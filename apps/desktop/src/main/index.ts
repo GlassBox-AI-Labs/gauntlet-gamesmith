@@ -15,6 +15,7 @@ import type { StartLoopInput } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
+import { buildReport } from './report'
 
 interface HarnessSpec {
   command: string
@@ -273,6 +274,10 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) =>
     ledger?.eventsForLoop(String(loopId), Math.min(2000, Math.max(1, Number(limit) || 800))) ?? [],
   )
+  ipcMain.handle('loop:report', (_event, value: unknown) => {
+    const loop = ledger?.getLoop(String(value))
+    return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id)) : ''
+  })
   ipcMain.handle('loop:pick-workspace', async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })

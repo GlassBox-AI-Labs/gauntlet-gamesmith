@@ -19,6 +19,7 @@ import type {
 } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
+import { buildReport } from './report'
 
 export const LOOP_MODELS: LoopModels = {
   orchestratorModel: 'claude-fable-5',
@@ -135,10 +136,11 @@ ${userPrompt}
 </goal>
 
 Protocol:
-1. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-2. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Judge visuals, gameplay, performance, completeness, polish.
-3. Compare side by side against the real AAA reference named in the goal. Be specific about every place it falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
-4. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
+1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
+2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
+3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Judge visuals, gameplay, performance, completeness, polish.
+4. Compare side by side: your captured screenshots of this project against the reference stills you downloaded in step 1. Be specific about every place it falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
+5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
 
 End your reply with EXACTLY one fenced JSON block and nothing after it:
 
@@ -232,7 +234,14 @@ export class LoopRunner {
 
   private broadcast(loopId: string): void {
     const loop = this.ledger.getLoop(loopId)
-    if (loop) this.send('loop:update', { loop, runs: this.ledger.runsForLoop(loopId) })
+    if (!loop) return
+    const runs = this.ledger.runsForLoop(loopId)
+    this.send('loop:update', { loop, runs })
+    try {
+      fs.writeFileSync(path.join(loop.workspaceDir, 'gauntlet-report.md'), buildReport(loop, runs))
+    } catch {
+      /* workspace may be gone; the in-app report still works */
+    }
   }
 
   private finishLoop(loopId: string, status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void {
@@ -544,6 +553,10 @@ export class LoopRunner {
       '--skip-git-repo-check',
       '-s',
       'workspace-write',
+      '-c',
+      'sandbox_workspace_write.network_access=true',
+      '-c',
+      'tools.web_search=true',
       '-m',
       LOOP_MODELS.criticModel,
       '-c',
@@ -581,6 +594,10 @@ export class LoopRunner {
           this.log(loop.id, run.id, 'codex', trunc(item.text, 400))
         } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
           this.log(loop.id, run.id, 'cmd', `$ ${trunc(item.command, 200)}`)
+        } else if (item.type === 'web_search' && type === 'item.completed') {
+          this.log(loop.id, run.id, 'search', `⌕ ${trunc(String(item.query ?? ''), 200)}`)
+        } else if (item.type === 'file_change' && type === 'item.completed') {
+          this.log(loop.id, run.id, 'cmd', `✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
         } else if (item.type === 'error') {
           this.log(loop.id, run.id, 'error', trunc(String(item.message ?? 'codex error'), 300))
         }
@@ -590,6 +607,7 @@ export class LoopRunner {
           sawUsage = true
           tokens.input += usage.input_tokens ?? 0
           tokens.cacheRead += usage.cached_input_tokens ?? 0
+          tokens.cacheWrite += usage.cache_write_input_tokens ?? 0
           tokens.output += usage.output_tokens ?? 0
         }
       } else if (type === 'turn.failed') {

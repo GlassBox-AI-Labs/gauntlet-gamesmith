@@ -115,6 +115,7 @@ export interface LoopApi {
   stop(loopId: string): Promise<void>
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
+  report(loopId: string): Promise<string>
   pickWorkspace(): Promise<string | null>
   defaultWorkspace(): Promise<string>
   onUpdate(listener: (snapshot: LoopSnapshot) => void): () => void

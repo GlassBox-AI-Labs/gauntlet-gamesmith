@@ -27,6 +27,7 @@ const loops: LoopApi = {
   stop: (loopId) => ipcRenderer.invoke('loop:stop', loopId),
   active: () => ipcRenderer.invoke('loop:active'),
   log: (loopId, limit) => ipcRenderer.invoke('loop:log', loopId, limit),
+  report: (loopId) => ipcRenderer.invoke('loop:report', loopId),
   pickWorkspace: () => ipcRenderer.invoke('loop:pick-workspace'),
   defaultWorkspace: () => ipcRenderer.invoke('loop:default-workspace'),
   onUpdate: (listener) => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -16,6 +16,7 @@ const KIND_COLORS: Record<string, string> = {
   tool: 'text-[#7d7772]',
   codex: 'text-[#9ad1c6]',
   cmd: 'text-[#7fa8a0]',
+  search: 'text-[#8fc7e6]',
   stderr: 'text-[#a08b6f]',
   error: 'text-[#f0aaaa]',
   metric: 'text-[#9fb2c8]',
@@ -128,6 +129,8 @@ export function RunView(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportMd, setReportMd] = useState('')
   const loopIdRef = useRef<string | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
@@ -168,6 +171,11 @@ export function RunView(): React.JSX.Element {
   useEffect(() => {
     if (stickRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [lines])
+
+  useEffect(() => {
+    if (!reportOpen || !snapshot) return
+    void window.loops.report(snapshot.loop.id).then(setReportMd)
+  }, [reportOpen, snapshot])
 
   const loop = snapshot?.loop ?? null
   const running = loop?.status === 'running'
@@ -289,6 +297,13 @@ export function RunView(): React.JSX.Element {
               {loop.workspaceDir}
             </span>
             <div className="ml-auto flex gap-2">
+              <Button
+                variant="outline"
+                className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${reportOpen ? 'text-[#e9c9bc]' : 'text-[#96908d]'}`}
+                onClick={() => setReportOpen((open) => !open)}
+              >
+                <FileText /> Report
+              </Button>
               {running ? (
                 <Button
                   variant="outline"
@@ -311,6 +326,12 @@ export function RunView(): React.JSX.Element {
 
           {loop.stopReason && !running && (
             <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>
+          )}
+
+          {reportOpen && (
+            <pre className="mb-5 max-h-[360px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#332e2e] bg-[#151111] p-4 font-mono text-[11px] leading-[1.65] text-[#c9c3c0]">
+              {reportMd || 'Building report…'}
+            </pre>
           )}
 
           <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e]">
