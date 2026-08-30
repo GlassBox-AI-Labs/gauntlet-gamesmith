@@ -114,7 +114,17 @@ export interface StartLoopResult {
   error?: string
 }
 
+export interface PlayState {
+  running: boolean
+  url: string | null
+  error: string | null
+}
+
 export interface LoopApi {
+  playStart(loopId: string): Promise<PlayState>
+  playStop(loopId: string): Promise<void>
+  playState(loopId: string): Promise<PlayState>
+  onPlayState(listener: (state: PlayState & { loopId: string }) => void): () => void
   start(input: StartLoopInput): Promise<StartLoopResult>
   stop(loopId: string): Promise<void>
   active(): Promise<LoopSnapshot | null>

@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { LoopLogLine, LoopSnapshot, RunRecord } from '../../../shared/loop'
+import type { LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 
 const LOG_LIMIT = 1500
 
@@ -133,6 +133,7 @@ export function RunView(): React.JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [reportOpen, setReportOpen] = useState(false)
   const [reportMd, setReportMd] = useState('')
+  const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null })
   const loopIdRef = useRef<string | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
@@ -178,6 +179,15 @@ export function RunView(): React.JSX.Element {
     if (!reportOpen || !snapshot) return
     void window.loops.report(snapshot.loop.id).then(setReportMd)
   }, [reportOpen, snapshot])
+
+  const activeLoopId = snapshot?.loop.id ?? null
+  useEffect(() => {
+    if (!activeLoopId) return
+    void window.loops.playState(activeLoopId).then(setPlay)
+    return window.loops.onPlayState((state) => {
+      if (state.loopId === activeLoopId) setPlay(state)
+    })
+  }, [activeLoopId])
 
   const loop = snapshot?.loop ?? null
   const running = loop?.status === 'running'
@@ -301,7 +311,34 @@ export function RunView(): React.JSX.Element {
             <span className="max-w-[320px] truncate font-mono text-[11px] text-[#68615f]" title={loop.workspaceDir}>
               {loop.workspaceDir}
             </span>
-            <div className="ml-auto flex gap-2">
+            <div className="ml-auto flex items-center gap-2">
+              {play.running && play.url && (
+                <button
+                  type="button"
+                  onClick={() => void window.loops.playStart(loop.id)}
+                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20"
+                  title="Open in browser"
+                >
+                  {play.url}
+                </button>
+              )}
+              {play.running ? (
+                <Button
+                  variant="outline"
+                  className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
+                  onClick={() => void window.loops.playStop(loop.id)}
+                >
+                  <Square /> Stop game
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="border-emerald-600/50 bg-transparent text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
+                  onClick={() => void window.loops.playStart(loop.id).then(setPlay)}
+                >
+                  <Play className="fill-current" /> Play
+                </Button>
+              )}
               <Button
                 variant="outline"
                 className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${reportOpen ? 'text-[#e9c9bc]' : 'text-[#96908d]'}`}
@@ -331,6 +368,10 @@ export function RunView(): React.JSX.Element {
 
           {loop.stopReason && !running && (
             <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>
+          )}
+
+          {play.error && (
+            <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>
           )}
 
           {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (

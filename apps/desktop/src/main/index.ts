@@ -15,6 +15,7 @@ import type { StartLoopInput } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
+import { playState, startPlay, stopAllPlay, stopPlay } from './play'
 import { buildReport, scanCritiqueArtifacts } from './report'
 
 interface HarnessSpec {
@@ -278,6 +279,16 @@ function registerLoopIpc(): void {
     const loop = ledger?.getLoop(String(value))
     return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id), scanCritiqueArtifacts(loop.workspaceDir)) : ''
   })
+  ipcMain.handle('play:start', (_event, value: unknown) => {
+    const loop = ledger?.getLoop(String(value))
+    if (!loop) return { running: false, url: null, error: 'Loop not found.' }
+    return startPlay(loop.id, loop.workspaceDir, (state) => mainWindow?.webContents.send('play:state', state))
+  })
+  ipcMain.handle('play:stop', (_event, value: unknown) => {
+    stopPlay(String(value))
+    mainWindow?.webContents.send('play:state', { loopId: String(value), running: false, url: null, error: null })
+  })
+  ipcMain.handle('play:state', (_event, value: unknown) => playState(String(value)))
   ipcMain.handle('loop:pick-workspace', async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })
@@ -363,6 +374,7 @@ if (hasSingleInstanceLock) {
 // live, quitting asks whether to keep them working or stop them gracefully.
 app.on('before-quit', (event) => {
   stopAllLogins()
+  stopAllPlay()
   const active = loopRunner?.activeRun()
   if (!active) return
   const choice = dialog.showMessageBoxSync({

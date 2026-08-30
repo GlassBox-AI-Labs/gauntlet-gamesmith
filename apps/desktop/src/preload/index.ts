@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
-import type { LoopApi, LoopLogLine, LoopSnapshot } from '../shared/loop'
+import type { LoopApi, LoopLogLine, LoopSnapshot, PlayState } from '../shared/loop'
 
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke('harness:detect', kind),
@@ -23,6 +23,14 @@ const harnesses: HarnessApi = {
 }
 
 const loops: LoopApi = {
+  playStart: (loopId) => ipcRenderer.invoke('play:start', loopId),
+  playStop: (loopId) => ipcRenderer.invoke('play:stop', loopId),
+  playState: (loopId) => ipcRenderer.invoke('play:state', loopId),
+  onPlayState: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: PlayState & { loopId: string }): void => listener(payload)
+    ipcRenderer.on('play:state', wrapped)
+    return () => ipcRenderer.removeListener('play:state', wrapped)
+  },
   start: (input) => ipcRenderer.invoke('loop:start', input),
   stop: (loopId) => ipcRenderer.invoke('loop:stop', loopId),
   active: () => ipcRenderer.invoke('loop:active'),
