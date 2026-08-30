@@ -295,7 +295,9 @@ export function RunView(): React.JSX.Element {
             <span className="text-sm text-[#ded9d6]">
               round {loop.round}/{loop.maxRounds}
             </span>
-            <span className="font-mono text-sm text-[#9fb2c8]">${loop.totalCostUsd.toFixed(2)} equiv</span>
+            <span className="font-mono text-sm text-[#9fb2c8]">
+              ${snapshot!.runs.reduce((sum, r) => sum + (r.costUsd ?? 0), 0).toFixed(2)} equiv
+            </span>
             <span className="max-w-[320px] truncate font-mono text-[11px] text-[#68615f]" title={loop.workspaceDir}>
               {loop.workspaceDir}
             </span>

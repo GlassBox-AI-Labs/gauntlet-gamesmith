@@ -20,6 +20,7 @@ import type {
 import { RESUME_PREFIX } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
+import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
 
 export const LOOP_MODELS: LoopModels = {
@@ -340,7 +341,7 @@ export class LoopRunner {
 
     const isResume = run.prompt.startsWith(RESUME_PREFIX) && this.hasClaudeSession(loop.workspaceDir)
     const prompt = isResume
-      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off and finish the task you were given. Same rules apply. ultracode'
+      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch implementer subagents only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply. ultracode'
       : run.prompt.startsWith(RESUME_PREFIX)
         ? run.prompt.slice(RESUME_PREFIX.length)
         : run.prompt
@@ -376,20 +377,34 @@ export class LoopRunner {
     let fallbackId = 0
     let lastTokenFlush = Date.now()
 
-    // Live token visibility: persist running totals every ~15s so the ledger,
-    // dashboard, and report show tokens mid-run, not only at run end.
+    // Live token + cost visibility: persist running totals every ~15s so the
+    // ledger, dashboard, and report show tokens and estimated cost mid-run.
+    let liveCostEstimate: number | null = null
     const flushTokens = (): void => {
       if (Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
       let input = 0
       let output = 0
-      for (const { usage } of msgUsage.values()) {
+      const perModel = new Map<string, TokenTotals>()
+      for (const { usage, model } of msgUsage.values()) {
+        const t = perModel.get(model ?? LOOP_MODELS.orchestratorModel) ?? emptyTokens()
+        t.input += usage.input_tokens ?? 0
+        t.output += usage.output_tokens ?? 0
+        t.cacheRead += usage.cache_read_input_tokens ?? 0
+        t.cacheWrite += usage.cache_creation_input_tokens ?? 0
+        perModel.set(model ?? LOOP_MODELS.orchestratorModel, t)
         input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
         output += usage.output_tokens ?? 0
+      }
+      liveCostEstimate = null
+      for (const [model, t] of perModel) {
+        const cost = estimateCostUsd(model, t)
+        if (cost != null) liveCostEstimate = (liveCostEstimate ?? 0) + cost
       }
       this.ledger.patchRun(run.id, {
         inputTokens: input,
         outputTokens: output,
+        costUsd: liveCostEstimate,
         metrics: this.buildImplementMetrics(agentLabels, msgUsage, null, finishedAgents),
       })
       this.broadcast(loop.id)
@@ -479,7 +494,8 @@ export class LoopRunner {
     const res = result as Record<string, unknown> | null
     const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
     const finishedAt = new Date().toISOString()
-    const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null
+    // Prefer the CLI's own figure (costBasis 'cli'); fall back to the live table estimate.
+    const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : liveCostEstimate
 
     this.ledger.patchRun(run.id, {
       metrics,
@@ -678,6 +694,7 @@ export class LoopRunner {
           this.ledger.patchRun(run.id, {
             inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
             outputTokens: tokens.output,
+            costUsd: estimateCostUsd(LOOP_MODELS.criticModel, tokens),
             metrics: {
               agents: [
                 {
@@ -727,20 +744,23 @@ export class LoopRunner {
       firstTs: new Date(startedAt).toISOString(),
       lastTs: new Date().toISOString(),
     }
+    const criticCost = sawUsage ? estimateCostUsd(LOOP_MODELS.criticModel, tokens) : null
     this.ledger.patchRun(run.id, {
-      metrics: { agents: [criticAgent], perModel: sawUsage ? { [LOOP_MODELS.criticModel]: { costUsd: null, tokens } } : {} },
-      inputTokens: sawUsage ? tokens.input + tokens.cacheRead : null,
+      metrics: { agents: [criticAgent], perModel: sawUsage ? { [LOOP_MODELS.criticModel]: { costUsd: criticCost, tokens } } : {} },
+      inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
       outputTokens: sawUsage ? tokens.output : null,
+      costUsd: criticCost,
       durationMs,
       summary: verdictText ? verdictText.slice(0, 4000) : null,
       verdict,
       finishedAt: new Date().toISOString(),
     })
+    this.accumulateCost(loop.id, criticCost)
     this.log(
       loop.id,
       run.id,
       'metric',
-      `▤ critique metrics: in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m (subscription — not in $ total)`,
+      `▤ critique metrics: ${criticCost != null ? `$${criticCost.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`,
     )
 
     const stopReason = this.stopRequested.has(loop.id) ? 'user' : active.timedOut ? 'timeout' : null

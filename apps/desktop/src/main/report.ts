@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { LoopRecord, RunRecord } from '../shared/loop'
+import { PRICE_TABLE_VERSION } from './pricing'
 
 const SPARK = '▁▂▃▄▅▆▇█'
 
@@ -161,6 +162,8 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
     lines.push('')
   }
 
-  lines.push(`_Costs are equivalent API cost estimates; runs use subscription logins. Ledger: ledger.db in app user data._`)
+  lines.push(
+    `_Costs are equivalent API cost estimates (claude: CLI-reported at run end, table mid-run; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
+  )
   return lines.join('\n')
 }
