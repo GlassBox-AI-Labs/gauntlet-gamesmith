@@ -407,7 +407,7 @@ export class LoopRunner {
       const type = obj.type as string
       const parentId = (obj.parent_tool_use_id as string | null) ?? null
       const agentKey = parentId ?? 'orchestrator'
-      const sub = parentId ? '↳ ' : ''
+      const who = parentId ? (agentLabels.get(parentId)?.label ?? `agent-${parentId.slice(-6)}`) : 'orchestrator'
 
       if (type === 'system' && obj.subtype === 'init') {
         const model = obj.model as string | undefined
@@ -431,17 +431,17 @@ export class LoopRunner {
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
           if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            this.log(loop.id, run.id, parentId ? 'agent' : 'claude', `${sub}${trunc(block.text, 400)}`)
+            this.log(loop.id, run.id, parentId ? 'agent' : 'claude', `[${who}] ${trunc(block.text, 400)}`)
           } else if (block.type === 'tool_use') {
             const name = block.name as string
             const input = block.input as Record<string, unknown> | undefined
             if ((name === 'Agent' || name === 'Task') && block.id) {
-              const label = (input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent'
+              const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
               const model = (input?.model as string | undefined) ?? null
               agentLabels.set(block.id as string, { label, model })
-              this.log(loop.id, run.id, 'spawn', `⇉ subagent "${label}"${model ? ` (${model})` : ''}`)
+              this.log(loop.id, run.id, 'spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
             } else {
-              this.log(loop.id, run.id, 'tool', `${sub}→ ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
+              this.log(loop.id, run.id, 'tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
             }
           }
         }
@@ -458,7 +458,7 @@ export class LoopRunner {
             this.log(loop.id, run.id, 'spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
           }
           if (block.is_error) {
-            this.log(loop.id, run.id, 'error', `${sub}✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
+            this.log(loop.id, run.id, 'error', `[${who}] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
           }
         }
         return
@@ -655,17 +655,17 @@ export class LoopRunner {
         if (!item) return
         if (item.type === 'agent_message' && typeof item.text === 'string' && type === 'item.completed') {
           lastAgentMessage = item.text
-          this.log(loop.id, run.id, 'codex', trunc(item.text, 400))
+          this.log(loop.id, run.id, 'codex', `[critic] ${trunc(item.text, 400)}`)
         } else if (item.type === 'reasoning' && typeof item.text === 'string' && type === 'item.completed' && item.text.trim()) {
-          this.log(loop.id, run.id, 'thought', `𝜓 ${trunc(item.text, 500)}`)
+          this.log(loop.id, run.id, 'thought', `[critic] 𝜓 ${trunc(item.text, 500)}`)
         } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'cmd', `$ ${trunc(item.command, 200)}`)
+          this.log(loop.id, run.id, 'cmd', `[critic] $ ${trunc(item.command, 200)}`)
         } else if (item.type === 'web_search' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'search', `⌕ ${trunc(String(item.query ?? ''), 200)}`)
+          this.log(loop.id, run.id, 'search', `[critic] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
         } else if (item.type === 'file_change' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'cmd', `✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
+          this.log(loop.id, run.id, 'cmd', `[critic] ✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
         } else if (item.type === 'error') {
-          this.log(loop.id, run.id, 'error', trunc(String(item.message ?? 'codex error'), 300))
+          this.log(loop.id, run.id, 'error', `[critic] ${trunc(String(item.message ?? 'codex error'), 300)}`)
         }
       } else if (type === 'turn.completed') {
         const usage = obj.usage as Record<string, number> | undefined
