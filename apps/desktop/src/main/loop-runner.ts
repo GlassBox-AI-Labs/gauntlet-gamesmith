@@ -277,6 +277,26 @@ export class LoopRunner {
     }
   }
 
+  /** The run currently being supervised, if any. */
+  activeRun(): { loopId: string; runId: string; pid: number; role: string } | null {
+    if (!this.current) return null
+    const run = this.ledger.getRun(this.current.runId)
+    return { loopId: this.current.loopId, runId: this.current.runId, pid: this.current.pid, role: run?.role ?? 'run' }
+  }
+
+  /**
+   * Graceful shutdown chosen at quit: SIGINT the agent and mark the loop
+   * stopped so the next launch does not resume it. (The SIGTERM/SIGKILL
+   * escalation timers die with the app; SIGINT is the reliable signal.)
+   */
+  stopForQuit(): void {
+    if (!this.current) return
+    const { loopId, runId, pid } = this.current
+    this.interruptPid(pid)
+    this.ledger.patchRun(runId, { status: 'cancelled', error: 'Stopped by user at quit.', finishedAt: new Date().toISOString() })
+    this.ledger.patchLoop(loopId, { status: 'stopped', stopReason: 'Stopped by user at quit.' })
+  }
+
   stop(loopId: string): void {
     this.stopRequested.add(loopId)
     if (this.current?.loopId === loopId) {

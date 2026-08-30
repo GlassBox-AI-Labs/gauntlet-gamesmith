@@ -358,9 +358,28 @@ if (hasSingleInstanceLock) {
   })
 }
 
-// Loop agents are detached processes and intentionally survive app quit —
-// the next launch re-attaches to them (LoopRunner.recoverAll).
-app.on('before-quit', stopAllLogins)
+// Loop agents are detached processes and by default survive app quit — the
+// next launch re-attaches to them (LoopRunner.recoverAll). When a run is
+// live, quitting asks whether to keep them working or stop them gracefully.
+app.on('before-quit', (event) => {
+  stopAllLogins()
+  const active = loopRunner?.activeRun()
+  if (!active) return
+  const choice = dialog.showMessageBoxSync({
+    type: 'question',
+    buttons: ['Keep agents running', 'Stop agents, then quit', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: `A loop is running (${active.role}, pid ${active.pid}).`,
+    detail:
+      'Agents are detached: quitting keeps them working headless and the app re-attaches on the next launch (the loop advances to its next run only while the app is open). Or stop them gracefully (SIGINT) and end the loop now.',
+  })
+  if (choice === 2) {
+    event.preventDefault()
+    return
+  }
+  if (choice === 1) loopRunner?.stopForQuit()
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
