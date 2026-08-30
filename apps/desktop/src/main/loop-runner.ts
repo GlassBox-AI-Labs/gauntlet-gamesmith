@@ -873,12 +873,18 @@ export class LoopRunner {
       'exec',
       '--json',
       '--skip-git-repo-check',
+      // code_mode fail-closes all command execution when its host binary is
+      // missing (verified live) — the classic shell path works everywhere.
+      '--disable',
+      'code_mode',
       '-s',
       'workspace-write',
       '-c',
       'sandbox_workspace_write.network_access=true',
       '-c',
       'tools.web_search=true',
+      '-c',
+      'model_reasoning_summary=detailed',
       '-m',
       LOOP_MODELS.criticModel,
       '-c',
