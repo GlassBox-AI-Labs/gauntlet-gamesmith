@@ -350,7 +350,7 @@ export function RunView(): React.JSX.Element {
                     />
                     {agent.label}
                     <span className="font-mono text-[10px] text-[#9fb2c8]">
-                      {fmtTokens(agent.tokens.input)}/{fmtTokens(agent.tokens.output)}
+                      {fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}
                     </span>
                     {agent.done && '✓'}
                   </span>
