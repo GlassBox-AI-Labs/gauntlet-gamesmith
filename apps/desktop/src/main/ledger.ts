@@ -13,6 +13,7 @@ import type {
   RunStatus,
   Verdict,
 } from '../shared/loop'
+import { RESUME_PREFIX } from '../shared/loop'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS loops (
@@ -301,12 +302,41 @@ export class Ledger {
     return rows.reverse().map((row) => ({ loopId: row.loop_id, runId: row.run_id, ts: row.ts, kind: row.kind, text: row.text }))
   }
 
-  /** Mark anything left 'running' by a previous app session as interrupted. */
-  sweepInterrupted(): void {
-    this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'App exited mid-run.' WHERE status IN ('queued', 'running')").run()
-    this.db
-      .prepare("UPDATE loops SET status = 'stopped', stop_reason = 'App exited mid-run. Start a new run to continue.' WHERE status = 'running'")
-      .run()
+  /**
+   * Recover loops left 'running' by a previous app session: mark their in-flight
+   * runs interrupted, queue fresh attempts with the same prompts, and return the
+   * loop ids that still have work so the runner can resume them.
+   */
+  resumeRunningLoops(): { loopId: string; round: number; role: RunRole }[] {
+    const rows = this.db.prepare("SELECT * FROM loops WHERE status = 'running'").all() as unknown as LoopRow[]
+    const resumed: { loopId: string; round: number; role: RunRole }[] = []
+    for (const row of rows) {
+      const loop = toLoop(row)
+      const runs = this.runsForLoop(loop.id)
+      const active = runs.find((r) => r.status === 'running')
+      if (active) {
+        this.patchRun(active.id, {
+          status: 'interrupted',
+          error: 'App restarted mid-run; a fresh attempt was queued.',
+          finishedAt: now(),
+        })
+        const basePrompt = active.prompt.startsWith(RESUME_PREFIX) ? active.prompt.slice(RESUME_PREFIX.length) : active.prompt
+        this.createRun({
+          loopId: loop.id,
+          round: active.round,
+          role: active.role,
+          harness: active.harness,
+          prompt: active.role === 'implement' ? RESUME_PREFIX + basePrompt : basePrompt,
+        })
+        resumed.push({ loopId: loop.id, round: active.round, role: active.role })
+      } else if (runs.some((r) => r.status === 'queued')) {
+        const queued = runs.find((r) => r.status === 'queued')!
+        resumed.push({ loopId: loop.id, round: queued.round, role: queued.role })
+      } else {
+        this.patchLoop(loop.id, { status: 'stopped', stopReason: 'No pending work found after app restart.' })
+      }
+    }
+    return resumed
   }
 
   close(): void {

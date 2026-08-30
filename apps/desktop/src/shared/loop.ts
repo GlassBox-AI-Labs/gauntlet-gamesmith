@@ -1,4 +1,7 @@
 export type RunRole = 'implement' | 'critique'
+
+/** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
+export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
 export type LoopStatus = 'running' | 'passed' | 'exhausted' | 'stopped' | 'failed'
 

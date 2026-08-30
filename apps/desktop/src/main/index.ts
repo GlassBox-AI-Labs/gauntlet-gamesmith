@@ -15,7 +15,7 @@ import type { StartLoopInput } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
-import { buildReport } from './report'
+import { buildReport, scanCritiqueArtifacts } from './report'
 
 interface HarnessSpec {
   command: string
@@ -276,7 +276,7 @@ function registerLoopIpc(): void {
   )
   ipcMain.handle('loop:report', (_event, value: unknown) => {
     const loop = ledger?.getLoop(String(value))
-    return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id)) : ''
+    return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id), scanCritiqueArtifacts(loop.workspaceDir)) : ''
   })
   ipcMain.handle('loop:pick-workspace', async () => {
     if (!mainWindow) return null
@@ -340,11 +340,12 @@ if (!hasSingleInstanceLock) app.quit()
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
-    ledger.sweepInterrupted()
+    const resumed = ledger.resumeRunningLoops()
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
     registerIpc()
     registerLoopIpc()
     mainWindow = createWindow()
+    for (const entry of resumed) loopRunner.resume(entry.loopId, entry.round, entry.role)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()

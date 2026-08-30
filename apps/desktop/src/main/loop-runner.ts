@@ -17,9 +17,10 @@ import type {
   TokenTotals,
   Verdict,
 } from '../shared/loop'
+import { RESUME_PREFIX } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
-import { buildReport } from './report'
+import { buildReport, scanCritiqueArtifacts } from './report'
 
 export const LOOP_MODELS: LoopModels = {
   orchestratorModel: 'claude-fable-5',
@@ -128,7 +129,8 @@ function buildImplementPrompt(userPrompt: string, round: number, verdict: Verdic
   ].join('\n\n')
 }
 
-function buildCriticPrompt(userPrompt: string): string {
+function buildCriticPrompt(userPrompt: string, round: number): string {
+  const evidenceDir = `critique/round-${round}`
   return `You are a brutally harsh AAA game quality critic with fresh eyes. You did not build this project and you have no attachment to it. Judge the project in the current working directory against this bar:
 
 <goal>
@@ -138,8 +140,8 @@ ${userPrompt}
 Protocol:
 1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
 2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Judge visuals, gameplay, performance, completeness, polish.
-4. Compare side by side: your captured screenshots of this project against the reference stills you downloaded in step 1. Be specific about every place it falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
+3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. Judge visuals, gameplay, performance, completeness, polish.
+4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair in ./${evidenceDir}/pairs.md: which shot vs which ref, which image wins, and exactly why. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
 5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
 
 End your reply with EXACTLY one fenced JSON block and nothing after it:
@@ -202,6 +204,13 @@ export class LoopRunner {
     return { ok: true, loopId: loop.id }
   }
 
+  /** Continue a loop recovered from a previous app session. */
+  resume(loopId: string, round: number, role: string): void {
+    this.log(loopId, null, 'system', `App restarted — resuming round ${round} (${role}). Agents keep running.`)
+    this.broadcast(loopId)
+    void this.executeNext(loopId)
+  }
+
   stop(loopId: string): void {
     this.stopRequested.add(loopId)
     if (this.current?.loopId === loopId) {
@@ -238,7 +247,7 @@ export class LoopRunner {
     const runs = this.ledger.runsForLoop(loopId)
     this.send('loop:update', { loop, runs })
     try {
-      fs.writeFileSync(path.join(loop.workspaceDir, 'gauntlet-report.md'), buildReport(loop, runs))
+      fs.writeFileSync(path.join(loop.workspaceDir, 'gauntlet-report.md'), buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir)))
     } catch {
       /* workspace may be gone; the in-app report still works */
     }
@@ -314,15 +323,38 @@ export class LoopRunner {
 
   // ---------------------------------------------------------------- implement
 
+  /** True if the workspace has a prior claude session transcript to `--continue` from. */
+  private hasClaudeSession(workspaceDir: string): boolean {
+    const projectDir = path.join(cliHome('claude'), 'projects', workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'))
+    try {
+      return fs.readdirSync(projectDir).some((file) => file.endsWith('.jsonl'))
+    } catch {
+      return false
+    }
+  }
+
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
     fs.mkdirSync(agentDir, { recursive: true })
     fs.writeFileSync(path.join(agentDir, 'implementer.md'), IMPLEMENTER_AGENT_MD)
 
-    this.log(loop.id, run.id, 'system', `● Round ${run.round} — implement (claude ${LOOP_MODELS.orchestratorModel}, effort ${LOOP_MODELS.orchestratorEffort})`)
+    const isResume = run.prompt.startsWith(RESUME_PREFIX) && this.hasClaudeSession(loop.workspaceDir)
+    const prompt = isResume
+      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off and finish the task you were given. Same rules apply. ultracode'
+      : run.prompt.startsWith(RESUME_PREFIX)
+        ? run.prompt.slice(RESUME_PREFIX.length)
+        : run.prompt
+
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `● Round ${run.round} — implement (claude ${LOOP_MODELS.orchestratorModel}, effort ${LOOP_MODELS.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
+    )
     const args = [
+      ...(isResume ? ['--continue'] : []),
       '-p',
-      run.prompt,
+      prompt,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -341,6 +373,22 @@ export class LoopRunner {
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
+    let lastTokenFlush = Date.now()
+
+    // Live token visibility: persist running totals every ~15s so the ledger,
+    // dashboard, and report show tokens mid-run, not only at run end.
+    const flushTokens = (): void => {
+      if (Date.now() - lastTokenFlush < 15_000) return
+      lastTokenFlush = Date.now()
+      let input = 0
+      let output = 0
+      for (const { usage } of msgUsage.values()) {
+        input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+        output += usage.output_tokens ?? 0
+      }
+      this.ledger.patchRun(run.id, { inputTokens: input, outputTokens: output })
+      this.broadcast(loop.id)
+    }
 
     const rl = readline.createInterface({ input: active.child.stdout })
     rl.on('line', (line) => {
@@ -373,6 +421,7 @@ export class LoopRunner {
             usage: message.usage as Record<string, number>,
             ts: new Date().toISOString(),
           })
+          flushTokens()
         }
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
@@ -451,7 +500,7 @@ export class LoopRunner {
     }
     this.ledger.patchRun(run.id, { status: 'succeeded' })
     if (this.overBudget(loop.id)) return
-    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt) })
+    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
   }
@@ -592,6 +641,8 @@ export class LoopRunner {
         if (item.type === 'agent_message' && typeof item.text === 'string' && type === 'item.completed') {
           lastAgentMessage = item.text
           this.log(loop.id, run.id, 'codex', trunc(item.text, 400))
+        } else if (item.type === 'reasoning' && typeof item.text === 'string' && type === 'item.completed' && item.text.trim()) {
+          this.log(loop.id, run.id, 'thought', `𝜓 ${trunc(item.text, 500)}`)
         } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
           this.log(loop.id, run.id, 'cmd', `$ ${trunc(item.command, 200)}`)
         } else if (item.type === 'web_search' && type === 'item.completed') {
@@ -609,6 +660,8 @@ export class LoopRunner {
           tokens.cacheRead += usage.cached_input_tokens ?? 0
           tokens.cacheWrite += usage.cache_write_input_tokens ?? 0
           tokens.output += usage.output_tokens ?? 0
+          this.ledger.patchRun(run.id, { inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite, outputTokens: tokens.output })
+          this.broadcast(loop.id)
         }
       } else if (type === 'turn.failed') {
         const error = obj.error as Record<string, unknown> | undefined
@@ -670,7 +723,7 @@ export class LoopRunner {
       this.ledger.patchRun(run.id, { status: 'failed', error: errText })
       if (attempts < MAX_CRITIQUE_ATTEMPTS) {
         this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-        this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt) })
+        this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
         this.broadcast(loop.id)
         void this.executeNext(loop.id)
         return
@@ -680,6 +733,11 @@ export class LoopRunner {
     }
 
     this.ledger.patchRun(run.id, { status: 'succeeded' })
+    const evidence = scanCritiqueArtifacts(loop.workspaceDir).find((a) => a.round === run.round)
+    if (evidence && (evidence.shots.length > 0 || evidence.refs.length > 0)) {
+      this.log(loop.id, run.id, 'shot', `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs${evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`)
+      for (const file of [...evidence.shots, ...evidence.refs].slice(0, 10)) this.log(loop.id, run.id, 'shot', `  ${file}`)
+    }
     this.log(loop.id, run.id, 'verdict', `★ score ${verdict.score.toFixed(2)}/1.00 ${verdict.pass ? '— PASS' : '— not there yet'} · ${trunc(verdict.summary, 300)}`)
     for (const finding of verdict.findings.slice(0, 12)) this.log(loop.id, run.id, 'verdict', `  · [${finding.severity}] ${trunc(finding.text, 240)}`)
     if (verdict.findings.length > 12) this.log(loop.id, run.id, 'verdict', `  · …and ${verdict.findings.length - 12} more findings`)

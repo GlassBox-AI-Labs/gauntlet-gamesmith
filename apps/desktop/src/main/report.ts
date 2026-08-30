@@ -1,6 +1,50 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import type { LoopRecord, RunRecord } from '../shared/loop'
 
 const SPARK = '▁▂▃▄▅▆▇█'
+
+export interface CritiqueArtifacts {
+  round: number
+  shots: string[]
+  refs: string[]
+  pairsMd: string | null
+}
+
+/** Collect the critic's saved evidence (screenshots, reference stills, pair notes) from the workspace. */
+export function scanCritiqueArtifacts(workspaceDir: string): CritiqueArtifacts[] {
+  const base = path.join(workspaceDir, 'critique')
+  let entries: string[] = []
+  try {
+    entries = fs.readdirSync(base)
+  } catch {
+    return []
+  }
+  const artifacts: CritiqueArtifacts[] = []
+  for (const name of entries) {
+    const match = /^round-(\d+)$/.exec(name)
+    if (!match) continue
+    const listImages = (sub: string): string[] => {
+      try {
+        return fs
+          .readdirSync(path.join(base, name, sub))
+          .filter((file) => /\.(png|jpe?g|webp|gif)$/i.test(file))
+          .sort()
+          .map((file) => path.posix.join('critique', name, sub, file))
+      } catch {
+        return []
+      }
+    }
+    let pairsMd: string | null = null
+    try {
+      pairsMd = fs.readFileSync(path.join(base, name, 'pairs.md'), 'utf8').slice(0, 4000)
+    } catch {
+      /* no pair notes */
+    }
+    artifacts.push({ round: Number(match[1]), shots: listImages('shots'), refs: listImages('refs'), pairsMd })
+  }
+  return artifacts.sort((a, b) => a.round - b.round)
+}
 
 function fmtTokens(n: number | null | undefined): string {
   if (n == null) return '—'
@@ -20,7 +64,7 @@ function spark(score: number): string {
   return SPARK[Math.min(SPARK.length - 1, Math.max(0, Math.round(score * (SPARK.length - 1))))]
 }
 
-export function buildReport(loop: LoopRecord, runs: RunRecord[]): string {
+export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: CritiqueArtifacts[] = []): string {
   const done = runs.filter((r) => r.status !== 'queued')
   const totalCost = done.reduce((sum, r) => sum + (r.costUsd ?? 0), 0)
   const totalIn = done.reduce((sum, r) => sum + (r.inputTokens ?? 0), 0)
@@ -71,6 +115,34 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[]): string {
     lines.push('')
     for (const finding of latest.verdict.findings) lines.push(`- **[${finding.severity}]** ${finding.text}`)
     lines.push('')
+  }
+
+  const latestEvidence = artifacts.at(-1)
+  if (latestEvidence && (latestEvidence.shots.length > 0 || latestEvidence.refs.length > 0)) {
+    lines.push(`## Critic evidence (round ${latestEvidence.round})`)
+    lines.push('')
+    for (const prior of artifacts.slice(0, -1)) {
+      lines.push(`Round ${prior.round}: ${prior.shots.length} shots · ${prior.refs.length} refs — critique/round-${prior.round}/`)
+    }
+    if (artifacts.length > 1) lines.push('')
+    if (latestEvidence.shots.length > 0) {
+      lines.push(`**This build** (${latestEvidence.shots.length} shots):`)
+      lines.push('')
+      for (const shot of latestEvidence.shots.slice(0, 6)) lines.push(`![shot](${shot})`)
+      lines.push('')
+    }
+    if (latestEvidence.refs.length > 0) {
+      lines.push(`**AAA reference** (${latestEvidence.refs.length} stills):`)
+      lines.push('')
+      for (const ref of latestEvidence.refs.slice(0, 6)) lines.push(`![ref](${ref})`)
+      lines.push('')
+    }
+    if (latestEvidence.pairsMd) {
+      lines.push('### Side-by-side pair notes')
+      lines.push('')
+      lines.push(latestEvidence.pairsMd.trim())
+      lines.push('')
+    }
   }
 
   const lastWithAgents = [...runs].reverse().find((r) => r.metrics && r.metrics.agents.length > 0)
