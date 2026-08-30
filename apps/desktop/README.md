@@ -1,8 +1,11 @@
-# Desktop harness login
+# Gauntlet Loop desktop
 
-The Electron desktop app drives the stock Claude Code and Codex login commands while keeping credentials entirely in each CLI's own store.
+The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
-The current implementation covers CLI detection, login-status probing, an interactive PTY embedded in Electron, and a terminal-header indicator that resolves after a successful status probe. It does not read credential files.
+Two tabs:
+
+- **Agents** — CLI detection, login-status probing, and an interactive PTY for signing in to Claude Code and Codex. It does not read credential files.
+- **Run** — paste a goal prompt and start a generator/critic loop. Claude Code (`claude-fable-5`, high effort) implements each round with `--dangerously-skip-permissions` inside the chosen workspace, orchestrating `implementer` subagents (opus, medium effort, seeded via `.claude/agents/implementer.md`). Codex (`gpt-5.6-sol`, medium reasoning) then judges with fresh eyes and must end with a JSON verdict; a failing verdict's findings are fed into the next round's implement prompt. Rounds, runs, verdicts, per-subagent token metrics, and the full event log are recorded in a SQLite ledger (`ledger.db` in user data, via `node:sqlite` — no native deps). The loop stops on critic pass, max rounds, budget ceiling (equivalent API cost), stop button, or rate limit. Both runs reuse the subscription logins from the Agents tab (`CLAUDE_CONFIG_DIR`/`CODEX_HOME` point at the app's harness homes; API-key env vars are stripped).
 
 Run the TypeScript development app from the repository root:
 

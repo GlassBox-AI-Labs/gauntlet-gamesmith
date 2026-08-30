@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
+import type { LoopApi, LoopLogLine, LoopSnapshot } from '../shared/loop'
 
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke('harness:detect', kind),
@@ -21,4 +22,24 @@ const harnesses: HarnessApi = {
   },
 }
 
+const loops: LoopApi = {
+  start: (input) => ipcRenderer.invoke('loop:start', input),
+  stop: (loopId) => ipcRenderer.invoke('loop:stop', loopId),
+  active: () => ipcRenderer.invoke('loop:active'),
+  log: (loopId, limit) => ipcRenderer.invoke('loop:log', loopId, limit),
+  pickWorkspace: () => ipcRenderer.invoke('loop:pick-workspace'),
+  defaultWorkspace: () => ipcRenderer.invoke('loop:default-workspace'),
+  onUpdate: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: LoopSnapshot): void => listener(payload)
+    ipcRenderer.on('loop:update', wrapped)
+    return () => ipcRenderer.removeListener('loop:update', wrapped)
+  },
+  onLog: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: LoopLogLine): void => listener(payload)
+    ipcRenderer.on('loop:log', wrapped)
+    return () => ipcRenderer.removeListener('loop:log', wrapped)
+  },
+}
+
 contextBridge.exposeInMainWorld('harnesses', harnesses)
+contextBridge.exposeInMainWorld('loops', loops)

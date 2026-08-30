@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
 import path from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import pty, { type IPty } from 'node-pty'
 import type {
   DetectionResult,
@@ -12,6 +11,10 @@ import type {
   TerminalDataEvent,
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
+import type { StartLoopInput } from '../shared/loop'
+import { cliHome, subscriptionEnv } from './harness-env'
+import { Ledger } from './ledger'
+import { LoopRunner } from './loop-runner'
 
 interface HarnessSpec {
   command: string
@@ -41,6 +44,8 @@ interface ClaudeStatus {
 const runningLogins = new Map<HarnessKind, IPty>()
 const validHarnessKinds = new Set<string>(harnessKinds)
 let mainWindow: BrowserWindow | null = null
+let ledger: Ledger | null = null
+let loopRunner: LoopRunner | null = null
 
 app.setName('Gauntlet Loop')
 app.setPath('userData', path.join(app.getPath('appData'), 'Gauntlet Loop'))
@@ -50,13 +55,6 @@ function assertHarnessKind(value: unknown): HarnessKind {
     throw new Error('Unsupported harness.')
   }
   return value as HarnessKind
-}
-
-function cliHome(kind: HarnessKind): string {
-  const home = path.join(app.getPath('userData'), 'harnesses', kind)
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 })
-  fs.chmodSync(home, 0o700)
-  return home
 }
 
 function harnessSpec(kind: HarnessKind): HarnessSpec {
@@ -77,16 +75,6 @@ function harnessSpec(kind: HarnessKind): HarnessSpec {
     loginArgs: ['login'],
     env: { CODEX_HOME: cliHome(kind) },
   }
-}
-
-function subscriptionEnv(overrides: Record<string, string>): Record<string, string> {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  )
-  delete env.ANTHROPIC_API_KEY
-  delete env.OPENAI_API_KEY
-  delete env.CODEX_API_KEY
-  return { ...env, ...overrides, NO_COLOR: '1' }
 }
 
 function run(command: string, args: string[], env: Record<string, string>, timeoutMs = 8_000): Promise<CommandResult> {
@@ -266,6 +254,33 @@ function stopAllLogins(): void {
   runningLogins.clear()
 }
 
+function registerLoopIpc(): void {
+  ipcMain.handle('loop:start', async (_event, value: unknown) => {
+    if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
+    const input = value as Partial<StartLoopInput> | undefined
+    const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), probe('codex')])
+    if (!claudeStatus.loggedIn) return { ok: false, error: 'Claude Code (implementer) is not connected. Sign in on the Agents tab.' }
+    if (!codexStatus.loggedIn) return { ok: false, error: 'Codex (critic) is not connected. Sign in on the Agents tab.' }
+    return loopRunner.start({
+      prompt: String(input?.prompt ?? ''),
+      workspaceDir: String(input?.workspaceDir ?? ''),
+      maxRounds: Number(input?.maxRounds ?? 10),
+      budgetUsd: input?.budgetUsd == null ? null : Number(input.budgetUsd) || null,
+    })
+  })
+  ipcMain.handle('loop:stop', (_event, value: unknown) => loopRunner?.stop(String(value)))
+  ipcMain.handle('loop:active', () => loopRunner?.snapshot() ?? null)
+  ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) =>
+    ledger?.eventsForLoop(String(loopId), Math.min(2000, Math.max(1, Number(limit) || 800))) ?? [],
+  )
+  ipcMain.handle('loop:pick-workspace', async () => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
+  ipcMain.handle('loop:default-workspace', () => path.join(app.getPath('home'), 'GauntletRuns', 'aaa-shooter'))
+}
+
 function registerIpc(): void {
   ipcMain.handle('harness:detect', (_event, value: unknown) => detect(assertHarnessKind(value)))
   ipcMain.handle('harness:probe', (_event, value: unknown) => probe(assertHarnessKind(value)))
@@ -319,7 +334,11 @@ if (!hasSingleInstanceLock) app.quit()
 
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
+    ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
+    ledger.sweepInterrupted()
+    loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
     registerIpc()
+    registerLoopIpc()
     mainWindow = createWindow()
 
     app.on('activate', () => {
@@ -334,7 +353,10 @@ if (hasSingleInstanceLock) {
   })
 }
 
-app.on('before-quit', stopAllLogins)
+app.on('before-quit', () => {
+  stopAllLogins()
+  loopRunner?.shutdown()
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
