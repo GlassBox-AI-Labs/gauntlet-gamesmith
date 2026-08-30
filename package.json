@@ -1,0 +1,14 @@
+{
+  "name": "gauntlet-loop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Electron desktop app for local Claude Code and Codex harnesses",
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "build": "pnpm --filter @gauntlet/desktop build",
+    "dev": "pnpm --filter @gauntlet/desktop dev",
+    "start": "pnpm --filter @gauntlet/desktop start",
+    "test": "pnpm --filter @gauntlet/desktop test",
+    "typecheck": "pnpm --filter @gauntlet/desktop typecheck"
+  }
+}
