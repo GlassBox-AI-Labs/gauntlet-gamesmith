@@ -63,27 +63,22 @@ describe('Ledger', () => {
     ledger.close()
   })
 
-  it('resumes running loops from a dead session by requeuing the interrupted run', () => {
+  it('requeues an orphaned run with the resume marker', () => {
     const ledger = makeLedger()
     const loop = ledger.createLoop({ prompt: 'p', workspaceDir: '/tmp/w', maxRounds: 3, budgetUsd: null, models })
     const run = ledger.createRun({ loopId: loop.id, round: 2, role: 'implement', harness: 'claude', prompt: 'build it' })
     ledger.patchRun(run.id, { status: 'running' })
 
-    const resumed = ledger.resumeRunningLoops()
-    expect(resumed).toEqual([{ loopId: loop.id, round: 2, role: 'implement' }])
+    const requeued = ledger.requeueInterruptedRun(ledger.getRun(run.id)!)
     expect(ledger.getRun(run.id)!.status).toBe('interrupted')
     expect(ledger.getLoop(loop.id)!.status).toBe('running')
-    const requeued = ledger.nextQueuedRun(loop.id)!
     expect(requeued.round).toBe(2)
+    expect(requeued.status).toBe('queued')
     expect(requeued.prompt).toBe('[[gauntlet:resume]]\nbuild it')
-    ledger.close()
-  })
-
-  it('stops a running loop with no pending work after restart', () => {
-    const ledger = makeLedger()
-    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: '/tmp/w', maxRounds: 1, budgetUsd: null, models })
-    expect(ledger.resumeRunningLoops()).toEqual([])
-    expect(ledger.getLoop(loop.id)!.status).toBe('stopped')
+    // Requeuing the requeued run must not stack markers.
+    const again = ledger.requeueInterruptedRun(requeued)
+    expect(again.prompt).toBe('[[gauntlet:resume]]\nbuild it')
+    expect(ledger.runningLoops().map((l) => l.id)).toEqual([loop.id])
     ledger.close()
   })
 })

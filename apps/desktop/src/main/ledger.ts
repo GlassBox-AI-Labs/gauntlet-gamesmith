@@ -302,41 +302,30 @@ export class Ledger {
     return rows.reverse().map((row) => ({ loopId: row.loop_id, runId: row.run_id, ts: row.ts, kind: row.kind, text: row.text }))
   }
 
-  /**
-   * Recover loops left 'running' by a previous app session: mark their in-flight
-   * runs interrupted, queue fresh attempts with the same prompts, and return the
-   * loop ids that still have work so the runner can resume them.
-   */
-  resumeRunningLoops(): { loopId: string; round: number; role: RunRole }[] {
+  runningLoops(): LoopRecord[] {
     const rows = this.db.prepare("SELECT * FROM loops WHERE status = 'running'").all() as unknown as LoopRow[]
-    const resumed: { loopId: string; round: number; role: RunRole }[] = []
-    for (const row of rows) {
-      const loop = toLoop(row)
-      const runs = this.runsForLoop(loop.id)
-      const active = runs.find((r) => r.status === 'running')
-      if (active) {
-        this.patchRun(active.id, {
-          status: 'interrupted',
-          error: 'App restarted mid-run; a fresh attempt was queued.',
-          finishedAt: now(),
-        })
-        const basePrompt = active.prompt.startsWith(RESUME_PREFIX) ? active.prompt.slice(RESUME_PREFIX.length) : active.prompt
-        this.createRun({
-          loopId: loop.id,
-          round: active.round,
-          role: active.role,
-          harness: active.harness,
-          prompt: active.role === 'implement' ? RESUME_PREFIX + basePrompt : basePrompt,
-        })
-        resumed.push({ loopId: loop.id, round: active.round, role: active.role })
-      } else if (runs.some((r) => r.status === 'queued')) {
-        const queued = runs.find((r) => r.status === 'queued')!
-        resumed.push({ loopId: loop.id, round: queued.round, role: queued.role })
-      } else {
-        this.patchLoop(loop.id, { status: 'stopped', stopReason: 'No pending work found after app restart.' })
-      }
-    }
-    return resumed
+    return rows.map(toLoop)
+  }
+
+  /**
+   * Mark an orphaned in-flight run interrupted and queue a fresh attempt with
+   * the same prompt (implement attempts get the resume marker so the runner
+   * continues the prior claude session instead of restarting the round).
+   */
+  requeueInterruptedRun(run: RunRecord): RunRecord {
+    this.patchRun(run.id, {
+      status: 'interrupted',
+      error: 'App restarted mid-run; a fresh attempt was queued.',
+      finishedAt: now(),
+    })
+    const basePrompt = run.prompt.startsWith(RESUME_PREFIX) ? run.prompt.slice(RESUME_PREFIX.length) : run.prompt
+    return this.createRun({
+      loopId: run.loopId,
+      round: run.round,
+      role: run.role,
+      harness: run.harness,
+      prompt: run.role === 'implement' ? RESUME_PREFIX + basePrompt : basePrompt,
+    })
   }
 
   close(): void {

@@ -1,9 +1,6 @@
-import { spawn, type ChildProcessByStdio } from 'node:child_process'
-import type { Readable } from 'node:stream'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import readline from 'node:readline'
 import type {
   AgentMetric,
   LoopLogLine,
@@ -18,7 +15,7 @@ import type {
   Verdict,
 } from '../shared/loop'
 import { RESUME_PREFIX } from '../shared/loop'
-import { cliHome, subscriptionEnv } from './harness-env'
+import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
@@ -60,6 +57,10 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function parseVerdict(text: string): Verdict | null {
@@ -154,16 +155,47 @@ End your reply with EXACTLY one fenced JSON block and nothing after it:
 "pass" may only be true if score >= 0.90 and you would genuinely mistake screenshots of this game for the AAA reference.`
 }
 
-interface ActiveRun {
+/** On-disk record of a detached run process; lets the app die and re-attach. */
+interface ProcMeta {
+  pid: number
+  outPath: string
+  errPath: string
+  startedAtMs: number
+  loggedOutLines: number
+  loggedErrLines: number
+}
+
+interface ExitHolder {
+  exited: boolean
+  code: number | null
+  spawnError: string | null
+}
+
+interface ExitInfo {
+  code: number | null // null = exit code unknown (re-attached process)
+  timedOut: boolean
+  spawnError: string | null
+}
+
+interface StreamParser {
+  onLine(line: string): void
+  onStderr(text: string): void
+  finalize(exit: ExitInfo): Promise<void> | void
+}
+
+interface Attachment {
   loopId: string
   runId: string
-  child: ChildProcessByStdio<null, Readable, Readable>
-  timer: NodeJS.Timeout
+  pid: number
   timedOut: boolean
 }
 
+interface LogGate {
+  suppress: boolean
+}
+
 export class LoopRunner {
-  private current: ActiveRun | null = null
+  private current: Attachment | null = null
   private stopRequested = new Set<string>()
 
   constructor(
@@ -205,35 +237,96 @@ export class LoopRunner {
     return { ok: true, loopId: loop.id }
   }
 
-  /** Continue a loop recovered from a previous app session. */
-  resume(loopId: string, round: number, role: string): void {
-    this.log(loopId, null, 'system', `App restarted — resuming round ${round} (${role}). Agents keep running.`)
-    this.broadcast(loopId)
-    void this.executeNext(loopId)
+  /**
+   * Boot-time recovery. Detached agents survive app restarts: if the run's
+   * process is still alive we re-attach to its output file (no interruption);
+   * if it finished while the app was down we drain and finalize it; only when
+   * no process metadata exists do we requeue a fresh attempt.
+   */
+  recoverAll(): void {
+    for (const loop of this.ledger.runningLoops()) {
+      const runs = this.ledger.runsForLoop(loop.id)
+      const active = runs.find((r) => r.status === 'running')
+      if (active) {
+        const meta = this.readMeta(active.id)
+        if (meta) {
+          const alive = this.pidAlive(meta.pid)
+          this.log(
+            loop.id,
+            active.id,
+            'system',
+            alive
+              ? `App restarted — re-attached to live ${active.role} (pid ${meta.pid}); agents were never interrupted.`
+              : `App restarted — ${active.role} ended while the app was down; draining its output.`,
+          )
+          this.broadcast(loop.id)
+          const gate: LogGate = { suppress: false }
+          const parser = active.role === 'implement' ? this.makeImplementParser(loop, active, gate) : this.makeCritiqueParser(loop, active, gate)
+          const timeout = active.role === 'implement' ? IMPLEMENT_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          void this.driveRun(loop, active, meta, timeout, parser, gate, null)
+          continue
+        }
+        this.ledger.requeueInterruptedRun(active)
+        this.log(loop.id, null, 'system', `App restarted — no live process found; requeued round ${active.round} ${active.role}.`)
+      } else if (!runs.some((r) => r.status === 'queued')) {
+        this.finishLoop(loop.id, 'stopped', 'No pending work found after app restart.')
+        continue
+      }
+      this.broadcast(loop.id)
+      void this.executeNext(loop.id)
+    }
   }
 
   stop(loopId: string): void {
     this.stopRequested.add(loopId)
     if (this.current?.loopId === loopId) {
       this.log(loopId, this.current.runId, 'system', 'Stop requested — interrupting current run (SIGINT).')
-      this.interrupt(this.current)
+      this.interruptPid(this.current.pid)
       return
     }
     this.finishLoop(loopId, 'stopped', 'Stopped by user.')
   }
 
-  shutdown(): void {
-    if (this.current) this.current.child.kill('SIGINT')
+  private pidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
   }
 
-  private interrupt(active: ActiveRun): void {
-    active.child.kill('SIGINT')
-    setTimeout(() => {
-      if (this.current === active) active.child.kill('SIGTERM')
-    }, 10_000).unref()
-    setTimeout(() => {
-      if (this.current === active) active.child.kill('SIGKILL')
-    }, 15_000).unref()
+  private interruptPid(pid: number): void {
+    const tryKill = (signal: NodeJS.Signals): void => {
+      try {
+        process.kill(pid, signal)
+      } catch {
+        /* already gone */
+      }
+    }
+    tryKill('SIGINT')
+    setTimeout(() => this.pidAlive(pid) && tryKill('SIGTERM'), 10_000).unref()
+    setTimeout(() => this.pidAlive(pid) && tryKill('SIGKILL'), 15_000).unref()
+  }
+
+  private metaPath(runId: string): string {
+    return path.join(runsDir(), `${runId}.json`)
+  }
+
+  private readMeta(runId: string): ProcMeta | null {
+    try {
+      return JSON.parse(fs.readFileSync(this.metaPath(runId), 'utf8')) as ProcMeta
+    } catch {
+      return null
+    }
+  }
+
+  private writeMeta(runId: string, meta: ProcMeta): void {
+    try {
+      fs.writeFileSync(this.metaPath(runId), JSON.stringify(meta))
+    } catch {
+      /* non-fatal */
+    }
   }
 
   private log(loopId: string, runId: string | null, kind: string, text: string): void {
@@ -282,47 +375,158 @@ export class LoopRunner {
     }
   }
 
-  private spawnRun(
+  /** Spawn a detached CLI process whose stdout/stderr stream to files. */
+  private spawnDetached(
     loop: LoopRecord,
     run: RunRecord,
     command: string,
     args: string[],
     env: Record<string, string>,
-    timeoutMs: number,
-  ): ActiveRun {
-    const child = spawn(command, args, { cwd: loop.workspaceDir, env, stdio: ['ignore', 'pipe', 'pipe'] })
-    const active: ActiveRun = {
-      loopId: loop.id,
-      runId: run.id,
-      child,
-      timedOut: false,
-      timer: setTimeout(() => {
-        active.timedOut = true
-        this.log(loop.id, run.id, 'error', `Run exceeded ${Math.round(timeoutMs / 60_000)} min — interrupting.`)
-        this.interrupt(active)
-      }, timeoutMs),
+  ): { meta: ProcMeta; own: ExitHolder } | null {
+    const outPath = path.join(runsDir(), `${run.id}.out.ndjson`)
+    const errPath = path.join(runsDir(), `${run.id}.err.log`)
+    const own: ExitHolder = { exited: false, code: null, spawnError: null }
+    let outFd: number
+    let errFd: number
+    try {
+      outFd = fs.openSync(outPath, 'a')
+      errFd = fs.openSync(errPath, 'a')
+    } catch (error) {
+      this.ledger.patchRun(run.id, { status: 'failed', error: `Cannot open stream files: ${String(error)}` })
+      this.finishLoop(loop.id, 'failed', 'Cannot open run stream files.')
+      return null
     }
-    this.current = active
+    const child = spawn(command, args, { cwd: loop.workspaceDir, env, detached: true, stdio: ['ignore', outFd, errFd] })
+    fs.closeSync(outFd)
+    fs.closeSync(errFd)
+    child.on('error', (error) => {
+      own.spawnError = error.message
+      own.exited = true
+      own.code = -1
+    })
+    child.on('exit', (code) => {
+      own.exited = true
+      own.code = code
+    })
+    child.unref()
+    const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
+    this.writeMeta(run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
     this.broadcast(loop.id)
-    return active
+    return { meta, own }
   }
 
-  private async waitForExit(active: ActiveRun): Promise<{ code: number | null; spawnError: string | null }> {
-    return new Promise((resolve) => {
-      let spawnError: string | null = null
-      active.child.on('error', (error) => {
-        spawnError = error.message
-      })
-      active.child.on('close', (code) => {
-        clearTimeout(active.timer)
-        this.current = null
-        resolve({ code, spawnError })
-      })
+  /**
+   * Tail the run's output files, feeding lines to the parser (replaying from
+   * byte 0 on re-attach with already-logged lines suppressed), until the
+   * process exits — then finalize.
+   */
+  private async driveRun(
+    loop: LoopRecord,
+    run: RunRecord,
+    meta: ProcMeta,
+    timeoutMs: number,
+    parser: StreamParser,
+    gate: LogGate,
+    own: ExitHolder | null,
+  ): Promise<void> {
+    const att: Attachment = { loopId: loop.id, runId: run.id, pid: meta.pid, timedOut: false }
+    this.current = att
+
+    let outOffset = 0
+    let outRemainder = ''
+    let outLine = 0
+    let errOffset = 0
+    let errRemainder = ''
+    let errLine = 0
+    let lastMetaWrite = 0
+    const initialOutLogged = meta.loggedOutLines
+    const initialErrLogged = meta.loggedErrLines
+
+    const readNew = (filePath: string, offset: number): { text: string; size: number } | null => {
+      try {
+        const size = fs.statSync(filePath).size
+        if (size <= offset) return null
+        const fd = fs.openSync(filePath, 'r')
+        const buf = Buffer.alloc(size - offset)
+        fs.readSync(fd, buf, 0, buf.length, offset)
+        fs.closeSync(fd)
+        return { text: buf.toString('utf8'), size }
+      } catch {
+        return null
+      }
+    }
+
+    const pump = (): void => {
+      const out = readNew(meta.outPath, outOffset)
+      if (out) {
+        outOffset = out.size
+        const lines = (outRemainder + out.text).split('\n')
+        outRemainder = lines.pop() ?? ''
+        for (const line of lines) {
+          outLine += 1
+          gate.suppress = outLine <= initialOutLogged
+          try {
+            parser.onLine(line)
+          } catch {
+            /* one bad line must not kill the drive loop */
+          }
+        }
+        gate.suppress = false
+        meta.loggedOutLines = Math.max(meta.loggedOutLines, outLine)
+      }
+      const err = readNew(meta.errPath, errOffset)
+      if (err) {
+        errOffset = err.size
+        const lines = (errRemainder + err.text).split('\n')
+        errRemainder = lines.pop() ?? ''
+        for (const line of lines) {
+          errLine += 1
+          gate.suppress = errLine <= initialErrLogged
+          if (line.trim()) parser.onStderr(line)
+        }
+        gate.suppress = false
+        meta.loggedErrLines = Math.max(meta.loggedErrLines, errLine)
+      }
+      if (Date.now() - lastMetaWrite > 1_000) {
+        lastMetaWrite = Date.now()
+        this.writeMeta(run.id, meta)
+      }
+    }
+
+    const remaining = timeoutMs - (Date.now() - meta.startedAtMs)
+    const timer =
+      remaining <= 0
+        ? ((att.timedOut = true), this.interruptPid(meta.pid), null)
+        : setTimeout(() => {
+            att.timedOut = true
+            this.log(loop.id, run.id, 'error', `Run exceeded ${Math.round(timeoutMs / 60_000)} min — interrupting.`)
+            this.interruptPid(meta.pid)
+          }, remaining)
+
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        pump()
+        const dead = own ? own.exited : !this.pidAlive(meta.pid)
+        if (dead) {
+          clearInterval(interval)
+          resolve()
+        }
+      }, 400)
     })
-  }
+    if (timer) clearTimeout(timer)
+    await sleep(300)
+    pump()
+    if (outRemainder.trim()) parser.onLine(outRemainder)
 
-  // ---------------------------------------------------------------- implement
+    this.current = null
+    await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
+    try {
+      fs.unlinkSync(this.metaPath(run.id))
+    } catch {
+      /* already gone */
+    }
+  }
 
   /** True if the workspace has a prior claude session transcript to `--continue` from. */
   private hasClaudeSession(workspaceDir: string): boolean {
@@ -333,6 +537,8 @@ export class LoopRunner {
       return false
     }
   }
+
+  // ---------------------------------------------------------------- implement
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
@@ -366,20 +572,27 @@ export class LoopRunner {
       '--effort',
       LOOP_MODELS.orchestratorEffort,
     ]
-    const active = this.spawnRun(loop, run, 'claude', args, subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }), IMPLEMENT_TIMEOUT_MS)
+    const spawned = this.spawnDetached(loop, run, 'claude', args, subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }))
+    if (!spawned) return
+    const gate: LogGate = { suppress: false }
+    const parser = this.makeImplementParser(loop, run, gate)
+    await this.driveRun(loop, run, spawned.meta, IMPLEMENT_TIMEOUT_MS, parser, gate, spawned.own)
+  }
 
-    // Per-agent accounting: forwarded subagent messages carry parent_tool_use_id.
-    // Usage repeats on every event for the same message id, so dedupe by id.
+  private makeImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const plog = (kind: string, text: string): void => {
+      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
+    }
     const agentLabels = new Map<string, { label: string; model: string | null }>()
     const finishedAgents = new Set<string>()
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
     let lastTokenFlush = Date.now()
+    let liveCostEstimate: number | null = null
 
     // Live token + cost visibility: persist running totals every ~15s so the
     // ledger, dashboard, and report show tokens and estimated cost mid-run.
-    let liveCostEstimate: number | null = null
     const flushTokens = (): void => {
       if (Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
@@ -410,8 +623,7 @@ export class LoopRunner {
       this.broadcast(loop.id)
     }
 
-    const rl = readline.createInterface({ input: active.child.stdout })
-    rl.on('line', (line) => {
+    const onLine = (line: string): void => {
       if (!line.trim()) return
       let obj: Record<string, unknown>
       try {
@@ -427,7 +639,7 @@ export class LoopRunner {
       if (type === 'system' && obj.subtype === 'init') {
         const model = obj.model as string | undefined
         if (model) this.ledger.patchRun(run.id, { model })
-        this.log(loop.id, run.id, 'system', `session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
+        plog('system', `session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
       }
       if (type === 'assistant') {
@@ -446,7 +658,7 @@ export class LoopRunner {
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
           if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            this.log(loop.id, run.id, parentId ? 'agent' : 'claude', `[${who}] ${trunc(block.text, 400)}`)
+            plog(parentId ? 'agent' : 'claude', `[${who}] ${trunc(block.text, 400)}`)
           } else if (block.type === 'tool_use') {
             const name = block.name as string
             const input = block.input as Record<string, unknown> | undefined
@@ -454,9 +666,9 @@ export class LoopRunner {
               const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
               const model = (input?.model as string | undefined) ?? null
               agentLabels.set(block.id as string, { label, model })
-              this.log(loop.id, run.id, 'spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
+              plog('spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
             } else {
-              this.log(loop.id, run.id, 'tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
+              plog('tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
             }
           }
         }
@@ -470,10 +682,10 @@ export class LoopRunner {
           const toolUseId = block.tool_use_id as string | undefined
           if (toolUseId && agentLabels.has(toolUseId) && !finishedAgents.has(toolUseId)) {
             finishedAgents.add(toolUseId)
-            this.log(loop.id, run.id, 'spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
+            plog('spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
           }
           if (block.is_error) {
-            this.log(loop.id, run.id, 'error', `[${who}] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
+            plog('error', `[${who}] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
           }
         }
         return
@@ -481,55 +693,62 @@ export class LoopRunner {
       if (type === 'result') {
         result = obj
       }
-    })
-    active.child.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim()
-      if (text) this.log(loop.id, run.id, 'stderr', trunc(text, 400))
-    })
-
-    const { code, spawnError } = await this.waitForExit(active)
-    rl.close()
-
-    const metrics = this.buildImplementMetrics(agentLabels, msgUsage, result, finishedAgents)
-    const res = result as Record<string, unknown> | null
-    const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
-    const finishedAt = new Date().toISOString()
-    // Prefer the CLI's own figure (costBasis 'cli'); fall back to the live table estimate.
-    const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : liveCostEstimate
-
-    this.ledger.patchRun(run.id, {
-      metrics,
-      costUsd,
-      inputTokens: usage ? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : null,
-      outputTokens: usage?.output_tokens ?? null,
-      numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-      durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : null,
-      sessionId: (res?.session_id as string | undefined) ?? null,
-      summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
-      finishedAt,
-    })
-    this.logRunMetrics(loop.id, run.id, 'implement', costUsd, res, metrics)
-    this.accumulateCost(loop.id, costUsd)
-
-    const stopReason = this.stopRequested.has(loop.id) ? 'user' : active.timedOut ? 'timeout' : null
-    if (stopReason) {
-      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Implement run timed out.')
-      return
     }
-    const succeeded = code === 0 && res !== null && res.is_error !== true
-    if (!succeeded) {
-      const errText = spawnError ?? (typeof res?.result === 'string' ? trunc(res.result as string, 400) : `claude exited ${code}${res ? ` (${res.subtype})` : ' without a result'}`)
-      const rateLimited = /rate.?limit|usage limit|out of extra usage/i.test(errText)
-      this.ledger.patchRun(run.id, { status: 'failed', error: errText })
-      this.finishLoop(loop.id, 'stopped', rateLimited ? `Rate limited — wait for the window to reset, then start a new run in the same workspace. (${errText})` : `Implement run failed: ${errText}`)
-      return
+
+    const finalize = (exit: ExitInfo): void => {
+      const metrics = this.buildImplementMetrics(agentLabels, msgUsage, result, finishedAgents)
+      const res = result as Record<string, unknown> | null
+      const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
+      const finishedAt = new Date().toISOString()
+      // Prefer the CLI's own figure (costBasis 'cli'); fall back to the live table estimate.
+      const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : liveCostEstimate
+
+      this.ledger.patchRun(run.id, {
+        metrics,
+        costUsd,
+        inputTokens: usage
+          ? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+          : undefined,
+        outputTokens: usage?.output_tokens ?? undefined,
+        numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
+        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(run.id)?.startedAtMs ?? Date.now()),
+        sessionId: (res?.session_id as string | undefined) ?? null,
+        summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
+        finishedAt,
+      })
+      this.logRunMetrics(loop.id, run.id, 'implement', costUsd, res, metrics)
+      this.accumulateCost(loop.id, costUsd)
+
+      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+      if (stopReason) {
+        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Implement run timed out.')
+        return
+      }
+      const succeeded = res !== null && res.is_error !== true && (exit.code === 0 || exit.code === null)
+      if (!succeeded) {
+        const errText =
+          exit.spawnError ??
+          (typeof res?.result === 'string' ? trunc(res.result as string, 400) : `claude exited ${exit.code}${res ? ` (${res.subtype})` : ' without a result'}`)
+        const rateLimited = /rate.?limit|usage limit|out of extra usage/i.test(errText)
+        this.ledger.patchRun(run.id, { status: 'failed', error: errText })
+        this.finishLoop(
+          loop.id,
+          'stopped',
+          rateLimited
+            ? `Rate limited — wait for the window to reset, then start a new run in the same workspace. (${errText})`
+            : `Implement run failed: ${errText}`,
+        )
+        return
+      }
+      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      if (this.overBudget(loop.id)) return
+      this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
+      this.broadcast(loop.id)
+      void this.executeNext(loop.id)
     }
-    this.ledger.patchRun(run.id, { status: 'succeeded' })
-    if (this.overBudget(loop.id)) return
-    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
-    this.broadcast(loop.id)
-    void this.executeNext(loop.id)
+
+    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), finalize }
   }
 
   private buildImplementMetrics(
@@ -624,9 +843,12 @@ export class LoopRunner {
 
   // ---------------------------------------------------------------- critique
 
+  private verdictFilePath(runId: string): string {
+    return path.join(runsDir(), `${runId}.verdict.txt`)
+  }
+
   private async executeCritique(loop: LoopRecord, run: RunRecord): Promise<void> {
     this.log(loop.id, run.id, 'system', `● Round ${run.round} — critique (codex ${LOOP_MODELS.criticModel}, effort ${LOOP_MODELS.criticEffort}, fresh eyes)`)
-    const lastMessageFile = path.join(os.tmpdir(), `gauntlet-verdict-${run.id}.txt`)
     const args = [
       'exec',
       '--json',
@@ -642,20 +864,28 @@ export class LoopRunner {
       '-c',
       `model_reasoning_effort=${LOOP_MODELS.criticEffort}`,
       '-o',
-      lastMessageFile,
+      this.verdictFilePath(run.id),
       run.prompt,
     ]
-    const active = this.spawnRun(loop, run, 'codex', args, subscriptionEnv({ CODEX_HOME: cliHome('codex') }), CRITIQUE_TIMEOUT_MS)
+    const spawned = this.spawnDetached(loop, run, 'codex', args, subscriptionEnv({ CODEX_HOME: cliHome('codex') }))
+    if (!spawned) return
     this.ledger.patchRun(run.id, { model: LOOP_MODELS.criticModel })
+    const gate: LogGate = { suppress: false }
+    const parser = this.makeCritiqueParser(loop, run, gate)
+    await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own)
+  }
 
+  private makeCritiqueParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const plog = (kind: string, text: string): void => {
+      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
+    }
     let lastAgentMessage = ''
     const tokens = emptyTokens()
     let sawUsage = false
     let failure: string | null = null
-    const startedAt = Date.now()
+    const startedAtMs = this.readMeta(run.id)?.startedAtMs ?? Date.now()
 
-    const rl = readline.createInterface({ input: active.child.stdout })
-    rl.on('line', (line) => {
+    const onLine = (line: string): void => {
       if (!line.trim()) return
       let obj: Record<string, unknown>
       try {
@@ -665,23 +895,23 @@ export class LoopRunner {
       }
       const type = obj.type as string
       if (type === 'thread.started') {
-        this.log(loop.id, run.id, 'system', `codex thread ${(obj.thread_id as string | undefined)?.slice(0, 8) ?? '?'}`)
+        plog('system', `codex thread ${(obj.thread_id as string | undefined)?.slice(0, 8) ?? '?'}`)
       } else if (type === 'item.completed' || type === 'item.updated') {
         const item = obj.item as Record<string, unknown> | undefined
         if (!item) return
         if (item.type === 'agent_message' && typeof item.text === 'string' && type === 'item.completed') {
           lastAgentMessage = item.text
-          this.log(loop.id, run.id, 'codex', `[critic] ${trunc(item.text, 400)}`)
+          plog('codex', `[critic] ${trunc(item.text, 400)}`)
         } else if (item.type === 'reasoning' && typeof item.text === 'string' && type === 'item.completed' && item.text.trim()) {
-          this.log(loop.id, run.id, 'thought', `[critic] 𝜓 ${trunc(item.text, 500)}`)
+          plog('thought', `[critic] 𝜓 ${trunc(item.text, 500)}`)
         } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'cmd', `[critic] $ ${trunc(item.command, 200)}`)
+          plog('cmd', `[critic] $ ${trunc(item.command, 200)}`)
         } else if (item.type === 'web_search' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'search', `[critic] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
+          plog('search', `[critic] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
         } else if (item.type === 'file_change' && type === 'item.completed') {
-          this.log(loop.id, run.id, 'cmd', `[critic] ✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
+          plog('cmd', `[critic] ✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
         } else if (item.type === 'error') {
-          this.log(loop.id, run.id, 'error', `[critic] ${trunc(String(item.message ?? 'codex error'), 300)}`)
+          plog('error', `[critic] ${trunc(String(item.message ?? 'codex error'), 300)}`)
         }
       } else if (type === 'turn.completed') {
         const usage = obj.usage as Record<string, number> | undefined
@@ -703,7 +933,7 @@ export class LoopRunner {
                   model: LOOP_MODELS.criticModel,
                   messages: 1,
                   tokens: { ...tokens },
-                  firstTs: new Date(startedAt).toISOString(),
+                  firstTs: new Date(startedAtMs).toISOString(),
                   lastTs: new Date().toISOString(),
                 },
               ],
@@ -715,107 +945,109 @@ export class LoopRunner {
       } else if (type === 'turn.failed') {
         const error = obj.error as Record<string, unknown> | undefined
         failure = String(error?.message ?? 'codex turn failed')
-        this.log(loop.id, run.id, 'error', failure)
+        plog('error', failure)
       }
-    })
-    active.child.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString().trim()
-      if (text) this.log(loop.id, run.id, 'stderr', trunc(text, 400))
-    })
-
-    const { code, spawnError } = await this.waitForExit(active)
-    rl.close()
-
-    let verdictText = lastAgentMessage
-    try {
-      verdictText = fs.readFileSync(lastMessageFile, 'utf8') || lastAgentMessage
-      fs.unlinkSync(lastMessageFile)
-    } catch {
-      /* fall back to streamed message */
     }
-    const verdict = parseVerdict(verdictText)
-    const durationMs = Date.now() - startedAt
-    const criticAgent: AgentMetric = {
-      id: 'critic',
-      label: 'critic (fresh eyes)',
-      model: LOOP_MODELS.criticModel,
-      messages: 1,
-      tokens,
-      firstTs: new Date(startedAt).toISOString(),
-      lastTs: new Date().toISOString(),
-    }
-    const criticCost = sawUsage ? estimateCostUsd(LOOP_MODELS.criticModel, tokens) : null
-    this.ledger.patchRun(run.id, {
-      metrics: { agents: [criticAgent], perModel: sawUsage ? { [LOOP_MODELS.criticModel]: { costUsd: criticCost, tokens } } : {} },
-      inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
-      outputTokens: sawUsage ? tokens.output : null,
-      costUsd: criticCost,
-      durationMs,
-      summary: verdictText ? verdictText.slice(0, 4000) : null,
-      verdict,
-      finishedAt: new Date().toISOString(),
-    })
-    this.accumulateCost(loop.id, criticCost)
-    this.log(
-      loop.id,
-      run.id,
-      'metric',
-      `▤ critique metrics: ${criticCost != null ? `$${criticCost.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`,
-    )
 
-    const stopReason = this.stopRequested.has(loop.id) ? 'user' : active.timedOut ? 'timeout' : null
-    if (stopReason) {
-      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Critique run timed out.')
-      return
-    }
-    if (failure || spawnError || code !== 0 || !verdict) {
-      const attempts = this.ledger.runsForLoop(loop.id).filter((r) => r.role === 'critique' && r.round === run.round).length
-      const errText = spawnError ?? failure ?? (verdict ? `codex exited ${code}` : `no parseable verdict (exit ${code})`)
-      this.ledger.patchRun(run.id, { status: 'failed', error: errText })
-      if (attempts < MAX_CRITIQUE_ATTEMPTS) {
-        this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-        this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
-        this.broadcast(loop.id)
-        void this.executeNext(loop.id)
+    const finalize = async (exit: ExitInfo): Promise<void> => {
+      let verdictText = lastAgentMessage
+      try {
+        verdictText = fs.readFileSync(this.verdictFilePath(run.id), 'utf8') || lastAgentMessage
+        fs.unlinkSync(this.verdictFilePath(run.id))
+      } catch {
+        /* fall back to streamed message */
+      }
+      const verdict = parseVerdict(verdictText)
+      const durationMs = Date.now() - startedAtMs
+      const criticAgent: AgentMetric = {
+        id: 'critic',
+        label: 'critic (fresh eyes)',
+        model: LOOP_MODELS.criticModel,
+        messages: 1,
+        tokens,
+        firstTs: new Date(startedAtMs).toISOString(),
+        lastTs: new Date().toISOString(),
+      }
+      const criticCost = sawUsage ? estimateCostUsd(LOOP_MODELS.criticModel, tokens) : null
+      this.ledger.patchRun(run.id, {
+        metrics: { agents: [criticAgent], perModel: sawUsage ? { [LOOP_MODELS.criticModel]: { costUsd: criticCost, tokens } } : {} },
+        inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
+        outputTokens: sawUsage ? tokens.output : null,
+        costUsd: criticCost,
+        durationMs,
+        summary: verdictText ? verdictText.slice(0, 4000) : null,
+        verdict,
+        finishedAt: new Date().toISOString(),
+      })
+      this.accumulateCost(loop.id, criticCost)
+      this.log(
+        loop.id,
+        run.id,
+        'metric',
+        `▤ critique metrics: ${criticCost != null ? `$${criticCost.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`,
+      )
+
+      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+      if (stopReason) {
+        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Critique run timed out.')
         return
       }
-      this.finishLoop(loop.id, 'failed', `Critique failed twice: ${errText}`)
-      return
+      if (failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
+        const attempts = this.ledger.runsForLoop(loop.id).filter((r) => r.role === 'critique' && r.round === run.round).length
+        const errText = exit.spawnError ?? failure ?? (verdict ? `codex exited ${exit.code}` : `no parseable verdict (exit ${exit.code})`)
+        this.ledger.patchRun(run.id, { status: 'failed', error: errText })
+        if (attempts < MAX_CRITIQUE_ATTEMPTS) {
+          this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
+          this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
+          this.broadcast(loop.id)
+          void this.executeNext(loop.id)
+          return
+        }
+        this.finishLoop(loop.id, 'failed', `Critique failed twice: ${errText}`)
+        return
+      }
+
+      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      const evidence = scanCritiqueArtifacts(loop.workspaceDir).find((a) => a.round === run.round)
+      if (evidence && (evidence.shots.length > 0 || evidence.refs.length > 0)) {
+        this.log(
+          loop.id,
+          run.id,
+          'shot',
+          `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs${evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`,
+        )
+        for (const file of [...evidence.shots, ...evidence.refs].slice(0, 10)) this.log(loop.id, run.id, 'shot', `  ${file}`)
+      }
+      this.log(loop.id, run.id, 'verdict', `★ score ${verdict.score.toFixed(2)}/1.00 ${verdict.pass ? '— PASS' : '— not there yet'} · ${trunc(verdict.summary, 300)}`)
+      for (const finding of verdict.findings.slice(0, 12)) this.log(loop.id, run.id, 'verdict', `  · [${finding.severity}] ${trunc(finding.text, 240)}`)
+      if (verdict.findings.length > 12) this.log(loop.id, run.id, 'verdict', `  · …and ${verdict.findings.length - 12} more findings`)
+
+      if (verdict.pass) {
+        this.finishLoop(loop.id, 'passed', `Critic passed the build with score ${verdict.score.toFixed(2)} after round ${run.round}.`)
+        return
+      }
+      if (run.round >= loop.maxRounds) {
+        this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached. Best score: ${this.bestScore(loop.id).toFixed(2)}.`)
+        return
+      }
+      if (this.overBudget(loop.id)) return
+
+      const nextRound = run.round + 1
+      this.ledger.patchLoop(loop.id, { round: nextRound })
+      this.ledger.createRun({
+        loopId: loop.id,
+        round: nextRound,
+        role: 'implement',
+        harness: 'claude',
+        prompt: buildImplementPrompt(loop.prompt, nextRound, verdict),
+      })
+      this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
+      this.broadcast(loop.id)
+      void this.executeNext(loop.id)
     }
 
-    this.ledger.patchRun(run.id, { status: 'succeeded' })
-    const evidence = scanCritiqueArtifacts(loop.workspaceDir).find((a) => a.round === run.round)
-    if (evidence && (evidence.shots.length > 0 || evidence.refs.length > 0)) {
-      this.log(loop.id, run.id, 'shot', `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs${evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`)
-      for (const file of [...evidence.shots, ...evidence.refs].slice(0, 10)) this.log(loop.id, run.id, 'shot', `  ${file}`)
-    }
-    this.log(loop.id, run.id, 'verdict', `★ score ${verdict.score.toFixed(2)}/1.00 ${verdict.pass ? '— PASS' : '— not there yet'} · ${trunc(verdict.summary, 300)}`)
-    for (const finding of verdict.findings.slice(0, 12)) this.log(loop.id, run.id, 'verdict', `  · [${finding.severity}] ${trunc(finding.text, 240)}`)
-    if (verdict.findings.length > 12) this.log(loop.id, run.id, 'verdict', `  · …and ${verdict.findings.length - 12} more findings`)
-
-    if (verdict.pass) {
-      this.finishLoop(loop.id, 'passed', `Critic passed the build with score ${verdict.score.toFixed(2)} after round ${run.round}.`)
-      return
-    }
-    if (run.round >= loop.maxRounds) {
-      this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached. Best score: ${this.bestScore(loop.id).toFixed(2)}.`)
-      return
-    }
-    if (this.overBudget(loop.id)) return
-
-    const nextRound = run.round + 1
-    this.ledger.patchLoop(loop.id, { round: nextRound })
-    this.ledger.createRun({
-      loopId: loop.id,
-      round: nextRound,
-      role: 'implement',
-      harness: 'claude',
-      prompt: buildImplementPrompt(loop.prompt, nextRound, verdict),
-    })
-    this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
-    this.broadcast(loop.id)
-    void this.executeNext(loop.id)
+    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), finalize }
   }
 
   // ---------------------------------------------------------------- helpers
@@ -834,8 +1066,6 @@ export class LoopRunner {
   }
 
   private bestScore(loopId: string): number {
-    return this.ledger
-      .runsForLoop(loopId)
-      .reduce((best, r) => (r.verdict && r.verdict.score > best ? r.verdict.score : best), 0)
+    return this.ledger.runsForLoop(loopId).reduce((best, r) => (r.verdict && r.verdict.score > best ? r.verdict.score : best), 0)
   }
 }

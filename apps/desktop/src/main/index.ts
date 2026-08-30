@@ -340,12 +340,11 @@ if (!hasSingleInstanceLock) app.quit()
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
-    const resumed = ledger.resumeRunningLoops()
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
     registerIpc()
     registerLoopIpc()
     mainWindow = createWindow()
-    for (const entry of resumed) loopRunner.resume(entry.loopId, entry.round, entry.role)
+    loopRunner.recoverAll()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
@@ -359,10 +358,9 @@ if (hasSingleInstanceLock) {
   })
 }
 
-app.on('before-quit', () => {
-  stopAllLogins()
-  loopRunner?.shutdown()
-})
+// Loop agents are detached processes and intentionally survive app quit —
+// the next launch re-attaches to them (LoopRunner.recoverAll).
+app.on('before-quit', stopAllLogins)
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

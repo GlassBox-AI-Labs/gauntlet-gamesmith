@@ -10,6 +10,13 @@ export function cliHome(kind: HarnessKind): string {
   return home
 }
 
+/** Directory for detached run transcripts and process metadata. */
+export function runsDir(): string {
+  const dir = path.join(app.getPath('userData'), 'runs')
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 export function subscriptionEnv(overrides: Record<string, string>): Record<string, string> {
   const env = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
