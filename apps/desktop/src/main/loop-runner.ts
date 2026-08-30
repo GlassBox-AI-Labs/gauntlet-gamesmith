@@ -142,8 +142,8 @@ ${userPrompt}
 Protocol:
 1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
 2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. Judge visuals, gameplay, performance, completeness, polish.
-4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair in ./${evidenceDir}/pairs.md: which shot vs which ref, which image wins, and exactly why. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
+3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish.
+4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
 5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
 
 End your reply with EXACTLY one fenced JSON block and nothing after it:
@@ -1041,7 +1041,7 @@ export class LoopRunner {
           loop.id,
           run.id,
           'shot',
-          `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs${evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`,
+          `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs · ${evidence.videos.length} videos${evidence.pairs ? ` · ${evidence.pairs.length} pairs` : evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`,
         )
         for (const file of [...evidence.shots, ...evidence.refs].slice(0, 10)) this.log(loop.id, run.id, 'shot', `  ${file}`)
       }

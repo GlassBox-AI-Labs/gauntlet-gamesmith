@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { pathToFileURL } from 'node:url'
+import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron'
 import pty, { type IPty } from 'node-pty'
 import type {
   DetectionResult,
@@ -11,7 +12,7 @@ import type {
   TerminalDataEvent,
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
-import type { StartLoopInput } from '../shared/loop'
+import type { CritiqueRound, StartLoopInput } from '../shared/loop'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
@@ -51,6 +52,31 @@ let loopRunner: LoopRunner | null = null
 
 app.setName('Gauntlet Loop')
 app.setPath('userData', path.join(app.getPath('appData'), 'Gauntlet Loop'))
+
+// gmedia://media/<loopId>/<relPath> serves critique/reference media (images,
+// gameplay video) from a loop's workspace to the sandboxed renderer.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'gmedia', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+])
+
+function registerMediaProtocol(): void {
+  protocol.handle('gmedia', (request) => {
+    const denied = new Response('not found', { status: 404 })
+    try {
+      const url = new URL(request.url)
+      const [loopId, ...rest] = decodeURIComponent(url.pathname).replace(/^\//, '').split('/')
+      const loop = ledger?.getLoop(loopId)
+      const rel = rest.join('/')
+      if (!loop || !/^(critique|reference)\//.test(rel) || rel.includes('..')) return denied
+      if (!/\.(png|jpe?g|webp|gif|webm|mp4|mov)$/i.test(rel)) return denied
+      const file = path.join(loop.workspaceDir, rel)
+      if (!file.startsWith(loop.workspaceDir)) return denied
+      return net.fetch(pathToFileURL(file).toString())
+    } catch {
+      return denied
+    }
+  })
+}
 
 function assertHarnessKind(value: unknown): HarnessKind {
   if (typeof value !== 'string' || !validHarnessKinds.has(value)) {
@@ -279,6 +305,29 @@ function registerLoopIpc(): void {
     const loop = ledger?.getLoop(String(value))
     return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id), scanCritiqueArtifacts(loop.workspaceDir)) : ''
   })
+  ipcMain.handle('loop:critique', (_event, value: unknown): CritiqueRound[] => {
+    const loop = ledger?.getLoop(String(value))
+    if (!loop || !ledger) return []
+    const artifacts = new Map(scanCritiqueArtifacts(loop.workspaceDir).map((a) => [a.round, a]))
+    const byRound = new Map<number, CritiqueRound>()
+    for (const run of ledger.runsForLoop(loop.id)) {
+      if (run.role !== 'critique') continue
+      const art = artifacts.get(run.round)
+      byRound.set(run.round, {
+        round: run.round,
+        runId: run.id,
+        status: run.status,
+        verdict: run.verdict,
+        thoughts: ledger.eventsForRun(run.id, 'thought').map((l) => l.text.replace(/^\[critic\]\s*𝜓?\s*/, '')),
+        shots: art?.shots ?? [],
+        refs: art?.refs ?? [],
+        videos: art?.videos ?? [],
+        pairs: art?.pairs ?? null,
+        pairsMd: art?.pairsMd ?? null,
+      })
+    }
+    return [...byRound.values()].sort((a, b) => a.round - b.round)
+  })
   ipcMain.handle('play:start', (_event, value: unknown) => {
     const loop = ledger?.getLoop(String(value))
     if (!loop) return { running: false, url: null, error: 'Loop not found.' }
@@ -352,6 +401,7 @@ if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
+    registerMediaProtocol()
     registerIpc()
     registerLoopIpc()
     mainWindow = createWindow()

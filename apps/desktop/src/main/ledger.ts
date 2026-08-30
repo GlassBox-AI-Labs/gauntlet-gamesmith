@@ -295,6 +295,15 @@ export class Ledger {
       .run(line.loopId, line.runId, line.ts, line.kind, line.text)
   }
 
+  eventsForRun(runId: string, kind?: string, limit = 500): LoopLogLine[] {
+    const rows = (
+      kind
+        ? this.db.prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE run_id = ? AND kind = ? ORDER BY seq ASC LIMIT ?').all(runId, kind, limit)
+        : this.db.prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE run_id = ? ORDER BY seq ASC LIMIT ?').all(runId, limit)
+    ) as { loop_id: string; run_id: string | null; ts: string; kind: string; text: string }[]
+    return rows.map((row) => ({ loopId: row.loop_id, runId: row.run_id, ts: row.ts, kind: row.kind, text: row.text }))
+  }
+
   eventsForLoop(loopId: string, limit = 800): LoopLogLine[] {
     const rows = this.db
       .prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE loop_id = ? ORDER BY seq DESC LIMIT ?')

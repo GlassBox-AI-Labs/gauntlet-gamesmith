@@ -23,6 +23,7 @@ const harnesses: HarnessApi = {
 }
 
 const loops: LoopApi = {
+  critique: (loopId) => ipcRenderer.invoke('loop:critique', loopId),
   playStart: (loopId) => ipcRenderer.invoke('play:start', loopId),
   playStop: (loopId) => ipcRenderer.invoke('play:stop', loopId),
   playState: (loopId) => ipcRenderer.invoke('play:state', loopId),

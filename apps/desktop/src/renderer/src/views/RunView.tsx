@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
+import { ChevronDown, ChevronRight, Eye, FileText, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
+import { CritiquePanel } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -133,6 +134,7 @@ export function RunView(): React.JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [reportOpen, setReportOpen] = useState(false)
   const [reportMd, setReportMd] = useState('')
+  const [critiqueOpen, setCritiqueOpen] = useState(false)
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null })
   const loopIdRef = useRef<string | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
@@ -341,6 +343,13 @@ export function RunView(): React.JSX.Element {
               )}
               <Button
                 variant="outline"
+                className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${critiqueOpen ? 'text-[#f2d98c]' : 'text-[#96908d]'}`}
+                onClick={() => setCritiqueOpen((open) => !open)}
+              >
+                <Eye /> Critique
+              </Button>
+              <Button
+                variant="outline"
                 className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${reportOpen ? 'text-[#e9c9bc]' : 'text-[#96908d]'}`}
                 onClick={() => setReportOpen((open) => !open)}
               >
@@ -401,6 +410,8 @@ export function RunView(): React.JSX.Element {
               })}
             </div>
           )}
+
+          {critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={snapshot!.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length} />}
 
           {reportOpen && (
             <pre className="mb-5 max-h-[360px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#332e2e] bg-[#151111] p-4 font-mono text-[11px] leading-[1.65] text-[#c9c3c0]">

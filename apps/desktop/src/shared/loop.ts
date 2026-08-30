@@ -120,7 +120,28 @@ export interface PlayState {
   error: string | null
 }
 
+export interface PairComparison {
+  shot: string
+  ref: string
+  winner: 'shot' | 'ref' | 'tie'
+  why: string
+}
+
+export interface CritiqueRound {
+  round: number
+  runId: string
+  status: RunStatus
+  verdict: Verdict | null
+  thoughts: string[]
+  shots: string[]
+  refs: string[]
+  videos: string[]
+  pairs: PairComparison[] | null
+  pairsMd: string | null
+}
+
 export interface LoopApi {
+  critique(loopId: string): Promise<CritiqueRound[]>
   playStart(loopId: string): Promise<PlayState>
   playStop(loopId: string): Promise<void>
   playState(loopId: string): Promise<PlayState>

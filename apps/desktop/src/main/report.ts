@@ -9,6 +9,8 @@ export interface CritiqueArtifacts {
   round: number
   shots: string[]
   refs: string[]
+  videos: string[]
+  pairs: { shot: string; ref: string; winner: 'shot' | 'ref' | 'tie'; why: string }[] | null
   pairsMd: string | null
 }
 
@@ -25,24 +27,49 @@ export function scanCritiqueArtifacts(workspaceDir: string): CritiqueArtifacts[]
   for (const name of entries) {
     const match = /^round-(\d+)$/.exec(name)
     if (!match) continue
-    const listImages = (sub: string): string[] => {
+    const listFiles = (sub: string, pattern: RegExp): string[] => {
       try {
         return fs
           .readdirSync(path.join(base, name, sub))
-          .filter((file) => /\.(png|jpe?g|webp|gif)$/i.test(file))
+          .filter((file) => pattern.test(file))
           .sort()
           .map((file) => path.posix.join('critique', name, sub, file))
       } catch {
         return []
       }
     }
+    const images = /\.(png|jpe?g|webp|gif)$/i
+    const movies = /\.(webm|mp4|mov)$/i
+    const videos = [...listFiles('.', movies), ...listFiles('video', movies), ...listFiles('videos', movies), ...listFiles('shots', movies)]
     let pairsMd: string | null = null
     try {
       pairsMd = fs.readFileSync(path.join(base, name, 'pairs.md'), 'utf8').slice(0, 4000)
     } catch {
       /* no pair notes */
     }
-    artifacts.push({ round: Number(match[1]), shots: listImages('shots'), refs: listImages('refs'), pairsMd })
+    let pairs: CritiqueArtifacts['pairs'] = null
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(base, name, 'pairs.json'), 'utf8')) as unknown
+      if (Array.isArray(raw)) {
+        const parsed = raw
+          .map((p) => {
+            const pair = p as Record<string, unknown>
+            const rel = (v: unknown): string | null =>
+              typeof v === 'string' && !v.includes('..') ? path.posix.join('critique', name, v.replace(/^\.?\//, '')) : null
+            const shot = rel(pair.shot)
+            const ref = rel(pair.ref)
+            if (!shot || !ref) return null
+            const winner: 'shot' | 'ref' | 'tie' = pair.winner === 'shot' || pair.winner === 'tie' ? pair.winner : 'ref'
+            return { shot, ref, winner, why: String(pair.why ?? '').slice(0, 600) }
+          })
+          .filter((p): p is NonNullable<typeof p> => p !== null)
+          .slice(0, 24)
+        if (parsed.length > 0) pairs = parsed
+      }
+    } catch {
+      /* no machine-readable pairs */
+    }
+    artifacts.push({ round: Number(match[1]), shots: listFiles('shots', images), refs: listFiles('refs', images), videos, pairs, pairsMd })
   }
   return artifacts.sort((a, b) => a.round - b.round)
 }
