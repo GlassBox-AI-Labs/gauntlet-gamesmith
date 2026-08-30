@@ -32,6 +32,7 @@ export interface AgentMetric {
   tokens: TokenTotals
   firstTs: string | null
   lastTs: string | null
+  done?: boolean
 }
 
 export interface RunMetrics {

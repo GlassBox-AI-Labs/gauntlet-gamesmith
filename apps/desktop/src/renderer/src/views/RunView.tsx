@@ -181,6 +181,7 @@ export function RunView(): React.JSX.Element {
 
   const loop = snapshot?.loop ?? null
   const running = loop?.status === 'running'
+  const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
 
   const start = async (): Promise<void> => {
     setBusy(true)
@@ -328,6 +329,34 @@ export function RunView(): React.JSX.Element {
 
           {loop.stopReason && !running && (
             <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>
+          )}
+
+          {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (
+            <div className="mb-5 flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
+              {liveRun.metrics.agents.map((agent) => {
+                const active = !agent.done && agent.lastTs != null && Date.now() - new Date(agent.lastTs).getTime() < 90_000
+                return (
+                  <span
+                    key={agent.id}
+                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
+                      agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
+                    }`}
+                  >
+                    <span
+                      className={`size-1.5 rounded-full ${
+                        agent.done ? 'bg-[#68615f]' : active ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'
+                      }`}
+                    />
+                    {agent.label}
+                    <span className="font-mono text-[10px] text-[#9fb2c8]">
+                      {fmtTokens(agent.tokens.input)}/{fmtTokens(agent.tokens.output)}
+                    </span>
+                    {agent.done && '✓'}
+                  </span>
+                )
+              })}
+            </div>
           )}
 
           {reportOpen && (

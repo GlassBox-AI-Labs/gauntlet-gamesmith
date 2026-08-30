@@ -370,6 +370,7 @@ export class LoopRunner {
     // Per-agent accounting: forwarded subagent messages carry parent_tool_use_id.
     // Usage repeats on every event for the same message id, so dedupe by id.
     const agentLabels = new Map<string, { label: string; model: string | null }>()
+    const finishedAgents = new Set<string>()
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
@@ -386,7 +387,11 @@ export class LoopRunner {
         input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
         output += usage.output_tokens ?? 0
       }
-      this.ledger.patchRun(run.id, { inputTokens: input, outputTokens: output })
+      this.ledger.patchRun(run.id, {
+        inputTokens: input,
+        outputTokens: output,
+        metrics: this.buildImplementMetrics(agentLabels, msgUsage, null, finishedAgents),
+      })
       this.broadcast(loop.id)
     }
 
@@ -446,7 +451,13 @@ export class LoopRunner {
         const message = obj.message as Record<string, unknown> | undefined
         const content = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : []
         for (const block of content) {
-          if (block.type === 'tool_result' && block.is_error) {
+          if (block.type !== 'tool_result') continue
+          const toolUseId = block.tool_use_id as string | undefined
+          if (toolUseId && agentLabels.has(toolUseId) && !finishedAgents.has(toolUseId)) {
+            finishedAgents.add(toolUseId)
+            this.log(loop.id, run.id, 'spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
+          }
+          if (block.is_error) {
             this.log(loop.id, run.id, 'error', `${sub}✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
           }
         }
@@ -464,7 +475,7 @@ export class LoopRunner {
     const { code, spawnError } = await this.waitForExit(active)
     rl.close()
 
-    const metrics = this.buildImplementMetrics(agentLabels, msgUsage, result)
+    const metrics = this.buildImplementMetrics(agentLabels, msgUsage, result, finishedAgents)
     const res = result as Record<string, unknown> | null
     const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
     const finishedAt = new Date().toISOString()
@@ -509,6 +520,7 @@ export class LoopRunner {
     agentLabels: Map<string, { label: string; model: string | null }>,
     msgUsage: Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>,
     result: Record<string, unknown> | null,
+    finished: Set<string> = new Set(),
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
@@ -554,6 +566,9 @@ export class LoopRunner {
           },
         }
       }
+    }
+    for (const [key, agent] of agents) {
+      if (key !== 'orchestrator') agent.done = finished.has(key)
     }
     const list = [...agents.values()]
     list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
@@ -660,7 +675,24 @@ export class LoopRunner {
           tokens.cacheRead += usage.cached_input_tokens ?? 0
           tokens.cacheWrite += usage.cache_write_input_tokens ?? 0
           tokens.output += usage.output_tokens ?? 0
-          this.ledger.patchRun(run.id, { inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite, outputTokens: tokens.output })
+          this.ledger.patchRun(run.id, {
+            inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
+            outputTokens: tokens.output,
+            metrics: {
+              agents: [
+                {
+                  id: 'critic',
+                  label: 'critic (fresh eyes)',
+                  model: LOOP_MODELS.criticModel,
+                  messages: 1,
+                  tokens: { ...tokens },
+                  firstTs: new Date(startedAt).toISOString(),
+                  lastTs: new Date().toISOString(),
+                },
+              ],
+              perModel: {},
+            },
+          })
           this.broadcast(loop.id)
         }
       } else if (type === 'turn.failed') {
