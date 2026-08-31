@@ -13,6 +13,7 @@ import type {
   RunStatus,
   Verdict,
 } from '../shared/loop'
+import { normalizeModels } from '../shared/models'
 import { RESUME_PREFIX } from '../shared/loop'
 
 const SCHEMA = `
@@ -115,7 +116,7 @@ function toLoop(row: LoopRow): LoopRecord {
     workspaceDir: row.workspace_dir,
     maxRounds: row.max_rounds,
     budgetUsd: row.budget_usd,
-    models: JSON.parse(row.models_json) as LoopModels,
+    models: normalizeModels(JSON.parse(row.models_json) as Partial<LoopModels>),
     status: row.status as LoopStatus,
     round: row.round,
     totalCostUsd: row.total_cost_usd,
