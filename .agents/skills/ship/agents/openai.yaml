@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ship"
+  short_description: "Test, sync, and ship changes to main"
+  default_prompt: "Use $ship to test, sync with the latest main, resolve conflicts, and push this workspace to main."
