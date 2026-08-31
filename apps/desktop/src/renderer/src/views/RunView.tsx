@@ -23,7 +23,7 @@ import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
-import { elapsedThroughRunMs, elapsedToRunStartMs } from '../../../shared/run-timing'
+import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
   CRITICS,
   DEFAULT_CRITIC_ID,
@@ -80,9 +80,10 @@ function fmtTokens(n: number | null | undefined): string {
 function fmtDuration(ms: number | null | undefined): string {
   if (ms == null) return '—'
   const totalSec = Math.round(ms / 1000)
-  const m = Math.floor(totalSec / 60)
-  const s = totalSec % 60
-  return m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m` : `${m}m${String(s).padStart(2, '0')}s`
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const h = Math.floor(totalSec / 3600)
+  const mmss = `${pad(Math.floor(totalSec / 60) % 60)}:${pad(totalSec % 60)}`
+  return h > 0 ? `${pad(h)}:${mmss}` : mmss
 }
 
 function fmtTs(iso: string): string {
@@ -358,6 +359,17 @@ function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Elemen
   )
 }
 
+/** Re-renders once a second so live runtimes count up. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [active])
+  return active ? now : Date.now()
+}
+
 function RunRow({
   run,
   loopCreatedAt,
@@ -420,7 +432,7 @@ function RunRow({
           className={`px-2 py-2.5 font-mono text-[11px] ${timing === 'elapsed' ? 'text-[#b8aaa4]' : 'text-[#96908d]'}`}
           title={timing === 'elapsed' ? elapsedTitle : undefined}
         >
-          {timing === 'elapsed' ? (elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`) : fmtDuration(run.durationMs)}
+          {timing === 'elapsed' ? (elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`) : fmtDuration(runtimeMs(run))}
         </TableCell>
       </TableRow>
       {expanded && (critique || run.metrics) && (
@@ -556,6 +568,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const loop = snapshot?.loop ?? null
   const critic = findCritic(criticId)
   const running = loop?.status === 'running'
+  const now = useNow(running)
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
   const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
   const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
@@ -576,7 +589,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       costUsd: sum.costUsd + (run.costUsd ?? 0),
       inputTokens: sum.inputTokens + (run.inputTokens ?? 0),
       outputTokens: sum.outputTokens + (run.outputTokens ?? 0),
-      durationMs: sum.durationMs + (run.durationMs ?? 0),
+      durationMs: sum.durationMs + (runtimeMs(run, now) ?? 0),
       bestScore: Math.max(sum.bestScore, run.verdict?.score ?? 0),
       hasScore: sum.hasScore || Boolean(run.verdict),
     }),

@@ -43,3 +43,14 @@ export function elapsedThroughRunMs(loopCreatedAt: string, run: TimedRun, nowMs 
 
   return elapsedFrom(origin, target)
 }
+
+/**
+ * How long an attempt has run. A live attempt has no recorded duration yet,
+ * so count from its start time up to `nowMs`.
+ */
+export function runtimeMs(run: TimedRun, nowMs = Date.now()): number | null {
+  if (run.durationMs != null) return run.durationMs
+  if (run.status !== 'running') return null
+  const started = timestamp(run.startedAt)
+  return started == null ? null : Math.max(0, nowMs - started)
+}

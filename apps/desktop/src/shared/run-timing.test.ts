@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunRecord } from './loop'
-import { elapsedThroughRunMs, elapsedToRunStartMs } from './run-timing'
+import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from './run-timing'
 
 const origin = '2026-08-31T10:00:00.000Z'
 
@@ -33,6 +33,15 @@ describe('run timing', () => {
 
     expect(elapsedToRunStartMs(origin, run)).toBeNull()
     expect(elapsedThroughRunMs(origin, run)).toBeNull()
+  })
+
+  it('counts a running attempt up from its start, and blanks a queued one', () => {
+    const live = timing({ status: 'running', finishedAt: null, durationMs: null })
+    const queued = timing({ status: 'queued', startedAt: null, finishedAt: null, durationMs: null })
+
+    expect(runtimeMs(live, new Date('2026-08-31T10:09:30.000Z').getTime())).toBe(4.5 * 60_000)
+    expect(runtimeMs(timing({}))).toBe(7 * 60_000)
+    expect(runtimeMs(queued)).toBeNull()
   })
 
   it('supports older completed records using their duration', () => {
