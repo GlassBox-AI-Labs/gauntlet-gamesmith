@@ -19,6 +19,7 @@ import { LoopRunner } from './loop-runner'
 import { startMediaServer } from './media-server'
 import { playState, startPlay, stopAllPlay, stopPlay } from './play'
 import { buildReport, scanCritiqueArtifacts } from './report'
+import { copyRunFolder, nextAvailableExportPath, safeExportFolderName } from './run-transfer'
 
 interface HarnessSpec {
   command: string
@@ -305,6 +306,46 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:report', (_event, value: unknown) => {
     const loop = ledger?.getLoop(String(value))
     return loop && ledger ? buildReport(loop, ledger.runsForLoop(loop.id), scanCritiqueArtifacts(loop.workspaceDir)) : ''
+  })
+  ipcMain.handle('loop:export', async (_event, value: unknown) => {
+    try {
+      if (!mainWindow || !ledger) return { ok: false, error: 'Run export is not ready.' }
+      const loop = ledger.getLoop(String(value))
+      if (!loop) return { ok: false, error: 'Run not found.' }
+      if (loop.status === 'running') return { ok: false, error: 'Stop the run before exporting so the folder and SQLite history are an exact snapshot.' }
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Export complete run folder',
+        message: 'Choose where Gauntlet Loop should copy the complete project and its exact SQLite history.',
+        buttonLabel: 'Export here',
+        defaultPath: app.getPath('downloads'),
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      const parentDir = result.filePaths[0]
+      if (result.canceled || !parentDir) return { ok: false, canceled: true }
+      const sourceDir = ledger.prepareRunFolder(loop.id)
+      const destinationDir = nextAvailableExportPath(parentDir, safeExportFolderName(path.basename(sourceDir)))
+      await copyRunFolder(sourceDir, destinationDir)
+      return { ok: true, filePath: destinationDir }
+    } catch (error) {
+      return { ok: false, error: `Could not export run: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  })
+  ipcMain.handle('loop:import', async () => {
+    try {
+      if (!mainWindow || !ledger) return { ok: false, error: 'Run import is not ready.' }
+      const pickedExport = await dialog.showOpenDialog(mainWindow, {
+        title: 'Open exported run folder',
+        message: 'Choose the transferred project folder containing .gauntlet-loop/ledger.db.',
+        buttonLabel: 'Open run folder',
+        properties: ['openDirectory'],
+      })
+      const workspaceDir = pickedExport.filePaths[0]
+      if (pickedExport.canceled || !workspaceDir) return { ok: false, canceled: true }
+      const snapshots = ledger.importRunFolder(workspaceDir)
+      return { ok: true, snapshot: snapshots[0], snapshots }
+    } catch (error) {
+      return { ok: false, error: `Could not import run: ${error instanceof Error ? error.message : String(error)}` }
+    }
   })
   ipcMain.handle('media:base', () => mediaBase)
   ipcMain.handle('loop:critique', (_event, value: unknown): CritiqueRound[] => {

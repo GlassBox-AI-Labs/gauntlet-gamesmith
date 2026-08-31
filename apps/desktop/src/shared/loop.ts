@@ -127,6 +127,15 @@ export interface StartLoopResult {
   error?: string
 }
 
+export interface RunTransferResult {
+  ok: boolean
+  canceled?: boolean
+  filePath?: string
+  snapshot?: LoopSnapshot
+  snapshots?: LoopSnapshot[]
+  error?: string
+}
+
 export interface PlayState {
   running: boolean
   url: string | null
@@ -169,6 +178,8 @@ export interface LoopApi {
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
   report(loopId: string): Promise<string>
+  exportRun(loopId: string): Promise<RunTransferResult>
+  importRun(): Promise<RunTransferResult>
   pickWorkspace(): Promise<string | null>
   defaultWorkspace(): Promise<string>
   onUpdate(listener: (snapshot: LoopSnapshot) => void): () => void

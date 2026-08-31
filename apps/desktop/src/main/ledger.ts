@@ -6,6 +6,7 @@ import type {
   LoopLogLine,
   LoopModels,
   LoopRecord,
+  LoopSnapshot,
   LoopStatus,
   RunMetrics,
   RunRecord,
@@ -15,6 +16,7 @@ import type {
 } from '../shared/loop'
 import { normalizeModels } from '../shared/models'
 import { RESUME_PREFIX } from '../shared/loop'
+import { assertRunFolder, runLedgerPath } from './run-transfer'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS loops (
@@ -111,6 +113,96 @@ interface RunRow {
   finished_at: string | null
 }
 
+interface EventRow {
+  seq: number
+  loop_id: string
+  run_id: string | null
+  ts: string
+  kind: string
+  text: string
+}
+
+function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void {
+  db.exec(`PRAGMA journal_mode = ${journalMode};`)
+  db.exec(SCHEMA)
+  const loopColumns = db.prepare('PRAGMA table_info(loops)').all() as unknown as { name: string }[]
+  if (!loopColumns.some((column) => column.name === 'title')) db.exec('ALTER TABLE loops ADD COLUMN title TEXT;')
+}
+
+function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO loops
+      (id, title, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, stop_reason, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.title,
+    row.prompt,
+    workspaceDir,
+    row.max_rounds,
+    row.budget_usd,
+    row.models_json,
+    row.status,
+    row.round,
+    row.total_cost_usd,
+    row.stop_reason,
+    row.created_at,
+    row.updated_at,
+  )
+}
+
+function putRunRow(db: DatabaseSync, row: RunRow): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO runs
+      (id, loop_id, round, role, harness, status, prompt, model, summary, verdict_json, metrics_json, cost_usd,
+       input_tokens, output_tokens, num_turns, duration_ms, session_id, error, created_at, started_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    row.id,
+    row.loop_id,
+    row.round,
+    row.role,
+    row.harness,
+    row.status,
+    row.prompt,
+    row.model,
+    row.summary,
+    row.verdict_json,
+    row.metrics_json,
+    row.cost_usd,
+    row.input_tokens,
+    row.output_tokens,
+    row.num_turns,
+    row.duration_ms,
+    row.session_id,
+    row.error,
+    row.created_at,
+    row.started_at,
+    row.finished_at,
+  )
+}
+
+function putEventRow(db: DatabaseSync, row: EventRow, preserveSeq: boolean): void {
+  if (preserveSeq) {
+    db.prepare('INSERT OR REPLACE INTO events (seq, loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?, ?)').run(
+      row.seq,
+      row.loop_id,
+      row.run_id,
+      row.ts,
+      row.kind,
+      row.text,
+    )
+    return
+  }
+  db.prepare('INSERT INTO events (loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)').run(
+    row.loop_id,
+    row.run_id,
+    row.ts,
+    row.kind,
+    row.text,
+  )
+}
+
 export function defaultLoopTitle(prompt: string): string {
   const compact = prompt.replace(/\s+/g, ' ').trim()
   const quoted = compact.match(/["“]([^"”]{1,80})["”]/)?.[1]
@@ -193,14 +285,57 @@ export interface LoopPatch {
 
 export class Ledger {
   private db: DatabaseSync
+  private folderDbs = new Map<string, DatabaseSync>()
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     this.db = new DatabaseSync(dbPath)
-    this.db.exec('PRAGMA journal_mode = WAL;')
-    this.db.exec(SCHEMA)
-    const loopColumns = this.db.prepare('PRAGMA table_info(loops)').all() as unknown as { name: string }[]
-    if (!loopColumns.some((column) => column.name === 'title')) this.db.exec('ALTER TABLE loops ADD COLUMN title TEXT;')
+    initializeSchema(this.db, 'WAL')
+  }
+
+  private openFolderDb(workspaceDir: string): DatabaseSync {
+    const existing = this.folderDbs.get(workspaceDir)
+    if (existing) return existing
+    const dbPath = runLedgerPath(workspaceDir)
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    const db = new DatabaseSync(dbPath)
+    initializeSchema(db, 'DELETE')
+    this.folderDbs.set(workspaceDir, db)
+    return db
+  }
+
+  private workspaceForLoop(loopId: string): string | null {
+    const row = this.db.prepare('SELECT workspace_dir FROM loops WHERE id = ?').get(loopId) as { workspace_dir: string } | undefined
+    return row?.workspace_dir ?? null
+  }
+
+  private ensureFolderDbForLoop(loopId: string): DatabaseSync | null {
+    const workspaceDir = this.workspaceForLoop(loopId)
+    if (!workspaceDir) return null
+    const existed = fs.existsSync(runLedgerPath(workspaceDir))
+    const db = this.openFolderDb(workspaceDir)
+    if (!existed) this.syncWorkspaceFolder(workspaceDir)
+    return db
+  }
+
+  private syncWorkspaceFolder(workspaceDir: string): void {
+    const folderDb = this.openFolderDb(workspaceDir)
+    const loops = this.db.prepare('SELECT * FROM loops WHERE workspace_dir = ? ORDER BY created_at ASC').all(workspaceDir) as unknown as LoopRow[]
+    folderDb.exec('BEGIN IMMEDIATE')
+    try {
+      folderDb.exec('DELETE FROM events; DELETE FROM runs; DELETE FROM loops;')
+      for (const loop of loops) {
+        putLoopRow(folderDb, loop)
+        const runs = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at ASC').all(loop.id) as unknown as RunRow[]
+        for (const run of runs) putRunRow(folderDb, run)
+        const events = this.db.prepare('SELECT * FROM events WHERE loop_id = ? ORDER BY seq ASC').all(loop.id) as unknown as EventRow[]
+        for (const event of events) putEventRow(folderDb, event, true)
+      }
+      folderDb.exec('COMMIT')
+    } catch (error) {
+      folderDb.exec('ROLLBACK')
+      throw error
+    }
   }
 
   createLoop(input: {
@@ -218,6 +353,7 @@ export class Ledger {
          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 1, 0, ?, ?)`,
       )
       .run(id, defaultLoopTitle(input.prompt), input.prompt, input.workspaceDir, input.maxRounds, input.budgetUsd, JSON.stringify(input.models), ts, ts)
+    this.syncWorkspaceFolder(input.workspaceDir)
     return this.getLoop(id)!
   }
 
@@ -230,6 +366,9 @@ export class Ledger {
     if (patch.totalCostUsd !== undefined) (sets.push('total_cost_usd = ?'), values.push(patch.totalCostUsd))
     if (patch.stopReason !== undefined) (sets.push('stop_reason = ?'), values.push(patch.stopReason))
     this.db.prepare(`UPDATE loops SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+    const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as LoopRow | undefined
+    const folderDb = this.ensureFolderDbForLoop(id)
+    if (row && folderDb) putLoopRow(folderDb, row)
   }
 
   getLoop(id: string): LoopRecord | null {
@@ -268,6 +407,9 @@ export class Ledger {
          VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
       )
       .run(id, input.loopId, input.round, input.role, input.harness, input.prompt, now())
+    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as unknown as RunRow
+    const folderDb = this.ensureFolderDbForLoop(input.loopId)
+    if (folderDb) putRunRow(folderDb, row)
     return this.getRun(id)!
   }
 
@@ -294,6 +436,11 @@ export class Ledger {
     if (patch.finishedAt !== undefined) set('finished_at', patch.finishedAt)
     if (sets.length === 0) return
     this.db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    if (row) {
+      const folderDb = this.ensureFolderDbForLoop(row.loop_id)
+      if (folderDb) putRunRow(folderDb, row)
+    }
   }
 
   getRun(id: string): RunRecord | null {
@@ -317,6 +464,21 @@ export class Ledger {
     this.db
       .prepare('INSERT INTO events (loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)')
       .run(line.loopId, line.runId, line.ts, line.kind, line.text)
+    const folderDb = this.ensureFolderDbForLoop(line.loopId)
+    if (folderDb) {
+      putEventRow(
+        folderDb,
+        {
+          seq: 0,
+          loop_id: line.loopId,
+          run_id: line.runId,
+          ts: line.ts,
+          kind: line.kind,
+          text: line.text,
+        },
+        false,
+      )
+    }
   }
 
   eventsForRun(runId: string, kind?: string, limit = 500): LoopLogLine[] {
@@ -338,6 +500,70 @@ export class Ledger {
   runningLoops(): LoopRecord[] {
     const rows = this.db.prepare("SELECT * FROM loops WHERE status = 'running'").all() as unknown as LoopRow[]
     return rows.map(toLoop)
+  }
+
+  /** Flush the complete project history into the SQLite ledger stored in its folder. */
+  prepareRunFolder(loopId: string): string {
+    const workspaceDir = this.workspaceForLoop(loopId)
+    if (!workspaceDir) throw new Error('Run not found.')
+    if (!fs.existsSync(runLedgerPath(workspaceDir))) this.syncWorkspaceFolder(workspaceDir)
+    const folderDb = this.folderDbs.get(workspaceDir)
+    folderDb?.close()
+    this.folderDbs.delete(workspaceDir)
+    return workspaceDir
+  }
+
+  /** Register every run from a transferred folder without changing its IDs or history. */
+  importRunFolder(workspaceDir: string): LoopSnapshot[] {
+    const folderPath = assertRunFolder(workspaceDir)
+    const source = new DatabaseSync(folderPath)
+    initializeSchema(source, 'DELETE')
+    const loops = source.prepare('SELECT * FROM loops ORDER BY created_at DESC').all() as unknown as LoopRow[]
+    if (loops.length === 0) {
+      source.close()
+      throw new Error('The folder ledger does not contain any runs.')
+    }
+
+    const imported: string[] = []
+    this.db.exec('BEGIN IMMEDIATE')
+    source.exec('BEGIN IMMEDIATE')
+    try {
+      for (const loop of loops) {
+        // Decode typed JSON now so malformed ledgers fail before registration.
+        toLoop({ ...loop, workspace_dir: workspaceDir })
+        const runs = source.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at ASC').all(loop.id) as unknown as RunRow[]
+        const events = source.prepare('SELECT * FROM events WHERE loop_id = ? ORDER BY seq ASC').all(loop.id) as unknown as EventRow[]
+        for (const run of runs) toRun(run)
+
+        this.db.prepare('DELETE FROM events WHERE loop_id = ?').run(loop.id)
+        this.db.prepare('DELETE FROM runs WHERE loop_id = ?').run(loop.id)
+        putLoopRow(this.db, loop, workspaceDir)
+        for (const run of runs) putRunRow(this.db, run)
+        // The folder keeps its exact event sequence. The app registry assigns
+        // local sequence numbers because it may contain unrelated projects.
+        for (const event of events) putEventRow(this.db, event, false)
+        source.prepare('UPDATE loops SET workspace_dir = ? WHERE id = ?').run(workspaceDir, loop.id)
+        imported.push(loop.id)
+      }
+      this.db.exec('COMMIT')
+      source.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      source.exec('ROLLBACK')
+      source.close()
+      throw error
+    }
+    source.close()
+
+    const oldMirror = this.folderDbs.get(workspaceDir)
+    oldMirror?.close()
+    this.folderDbs.delete(workspaceDir)
+    return imported
+      .map((id) => {
+        const loop = this.getLoop(id)!
+        return { loop, runs: this.runsForLoop(id) }
+      })
+      .sort((a, b) => b.loop.createdAt.localeCompare(a.loop.createdAt))
   }
 
   /**
@@ -362,6 +588,8 @@ export class Ledger {
   }
 
   close(): void {
+    for (const folderDb of this.folderDbs.values()) folderDb.close()
+    this.folderDbs.clear()
     this.db.close()
   }
 }

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Download,
   Eye,
   FileText,
   FolderGit2,
@@ -14,6 +15,7 @@ import {
   Plus,
   Sparkles,
   Square,
+  Upload,
   X,
 } from 'lucide-react'
 import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
@@ -104,6 +106,7 @@ function RunSidebar({
   expandedRuns,
   visibleRounds,
   onNewRun,
+  onImportRun,
   onSelectRun,
   onSelectRound,
   onToggleRun,
@@ -116,6 +119,7 @@ function RunSidebar({
   expandedRuns: Set<string>
   visibleRounds: Record<string, number>
   onNewRun: () => void
+  onImportRun: () => void
   onSelectRun: (snapshot: LoopSnapshot) => void
   onSelectRound: (snapshot: LoopSnapshot, round: number) => void
   onToggleRun: (loopId: string) => void
@@ -131,6 +135,13 @@ function RunSidebar({
           className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-[#ded9d6] transition-colors hover:bg-white/[0.05] hover:text-white"
         >
           <Plus className="size-4" /> Run
+        </button>
+        <button
+          type="button"
+          onClick={onImportRun}
+          className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[13px] text-[#918a87] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6]"
+        >
+          <Download className="size-4" /> Import run
         </button>
       </div>
       <div className="border-t border-[#2f2a2b]" />
@@ -387,6 +398,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [criticId, setCriticId] = useState(DEFAULT_CRITIC_ID)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
@@ -508,6 +520,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const start = async (): Promise<void> => {
     setBusy(true)
     setError(null)
+    setNotice(null)
     try {
       const result = await window.loops.start({
         prompt,
@@ -556,6 +569,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setExpanded(new Set())
     setReportOpen(false)
     setCritiqueOpen(false)
+    setNotice(null)
     setLines(await window.loops.log(next.loop.id))
   }
 
@@ -564,6 +578,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setSelectedRound(null)
     setPrompt('')
     setError(null)
+    setNotice(null)
     setProjectOpen(false)
   }
 
@@ -581,6 +596,57 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setSnapshots((current) => current.map((item) => item.loop.id === updated.id ? { ...item, loop: updated } : item))
     setTitleDraft(updated.title)
     setRenaming(false)
+  }
+
+  const importRun = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.loops.importRun()
+      if (result.canceled) return
+      if (!result.ok || !result.snapshot) {
+        setError(result.error ?? 'Failed to import run.')
+        return
+      }
+      const imported = result.snapshot
+      const importedSnapshots = result.snapshots ?? [imported]
+      const importedIds = new Set(importedSnapshots.map((item) => item.loop.id))
+      loopIdRef.current = imported.loop.id
+      setSnapshot(imported)
+      setSnapshots((current) => [...importedSnapshots, ...current.filter((item) => !importedIds.has(item.loop.id))])
+      setWorkspaceDir(imported.loop.workspaceDir)
+      setLines(await window.loops.log(imported.loop.id, LOG_LIMIT))
+      setExpanded(new Set())
+      setExpandedRuns((current) => new Set(current).add(imported.loop.id))
+      setSelectedRound(null)
+      setRenaming(false)
+      setReportOpen(false)
+      setCritiqueOpen(false)
+      setProjectOpen(false)
+      setComposing(false)
+      setNotice(`Opened the complete run folder at ${imported.loop.workspaceDir}. Its project files and SQLite history remain together.`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exportRun = async (): Promise<void> => {
+    if (!loop) return
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.loops.exportRun(loop.id)
+      if (result.canceled) return
+      if (!result.ok) {
+        setError(result.error ?? 'Failed to export run.')
+        return
+      }
+      setNotice(`Exported the complete project and SQLite history to ${result.filePath ?? 'the selected folder'}.`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
@@ -602,6 +668,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         expandedRuns={expandedRuns}
         visibleRounds={visibleRounds}
         onNewRun={beginNewRun}
+        onImportRun={() => void importRun()}
         onSelectRun={(next) => void selectRun(next)}
         onSelectRound={(next, round) => void selectRun(next, round)}
         onToggleRun={(loopId) =>
@@ -619,6 +686,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
+
+      {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
 
       {composing || !loop ? (
         <Card className="gap-0 overflow-visible border-[#393433] bg-[#1d1919] p-0 shadow-2xl shadow-black/20">
@@ -841,6 +910,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 onClick={() => setReportOpen((open) => !open)}
               >
                 <FileText /> Report
+              </Button>
+              <Button
+                variant="outline"
+                className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
+                disabled={busy || running}
+                title={running ? 'Stop the run first to export an exact folder snapshot' : 'Export the complete project folder and SQLite history'}
+                onClick={() => void exportRun()}
+              >
+                <Upload /> Export
               </Button>
               {running ? (
                 <Button

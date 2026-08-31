@@ -14,6 +14,13 @@ function makeLedger(): Ledger {
   return new Ledger(path.join(dir, 'ledger.db'))
 }
 
+function workspace(name = 'workspace'): string {
+  if (!dir) throw new Error('Test ledger has not been created.')
+  const workspaceDir = path.join(dir, name)
+  fs.mkdirSync(workspaceDir, { recursive: true })
+  return workspaceDir
+}
+
 afterEach(() => {
   if (dir) fs.rmSync(dir, { recursive: true, force: true })
   dir = null
@@ -27,7 +34,7 @@ describe('Ledger', () => {
 
   it('round-trips loops, runs, verdicts and metrics', () => {
     const ledger = makeLedger()
-    const loop = ledger.createLoop({ prompt: 'build it', workspaceDir: '/tmp/w', maxRounds: 5, budgetUsd: 50, models })
+    const loop = ledger.createLoop({ prompt: 'build it', workspaceDir: workspace(), maxRounds: 5, budgetUsd: 50, models })
     expect(loop.status).toBe('running')
     expect(loop.title).toBe('It')
     expect(loop.models.criticModel).toBe('gpt-5.6-sol')
@@ -55,7 +62,7 @@ describe('Ledger', () => {
 
   it('persists an operator-supplied run title', () => {
     const ledger = makeLedger()
-    const loop = ledger.createLoop({ prompt: 'Build a game', workspaceDir: '/tmp/w', maxRounds: 1, budgetUsd: null, models })
+    const loop = ledger.createLoop({ prompt: 'Build a game', workspaceDir: workspace(), maxRounds: 1, budgetUsd: null, models })
     ledger.patchLoop(loop.id, { title: 'Arcade study' })
 
     expect(ledger.getLoop(loop.id)?.title).toBe('Arcade study')
@@ -64,7 +71,7 @@ describe('Ledger', () => {
 
   it('appends and reads back events in order', () => {
     const ledger = makeLedger()
-    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: '/tmp/w', maxRounds: 1, budgetUsd: null, models })
+    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: workspace(), maxRounds: 1, budgetUsd: null, models })
     for (let i = 0; i < 5; i += 1) ledger.appendEvent({ loopId: loop.id, runId: null, ts: `t${i}`, kind: 'system', text: `line ${i}` })
     const lines = ledger.eventsForLoop(loop.id, 3)
     expect(lines.map((l) => l.text)).toEqual(['line 2', 'line 3', 'line 4'])
@@ -73,8 +80,8 @@ describe('Ledger', () => {
 
   it('lists every run with the newest prompt first', () => {
     const ledger = makeLedger()
-    const first = ledger.createLoop({ prompt: 'first', workspaceDir: '/tmp/one', maxRounds: 1, budgetUsd: null, models })
-    const second = ledger.createLoop({ prompt: 'second', workspaceDir: '/tmp/two', maxRounds: 1, budgetUsd: null, models })
+    const first = ledger.createLoop({ prompt: 'first', workspaceDir: workspace('one'), maxRounds: 1, budgetUsd: null, models })
+    const second = ledger.createLoop({ prompt: 'second', workspaceDir: workspace('two'), maxRounds: 1, budgetUsd: null, models })
 
     expect(ledger.loops().map((loop) => loop.id)).toEqual([second.id, first.id])
     ledger.close()
@@ -82,7 +89,7 @@ describe('Ledger', () => {
 
   it('requeues an orphaned run with the resume marker', () => {
     const ledger = makeLedger()
-    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: '/tmp/w', maxRounds: 3, budgetUsd: null, models })
+    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: workspace(), maxRounds: 3, budgetUsd: null, models })
     const run = ledger.createRun({ loopId: loop.id, round: 2, role: 'implement', harness: 'claude', prompt: 'build it' })
     ledger.patchRun(run.id, { status: 'running' })
 
