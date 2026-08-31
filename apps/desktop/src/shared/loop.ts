@@ -35,6 +35,19 @@ export interface AgentMetric {
   firstTs: string | null
   lastTs: string | null
   done?: boolean
+  /**
+   * Workflow agents run in a separate runtime, so their numbers come off disk
+   * rather than out of the message stream. They report one scalar token count
+   * instead of the input/output/cache split, so `tokens` stays zero for them
+   * and `totalTokens` carries the figure.
+   */
+  source?: 'stream' | 'workflow'
+  phase?: string
+  state?: string
+  totalTokens?: number
+  toolCalls?: number
+  durationMs?: number
+  note?: string
 }
 
 export interface RunMetrics {

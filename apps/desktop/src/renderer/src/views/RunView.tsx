@@ -24,7 +24,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 import {
   CRITICS,
   DEFAULT_CRITIC_ID,
@@ -303,6 +303,44 @@ function PromptBlock({ title, value }: { title: string; value: string }): React.
   )
 }
 
+/**
+ * Agents the ultracode orchestrator ran through the Workflow tool. They never
+ * reach the message stream, so their numbers come off disk and read differently
+ * from stream agents: one scalar token count, plus a phase and a live state.
+ */
+function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Element | null {
+  const workflow = agents.filter((agent) => agent.source === 'workflow')
+  if (workflow.length === 0) return null
+  const phases: { phase: string; agents: AgentMetric[] }[] = []
+  for (const agent of workflow) {
+    const phase = agent.phase ?? 'workflow'
+    const last = phases.at(-1)
+    if (last && last.phase === phase) last.agents.push(agent)
+    else phases.push({ phase, agents: [agent] })
+  }
+  const totalTokens = workflow.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0)
+  return (
+    <>
+      <div className="mt-1 text-[#c0aee6]">
+        ⇉ workflow fan-out · {workflow.length} agents · {fmtTokens(totalTokens)} tokens
+      </div>
+      {phases.map((group, index) => (
+        <div key={`${group.phase}-${index}`} className="pl-5">
+          <div className="text-[#8f8a87]">{group.phase}</div>
+          {group.agents.map((agent) => (
+            <div key={agent.id} className="pl-4 text-[#a89f9a]">
+              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓' : '⋯'}</span> {agent.label}
+              <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {fmtTokens(agent.totalTokens ?? 0)} tokens · {agent.toolCalls ?? 0}{' '}
+              tools · {fmtDuration(agent.durationMs)}
+              {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </>
+  )
+}
+
 function RunRow({
   run,
   loopId,
@@ -362,14 +400,17 @@ function RunRow({
               </div>
             )}
             <div className="grid gap-1.5 font-mono text-[11px]">
-              {(run.metrics?.agents ?? []).map((agent) => (
-                <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
-                  {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
-                  {agent.label}
-                  <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
-                  {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
-                </div>
-              ))}
+              {(run.metrics?.agents ?? [])
+                .filter((agent) => agent.source !== 'workflow')
+                .map((agent) => (
+                  <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
+                    {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
+                    {agent.label}
+                    <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
+                    {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
+                  </div>
+                ))}
+              <WorkflowAgents agents={run.metrics?.agents ?? []} />
               {Object.entries(run.metrics?.perModel ?? {}).map(([model, mu]) => (
                 <div key={model} className="text-[#9fb2c8]">
                   {model}: {mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(mu.tokens.input)} · out {fmtTokens(mu.tokens.output)}

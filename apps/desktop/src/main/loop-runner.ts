@@ -20,6 +20,7 @@ import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
+import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
 
 const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
@@ -691,12 +692,33 @@ export class LoopRunner {
     let fallbackId = 0
     let lastTokenFlush = Date.now()
     let liveCostEstimate: number | null = null
+    // Filled from the init event; without it we cannot locate the workflow dir.
+    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
+    let workflowAgents: AgentMetric[] = []
+    let workflowRuns: WorkflowRunSummary[] = []
+    let workflowTokens = 0
+    const loggedWorkflowRuns = new Set<string>()
+
+    const pollWorkflows = (): void => {
+      if (!sessionId) return
+      const progress = readWorkflowProgress(workflowDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      workflowAgents = progress.agents
+      workflowRuns = progress.runs
+      workflowTokens = progress.totalTokens
+      for (const wf of progress.runs) {
+        const key = `${wf.runId}:${wf.status}`
+        if (loggedWorkflowRuns.has(key)) continue
+        loggedWorkflowRuns.add(key)
+        plog('spawn', `⇉ workflow "${wf.name}" ${wf.status} — ${wf.agentCount} agents · ${formatTokens(wf.totalTokens)} tokens`)
+      }
+    }
 
     // Live token + cost visibility: persist running totals every ~15s so the
     // ledger, dashboard, and report show tokens and estimated cost mid-run.
     const flushTokens = (): void => {
       if (Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
+      pollWorkflows()
       let input = 0
       let output = 0
       const perModel = new Map<string, TokenTotals>()
@@ -719,7 +741,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents),
       })
       this.broadcast(loop.id)
     }
@@ -739,7 +761,7 @@ export class LoopRunner {
 
       if (type === 'system' && obj.subtype === 'init') {
         const model = obj.model as string | undefined
-        const sessionId = (obj.session_id as string | undefined) ?? null
+        sessionId = (obj.session_id as string | undefined) ?? sessionId
         if (model || sessionId) this.ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
         plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
@@ -798,7 +820,14 @@ export class LoopRunner {
     }
 
     const finalize = (exit: ExitInfo): void => {
-      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents)
+      pollWorkflows()
+      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents)
+      if (workflowRuns.length) {
+        plog(
+          'metric',
+          `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens (included in the run cost above)`,
+        )
+      }
       const res = result as Record<string, unknown> | null
       const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
       const finishedAt = new Date().toISOString()
@@ -859,6 +888,7 @@ export class LoopRunner {
     msgUsage: Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>,
     result: Record<string, unknown> | null,
     finished: Set<string> = new Set(),
+    workflowAgents: AgentMetric[] = [],
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
@@ -910,7 +940,9 @@ export class LoopRunner {
     }
     const list = [...agents.values()]
     list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
-    return { agents: list, perModel }
+    // Workflow agents carry only a scalar token count, so they cannot join
+    // perModel — that stays priced off the stream and the CLI's own figures.
+    return { agents: [...list, ...workflowAgents], perModel }
   }
 
   private logRunMetrics(
