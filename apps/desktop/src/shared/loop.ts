@@ -142,6 +142,7 @@ export interface CritiqueRound {
 
 export interface LoopApi {
   critique(loopId: string): Promise<CritiqueRound[]>
+  mediaBase(): Promise<string | null>
   playStart(loopId: string): Promise<PlayState>
   playStop(loopId: string): Promise<void>
   playState(loopId: string): Promise<PlayState>

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import type { CritiqueRound } from '../../../shared/loop'
 
-function mediaUrl(loopId: string, rel: string): string {
-  return `gmedia://media/${loopId}/${rel.split('/').map(encodeURIComponent).join('/')}`
+function makeMediaUrl(base: string | null, loopId: string, rel: string): string {
+  if (!base) return ''
+  return `${base}/${loopId}/${rel.split('/').map(encodeURIComponent).join('/')}`
 }
 
 function Winner({ active }: { active: boolean }): React.JSX.Element | null {
@@ -16,6 +17,12 @@ export function CritiquePanel({ loopId, refreshKey }: { loopId: string; refreshK
   const [selected, setSelected] = useState<number | null>(null)
   const [thoughtsOpen, setThoughtsOpen] = useState(false)
   const [zoom, setZoom] = useState<string | null>(null)
+  const [mediaBase, setMediaBase] = useState<string | null>(null)
+  const mediaUrl = (id: string, rel: string): string => makeMediaUrl(mediaBase, id, rel)
+
+  useEffect(() => {
+    void window.loops.mediaBase().then(setMediaBase)
+  }, [])
 
   useEffect(() => {
     void window.loops.critique(loopId).then((data) => {
