@@ -110,6 +110,8 @@ function RunRow({
       {expanded && (critique || run.metrics) && (
         <TableRow className="border-[#3b3636] hover:bg-transparent">
           <TableCell colSpan={9} className="bg-[#151111] px-4 py-3">
+            {/* w-0 + min-w-full stops wide media from stretching the table sideways */}
+            <div className="w-0 min-w-full">
             {critique && (
               <div className="mb-3">
                 <CritiqueRoundView loopId={loopId} round={critique} />
@@ -129,6 +131,7 @@ function RunRow({
                   {model}: {mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(mu.tokens.input)} · out {fmtTokens(mu.tokens.output)}
                 </div>
               ))}
+            </div>
             </div>
           </TableCell>
         </TableRow>
