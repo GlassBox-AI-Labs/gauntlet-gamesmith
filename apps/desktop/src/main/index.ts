@@ -12,6 +12,7 @@ import type {
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
 import type { CritiqueRound, StartLoopInput } from '../shared/loop'
+import { resolveModels } from '../shared/models'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
@@ -262,14 +263,23 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:start', async (_event, value: unknown) => {
     if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
     const input = value as Partial<StartLoopInput> | undefined
-    const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), probe('codex')])
+    const models = resolveModels(input, input?.criticId)
+    // The implementer always runs on claude; the critic only needs codex when
+    // that is the harness the picked critic model runs on.
+    const needsCodex = models.criticHarness === 'codex'
+    const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), needsCodex ? probe('codex') : Promise.resolve(null)])
     if (!claudeStatus.loggedIn) return { ok: false, error: 'Claude Code (implementer) is not connected. Sign in on the Agents tab.' }
-    if (!codexStatus.loggedIn) return { ok: false, error: 'Codex (critic) is not connected. Sign in on the Agents tab.' }
+    if (needsCodex && !codexStatus?.loggedIn) return { ok: false, error: 'Codex (critic) is not connected. Sign in on the Agents tab.' }
     return loopRunner.start({
       prompt: String(input?.prompt ?? ''),
       workspaceDir: String(input?.workspaceDir ?? ''),
       maxRounds: Number(input?.maxRounds ?? 10),
       budgetUsd: input?.budgetUsd == null ? null : Number(input.budgetUsd) || null,
+      orchestratorModel: models.orchestratorModel,
+      orchestratorEffort: models.orchestratorEffort,
+      subagentModel: models.subagentModel,
+      subagentEffort: models.subagentEffort,
+      criticId: models.criticId,
     })
   })
   ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })

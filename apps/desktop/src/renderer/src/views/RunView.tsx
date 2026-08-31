@@ -4,8 +4,21 @@ import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import {
+  CRITICS,
+  DEFAULT_CRITIC_ID,
+  DEFAULT_IMPLEMENTER,
+  findCritic,
+  MODEL_CHOICES,
+  modelLabel,
+  ORCHESTRATOR_EFFORTS,
+  SOLO_SUBAGENT,
+  SUBAGENT_EFFORTS,
+  type ImplementerFields,
+} from '../../../shared/models'
 
 const LOG_LIMIT = 1500
 
@@ -149,6 +162,8 @@ export function RunView(): React.JSX.Element {
   const [workspaceDir, setWorkspaceDir] = useState('')
   const [maxRounds, setMaxRounds] = useState('10')
   const [budget, setBudget] = useState('')
+  const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
+  const [criticId, setCriticId] = useState(DEFAULT_CRITIC_ID)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -181,6 +196,13 @@ export function RunView(): React.JSX.Element {
         loopIdRef.current = snap.loop.id
         setSnapshot(snap)
         setPrompt(snap.loop.prompt)
+        setImpl({
+          orchestratorModel: snap.loop.models.orchestratorModel,
+          orchestratorEffort: snap.loop.models.orchestratorEffort,
+          subagentModel: snap.loop.models.subagentModel,
+          subagentEffort: snap.loop.models.subagentEffort,
+        })
+        setCriticId(snap.loop.models.criticId)
         setLines(await window.loops.log(snap.loop.id))
       } else {
         setComposing(true)
@@ -220,6 +242,7 @@ export function RunView(): React.JSX.Element {
   }, [activeLoopId])
 
   const loop = snapshot?.loop ?? null
+  const critic = findCritic(criticId)
   const running = loop?.status === 'running'
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
 
@@ -232,6 +255,8 @@ export function RunView(): React.JSX.Element {
         workspaceDir,
         maxRounds: Number(maxRounds) || 10,
         budgetUsd: budget.trim() ? Number(budget) : null,
+        ...impl,
+        criticId,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -270,7 +295,7 @@ export function RunView(): React.JSX.Element {
             placeholder={'Paste your goal prompt.\n\ne.g. "I want you to build a first-person shooter at the level of the most recent Call of Duty games. It should be utterly perfect, visually beautiful, with every single thing done at AAA quality…"'}
             className="w-full resize-y rounded-lg border border-[#393433] bg-[#141010] p-3.5 text-[13px] leading-relaxed text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]"
           />
-          <div className="grid grid-cols-[1fr_auto_110px_130px] items-end gap-3 max-sm:grid-cols-1">
+          <div className="grid grid-cols-[1fr_auto] items-end gap-3 max-sm:grid-cols-1">
             <label className="grid gap-1.5 text-xs text-[#96908d]">
               Workspace (created if missing)
               <input
@@ -287,6 +312,87 @@ export function RunView(): React.JSX.Element {
             >
               <FolderOpen /> Browse
             </Button>
+          </div>
+          <div className="grid gap-2.5 rounded-lg border border-[#332e2e] bg-[#161212] p-3">
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Orchestrator</span>
+              <Select value={impl.orchestratorModel} onValueChange={(v) => setImpl((c) => ({ ...c, orchestratorModel: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODEL_CHOICES.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={impl.orchestratorEffort} onValueChange={(v) => setImpl((c) => ({ ...c, orchestratorEffort: v }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ORCHESTRATOR_EFFORTS.map((e) => (
+                    <SelectItem key={e} value={e}>
+                      {e === 'ultracode' ? 'ultracode (xhigh + workflows)' : e}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Subagents</span>
+              <Select
+                value={impl.subagentModel ?? SOLO_SUBAGENT}
+                onValueChange={(v) => setImpl((c) => ({ ...c, subagentModel: v === SOLO_SUBAGENT ? null : v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODEL_CHOICES.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={SOLO_SUBAGENT}>none (solo)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={impl.subagentEffort}
+                onValueChange={(v) => setImpl((c) => ({ ...c, subagentEffort: v }))}
+                disabled={impl.subagentModel === null}
+              >
+                <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUBAGENT_EFFORTS.map((e) => (
+                    <SelectItem key={e} value={e}>
+                      {e}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Critic</span>
+              <Select value={criticId} onValueChange={setCriticId}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CRITICS.map((preset) => (
+                    <SelectItem key={preset.id} value={preset.id}>
+                      {preset.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-[140px_160px_1fr] items-end gap-6 max-sm:grid-cols-1 max-sm:gap-3">
             <label className="grid gap-1.5 text-xs text-[#96908d]">
               Max rounds
               <input
@@ -297,7 +403,7 @@ export function RunView(): React.JSX.Element {
               />
             </label>
             <label className="grid gap-1.5 text-xs text-[#96908d]">
-              Budget $ (equiv, opt.)
+              Budget $ (optional)
               <input
                 value={budget}
                 onChange={(event) => setBudget(event.target.value)}
@@ -308,9 +414,13 @@ export function RunView(): React.JSX.Element {
             </label>
           </div>
           <p className="text-xs leading-relaxed text-[#7d7772]">
-            Claude (claude-fable-5, high effort) orchestrates opus implementer subagents at medium effort with permissions bypassed inside the
-            workspace. Codex (gpt-5.6-sol, medium) judges with fresh eyes each round; its verdict is written to the SQLite ledger and seeds the next
-            round. Costs shown are equivalent API cost estimates — runs use your subscription logins.
+            {modelLabel(impl.orchestratorModel)} orchestrates at {impl.orchestratorEffort} effort
+            {impl.orchestratorEffort === 'ultracode' ? ' (xhigh reasoning plus automatic workflow fan-out)' : ''}
+            {impl.subagentModel
+              ? `, delegating to ${modelLabel(impl.subagentModel)} implementer subagents at ${impl.subagentEffort} effort.`
+              : ', doing the work itself with no subagents.'}{' '}
+            Permissions are bypassed inside the workspace. {critic.detail} The critic judges with fresh eyes each round; its verdict is written to the
+            SQLite ledger and seeds the next round. Costs shown are equivalent API cost estimates — runs use your subscription logins.
           </p>
           {error && <p className="rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
           <div className="flex items-center gap-3">

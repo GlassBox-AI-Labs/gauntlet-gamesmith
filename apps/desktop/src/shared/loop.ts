@@ -1,3 +1,5 @@
+import type { HarnessKind } from './harness'
+
 export type RunRole = 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
@@ -43,8 +45,12 @@ export interface RunMetrics {
 export interface LoopModels {
   orchestratorModel: string
   orchestratorEffort: string
-  subagentModel: string
+  /** null = the orchestrator implements by itself, with no subagents. */
+  subagentModel: string | null
   subagentEffort: string
+  /** Id of the critic preset picked on the run form. */
+  criticId: string
+  criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
 }
@@ -54,7 +60,7 @@ export interface RunRecord {
   loopId: string
   round: number
   role: RunRole
-  harness: 'claude' | 'codex'
+  harness: HarnessKind
   status: RunStatus
   prompt: string
   model: string | null
@@ -106,6 +112,12 @@ export interface StartLoopInput {
   workspaceDir: string
   maxRounds: number
   budgetUsd: number | null
+  orchestratorModel: string
+  orchestratorEffort: string
+  /** null = no implementer subagents; the orchestrator does the work itself. */
+  subagentModel: string | null
+  subagentEffort: string
+  criticId: string
 }
 
 export interface StartLoopResult {

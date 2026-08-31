@@ -2,17 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { LoopModels } from '../shared/loop'
+import { resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
 
-const models: LoopModels = {
-  orchestratorModel: 'claude-fable-5',
-  orchestratorEffort: 'high',
-  subagentModel: 'opus',
-  subagentEffort: 'medium',
-  criticModel: 'gpt-5.6-sol',
-  criticEffort: 'medium',
-}
+const models = resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5', subagentEffort: 'medium' }, 'codex-sol-medium')
 
 let dir: string | null = null
 
