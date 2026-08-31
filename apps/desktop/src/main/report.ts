@@ -69,7 +69,14 @@ export function scanCritiqueArtifacts(workspaceDir: string): CritiqueArtifacts[]
     } catch {
       /* no machine-readable pairs */
     }
-    artifacts.push({ round: Number(match[1]), shots: listFiles('shots', images), refs: listFiles('refs', images), videos, pairs, pairsMd })
+    artifacts.push({
+      round: Number(match[1]),
+      shots: [...listFiles('shots', images), ...listFiles('shots/motion', images)],
+      refs: [...listFiles('refs', images), ...listFiles('refs/motion', images)],
+      videos,
+      pairs,
+      pairsMd,
+    })
   }
   return artifacts.sort((a, b) => a.round - b.round)
 }
