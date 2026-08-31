@@ -30,6 +30,7 @@ interface AgentAccumulator {
   /** Keyed by message id: the runtime writes a message repeatedly as it streams. */
   usageByMessage: Map<string, Record<string, number>>
   toolCalls: number
+  lastTool: string | null
   lastText: string | null
   result: string | null
   firstTs: string | null
@@ -163,6 +164,7 @@ export class WorkflowTail {
         model: null,
         usageByMessage: new Map(),
         toolCalls: 0,
+        lastTool: null,
         lastText: null,
         result: null,
         firstTs: null,
@@ -218,7 +220,12 @@ export class WorkflowTail {
         if (id && usage) agent.usageByMessage.set(id, usage)
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
-          if (block.type === 'tool_use') agent.toolCalls += 1
+          if (block.type === 'tool_use') {
+            agent.toolCalls += 1
+            const input = block.input as Record<string, unknown> | undefined
+            const detail = input?.command ?? input?.file_path ?? input?.pattern ?? input?.query
+            agent.lastTool = `${String(block.name)}${detail ? ` ${trim(String(detail), 90)}` : ''}`
+          }
           else if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) agent.lastText = block.text
         }
       }
@@ -255,6 +262,7 @@ export class WorkflowTail {
         costUsd: estimateCostUsd(agent.model, tokens),
         agentType: agent.agentType ?? undefined,
         prompt: trim(agent.prompt, 4000),
+        lastTool: agent.lastTool ?? undefined,
         note: trim(agent.result ?? agent.lastText, 300),
       }
     })

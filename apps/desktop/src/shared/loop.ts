@@ -54,6 +54,8 @@ export interface AgentMetric {
   agentType?: string
   /** The task this agent was actually given, truncated for display. */
   prompt?: string
+  /** Most recent tool call, for the live feed. */
+  lastTool?: string
 }
 
 export interface RunMetrics {
