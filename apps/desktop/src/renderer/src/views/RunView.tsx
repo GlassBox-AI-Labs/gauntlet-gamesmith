@@ -5,8 +5,6 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
-  Eye,
-  FileText,
   FolderGit2,
   FolderPlus,
   LoaderCircle,
@@ -18,7 +16,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
+import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -447,9 +445,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
-  const [reportOpen, setReportOpen] = useState(false)
-  const [reportMd, setReportMd] = useState('')
-  const [critiqueOpen, setCritiqueOpen] = useState(false)
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null })
   const loopIdRef = useRef<string | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
@@ -504,11 +499,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   useEffect(() => {
     if (stickRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [lines])
-
-  useEffect(() => {
-    if (!reportOpen || !snapshot) return
-    void window.loops.report(snapshot.loop.id).then(setReportMd)
-  }, [reportOpen, snapshot])
 
   const [critiqueRounds, setCritiqueRounds] = useState<CritiqueRound[]>([])
   const finishedCritiques = snapshot?.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length ?? 0
@@ -608,8 +598,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setComposing(false)
     setProjectOpen(false)
     setExpanded(new Set())
-    setReportOpen(false)
-    setCritiqueOpen(false)
     setNotice(null)
     setLines(await window.loops.log(next.loop.id))
   }
@@ -662,8 +650,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setExpandedRuns((current) => new Set(current).add(imported.loop.id))
       setSelectedRound(null)
       setRenaming(false)
-      setReportOpen(false)
-      setCritiqueOpen(false)
       setProjectOpen(false)
       setComposing(false)
       setNotice(`Opened the complete run folder at ${imported.loop.workspaceDir}. Its project files and SQLite history remain together.`)
@@ -940,20 +926,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               )}
               <Button
                 variant="outline"
-                className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${critiqueOpen ? 'text-[#f2d98c]' : 'text-[#96908d]'}`}
-                onClick={() => setCritiqueOpen((open) => !open)}
-              >
-                <Eye /> Critique
-              </Button>
-              <Button
-                variant="outline"
-                className={`border-[#494343] bg-transparent hover:bg-white/5 hover:text-white ${reportOpen ? 'text-[#e9c9bc]' : 'text-[#96908d]'}`}
-                onClick={() => setReportOpen((open) => !open)}
-              >
-                <FileText /> Report
-              </Button>
-              <Button
-                variant="outline"
                 className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
                 disabled={busy || running}
                 title={running ? 'Stop the run first to export an exact folder snapshot' : 'Export the complete project folder and SQLite history'}
@@ -1066,14 +1038,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 )
               })}
             </div>
-          )}
-
-          {selectedRound == null && critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={finishedCritiques} />}
-
-          {selectedRound == null && reportOpen && (
-            <pre className="mb-5 max-h-[360px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#332e2e] bg-[#151111] p-4 font-mono text-[11px] leading-[1.65] text-[#c9c3c0]">
-              {reportMd || 'Building report…'}
-            </pre>
           )}
 
           <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e]">
