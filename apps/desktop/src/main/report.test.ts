@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LoopRecord, RunRecord } from '../shared/loop'
+import { resolveModels } from '../shared/models'
 import { buildReport } from './report'
 
 const loop: LoopRecord = {
@@ -9,14 +10,7 @@ const loop: LoopRecord = {
   workspaceDir: '/tmp/w',
   maxRounds: 10,
   budgetUsd: 100,
-  models: {
-    orchestratorModel: 'claude-fable-5',
-    orchestratorEffort: 'high',
-    subagentModel: 'opus',
-    subagentEffort: 'medium',
-    criticModel: 'gpt-5.6-sol',
-    criticEffort: 'medium',
-  },
+  models: resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5', subagentEffort: 'medium' }, 'codex-sol-medium'),
   status: 'running',
   round: 2,
   totalCostUsd: 12.5,

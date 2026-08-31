@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { LoopRecord, RunRecord } from '../shared/loop'
+import { describeModels } from '../shared/models'
 import { PRICE_TABLE_VERSION } from './pricing'
 
 const SPARK = '▁▂▃▄▅▆▇█'
@@ -114,7 +115,7 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
   lines.push(`- **Goal:** ${loop.prompt.replace(/\s+/g, ' ').slice(0, 180)}${loop.prompt.length > 180 ? '…' : ''}`)
   lines.push(`- **Workspace:** ${loop.workspaceDir}`)
   lines.push(
-    `- **Models:** ${loop.models.orchestratorModel} (${loop.models.orchestratorEffort}) orchestrating ${loop.models.subagentModel} (${loop.models.subagentEffort}) subagents · critic ${loop.models.criticModel} (${loop.models.criticEffort}), fresh eyes`,
+    `- **Models:** ${describeModels(loop.models)}`,
   )
   lines.push(`- **Started:** ${loop.createdAt} · **Updated:** ${loop.updatedAt}${wallClockMs != null ? ` · **Wall clock:** ${fmtDuration(wallClockMs)}` : ''}`)
   lines.push(

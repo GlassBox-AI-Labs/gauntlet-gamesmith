@@ -20,8 +20,21 @@ import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import {
+  CRITICS,
+  DEFAULT_CRITIC_ID,
+  DEFAULT_IMPLEMENTER,
+  findCritic,
+  MODEL_CHOICES,
+  modelLabel,
+  ORCHESTRATOR_EFFORTS,
+  SOLO_SUBAGENT,
+  SUBAGENT_EFFORTS,
+  type ImplementerFields,
+} from '../../../shared/models'
 
 const LOG_LIMIT = 1500
 const ROUNDS_PAGE_SIZE = 3
@@ -369,6 +382,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [prompt, setPrompt] = useState('')
   const [workspaceDir, setWorkspaceDir] = useState('')
   const [projectOpen, setProjectOpen] = useState(false)
+  const [maxRounds, setMaxRounds] = useState('10')
+  const [budget, setBudget] = useState('')
+  const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
+  const [criticId, setCriticId] = useState(DEFAULT_CRITIC_ID)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -411,6 +428,13 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       if (initial) {
         loopIdRef.current = initial.loop.id
         setSnapshot(initial)
+        setImpl({
+          orchestratorModel: initial.loop.models.orchestratorModel,
+          orchestratorEffort: initial.loop.models.orchestratorEffort,
+          subagentModel: initial.loop.models.subagentModel,
+          subagentEffort: initial.loop.models.subagentEffort,
+        })
+        setCriticId(initial.loop.models.criticId)
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -451,6 +475,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   }, [activeLoopId])
 
   const loop = snapshot?.loop ?? null
+  const critic = findCritic(criticId)
   const running = loop?.status === 'running'
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
   const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
@@ -487,8 +512,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       const result = await window.loops.start({
         prompt,
         workspaceDir,
-        maxRounds: 10,
-        budgetUsd: null,
+        maxRounds: Number(maxRounds) || 10,
+        budgetUsd: budget.trim() ? Number(budget) : null,
+        ...impl,
+        criticId,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -515,6 +542,13 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
     loopIdRef.current = next.loop.id
     setSnapshot(next)
+    setImpl({
+      orchestratorModel: next.loop.models.orchestratorModel,
+      orchestratorEffort: next.loop.models.orchestratorEffort,
+      subagentModel: next.loop.models.subagentModel,
+      subagentEffort: next.loop.models.subagentEffort,
+    })
+    setCriticId(next.loop.models.criticId)
     setSelectedRound(round)
     setRenaming(false)
     setComposing(false)
@@ -612,6 +646,70 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             placeholder="What do you want to work on?"
             className="min-h-[360px] w-full resize-y bg-transparent px-5 py-5 text-[15px] leading-relaxed text-[#eeeae7] outline-none placeholder:text-[#68615f]"
           />
+          <div className="mx-5 mb-4 grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Orchestrator</span>
+              <Select value={impl.orchestratorModel} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorModel: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={impl.orchestratorEffort} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorEffort: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ORCHESTRATOR_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort === 'ultracode' ? 'ultracode (xhigh + workflows)' : effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Subagents</span>
+              <Select
+                value={impl.subagentModel ?? SOLO_SUBAGENT}
+                onValueChange={(value) => setImpl((current) => ({ ...current, subagentModel: value === SOLO_SUBAGENT ? null : value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  <SelectItem value={SOLO_SUBAGENT}>none (solo)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={impl.subagentEffort}
+                onValueChange={(value) => setImpl((current) => ({ ...current, subagentEffort: value }))}
+                disabled={impl.subagentModel === null}
+              >
+                <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SUBAGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Critic</span>
+              <Select value={criticId} onValueChange={setCriticId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CRITICS.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+              <label className="grid gap-1.5 text-xs text-[#96908d]">
+                Max rounds
+                <input value={maxRounds} onChange={(event) => setMaxRounds(event.target.value)} inputMode="numeric" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none focus:border-[#5a524f]" />
+              </label>
+              <label className="grid gap-1.5 text-xs text-[#96908d]">
+                Budget $ (optional)
+                <input value={budget} onChange={(event) => setBudget(event.target.value)} inputMode="decimal" placeholder="none" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]" />
+              </label>
+            </div>
+            <p className="text-xs leading-relaxed text-[#7d7772]">
+              {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
+              {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
+              {critic.detail}
+            </p>
+          </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
           <div className="flex justify-end px-5 pb-5">
             <Button

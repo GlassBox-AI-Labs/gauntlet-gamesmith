@@ -15,34 +15,40 @@ import type {
   Verdict,
 } from '../shared/loop'
 import { RESUME_PREFIX } from '../shared/loop'
+import { describeModels, isUltracode, resolveModels } from '../shared/models'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
 
-export const LOOP_MODELS: LoopModels = {
-  orchestratorModel: 'claude-fable-5',
-  orchestratorEffort: 'high',
-  subagentModel: 'opus',
-  subagentEffort: 'medium',
-  criticModel: 'gpt-5.6-sol',
-  criticEffort: 'medium',
-}
-
 const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
 
-const IMPLEMENTER_AGENT_MD = `---
+function implementerAgentMd(models: LoopModels): string {
+  return `---
 name: implementer
 description: Builds and polishes one assigned slice of the game to AAA quality. Use for ALL substantial implementation work.
-model: ${LOOP_MODELS.subagentModel}
-effort: ${LOOP_MODELS.subagentEffort}
+model: ${models.subagentModel ?? models.orchestratorModel}
+effort: ${models.subagentEffort}
 ---
 You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, level design, ...). Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
 `
+}
 
-const ORCHESTRATION_SUFFIX = `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${LOOP_MODELS.subagentModel} at ${LOOP_MODELS.subagentEffort} effort), one per workstream, and integrate their results. Verify the game actually builds and runs before you finish. ultracode`
+function orchestrationSuffix(models: LoopModels): string {
+  if (!models.subagentModel) {
+    return 'Working rules: you implement this yourself — do NOT delegate to subagents. Verify the game actually builds and runs before you finish.'
+  }
+  // A workflow agent picks its model as: model the script names → the agent
+  // file's frontmatter → CLAUDE_CODE_SUBAGENT_MODEL → the session model. The env
+  // var (set on the spawn) pins the model either way, but effort only binds
+  // through the agent file, so the script has to name the agent type to get it.
+  const workflowRule = isUltracode(models)
+    ? ` When you orchestrate through a workflow, pass \`{agentType: 'implementer'}\` on every \`agent()\` call so each one runs ${models.subagentModel} at ${models.subagentEffort} effort rather than inheriting yours.`
+    : ''
+  return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} Verify the game actually builds and runs before you finish.`
+}
 
 function trunc(value: string, max: number): string {
   const flat = value.replace(/\s+/g, ' ').trim()
@@ -115,8 +121,8 @@ function normalizeVerdict(value: unknown): Verdict | null {
   return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
 }
 
-function buildImplementPrompt(userPrompt: string, round: number, verdict: Verdict | null): string {
-  if (round <= 1 || !verdict) return `${userPrompt}\n\n${ORCHESTRATION_SUFFIX}`
+function buildImplementPrompt(models: LoopModels, userPrompt: string, round: number, verdict: Verdict | null): string {
+  if (round <= 1 || !verdict) return `${userPrompt}\n\n${orchestrationSuffix(models)}`
   const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
   return [
     userPrompt,
@@ -127,7 +133,7 @@ function buildImplementPrompt(userPrompt: string, round: number, verdict: Verdic
     findings || '- (no itemized findings — raise overall quality)',
     '---',
     'Fix every finding above, then keep raising quality toward the bar.',
-    ORCHESTRATION_SUFFIX,
+    orchestrationSuffix(models),
   ].join('\n\n')
 }
 
@@ -224,15 +230,16 @@ export class LoopRunner {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models: LOOP_MODELS })
+    const models = resolveModels(input, input.criticId)
+    const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
     this.log(
       loop.id,
       null,
       'system',
-      `Implementer: ${LOOP_MODELS.orchestratorModel} (${LOOP_MODELS.orchestratorEffort}) orchestrating ${LOOP_MODELS.subagentModel} (${LOOP_MODELS.subagentEffort}) subagents · Critic: codex ${LOOP_MODELS.criticModel} (${LOOP_MODELS.criticEffort}), fresh eyes every round.`,
+      describeModels(models),
     )
-    this.ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(prompt, 1, null) })
+    this.ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(models, prompt, 1, null) })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
     return { ok: true, loopId: loop.id }
@@ -321,7 +328,7 @@ export class LoopRunner {
       })
       this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
     } else if (last?.role === 'implement') {
-      this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, last.round) })
+      this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, last.round) })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
     } else if (last?.role === 'critique') {
       const nextRound = last.round + 1
@@ -335,11 +342,11 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: 'claude',
-        prompt: buildImplementPrompt(loop.prompt, nextRound, last.verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
-      this.ledger.createRun({ loopId, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(loop.prompt, 1, null) })
+      this.ledger.createRun({ loopId, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null) })
       this.log(loopId, null, 'system', 'Loop resumed by user — starting round 1.')
     }
     this.broadcast(loopId)
@@ -598,6 +605,15 @@ export class LoopRunner {
     }
   }
 
+  /** Session id of the newest earlier implement run in this loop, if claude reported one. */
+  private lastImplementSessionId(loopId: string, exceptRunId: string): string | null {
+    const prior = this.ledger
+      .runsForLoop(loopId)
+      .filter((r) => r.role === 'implement' && r.id !== exceptRunId && r.sessionId)
+      .at(-1)
+    return prior?.sessionId ?? null
+  }
+
   /** True if the workspace has a prior claude session transcript to `--continue` from. */
   private hasClaudeSession(workspaceDir: string): boolean {
     const projectDir = path.join(cliHome('claude'), 'projects', workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'))
@@ -611,13 +627,17 @@ export class LoopRunner {
   // ---------------------------------------------------------------- implement
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
-    const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
-    fs.mkdirSync(agentDir, { recursive: true })
-    fs.writeFileSync(path.join(agentDir, 'implementer.md'), IMPLEMENTER_AGENT_MD)
+    const models = loop.models
+    if (models.subagentModel) {
+      const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
+      fs.mkdirSync(agentDir, { recursive: true })
+      fs.writeFileSync(path.join(agentDir, 'implementer.md'), implementerAgentMd(models))
+    }
 
-    const isResume = run.prompt.startsWith(RESUME_PREFIX) && this.hasClaudeSession(loop.workspaceDir)
+    const priorSessionId = this.lastImplementSessionId(loop.id, run.id)
+    const isResume = run.prompt.startsWith(RESUME_PREFIX) && (priorSessionId != null || this.hasClaudeSession(loop.workspaceDir))
     const prompt = isResume
-      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch implementer subagents only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply. ultracode'
+      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch implementer subagents only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply.'
       : run.prompt.startsWith(RESUME_PREFIX)
         ? run.prompt.slice(RESUME_PREFIX.length)
         : run.prompt
@@ -626,10 +646,10 @@ export class LoopRunner {
       loop.id,
       run.id,
       'system',
-      `● Round ${run.round} — implement (claude ${LOOP_MODELS.orchestratorModel}, effort ${LOOP_MODELS.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
+      `● Round ${run.round} — implement (claude ${models.orchestratorModel}, effort ${models.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
     )
     const args = [
-      ...(isResume ? ['--continue'] : []),
+      ...(isResume ? (priorSessionId ? ['--resume', priorSessionId] : ['--continue']) : []),
       '-p',
       prompt,
       '--output-format',
@@ -638,11 +658,22 @@ export class LoopRunner {
       '--forward-subagent-text',
       '--dangerously-skip-permissions',
       '--model',
-      LOOP_MODELS.orchestratorModel,
+      models.orchestratorModel,
       '--effort',
-      LOOP_MODELS.orchestratorEffort,
+      models.orchestratorEffort,
     ]
-    const spawned = this.spawnDetached(loop, run, 'claude', args, subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }))
+    const spawned = this.spawnDetached(
+      loop,
+      run,
+      'claude',
+      args,
+      subscriptionEnv({
+        CLAUDE_CONFIG_DIR: cliHome('claude'),
+        // Binds the subagent model on both delegation paths: it is what a
+        // workflow agent falls back to when the script names no model.
+        ...(models.subagentModel ? { CLAUDE_CODE_SUBAGENT_MODEL: models.subagentModel } : {}),
+      }),
+    )
     if (!spawned) return
     const gate: LogGate = { suppress: false }
     const parser = this.makeImplementParser(loop, run, gate)
@@ -670,12 +701,12 @@ export class LoopRunner {
       let output = 0
       const perModel = new Map<string, TokenTotals>()
       for (const { usage, model } of msgUsage.values()) {
-        const t = perModel.get(model ?? LOOP_MODELS.orchestratorModel) ?? emptyTokens()
+        const t = perModel.get(model ?? loop.models.orchestratorModel) ?? emptyTokens()
         t.input += usage.input_tokens ?? 0
         t.output += usage.output_tokens ?? 0
         t.cacheRead += usage.cache_read_input_tokens ?? 0
         t.cacheWrite += usage.cache_creation_input_tokens ?? 0
-        perModel.set(model ?? LOOP_MODELS.orchestratorModel, t)
+        perModel.set(model ?? loop.models.orchestratorModel, t)
         input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
         output += usage.output_tokens ?? 0
       }
@@ -688,7 +719,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(agentLabels, msgUsage, null, finishedAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents),
       })
       this.broadcast(loop.id)
     }
@@ -708,8 +739,9 @@ export class LoopRunner {
 
       if (type === 'system' && obj.subtype === 'init') {
         const model = obj.model as string | undefined
-        if (model) this.ledger.patchRun(run.id, { model })
-        plog('system', `session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
+        const sessionId = (obj.session_id as string | undefined) ?? null
+        if (model || sessionId) this.ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
+        plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
       }
       if (type === 'assistant') {
@@ -766,7 +798,7 @@ export class LoopRunner {
     }
 
     const finalize = (exit: ExitInfo): void => {
-      const metrics = this.buildImplementMetrics(agentLabels, msgUsage, result, finishedAgents)
+      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents)
       const res = result as Record<string, unknown> | null
       const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
       const finishedAt = new Date().toISOString()
@@ -813,7 +845,7 @@ export class LoopRunner {
       }
       this.ledger.patchRun(run.id, { status: 'succeeded' })
       if (this.overBudget(loop.id)) return
-      this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
+      this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
       this.broadcast(loop.id)
       void this.executeNext(loop.id)
     }
@@ -822,6 +854,7 @@ export class LoopRunner {
   }
 
   private buildImplementMetrics(
+    models: LoopModels,
     agentLabels: Map<string, { label: string; model: string | null }>,
     msgUsage: Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>,
     result: Record<string, unknown> | null,
@@ -835,7 +868,7 @@ export class LoopRunner {
         agent = {
           id: key,
           label: key === 'orchestrator' ? 'orchestrator' : (reg?.label ?? `subagent ${key.slice(-6)}`),
-          model: key === 'orchestrator' ? LOOP_MODELS.orchestratorModel : (reg?.model ?? LOOP_MODELS.subagentModel),
+          model: key === 'orchestrator' ? models.orchestratorModel : (reg?.model ?? models.subagentModel ?? models.orchestratorModel),
           messages: 0,
           tokens: emptyTokens(),
           firstTs: null,
@@ -918,40 +951,72 @@ export class LoopRunner {
   }
 
   private async executeCritique(loop: LoopRecord, run: RunRecord): Promise<void> {
-    this.log(loop.id, run.id, 'system', `● Round ${run.round} — critique (codex ${LOOP_MODELS.criticModel}, effort ${LOOP_MODELS.criticEffort}, fresh eyes)`)
-    const args = [
-      'exec',
-      '--json',
-      '--skip-git-repo-check',
-      // code_mode fail-closes all command execution when its host binary is
-      // missing (verified live) — the classic shell path works everywhere.
-      '--disable',
-      'code_mode',
-      '-s',
-      'workspace-write',
-      '-c',
-      'sandbox_workspace_write.network_access=true',
-      '-c',
-      'tools.web_search=true',
-      '-c',
-      'model_reasoning_summary=detailed',
-      '-m',
-      LOOP_MODELS.criticModel,
-      '-c',
-      `model_reasoning_effort=${LOOP_MODELS.criticEffort}`,
-      '-o',
-      this.verdictFilePath(run.id),
-      run.prompt,
-    ]
-    const spawned = this.spawnDetached(loop, run, 'codex', args, subscriptionEnv({ CODEX_HOME: cliHome('codex') }))
+    const models = loop.models
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `● Round ${run.round} — critique (${run.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
+    )
+    const spawned =
+      run.harness === 'claude'
+        ? this.spawnDetached(
+            loop,
+            run,
+            'claude',
+            [
+              '-p',
+              run.prompt,
+              '--output-format',
+              'stream-json',
+              '--verbose',
+              '--dangerously-skip-permissions',
+              '--model',
+              models.criticModel,
+              '--effort',
+              models.criticEffort,
+            ],
+            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }),
+          )
+        : this.spawnDetached(
+            loop,
+            run,
+            'codex',
+            [
+              'exec',
+              '--json',
+              '--skip-git-repo-check',
+              // code_mode fail-closes all command execution when its host binary is
+              // missing (verified live) — the classic shell path works everywhere.
+              '--disable',
+              'code_mode',
+              '-s',
+              'workspace-write',
+              '-c',
+              'sandbox_workspace_write.network_access=true',
+              '-c',
+              'tools.web_search=true',
+              '-c',
+              'model_reasoning_summary=detailed',
+              '-m',
+              models.criticModel,
+              '-c',
+              `model_reasoning_effort=${models.criticEffort}`,
+              '-o',
+              this.verdictFilePath(run.id),
+              run.prompt,
+            ],
+            subscriptionEnv({ CODEX_HOME: cliHome('codex') }),
+          )
     if (!spawned) return
-    this.ledger.patchRun(run.id, { model: LOOP_MODELS.criticModel })
+    this.ledger.patchRun(run.id, { model: models.criticModel })
     const gate: LogGate = { suppress: false }
     const parser = this.makeCritiqueParser(loop, run, gate)
     await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own)
   }
 
   private makeCritiqueParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const models = loop.models
     const plog = (kind: string, text: string): void => {
       if (!gate.suppress) this.log(loop.id, run.id, kind, text)
     }
@@ -961,7 +1026,104 @@ export class LoopRunner {
     let failure: string | null = null
     const startedAtMs = this.readMeta(run.id)?.startedAtMs ?? Date.now()
 
-    const onLine = (line: string): void => {
+    /** Push the running critic totals into the ledger so cost shows mid-run. */
+    const flushCritic = (): void => {
+      this.ledger.patchRun(run.id, {
+        inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
+        outputTokens: tokens.output,
+        costUsd: estimateCostUsd(models.criticModel, tokens),
+        metrics: {
+          agents: [
+            {
+              id: 'critic',
+              label: 'critic (fresh eyes)',
+              model: models.criticModel,
+              messages: 1,
+              tokens: { ...tokens },
+              firstTs: new Date(startedAtMs).toISOString(),
+              lastTs: new Date().toISOString(),
+            },
+          ],
+          perModel: {},
+        },
+      })
+      this.broadcast(loop.id)
+    }
+
+    // Claude and Codex stream different JSON shapes; each reader feeds the same
+    // state above, so everything downstream of here is harness-agnostic.
+    const onClaudeLine = (line: string): void => {
+      if (!line.trim()) return
+      let obj: Record<string, unknown>
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        return
+      }
+      const type = obj.type as string
+      if (type === 'system' && obj.subtype === 'init') {
+        plog('system', `claude session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${(obj.model as string | undefined) ?? '?'}`)
+        return
+      }
+      if (type === 'assistant') {
+        const message = obj.message as Record<string, unknown> | undefined
+        if (!message) return
+        const usage = message.usage as Record<string, number> | undefined
+        if (usage) {
+          sawUsage = true
+          tokens.input += usage.input_tokens ?? 0
+          tokens.output += usage.output_tokens ?? 0
+          tokens.cacheRead += usage.cache_read_input_tokens ?? 0
+          tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
+          flushCritic()
+        }
+        const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
+        for (const block of content) {
+          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            lastAgentMessage = block.text
+            plog('claude', `[critic] ${trunc(block.text, 400)}`)
+          } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
+            plog('thought', `[critic] 𝜓 ${trunc(block.thinking, 500)}`)
+          } else if (block.type === 'tool_use') {
+            const name = block.name as string
+            const input = block.input as Record<string, unknown> | undefined
+            if (name === 'WebSearch') plog('search', `[critic] ⌕ ${trunc(String(input?.query ?? ''), 200)}`)
+            else if (name === 'Bash') plog('cmd', `[critic] $ ${trunc(String(input?.command ?? ''), 200)}`)
+            else plog('tool', `[critic] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
+          }
+        }
+        return
+      }
+      if (type === 'user') {
+        const message = obj.message as Record<string, unknown> | undefined
+        const content = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : []
+        for (const block of content) {
+          if (block.type === 'tool_result' && block.is_error) {
+            plog('error', `[critic] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
+          }
+        }
+        return
+      }
+      if (type === 'result') {
+        // The final result text is the critic's verdict; it also carries the
+        // authoritative usage totals, which replace the per-message tally.
+        if (typeof obj.result === 'string' && obj.result.trim()) lastAgentMessage = obj.result
+        const usage = obj.usage as Record<string, number> | undefined
+        if (usage) {
+          sawUsage = true
+          tokens.input = usage.input_tokens ?? tokens.input
+          tokens.output = usage.output_tokens ?? tokens.output
+          tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
+          tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
+        }
+        if (obj.subtype !== 'success' && obj.is_error === true) {
+          failure = typeof obj.result === 'string' ? trunc(obj.result, 400) : `claude critique ${String(obj.subtype ?? 'failed')}`
+          plog('error', failure)
+        }
+      }
+    }
+
+    const onCodexLine = (line: string): void => {
       if (!line.trim()) return
       let obj: Record<string, unknown>
       try {
@@ -997,26 +1159,7 @@ export class LoopRunner {
           tokens.cacheRead += usage.cached_input_tokens ?? 0
           tokens.cacheWrite += usage.cache_write_input_tokens ?? 0
           tokens.output += usage.output_tokens ?? 0
-          this.ledger.patchRun(run.id, {
-            inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
-            outputTokens: tokens.output,
-            costUsd: estimateCostUsd(LOOP_MODELS.criticModel, tokens),
-            metrics: {
-              agents: [
-                {
-                  id: 'critic',
-                  label: 'critic (fresh eyes)',
-                  model: LOOP_MODELS.criticModel,
-                  messages: 1,
-                  tokens: { ...tokens },
-                  firstTs: new Date(startedAtMs).toISOString(),
-                  lastTs: new Date().toISOString(),
-                },
-              ],
-              perModel: {},
-            },
-          })
-          this.broadcast(loop.id)
+          flushCritic()
         }
       } else if (type === 'turn.failed') {
         const error = obj.error as Record<string, unknown> | undefined
@@ -1025,28 +1168,34 @@ export class LoopRunner {
       }
     }
 
+    const onLine = run.harness === 'claude' ? onClaudeLine : onCodexLine
+
     const finalize = async (exit: ExitInfo): Promise<void> => {
       let verdictText = lastAgentMessage
-      try {
-        verdictText = fs.readFileSync(this.verdictFilePath(run.id), 'utf8') || lastAgentMessage
-        fs.unlinkSync(this.verdictFilePath(run.id))
-      } catch {
-        /* fall back to streamed message */
+      if (run.harness === 'codex') {
+        // codex writes its final message to the -o file; claude streams it in
+        // the result event, which onClaudeLine already captured.
+        try {
+          verdictText = fs.readFileSync(this.verdictFilePath(run.id), 'utf8') || lastAgentMessage
+          fs.unlinkSync(this.verdictFilePath(run.id))
+        } catch {
+          /* fall back to streamed message */
+        }
       }
       const verdict = parseVerdict(verdictText)
       const durationMs = Date.now() - startedAtMs
       const criticAgent: AgentMetric = {
         id: 'critic',
         label: 'critic (fresh eyes)',
-        model: LOOP_MODELS.criticModel,
+        model: models.criticModel,
         messages: 1,
         tokens,
         firstTs: new Date(startedAtMs).toISOString(),
         lastTs: new Date().toISOString(),
       }
-      const criticCost = sawUsage ? estimateCostUsd(LOOP_MODELS.criticModel, tokens) : null
+      const criticCost = sawUsage ? estimateCostUsd(models.criticModel, tokens) : null
       this.ledger.patchRun(run.id, {
-        metrics: { agents: [criticAgent], perModel: sawUsage ? { [LOOP_MODELS.criticModel]: { costUsd: criticCost, tokens } } : {} },
+        metrics: { agents: [criticAgent], perModel: sawUsage ? { [models.criticModel]: { costUsd: criticCost, tokens } } : {} },
         inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
         outputTokens: sawUsage ? tokens.output : null,
         costUsd: criticCost,
@@ -1071,11 +1220,11 @@ export class LoopRunner {
       }
       if (failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
         const attempts = this.ledger.runsForLoop(loop.id).filter((r) => r.role === 'critique' && r.round === run.round).length
-        const errText = exit.spawnError ?? failure ?? (verdict ? `codex exited ${exit.code}` : `no parseable verdict (exit ${exit.code})`)
+        const errText = exit.spawnError ?? failure ?? (verdict ? `${run.harness} exited ${exit.code}` : `no parseable verdict (exit ${exit.code})`)
         this.ledger.patchRun(run.id, { status: 'failed', error: errText })
         if (attempts < MAX_CRITIQUE_ATTEMPTS) {
           this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-          this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, run.round) })
+          this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
           return
@@ -1116,7 +1265,7 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: 'claude',
-        prompt: buildImplementPrompt(loop.prompt, nextRound, verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict),
       })
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
       this.broadcast(loop.id)
