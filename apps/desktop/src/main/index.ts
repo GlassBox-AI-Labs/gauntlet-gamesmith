@@ -296,6 +296,7 @@ function registerLoopIpc(): void {
       budgetUsd: input?.budgetUsd == null ? null : Number(input.budgetUsd) || null,
     })
   })
+  ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })
   ipcMain.handle('loop:stop', (_event, value: unknown) => loopRunner?.stop(String(value)))
   ipcMain.handle('loop:active', () => loopRunner?.snapshot() ?? null)
   ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) =>

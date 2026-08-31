@@ -147,6 +147,7 @@ export interface LoopApi {
   playState(loopId: string): Promise<PlayState>
   onPlayState(listener: (state: PlayState & { loopId: string }) => void): () => void
   start(input: StartLoopInput): Promise<StartLoopResult>
+  resume(loopId: string): Promise<StartLoopResult>
   stop(loopId: string): Promise<void>
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>

@@ -364,13 +364,28 @@ export function RunView(): React.JSX.Element {
                   <Square className="fill-current" /> Stop
                 </Button>
               ) : (
-                <Button
-                  variant="outline"
-                  className="border-[#494343] bg-transparent text-[#eeeae7] hover:bg-white/5 hover:text-white"
-                  onClick={() => setComposing(true)}
-                >
-                  <Plus /> New run
-                </Button>
+                <>
+                  {(loop.status === 'stopped' || loop.status === 'exhausted') && (
+                    <Button
+                      variant="outline"
+                      className="border-amber-500/50 bg-transparent text-amber-300 hover:bg-amber-500/10 hover:text-amber-200"
+                      onClick={() =>
+                        void window.loops.resume(loop.id).then((result) => {
+                          if (!result.ok) setError(result.error ?? 'Could not resume.')
+                        })
+                      }
+                    >
+                      <Play className="fill-current" /> Resume loop
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    className="border-[#494343] bg-transparent text-[#eeeae7] hover:bg-white/5 hover:text-white"
+                    onClick={() => setComposing(true)}
+                  >
+                    <Plus /> New run
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -382,6 +397,7 @@ export function RunView(): React.JSX.Element {
           {play.error && (
             <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>
           )}
+          {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
 
           {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (
             <div className="mb-5 flex flex-wrap items-center gap-2">

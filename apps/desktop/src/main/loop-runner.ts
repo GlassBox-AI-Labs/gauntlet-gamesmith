@@ -297,6 +297,55 @@ export class LoopRunner {
     this.ledger.patchLoop(loopId, { status: 'stopped', stopReason: 'Stopped by user at quit.' })
   }
 
+  /** Revive a stopped loop: requeue where it left off and keep going. */
+  resumeLoop(loopId: string): StartLoopResult {
+    const loop = this.ledger.getLoop(loopId)
+    if (!loop) return { ok: false, error: 'Loop not found.' }
+    if (loop.status === 'running') return { ok: false, error: 'Loop is already running.' }
+    if (loop.status === 'passed') return { ok: false, error: 'Loop already passed — start a new run to keep improving.' }
+    if (this.current || this.ledger.runningLoop()) return { ok: false, error: 'Another loop is running. Stop it first.' }
+    this.stopRequested.delete(loopId)
+
+    const runs = this.ledger.runsForLoop(loopId)
+    const last = runs.at(-1)
+    this.ledger.patchLoop(loopId, { status: 'running', stopReason: null })
+    if (last && last.status !== 'succeeded') {
+      const base = last.prompt.startsWith(RESUME_PREFIX) ? last.prompt.slice(RESUME_PREFIX.length) : last.prompt
+      this.ledger.createRun({
+        loopId,
+        round: last.round,
+        role: last.role,
+        harness: last.harness,
+        prompt: last.role === 'implement' ? RESUME_PREFIX + base : base,
+      })
+      this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
+    } else if (last?.role === 'implement') {
+      this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: 'codex', prompt: buildCriticPrompt(loop.prompt, last.round) })
+      this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
+    } else if (last?.role === 'critique') {
+      const nextRound = last.round + 1
+      if (nextRound > loop.maxRounds) {
+        this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached.`)
+        return { ok: false, error: 'Max rounds already reached.' }
+      }
+      this.ledger.patchLoop(loopId, { round: nextRound })
+      this.ledger.createRun({
+        loopId,
+        round: nextRound,
+        role: 'implement',
+        harness: 'claude',
+        prompt: buildImplementPrompt(loop.prompt, nextRound, last.verdict),
+      })
+      this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
+    } else {
+      this.ledger.createRun({ loopId, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(loop.prompt, 1, null) })
+      this.log(loopId, null, 'system', 'Loop resumed by user — starting round 1.')
+    }
+    this.broadcast(loopId)
+    void this.executeNext(loopId)
+    return { ok: true, loopId }
+  }
+
   stop(loopId: string): void {
     this.stopRequested.add(loopId)
     if (this.current?.loopId === loopId) {
