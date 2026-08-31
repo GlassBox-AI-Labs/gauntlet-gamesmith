@@ -460,7 +460,12 @@ function createWindow(): BrowserWindow {
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
-if (!hasSingleInstanceLock) app.quit()
+if (!hasSingleInstanceLock) {
+  // Silent quit here reads as a build failure in `electron-vite dev`: the app
+  // window that appears is the instance already running, not this one.
+  console.error('Gauntlet Loop is already running — quitting this instance. Quit the existing app first.')
+  app.quit()
+}
 
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {

@@ -22,8 +22,16 @@ import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
+import { WorkflowTail, workflowTailDir } from './workflow-tail'
 
-const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
+/**
+ * How long a run may make no progress before we call it stuck. This is idle
+ * time, not total runtime: a fan-out that works for four hours is healthy, and
+ * killing it at a fixed wall-clock limit threw away 2h15m of finished agent
+ * work mid final-verification. A hard ceiling still backstops a wedged process.
+ */
+const IMPLEMENT_IDLE_MS = 40 * 60_000
+const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
 
@@ -209,6 +217,12 @@ interface ExitInfo {
 interface StreamParser {
   onLine(line: string): void
   onStderr(text: string): void
+  /** Called on the drive loop regardless of output, for work that must happen
+   *  while the process is quiet — an orchestrator waiting on a fan-out emits
+   *  nothing for minutes, which is exactly when its agents need reading. */
+  tick?(): void
+  /** Epoch ms of the last observed progress, for idle detection. */
+  progressAt?(): number
   finalize(exit: ExitInfo): Promise<void> | void
 }
 
@@ -292,8 +306,9 @@ export class LoopRunner {
           this.broadcast(loop.id)
           const gate: LogGate = { suppress: false }
           const parser = active.role === 'implement' ? this.makeImplementParser(loop, active, gate) : this.makeCritiqueParser(loop, active, gate)
-          const timeout = active.role === 'implement' ? IMPLEMENT_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
-          void this.driveRun(loop, active, meta, timeout, parser, gate, null)
+          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : CRITIQUE_TIMEOUT_MS
+          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : CRITIQUE_TIMEOUT_MS
+          void this.driveRun(loop, active, meta, idle, cap, parser, gate, null)
           continue
         }
         this.ledger.requeueInterruptedRun(active)
@@ -524,7 +539,8 @@ export class LoopRunner {
     loop: LoopRecord,
     run: RunRecord,
     meta: ProcMeta,
-    timeoutMs: number,
+    idleMs: number,
+    hardCapMs: number,
     parser: StreamParser,
     gate: LogGate,
     own: ExitHolder | null,
@@ -593,19 +609,26 @@ export class LoopRunner {
       }
     }
 
-    const remaining = timeoutMs - (Date.now() - meta.startedAtMs)
-    const timer =
-      remaining <= 0
-        ? ((att.timedOut = true), this.interruptPid(meta.pid), null)
-        : setTimeout(() => {
-            att.timedOut = true
-            this.log(loop.id, run.id, 'error', `Run exceeded ${Math.round(timeoutMs / 60_000)} min — interrupting.`)
-            this.interruptPid(meta.pid)
-          }, remaining)
-
     await new Promise<void>((resolve) => {
       const interval = setInterval(() => {
         pump()
+        parser.tick?.()
+        const now = Date.now()
+        const idleFor = now - (parser.progressAt?.() ?? now)
+        const stalled = idleFor > idleMs
+        const overCap = now - meta.startedAtMs > hardCapMs
+        if (!att.timedOut && (stalled || overCap)) {
+          att.timedOut = true
+          this.log(
+            loop.id,
+            run.id,
+            'error',
+            stalled
+              ? `No progress for ${Math.round(idleFor / 60_000)} min — interrupting.`
+              : `Run exceeded the ${Math.round(hardCapMs / 3_600_000)}h ceiling — interrupting.`,
+          )
+          this.interruptPid(meta.pid)
+        }
         const dead = own ? own.exited : !this.pidAlive(meta.pid)
         if (dead) {
           clearInterval(interval)
@@ -613,7 +636,6 @@ export class LoopRunner {
         }
       }, 400)
     })
-    if (timer) clearTimeout(timer)
     await sleep(300)
     pump()
     if (outRemainder.trim()) parser.onLine(outRemainder)
@@ -704,7 +726,7 @@ export class LoopRunner {
     if (!spawned) return
     const gate: LogGate = { suppress: false }
     const parser = this.makeImplementParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, IMPLEMENT_TIMEOUT_MS, parser, gate, spawned.own)
+    await this.driveRun(loop, run, spawned.meta, IMPLEMENT_IDLE_MS, IMPLEMENT_HARD_CAP_MS, parser, gate, spawned.own)
   }
 
   private makeImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
@@ -725,12 +747,51 @@ export class LoopRunner {
     let workflowTokens = 0
     const loggedWorkflowRuns = new Set<string>()
 
+    let tail: WorkflowTail | null = null
+
+    // Last state we logged per agent, so a poll only reports what changed.
+    const loggedAgents = new Map<string, { done: boolean; lastToolAt: number; tools: number }>()
+
+    const logWorkflowActivity = (agents: AgentMetric[]): void => {
+      for (const agent of agents) {
+        const seen = loggedAgents.get(agent.id)
+        if (!seen) {
+          loggedAgents.set(agent.id, { done: false, lastToolAt: 0, tools: agent.toolCalls ?? 0 })
+          plog('spawn', `⇉ [${agent.phase ?? 'workflow'}] "${agent.label}" started (${agent.model ?? '?'})`)
+          continue
+        }
+        if (agent.state === 'done' && !seen.done) {
+          seen.done = true
+          plog(
+            'spawn',
+            `⇊ "${agent.label}" finished — ${agent.costUsd != null ? `$${agent.costUsd.toFixed(2)} · ` : ''}${agent.toolCalls ?? 0} tools · ${formatTokens(agent.totalTokens ?? 0)} tokens`,
+          )
+          if (agent.note) plog('agent', `  [${agent.label}] ${trunc(agent.note, 300)}`)
+          continue
+        }
+        // While an agent works, report what it is doing at most once a minute —
+        // thirteen agents each logging every tool call would bury the feed.
+        if (agent.state !== 'done' && agent.lastTool && (agent.toolCalls ?? 0) > seen.tools && Date.now() - seen.lastToolAt > 60_000) {
+          seen.lastToolAt = Date.now()
+          seen.tools = agent.toolCalls ?? 0
+          plog('tool', `  [${agent.label}] → ${agent.lastTool} (${agent.toolCalls} tools · ${formatTokens(agent.totalTokens ?? 0)} tokens)`)
+        }
+      }
+    }
+
     const pollWorkflows = (): void => {
       if (!sessionId) return
+      // Live agent state comes from the transcripts the runtime appends as it
+      // works; the wf_*.json summary only lands when a workflow ends, and is
+      // read for the run status and phase names it carries.
+      tail ??= new WorkflowTail(workflowTailDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      const live = tail.poll()
       const progress = readWorkflowProgress(workflowDir(cliHome('claude'), loop.workspaceDir, sessionId))
-      workflowAgents = progress.agents
+      const phaseById = new Map(progress.agents.map((a) => [a.id.split(':').at(-1), a.phase]))
+      workflowAgents = live.map((a) => ({ ...a, phase: a.phase ?? phaseById.get(a.id.split(':').at(-1)) }))
       workflowRuns = progress.runs
-      workflowTokens = progress.totalTokens
+      workflowTokens = live.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0) || progress.totalTokens
+      logWorkflowActivity(workflowAgents)
       for (const wf of progress.runs) {
         const key = `${wf.runId}:${wf.status}`
         if (loggedWorkflowRuns.has(key)) continue
@@ -741,8 +802,8 @@ export class LoopRunner {
 
     // Live token + cost visibility: persist running totals every ~15s so the
     // ledger, dashboard, and report show tokens and estimated cost mid-run.
-    const flushTokens = (): void => {
-      if (Date.now() - lastTokenFlush < 15_000) return
+    const flushTokens = (force = false): void => {
+      if (!force && Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
       pollWorkflows()
       let input = 0
@@ -763,6 +824,16 @@ export class LoopRunner {
         const cost = estimateCostUsd(model, t)
         if (cost != null) liveCostEstimate = (liveCostEstimate ?? 0) + cost
       }
+      // The message stream carries the orchestrator only. While a fan-out is
+      // running that is a tiny fraction of the spend — $1.50 against $87 of
+      // agent work on one round — so add what the agents' own transcripts say.
+      // At finalize this is replaced by the CLI's modelUsage, which already
+      // counts them, so the two are never added together.
+      for (const agent of workflowAgents) {
+        if (agent.costUsd != null) liveCostEstimate = (liveCostEstimate ?? 0) + agent.costUsd
+        input += agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite
+        output += agent.tokens.output
+      }
       this.ledger.patchRun(run.id, {
         inputTokens: input,
         outputTokens: output,
@@ -774,6 +845,7 @@ export class LoopRunner {
 
     const onLine = (line: string): void => {
       if (!line.trim()) return
+      lastProgressAt = Date.now()
       let obj: Record<string, unknown>
       try {
         obj = JSON.parse(line) as Record<string, unknown>
@@ -871,7 +943,10 @@ export class LoopRunner {
           : undefined,
         outputTokens: usage?.output_tokens ?? undefined,
         numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()),
+        // res.duration_ms restarts whenever the CLI re-inits mid-run: a 150-minute
+        // run reported 3m16s, the time since its last init event. Our own start
+        // time is the only one that spans the whole run.
+        durationMs: Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.parse(run.startedAt ?? run.createdAt)),
         sessionId: (res?.session_id as string | undefined) ?? null,
         summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
         finishedAt,
@@ -926,7 +1001,25 @@ export class LoopRunner {
       void this.executeNext(loop.id)
     }
 
-    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), finalize }
+    let lastProgressAt = Date.now()
+    let lastWorkflowFootprint = ''
+    let lastTick = 0
+    const tick = (): void => {
+      if (Date.now() - lastTick < 10_000) return
+      lastTick = Date.now()
+      const before = workflowAgents.length
+      pollWorkflows()
+      // Any agent gaining tokens or tool calls counts as the run progressing.
+      const footprint = workflowAgents.map((a) => `${a.id}:${a.totalTokens}:${a.toolCalls}:${a.state}`).join('|')
+      if (footprint !== lastWorkflowFootprint) {
+        lastWorkflowFootprint = footprint
+        lastProgressAt = Date.now()
+      }
+      if (workflowAgents.length === 0 && before === 0) return
+      flushTokens(true)
+    }
+
+    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), tick, progressAt: () => lastProgressAt, finalize }
   }
 
   private buildImplementMetrics(
@@ -1091,7 +1184,7 @@ export class LoopRunner {
     this.ledger.patchRun(run.id, { model: models.criticModel })
     const gate: LogGate = { suppress: false }
     const parser = this.makeCritiqueParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own)
+    await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own)
   }
 
   private makeCritiqueParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
