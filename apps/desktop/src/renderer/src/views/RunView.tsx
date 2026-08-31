@@ -154,6 +154,7 @@ function RunSidebar({
             const limit = visibleRounds[loopId] ?? ROUNDS_PAGE_SIZE
             const open = expandedRuns.has(loopId)
             const selected = selectedLoopId === loopId
+            const label = projectName(item.loop.workspaceDir)
             return (
               <div key={loopId}>
                 <div
@@ -165,17 +166,17 @@ function RunSidebar({
                     type="button"
                     onClick={() => onToggleRun(loopId)}
                     className="grid size-8 shrink-0 place-items-center rounded-md text-[#716b68] hover:text-[#c9c3c0]"
-                    aria-label={`${open ? 'Collapse' : 'Expand'} ${item.loop.title}`}
+                    aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
                   >
                     {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                   </button>
                   <button
                     type="button"
                     onClick={() => onSelectRun(item)}
-                    title={item.loop.title}
+                    title={item.loop.workspaceDir}
                     className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]"
                   >
-                    {item.loop.title}
+                    {label}
                   </button>
                   {item.loop.status === 'running' && <span className="mr-2 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" />}
                 </div>
