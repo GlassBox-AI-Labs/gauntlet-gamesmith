@@ -48,6 +48,12 @@ export interface AgentMetric {
   toolCalls?: number
   durationMs?: number
   note?: string
+  /** Priced from the real token split in the agent's own transcript. */
+  costUsd?: number | null
+  /** Which agent definition the workflow script asked for, e.g. 'implementer'. */
+  agentType?: string
+  /** The task this agent was actually given, truncated for display. */
+  prompt?: string
 }
 
 export interface RunMetrics {

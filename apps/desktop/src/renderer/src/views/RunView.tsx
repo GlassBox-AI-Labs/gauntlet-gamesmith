@@ -318,19 +318,36 @@ function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Elemen
     else phases.push({ phase, agents: [agent] })
   }
   const totalTokens = workflow.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0)
+  const totalCost = workflow.reduce((sum, a) => sum + (a.costUsd ?? 0), 0)
+  const running = workflow.filter((a) => a.state !== 'done').length
   return (
     <>
       <div className="mt-1 text-[#c0aee6]">
-        ⇉ workflow fan-out · {workflow.length} agents · {fmtTokens(totalTokens)} tokens
+        ⇉ workflow fan-out · {workflow.length} agents{running > 0 ? ` (${running} running)` : ''} · {fmtTokens(totalTokens)} tokens · $
+        {totalCost.toFixed(2)}
       </div>
       {phases.map((group, index) => (
         <div key={`${group.phase}-${index}`} className="pl-5">
           <div className="text-[#8f8a87]">{group.phase}</div>
           {group.agents.map((agent) => (
             <div key={agent.id} className="pl-4 text-[#a89f9a]">
-              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓' : '⋯'}</span> {agent.label}
-              <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {fmtTokens(agent.totalTokens ?? 0)} tokens · {agent.toolCalls ?? 0}{' '}
-              tools · {fmtDuration(agent.durationMs)}
+              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓' : '⋯'}</span>{' '}
+              {agent.label}
+              <span className="text-[#68615f]">
+                {' '}
+                ({agent.model ?? '?'}
+                {agent.agentType ? `, ${agent.agentType}` : ''})
+              </span>{' '}
+              · {agent.costUsd != null ? `$${agent.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(agent.tokens.input + agent.tokens.cacheRead)} · out{' '}
+              {fmtTokens(agent.tokens.output)} · {agent.toolCalls ?? 0} tools · {fmtDuration(agent.durationMs)}
+              {agent.prompt && (
+                <details className="pl-4">
+                  <summary className="cursor-pointer text-[#68615f] hover:text-[#96908d]">task given to this agent</summary>
+                  <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#332e2e] bg-[#141010] p-2 text-[10px] leading-relaxed text-[#8f8a87]">
+                    {agent.prompt}
+                  </pre>
+                </details>
+              )}
               {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
             </div>
           ))}

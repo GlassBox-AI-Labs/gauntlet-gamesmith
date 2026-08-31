@@ -21,6 +21,7 @@ import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
+import { WorkflowTail, workflowTailDir } from './workflow-tail'
 
 const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
@@ -724,12 +725,20 @@ export class LoopRunner {
     let workflowTokens = 0
     const loggedWorkflowRuns = new Set<string>()
 
+    let tail: WorkflowTail | null = null
+
     const pollWorkflows = (): void => {
       if (!sessionId) return
+      // Live agent state comes from the transcripts the runtime appends as it
+      // works; the wf_*.json summary only lands when a workflow ends, and is
+      // read for the run status and phase names it carries.
+      tail ??= new WorkflowTail(workflowTailDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      const live = tail.poll()
       const progress = readWorkflowProgress(workflowDir(cliHome('claude'), loop.workspaceDir, sessionId))
-      workflowAgents = progress.agents
+      const phaseById = new Map(progress.agents.map((a) => [a.id.split(':').at(-1), a.phase]))
+      workflowAgents = live.map((a) => ({ ...a, phase: a.phase ?? phaseById.get(a.id.split(':').at(-1)) }))
       workflowRuns = progress.runs
-      workflowTokens = progress.totalTokens
+      workflowTokens = live.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0) || progress.totalTokens
       for (const wf of progress.runs) {
         const key = `${wf.runId}:${wf.status}`
         if (loggedWorkflowRuns.has(key)) continue
