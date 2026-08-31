@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Eye, FileText, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
-import { CritiquePanel } from '@/views/CritiquePanel'
+import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import type { CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 
 const LOG_LIMIT = 1500
 
@@ -59,8 +59,20 @@ function fmtTs(iso: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toTimeString().slice(0, 8)
 }
 
-function RunRow({ run, expanded, onToggle }: { run: RunRecord; expanded: boolean; onToggle: () => void }): React.JSX.Element {
-  const hasDetail = Boolean(run.metrics && run.metrics.agents.length > 0)
+function RunRow({
+  run,
+  loopId,
+  critique,
+  expanded,
+  onToggle,
+}: {
+  run: RunRecord
+  loopId: string
+  critique?: CritiqueRound
+  expanded: boolean
+  onToggle: () => void
+}): React.JSX.Element {
+  const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
   const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'critique' ? '—' : ''
   return (
     <>
@@ -95,11 +107,16 @@ function RunRow({ run, expanded, onToggle }: { run: RunRecord; expanded: boolean
         </TableCell>
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{fmtDuration(run.durationMs)}</TableCell>
       </TableRow>
-      {expanded && run.metrics && (
+      {expanded && (critique || run.metrics) && (
         <TableRow className="border-[#3b3636] hover:bg-transparent">
           <TableCell colSpan={9} className="bg-[#151111] px-4 py-3">
+            {critique && (
+              <div className="mb-3">
+                <CritiqueRoundView loopId={loopId} round={critique} />
+              </div>
+            )}
             <div className="grid gap-1.5 font-mono text-[11px]">
-              {run.metrics.agents.map((agent) => (
+              {(run.metrics?.agents ?? []).map((agent) => (
                 <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
                   {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
                   {agent.label}
@@ -107,7 +124,7 @@ function RunRow({ run, expanded, onToggle }: { run: RunRecord; expanded: boolean
                   {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
                 </div>
               ))}
-              {Object.entries(run.metrics.perModel).map(([model, mu]) => (
+              {Object.entries(run.metrics?.perModel ?? {}).map(([model, mu]) => (
                 <div key={model} className="text-[#9fb2c8]">
                   {model}: {mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(mu.tokens.input)} · out {fmtTokens(mu.tokens.output)}
                 </div>
@@ -182,7 +199,15 @@ export function RunView(): React.JSX.Element {
     void window.loops.report(snapshot.loop.id).then(setReportMd)
   }, [reportOpen, snapshot])
 
+  const [critiqueRounds, setCritiqueRounds] = useState<CritiqueRound[]>([])
+  const finishedCritiques = snapshot?.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length ?? 0
+
   const activeLoopId = snapshot?.loop.id ?? null
+
+  useEffect(() => {
+    if (!activeLoopId) return
+    void window.loops.critique(activeLoopId).then(setCritiqueRounds)
+  }, [activeLoopId, finishedCritiques])
   useEffect(() => {
     if (!activeLoopId) return
     void window.loops.playState(activeLoopId).then(setPlay)
@@ -427,7 +452,7 @@ export function RunView(): React.JSX.Element {
             </div>
           )}
 
-          {critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={snapshot!.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length} />}
+          {critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={finishedCritiques} />}
 
           {reportOpen && (
             <pre className="mb-5 max-h-[360px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#332e2e] bg-[#151111] p-4 font-mono text-[11px] leading-[1.65] text-[#c9c3c0]">
@@ -455,6 +480,8 @@ export function RunView(): React.JSX.Element {
                   <RunRow
                     key={run.id}
                     run={run}
+                    loopId={loop.id}
+                    critique={run.role === 'critique' ? critiqueRounds.find((c) => c.runId === run.id) : undefined}
                     expanded={expanded.has(run.id)}
                     onToggle={() =>
                       setExpanded((current) => {
