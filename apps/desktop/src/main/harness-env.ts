@@ -10,9 +10,9 @@ export function cliHome(kind: HarnessKind): string {
   return home
 }
 
-/** Directory for detached run transcripts and process metadata. */
-export function runsDir(): string {
-  const dir = path.join(app.getPath('userData'), 'runs')
+/** Run transcripts live with the project so a folder transfer is complete. */
+export function runsDir(workspaceDir: string): string {
+  const dir = path.join(workspaceDir, '.gauntlet-loop', 'runs')
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }

@@ -256,7 +256,7 @@ export class LoopRunner {
       const runs = this.ledger.runsForLoop(loop.id)
       const active = runs.find((r) => r.status === 'running')
       if (active) {
-        const meta = this.readMeta(active.id)
+        const meta = this.readMeta(loop.workspaceDir, active.id)
         if (meta) {
           const alive = this.pidAlive(meta.pid)
           this.log(
@@ -386,21 +386,21 @@ export class LoopRunner {
     setTimeout(() => this.pidAlive(pid) && tryKill('SIGKILL'), 15_000).unref()
   }
 
-  private metaPath(runId: string): string {
-    return path.join(runsDir(), `${runId}.json`)
+  private metaPath(workspaceDir: string, runId: string): string {
+    return path.join(runsDir(workspaceDir), `${runId}.json`)
   }
 
-  private readMeta(runId: string): ProcMeta | null {
+  private readMeta(workspaceDir: string, runId: string): ProcMeta | null {
     try {
-      return JSON.parse(fs.readFileSync(this.metaPath(runId), 'utf8')) as ProcMeta
+      return JSON.parse(fs.readFileSync(this.metaPath(workspaceDir, runId), 'utf8')) as ProcMeta
     } catch {
       return null
     }
   }
 
-  private writeMeta(runId: string, meta: ProcMeta): void {
+  private writeMeta(workspaceDir: string, runId: string, meta: ProcMeta): void {
     try {
-      fs.writeFileSync(this.metaPath(runId), JSON.stringify(meta))
+      fs.writeFileSync(this.metaPath(workspaceDir, runId), JSON.stringify(meta))
     } catch {
       /* non-fatal */
     }
@@ -460,8 +460,8 @@ export class LoopRunner {
     args: string[],
     env: Record<string, string>,
   ): { meta: ProcMeta; own: ExitHolder } | null {
-    const outPath = path.join(runsDir(), `${run.id}.out.ndjson`)
-    const errPath = path.join(runsDir(), `${run.id}.err.log`)
+    const outPath = path.join(runsDir(loop.workspaceDir), `${run.id}.out.ndjson`)
+    const errPath = path.join(runsDir(loop.workspaceDir), `${run.id}.err.log`)
     const own: ExitHolder = { exited: false, code: null, spawnError: null }
     let outFd: number
     let errFd: number
@@ -487,7 +487,7 @@ export class LoopRunner {
     })
     child.unref()
     const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
-    this.writeMeta(run.id, meta)
+    this.writeMeta(loop.workspaceDir, run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
     this.broadcast(loop.id)
     return { meta, own }
@@ -567,7 +567,7 @@ export class LoopRunner {
       }
       if (Date.now() - lastMetaWrite > 1_000) {
         lastMetaWrite = Date.now()
-        this.writeMeta(run.id, meta)
+        this.writeMeta(loop.workspaceDir, run.id, meta)
       }
     }
 
@@ -599,7 +599,7 @@ export class LoopRunner {
     this.current = null
     await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
     try {
-      fs.unlinkSync(this.metaPath(run.id))
+      fs.unlinkSync(this.metaPath(loop.workspaceDir, run.id))
     } catch {
       /* already gone */
     }
@@ -813,7 +813,7 @@ export class LoopRunner {
           : undefined,
         outputTokens: usage?.output_tokens ?? undefined,
         numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(run.id)?.startedAtMs ?? Date.now()),
+        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()),
         sessionId: (res?.session_id as string | undefined) ?? null,
         summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
         finishedAt,
@@ -946,8 +946,8 @@ export class LoopRunner {
 
   // ---------------------------------------------------------------- critique
 
-  private verdictFilePath(runId: string): string {
-    return path.join(runsDir(), `${runId}.verdict.txt`)
+  private verdictFilePath(workspaceDir: string, runId: string): string {
+    return path.join(runsDir(workspaceDir), `${runId}.verdict.txt`)
   }
 
   private async executeCritique(loop: LoopRecord, run: RunRecord): Promise<void> {
@@ -1003,7 +1003,7 @@ export class LoopRunner {
               '-c',
               `model_reasoning_effort=${models.criticEffort}`,
               '-o',
-              this.verdictFilePath(run.id),
+              this.verdictFilePath(loop.workspaceDir, run.id),
               run.prompt,
             ],
             subscriptionEnv({ CODEX_HOME: cliHome('codex') }),
@@ -1024,7 +1024,7 @@ export class LoopRunner {
     const tokens = emptyTokens()
     let sawUsage = false
     let failure: string | null = null
-    const startedAtMs = this.readMeta(run.id)?.startedAtMs ?? Date.now()
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
 
     /** Push the running critic totals into the ledger so cost shows mid-run. */
     const flushCritic = (): void => {
@@ -1176,8 +1176,8 @@ export class LoopRunner {
         // codex writes its final message to the -o file; claude streams it in
         // the result event, which onClaudeLine already captured.
         try {
-          verdictText = fs.readFileSync(this.verdictFilePath(run.id), 'utf8') || lastAgentMessage
-          fs.unlinkSync(this.verdictFilePath(run.id))
+          verdictText = fs.readFileSync(this.verdictFilePath(loop.workspaceDir, run.id), 'utf8') || lastAgentMessage
+          fs.unlinkSync(this.verdictFilePath(loop.workspaceDir, run.id))
         } catch {
           /* fall back to streamed message */
         }

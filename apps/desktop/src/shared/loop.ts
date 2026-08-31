@@ -81,6 +81,7 @@ export interface RunRecord {
 
 export interface LoopRecord {
   id: string
+  title: string
   prompt: string
   workspaceDir: string
   maxRounds: number
@@ -126,6 +127,15 @@ export interface StartLoopResult {
   error?: string
 }
 
+export interface RunTransferResult {
+  ok: boolean
+  canceled?: boolean
+  filePath?: string
+  snapshot?: LoopSnapshot
+  snapshots?: LoopSnapshot[]
+  error?: string
+}
+
 export interface PlayState {
   running: boolean
   url: string | null
@@ -153,6 +163,9 @@ export interface CritiqueRound {
 }
 
 export interface LoopApi {
+  list(): Promise<LoopSnapshot[]>
+  get(loopId: string): Promise<LoopSnapshot | null>
+  rename(loopId: string, title: string): Promise<LoopRecord | null>
   critique(loopId: string): Promise<CritiqueRound[]>
   mediaBase(): Promise<string | null>
   playStart(loopId: string): Promise<PlayState>
@@ -165,6 +178,8 @@ export interface LoopApi {
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
   report(loopId: string): Promise<string>
+  exportRun(loopId: string): Promise<RunTransferResult>
+  importRun(): Promise<RunTransferResult>
   pickWorkspace(): Promise<string | null>
   defaultWorkspace(): Promise<string>
   onUpdate(listener: (snapshot: LoopSnapshot) => void): () => void
