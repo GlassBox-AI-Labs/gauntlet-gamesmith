@@ -51,6 +51,26 @@ function orchestrationSuffix(models: LoopModels): string {
   return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} Verify the game actually builds and runs before you finish.`
 }
 
+/**
+ * Which cost figure to trust for an implement run.
+ *
+ * `total_cost_usd` covers the main thread only. On a run that fanned out
+ * through a workflow it reported $5.11 while the CLI's own per-model
+ * accounting reported $14.39 for the same run — the fan-out is missing from
+ * it. `modelUsage` counts every agent and is what the run's breakdown itemises,
+ * so the headline total comes from there whenever the CLI provides it, and the
+ * total always equals the sum of the parts shown beneath it.
+ */
+export function implementCostUsd(
+  perModel: RunMetrics['perModel'],
+  totalCostUsd: number | null,
+  liveEstimate: number | null,
+): number | null {
+  const costs = Object.values(perModel).map((m) => m.costUsd)
+  if (costs.some((c) => c != null)) return costs.reduce((sum: number, c) => sum + (c ?? 0), 0)
+  return totalCostUsd ?? liveEstimate
+}
+
 function trunc(value: string, max: number): string {
   const flat = value.replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
@@ -673,6 +693,11 @@ export class LoopRunner {
         // Binds the subagent model on both delegation paths: it is what a
         // workflow agent falls back to when the script names no model.
         ...(models.subagentModel ? { CLAUDE_CODE_SUBAGENT_MODEL: models.subagentModel } : {}),
+        // Workflow agents are background tasks, and `claude -p` terminates
+        // those after 600s by default — which kills a fan-out mid-write and
+        // leaves stub files behind. Wait instead; IMPLEMENT_TIMEOUT_MS is the
+        // real bound.
+        CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
       }),
     )
     if (!spawned) return
@@ -825,14 +850,17 @@ export class LoopRunner {
       if (workflowRuns.length) {
         plog(
           'metric',
-          `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens (included in the run cost above)`,
+          `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens`,
         )
       }
       const res = result as Record<string, unknown> | null
       const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
       const finishedAt = new Date().toISOString()
-      // Prefer the CLI's own figure (costBasis 'cli'); fall back to the live table estimate.
-      const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : liveCostEstimate
+      const costUsd = implementCostUsd(
+        metrics.perModel,
+        typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null,
+        liveCostEstimate,
+      )
 
       this.ledger.patchRun(run.id, {
         metrics,
@@ -1008,7 +1036,7 @@ export class LoopRunner {
               '--effort',
               models.criticEffort,
             ],
-            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }),
+            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude'), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }),
           )
         : this.spawnDetached(
             loop,

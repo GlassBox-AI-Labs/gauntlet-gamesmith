@@ -216,7 +216,7 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
   }
 
   lines.push(
-    `_Costs are equivalent API cost estimates (claude: CLI-reported at run end, table mid-run; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
+    `_Costs are equivalent API cost estimates (claude: the CLI's per-model breakdown at run end, which counts workflow agents that its total_cost_usd omits, and a price-table estimate mid-run that undercounts a fan-out in flight; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
   )
   return lines.join('\n')
 }
