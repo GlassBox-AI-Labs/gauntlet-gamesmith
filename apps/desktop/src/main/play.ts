@@ -3,16 +3,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { shell } from 'electron'
 import type { PlayState } from '../shared/loop'
+import { cleanupRoundCheckout } from './round-revision'
 
 interface PlaySession {
   child: ChildProcess
+  workspaceDir: string
+  cleanupDir: string | null
   state: PlayState
 }
 
 const sessions = new Map<string, PlaySession>()
 
 export function playState(loopId: string): PlayState {
-  return sessions.get(loopId)?.state ?? { running: false, url: null, error: null }
+  return sessions.get(loopId)?.state ?? { running: false, url: null, error: null, round: null }
 }
 
 export function stopPlay(loopId: string): void {
@@ -20,13 +23,17 @@ export function stopPlay(loopId: string): void {
   if (!session) return
   sessions.delete(loopId)
   const pid = session.child.pid
-  if (!pid) return
+  if (!pid) {
+    if (session.cleanupDir) cleanupRoundCheckout(session.cleanupDir)
+    return
+  }
   // Negative pid = whole process group (npm spawns the actual dev server).
   try {
     process.kill(-pid, 'SIGTERM')
   } catch {
     /* already gone */
   }
+  if (session.cleanupDir) cleanupRoundCheckout(session.cleanupDir)
   setTimeout(() => {
     try {
       process.kill(-pid, 'SIGKILL')
@@ -53,14 +60,24 @@ function detectLaunch(workspaceDir: string): { command: string; args: string[] }
   return { error: 'Nothing launchable yet — no dev/start script and no index.html in the workspace.' }
 }
 
-export function startPlay(loopId: string, workspaceDir: string, notify: (state: PlayState & { loopId: string }) => void): PlayState {
+export function startPlay(
+  loopId: string,
+  workspaceDir: string,
+  round: number | null,
+  cleanupDir: string | null,
+  notify: (state: PlayState & { loopId: string }) => void,
+): PlayState {
   const existing = sessions.get(loopId)
-  if (existing?.state.running) {
+  if (existing?.state.running && existing.workspaceDir === workspaceDir) {
     if (existing.state.url) void shell.openExternal(existing.state.url)
     return existing.state
   }
+  if (existing) stopPlay(loopId)
   const launch = detectLaunch(workspaceDir)
-  if ('error' in launch) return { running: false, url: null, error: launch.error }
+  if ('error' in launch) {
+    if (cleanupDir) cleanupRoundCheckout(cleanupDir)
+    return { running: false, url: null, error: launch.error, round }
+  }
 
   const child = spawn(launch.command, launch.args, {
     cwd: workspaceDir,
@@ -68,7 +85,7 @@ export function startPlay(loopId: string, workspaceDir: string, notify: (state: 
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const session: PlaySession = { child, state: { running: true, url: null, error: null } }
+  const session: PlaySession = { child, workspaceDir, cleanupDir, state: { running: true, url: null, error: null, round } }
   sessions.set(loopId, session)
   const push = (): void => notify({ loopId, ...session.state })
 
@@ -78,8 +95,10 @@ export function startPlay(loopId: string, workspaceDir: string, notify: (state: 
     buffer = (buffer + chunk.toString()).slice(-8_000)
     const match = buffer.replace(/\u001b\[[0-9;]*m/g, '').match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+\/?/)
     if (match) {
-      session.state.url = match[0]
-      void shell.openExternal(match[0])
+      const browserUrl = new URL(match[0])
+      if (round != null) browserUrl.searchParams.set('gauntlet-round', String(round))
+      session.state.url = browserUrl.toString()
+      void shell.openExternal(session.state.url)
       push()
     }
   }
@@ -88,12 +107,14 @@ export function startPlay(loopId: string, workspaceDir: string, notify: (state: 
   child.on('exit', (code) => {
     if (sessions.get(loopId)?.child !== child) return
     sessions.delete(loopId)
-    session.state = { running: false, url: null, error: code ? `Game process exited (code ${code}).` : null }
+    if (session.cleanupDir) cleanupRoundCheckout(session.cleanupDir)
+    session.state = { running: false, url: null, error: code ? `Game process exited (code ${code}).` : null, round }
     push()
   })
   child.on('error', (error) => {
     sessions.delete(loopId)
-    session.state = { running: false, url: null, error: error.message }
+    if (session.cleanupDir) cleanupRoundCheckout(session.cleanupDir)
+    session.state = { running: false, url: null, error: error.message, round }
     push()
   })
   push()

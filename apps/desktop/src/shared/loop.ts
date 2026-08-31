@@ -86,6 +86,8 @@ export interface RunRecord {
   numTurns: number | null
   durationMs: number | null
   sessionId: string | null
+  /** Immutable Git commit for the playable source produced by an implement attempt. */
+  revision: string | null
   error: string | null
   createdAt: string
   startedAt: string | null
@@ -153,6 +155,8 @@ export interface PlayState {
   running: boolean
   url: string | null
   error: string | null
+  /** null plays the live workspace; a number plays that saved round build. */
+  round: number | null
 }
 
 export interface PairComparison {
@@ -181,7 +185,7 @@ export interface LoopApi {
   rename(loopId: string, title: string): Promise<LoopRecord | null>
   critique(loopId: string): Promise<CritiqueRound[]>
   mediaBase(): Promise<string | null>
-  playStart(loopId: string): Promise<PlayState>
+  playStart(loopId: string, round?: number | null): Promise<PlayState>
   playStop(loopId: string): Promise<void>
   playState(loopId: string): Promise<PlayState>
   onPlayState(listener: (state: PlayState & { loopId: string }) => void): () => void

@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS runs (
   num_turns INTEGER,
   duration_ms INTEGER,
   session_id TEXT,
+  revision TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
@@ -107,6 +108,7 @@ interface RunRow {
   num_turns: number | null
   duration_ms: number | null
   session_id: string | null
+  revision: string | null
   error: string | null
   created_at: string
   started_at: string | null
@@ -127,6 +129,8 @@ function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void
   db.exec(SCHEMA)
   const loopColumns = db.prepare('PRAGMA table_info(loops)').all() as unknown as { name: string }[]
   if (!loopColumns.some((column) => column.name === 'title')) db.exec('ALTER TABLE loops ADD COLUMN title TEXT;')
+  const runColumns = db.prepare('PRAGMA table_info(runs)').all() as unknown as { name: string }[]
+  if (!runColumns.some((column) => column.name === 'revision')) db.exec('ALTER TABLE runs ADD COLUMN revision TEXT;')
 }
 
 function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
@@ -155,8 +159,8 @@ function putRunRow(db: DatabaseSync, row: RunRow): void {
   db.prepare(
     `INSERT OR REPLACE INTO runs
       (id, loop_id, round, role, harness, status, prompt, model, summary, verdict_json, metrics_json, cost_usd,
-       input_tokens, output_tokens, num_turns, duration_ms, session_id, error, created_at, started_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       input_tokens, output_tokens, num_turns, duration_ms, session_id, revision, error, created_at, started_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.loop_id,
@@ -175,6 +179,7 @@ function putRunRow(db: DatabaseSync, row: RunRow): void {
     row.num_turns,
     row.duration_ms,
     row.session_id,
+    row.revision,
     row.error,
     row.created_at,
     row.started_at,
@@ -251,6 +256,7 @@ function toRun(row: RunRow): RunRecord {
     numTurns: row.num_turns,
     durationMs: row.duration_ms,
     sessionId: row.session_id,
+    revision: row.revision,
     error: row.error,
     createdAt: row.created_at,
     startedAt: row.started_at,
@@ -270,6 +276,7 @@ export interface RunPatch {
   numTurns?: number | null
   durationMs?: number | null
   sessionId?: string | null
+  revision?: string | null
   error?: string | null
   startedAt?: string | null
   finishedAt?: string | null
@@ -431,6 +438,7 @@ export class Ledger {
     if (patch.numTurns !== undefined) set('num_turns', patch.numTurns)
     if (patch.durationMs !== undefined) set('duration_ms', patch.durationMs)
     if (patch.sessionId !== undefined) set('session_id', patch.sessionId)
+    if (patch.revision !== undefined) set('revision', patch.revision)
     if (patch.error !== undefined) set('error', patch.error)
     if (patch.startedAt !== undefined) set('started_at', patch.startedAt)
     if (patch.finishedAt !== undefined) set('finished_at', patch.finishedAt)

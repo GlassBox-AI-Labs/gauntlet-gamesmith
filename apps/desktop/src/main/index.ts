@@ -19,6 +19,7 @@ import { LoopRunner } from './loop-runner'
 import { startMediaServer } from './media-server'
 import { playState, startPlay, stopAllPlay, stopPlay } from './play'
 import { buildReport, scanCritiqueArtifacts } from './report'
+import { checkoutRoundRevision } from './round-revision'
 import { copyRunFolder, nextAvailableExportPath, safeExportFolderName } from './run-transfer'
 
 interface HarnessSpec {
@@ -371,14 +372,35 @@ function registerLoopIpc(): void {
     }
     return [...byRound.values()].sort((a, b) => a.round - b.round)
   })
-  ipcMain.handle('play:start', (_event, value: unknown) => {
+  ipcMain.handle('play:start', (_event, value: unknown, roundValue: unknown) => {
     const loop = ledger?.getLoop(String(value))
-    if (!loop) return { running: false, url: null, error: 'Loop not found.' }
-    return startPlay(loop.id, loop.workspaceDir, (state) => mainWindow?.webContents.send('play:state', state))
+    if (!loop) return { running: false, url: null, error: 'Loop not found.', round: null }
+    const round = roundValue == null ? null : Number(roundValue)
+    if (round != null && (!Number.isInteger(round) || round < 1)) {
+      return { running: false, url: null, error: 'Invalid round.', round: null }
+    }
+    const revision = round == null
+      ? null
+      : ledger?.runsForLoop(loop.id).find((run) => run.role === 'implement' && run.round === round && run.status === 'succeeded')?.revision
+    if (round != null && !revision) {
+      return {
+        ...playState(loop.id),
+        error: `Round ${round} has no saved Git revision. Revisions are available for rounds completed after this feature was installed.`,
+      }
+    }
+    try {
+      const playDir = revision ? checkoutRoundRevision(loop.workspaceDir, round!, revision) : loop.workspaceDir
+      return startPlay(loop.id, playDir, round, revision ? playDir : null, (state) => mainWindow?.webContents.send('play:state', state))
+    } catch (error) {
+      return {
+        ...playState(loop.id),
+        error: `Could not check out round ${round}: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
   })
   ipcMain.handle('play:stop', (_event, value: unknown) => {
     stopPlay(String(value))
-    mainWindow?.webContents.send('play:state', { loopId: String(value), running: false, url: null, error: null })
+    mainWindow?.webContents.send('play:state', { loopId: String(value), running: false, url: null, error: null, round: null })
   })
   ipcMain.handle('play:state', (_event, value: unknown) => playState(String(value)))
   ipcMain.handle('loop:pick-workspace', async () => {

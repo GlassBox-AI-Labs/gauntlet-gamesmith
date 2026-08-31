@@ -38,6 +38,7 @@ function run(partial: Partial<RunRecord>): RunRecord {
     numTurns: null,
     durationMs: null,
     sessionId: null,
+    revision: null,
     error: null,
     createdAt: '2026-08-30T20:00:01.000Z',
     startedAt: null,
@@ -63,6 +64,9 @@ describe('buildReport', () => {
     ])
     expect(report).toContain('**Equivalent cost:** $10.00 of $100.00 budget')
     expect(report).toContain('in 2.00M / out 100.0k')
+    expect(report).toContain('| Elapsed | Score |')
+    expect(report).not.toContain('| Runtime |')
+    expect(report).toContain('| +30m00s |')
     expect(report).toContain('0.42')
     expect(report).toContain('flat lighting')
   })

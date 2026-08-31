@@ -44,12 +44,14 @@ describe('Ledger', () => {
 
     ledger.patchRun(run.id, {
       status: 'succeeded',
+      revision: '0123456789abcdef0123456789abcdef01234567',
       costUsd: 4.2,
       verdict: { score: 0.4, pass: false, summary: 's', findings: [{ severity: 'major', text: 'f' }] },
       metrics: { agents: [{ id: 'orchestrator', label: 'orchestrator', model: 'claude-fable-5', messages: 3, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, firstTs: null, lastTs: null }], perModel: {} },
     })
     const saved = ledger.getRun(run.id)!
     expect(saved.status).toBe('succeeded')
+    expect(saved.revision).toBe('0123456789abcdef0123456789abcdef01234567')
     expect(saved.verdict!.findings[0].text).toBe('f')
     expect(saved.metrics!.agents[0].messages).toBe(3)
     expect(ledger.nextQueuedRun(loop.id)).toBeNull()

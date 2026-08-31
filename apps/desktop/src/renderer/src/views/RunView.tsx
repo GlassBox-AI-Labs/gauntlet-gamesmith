@@ -23,6 +23,7 @@ import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import { elapsedThroughRunMs, elapsedToRunStartMs } from '../../../shared/run-timing'
 import {
   CRITICS,
   DEFAULT_CRITIC_ID,
@@ -342,12 +343,16 @@ function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Elemen
 
 function RunRow({
   run,
+  loopCreatedAt,
+  timing,
   loopId,
   critique,
   expanded,
   onToggle,
 }: {
   run: RunRecord
+  loopCreatedAt: string
+  timing: 'elapsed' | 'runtime'
   loopId: string
   critique?: CritiqueRound
   expanded: boolean
@@ -355,6 +360,14 @@ function RunRow({
 }): React.JSX.Element {
   const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
   const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'critique' ? '—' : ''
+  const elapsedMs = elapsedThroughRunMs(loopCreatedAt, run)
+  const startedMs = elapsedToRunStartMs(loopCreatedAt, run)
+  const elapsedTitle =
+    elapsedMs == null
+      ? undefined
+      : startedMs != null && startedMs !== elapsedMs
+        ? `Started ${fmtDuration(startedMs)} into the loop · reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
+        : `Reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
   return (
     <>
       <TableRow
@@ -386,7 +399,12 @@ function RunRow({
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">
           {fmtTokens(run.inputTokens)} / {fmtTokens(run.outputTokens)}
         </TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{fmtDuration(run.durationMs)}</TableCell>
+        <TableCell
+          className={`px-2 py-2.5 font-mono text-[11px] ${timing === 'elapsed' ? 'text-[#b8aaa4]' : 'text-[#96908d]'}`}
+          title={timing === 'elapsed' ? elapsedTitle : undefined}
+        >
+          {timing === 'elapsed' ? (elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`) : fmtDuration(run.durationMs)}
+        </TableCell>
       </TableRow>
       {expanded && (critique || run.metrics) && (
         <TableRow className="border-[#3b3636] hover:bg-transparent">
@@ -446,7 +464,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
-  const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null })
+  const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
   const loopIdRef = useRef<string | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
@@ -548,6 +566,13 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
   )
   const totalTokens = totals.inputTokens + totals.outputTokens
+  const playingSelectedBuild = play.running && play.round === selectedRound
+  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
+  const selectedRoundPlayable = selectedRevision != null
+  const visibleElapsedMs = visibleRuns.reduce<number | null>((latest, run) => {
+    const elapsed = loop ? elapsedThroughRunMs(loop.createdAt, run) : null
+    return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
+  }, null)
 
   const start = async (): Promise<void> => {
     setBusy(true)
@@ -894,11 +919,16 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             <span className="font-mono text-sm text-[#b7cbe0]" title={`${totalTokens.toLocaleString()} combined tokens`}>
               {fmtTokens(totalTokens)} tokens
             </span>
+            {selectedRevision && (
+              <span className="font-mono text-[11px] text-[#8f8885]" title={selectedRevision}>
+                commit {selectedRevision.slice(0, 12)}
+              </span>
+            )}
             <span className="max-w-[320px] truncate font-mono text-[11px] text-[#68615f]" title={loop.workspaceDir}>
               {loop.workspaceDir}
             </span>
             {selectedRound == null && <div className="ml-auto flex items-center gap-2">
-              {play.running && play.url && (
+              {playingSelectedBuild && play.url && (
                 <button
                   type="button"
                   onClick={() => void window.loops.playStart(loop.id)}
@@ -908,7 +938,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   {play.url}
                 </button>
               )}
-              {play.running ? (
+              {playingSelectedBuild ? (
                 <Button
                   variant="outline"
                   className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
@@ -967,6 +997,37 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 </>
               )}
             </div>}
+            {selectedRound != null && <div className="ml-auto flex items-center gap-2">
+              {playingSelectedBuild && play.url && (
+                <button
+                  type="button"
+                  onClick={() => void window.loops.playStart(loop.id, selectedRound)}
+                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20"
+                  title="Open this round in the browser"
+                >
+                  {play.url}
+                </button>
+              )}
+              {playingSelectedBuild ? (
+                <Button
+                  variant="outline"
+                  className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
+                  onClick={() => void window.loops.playStop(loop.id)}
+                >
+                  <Square /> Stop game
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="border-emerald-600/50 bg-transparent text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
+                  disabled={!selectedRoundPlayable}
+                  title={selectedRoundPlayable ? `Launch commit ${selectedRevision.slice(0, 12)} from round ${selectedRound}` : 'No Git revision was recorded for this round'}
+                  onClick={() => void window.loops.playStart(loop.id, selectedRound).then(setPlay)}
+                >
+                  <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
+                </Button>
+              )}
+            </div>}
           </div>
 
           {selectedRound == null && loop.stopReason && !running && (
@@ -994,8 +1055,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <div className="mt-1 font-mono text-lg text-[#b7cbe0]">${totals.costUsd.toFixed(2)}</div>
                 </div>
                 <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
-                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Attempts / runtime</div>
-                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(totals.durationMs)}</div>
+                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Attempts / elapsed</div>
+                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(visibleElapsedMs)}</div>
                 </div>
               </div>
               <div className="mb-5 grid gap-3">
@@ -1053,7 +1114,16 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Cost</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Time</TableHead>
+                  {selectedRound == null ? (
+                    <TableHead
+                      className="px-2 text-[11px] text-[#68615f]"
+                      title="Wall-clock time from the beginning of the loop through this attempt"
+                    >
+                      Elapsed
+                    </TableHead>
+                  ) : (
+                    <TableHead className="px-2 text-[11px] text-[#68615f]">Runtime</TableHead>
+                  )}
                 </TableRow>
               </TableHeader>
               <TableBody className="text-xs">
@@ -1061,6 +1131,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <RunRow
                     key={run.id}
                     run={run}
+                    loopCreatedAt={loop.createdAt}
+                    timing={selectedRound == null ? 'elapsed' : 'runtime'}
                     loopId={loop.id}
                     critique={run.role === 'critique' ? critiqueRounds.find((c) => c.runId === run.id) : undefined}
                     expanded={expanded.has(run.id)}
@@ -1089,7 +1161,16 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                     <div>{fmtTokens(totalTokens)} total</div>
                     <div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
                   </TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]">{fmtDuration(totals.durationMs)}</TableCell>
+                  <TableCell
+                    className={`px-2 py-3 font-mono text-[11px] ${selectedRound == null ? 'text-[#b8aaa4]' : 'text-[#c2bbb7]'}`}
+                    title={selectedRound == null ? 'Wall-clock time from the beginning of the loop through the latest visible attempt' : undefined}
+                  >
+                    {selectedRound == null
+                      ? visibleElapsedMs == null
+                        ? '—'
+                        : `+${fmtDuration(visibleElapsedMs)}`
+                      : fmtDuration(totals.durationMs)}
+                  </TableCell>
                 </TableRow>
               </TableBody>
             </Table>

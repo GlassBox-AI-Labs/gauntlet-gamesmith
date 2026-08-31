@@ -20,6 +20,7 @@ import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
+import { captureRoundRevision } from './round-revision'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
 
 const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
@@ -844,7 +845,7 @@ export class LoopRunner {
       }
     }
 
-    const finalize = (exit: ExitInfo): void => {
+    const finalize = async (exit: ExitInfo): Promise<void> => {
       pollWorkflows()
       const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents)
       if (workflowRuns.length) {
@@ -900,7 +901,25 @@ export class LoopRunner {
         )
         return
       }
-      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      try {
+        const parentRevision = this.ledger
+          .runsForLoop(loop.id)
+          .filter((prior) => prior.role === 'implement' && prior.round < run.round && prior.revision)
+          .at(-1)?.revision
+        const revision = captureRoundRevision({
+          workspaceDir: loop.workspaceDir,
+          loopId: loop.id,
+          round: run.round,
+          parentRevision,
+        })
+        this.ledger.patchRun(run.id, { status: 'succeeded', revision })
+        this.log(loop.id, run.id, 'system', `Round ${run.round} committed at ${revision.slice(0, 12)}.`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.ledger.patchRun(run.id, { status: 'failed', error: `Could not commit round revision: ${message}` })
+        this.finishLoop(loop.id, 'failed', `Round ${run.round} finished, but its Git revision could not be saved: ${message}`)
+        return
+      }
       if (this.overBudget(loop.id)) return
       this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
       this.broadcast(loop.id)
