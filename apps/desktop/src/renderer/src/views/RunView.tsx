@@ -1,12 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Eye, FileText, FolderOpen, LoaderCircle, Play, Plus, Square } from 'lucide-react'
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Eye,
+  FileText,
+  FolderGit2,
+  FolderPlus,
+  LoaderCircle,
+  Pencil,
+  Play,
+  Plus,
+  Sparkles,
+  Square,
+  Upload,
+  X,
+} from 'lucide-react'
 import { CritiquePanel, CritiqueRoundView } from '@/views/CritiquePanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 import {
   CRITICS,
   DEFAULT_CRITIC_ID,
@@ -21,6 +39,7 @@ import {
 } from '../../../shared/models'
 
 const LOG_LIMIT = 1500
+const ROUNDS_PAGE_SIZE = 3
 
 const KIND_COLORS: Record<string, string> = {
   system: 'text-[#8f8a87]',
@@ -70,6 +89,256 @@ function fmtDuration(ms: number | null | undefined): string {
 function fmtTs(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? '' : d.toTimeString().slice(0, 8)
+}
+
+function projectName(workspaceDir: string): string {
+  return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
+}
+
+function roundNumbers(snapshot: LoopSnapshot): number[] {
+  return [...new Set(snapshot.runs.map((run) => run.round))].sort((a, b) => b - a)
+}
+
+function RunSidebar({
+  snapshots,
+  selectedLoopId,
+  selectedRound,
+  expandedRuns,
+  visibleRounds,
+  onNewRun,
+  onImportRun,
+  onSelectRun,
+  onSelectRound,
+  onToggleRun,
+  onLoadMore,
+  onOpenAgents,
+}: {
+  snapshots: LoopSnapshot[]
+  selectedLoopId: string | null
+  selectedRound: number | null
+  expandedRuns: Set<string>
+  visibleRounds: Record<string, number>
+  onNewRun: () => void
+  onImportRun: () => void
+  onSelectRun: (snapshot: LoopSnapshot) => void
+  onSelectRound: (snapshot: LoopSnapshot, round: number) => void
+  onToggleRun: (loopId: string) => void
+  onLoadMore: (loopId: string) => void
+  onOpenAgents: () => void
+}): React.JSX.Element {
+  return (
+    <aside className="flex h-screen w-[252px] shrink-0 flex-col border-r border-[#2a2626] bg-[#141112]">
+      <div className="px-3 pb-3 pt-5">
+        <button
+          type="button"
+          onClick={onNewRun}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-[#ded9d6] transition-colors hover:bg-white/[0.05] hover:text-white"
+        >
+          <Plus className="size-4" /> Run
+        </button>
+        <button
+          type="button"
+          onClick={onImportRun}
+          className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[13px] text-[#918a87] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6]"
+        >
+          <Download className="size-4" /> Import run
+        </button>
+      </div>
+      <div className="border-t border-[#2f2a2b]" />
+      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-4">
+        <div className="mb-2 px-2 text-[13px] font-medium text-[#8d8784]">Runs</div>
+        <div className="grid gap-1">
+          {snapshots.map((item) => {
+            const loopId = item.loop.id
+            const rounds = roundNumbers(item)
+            const limit = visibleRounds[loopId] ?? ROUNDS_PAGE_SIZE
+            const open = expandedRuns.has(loopId)
+            const selected = selectedLoopId === loopId
+            return (
+              <div key={loopId}>
+                <div
+                  className={`group flex items-center rounded-lg pr-1 transition-colors ${
+                    selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onToggleRun(loopId)}
+                    className="grid size-8 shrink-0 place-items-center rounded-md text-[#716b68] hover:text-[#c9c3c0]"
+                    aria-label={`${open ? 'Collapse' : 'Expand'} ${item.loop.title}`}
+                  >
+                    {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectRun(item)}
+                    title={item.loop.title}
+                    className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]"
+                  >
+                    {item.loop.title}
+                  </button>
+                  {item.loop.status === 'running' && <span className="mr-2 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" />}
+                </div>
+                {open && (
+                  <div className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
+                    {rounds.slice(0, limit).map((round) => {
+                      const records = item.runs.filter((run) => run.round === round)
+                      const score = records.find((run) => run.verdict)?.verdict?.score
+                      const active = records.some((run) => run.status === 'running' || run.status === 'queued')
+                      return (
+                        <button
+                          type="button"
+                          key={round}
+                          onClick={() => onSelectRound(item, round)}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${
+                            selectedLoopId === loopId && selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'
+                          }`}
+                        >
+                          <span>Round {round}</span>
+                          <span className={active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}>
+                            {active ? 'active' : score != null ? score.toFixed(2) : ''}
+                          </span>
+                        </button>
+                      )
+                    })}
+                    {rounds.length > limit && (
+                      <button
+                        type="button"
+                        onClick={() => onLoadMore(loopId)}
+                        className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] text-[#77706d] hover:bg-white/[0.035] hover:text-[#c9c3c0]"
+                      >
+                        Load more
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {snapshots.length === 0 && <p className="px-2 py-3 text-xs leading-relaxed text-[#68615f]">Your runs will appear here.</p>}
+        </div>
+      </div>
+      <div className="border-t border-[#2f2a2b] p-3">
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-[#88817e] hover:bg-white/[0.04] hover:text-[#ded9d6]"
+        >
+          <Sparkles className="size-3.5" /> Agents
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+function ProjectChooser({
+  value,
+  projects,
+  open,
+  onOpenChange,
+  onChange,
+  onAddProject,
+}: {
+  value: string
+  projects: string[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onChange: (project: string) => void
+  onAddProject: () => void
+}): React.JSX.Element {
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        className="flex max-w-[360px] items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[#ded9d6] hover:bg-white/[0.05]"
+      >
+        <FolderGit2 className="size-4 text-[#bda99f]" />
+        <span className="truncate">{projectName(value)}</span>
+        <ChevronDown className={`size-3.5 text-[#77706d] transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+8px)] z-30 w-[300px] overflow-hidden rounded-xl border border-[#443e3d] bg-[#282424] py-1.5 shadow-2xl">
+          <div className="max-h-[280px] overflow-y-auto px-1.5">
+            {projects.map((project) => (
+              <button
+                type="button"
+                key={project}
+                onClick={() => {
+                  onChange(project)
+                  onOpenChange(false)
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#c9c3c0] hover:bg-white/[0.055] hover:text-white"
+                title={project}
+              >
+                <FolderGit2 className="size-4 shrink-0 text-[#a9968d]" />
+                <span className="min-w-0 flex-1 truncate">{projectName(project)}</span>
+                {project === value && <Check className="size-4 shrink-0" />}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1 border-t border-[#403a39] px-1.5 pt-1.5">
+            <button
+              type="button"
+              onClick={onAddProject}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#aaa4a1] hover:bg-white/[0.055] hover:text-white"
+            >
+              <FolderPlus className="size-4" /> Add project
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PromptBlock({ title, value }: { title: string; value: string }): React.JSX.Element {
+  return (
+    <section className="overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212]">
+      <h2 className="border-b border-[#332e2e] px-4 py-3 text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">{title}</h2>
+      <pre className="max-h-[260px] overflow-y-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-[11px] leading-[1.7] text-[#c9c3c0]">
+        {value || 'No additional prompt was recorded.'}
+      </pre>
+    </section>
+  )
+}
+
+/**
+ * Agents the ultracode orchestrator ran through the Workflow tool. They never
+ * reach the message stream, so their numbers come off disk and read differently
+ * from stream agents: one scalar token count, plus a phase and a live state.
+ */
+function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Element | null {
+  const workflow = agents.filter((agent) => agent.source === 'workflow')
+  if (workflow.length === 0) return null
+  const phases: { phase: string; agents: AgentMetric[] }[] = []
+  for (const agent of workflow) {
+    const phase = agent.phase ?? 'workflow'
+    const last = phases.at(-1)
+    if (last && last.phase === phase) last.agents.push(agent)
+    else phases.push({ phase, agents: [agent] })
+  }
+  const totalTokens = workflow.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0)
+  return (
+    <>
+      <div className="mt-1 text-[#c0aee6]">
+        ⇉ workflow fan-out · {workflow.length} agents · {fmtTokens(totalTokens)} tokens
+      </div>
+      {phases.map((group, index) => (
+        <div key={`${group.phase}-${index}`} className="pl-5">
+          <div className="text-[#8f8a87]">{group.phase}</div>
+          {group.agents.map((agent) => (
+            <div key={agent.id} className="pl-4 text-[#a89f9a]">
+              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓' : '⋯'}</span> {agent.label}
+              <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {fmtTokens(agent.totalTokens ?? 0)} tokens · {agent.toolCalls ?? 0}{' '}
+              tools · {fmtDuration(agent.durationMs)}
+              {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </>
+  )
 }
 
 function RunRow({
@@ -131,14 +400,17 @@ function RunRow({
               </div>
             )}
             <div className="grid gap-1.5 font-mono text-[11px]">
-              {(run.metrics?.agents ?? []).map((agent) => (
-                <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
-                  {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
-                  {agent.label}
-                  <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
-                  {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
-                </div>
-              ))}
+              {(run.metrics?.agents ?? [])
+                .filter((agent) => agent.source !== 'workflow')
+                .map((agent) => (
+                  <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
+                    {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
+                    {agent.label}
+                    <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
+                    {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
+                  </div>
+                ))}
+              <WorkflowAgents agents={run.metrics?.agents ?? []} />
               {Object.entries(run.metrics?.perModel ?? {}).map(([model, mu]) => (
                 <div key={model} className="text-[#9fb2c8]">
                   {model}: {mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(mu.tokens.input)} · out {fmtTokens(mu.tokens.output)}
@@ -153,20 +425,28 @@ function RunRow({
   )
 }
 
-export function RunView(): React.JSX.Element {
+export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.JSX.Element {
+  const [snapshots, setSnapshots] = useState<LoopSnapshot[]>([])
   const [snapshot, setSnapshot] = useState<LoopSnapshot | null>(null)
   const [lines, setLines] = useState<LoopLogLine[]>([])
   const [composing, setComposing] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [workspaceDir, setWorkspaceDir] = useState('')
+  const [projectOpen, setProjectOpen] = useState(false)
   const [maxRounds, setMaxRounds] = useState('10')
   const [budget, setBudget] = useState('')
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [criticId, setCriticId] = useState(DEFAULT_CRITIC_ID)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
+  const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
+  const [selectedRound, setSelectedRound] = useState<number | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
   const [reportOpen, setReportOpen] = useState(false)
   const [reportMd, setReportMd] = useState('')
   const [critiqueOpen, setCritiqueOpen] = useState(false)
@@ -181,6 +461,10 @@ export function RunView(): React.JSX.Element {
         loopIdRef.current = snap.loop.id
         setSnapshot(snap)
       }
+      setSnapshots((current) => {
+        const next = [snap, ...current.filter((item) => item.loop.id !== snap.loop.id)]
+        return next.sort((a, b) => b.loop.createdAt.localeCompare(a.loop.createdAt))
+      })
     })
     const removeLog = window.loops.onLog((line) => {
       if (line.loopId !== loopIdRef.current) return
@@ -190,20 +474,22 @@ export function RunView(): React.JSX.Element {
       })
     })
     void (async () => {
-      const [snap, defaultDir] = await Promise.all([window.loops.active(), window.loops.defaultWorkspace()])
-      setWorkspaceDir((current) => current || defaultDir)
-      if (snap) {
-        loopIdRef.current = snap.loop.id
-        setSnapshot(snap)
-        setPrompt(snap.loop.prompt)
+      const [all, snap, defaultDir] = await Promise.all([window.loops.list(), window.loops.active(), window.loops.defaultWorkspace()])
+      setSnapshots(all)
+      const initial = snap ?? all[0] ?? null
+      setWorkspaceDir((current) => current || initial?.loop.workspaceDir || defaultDir)
+      if (initial) {
+        loopIdRef.current = initial.loop.id
+        setSnapshot(initial)
         setImpl({
-          orchestratorModel: snap.loop.models.orchestratorModel,
-          orchestratorEffort: snap.loop.models.orchestratorEffort,
-          subagentModel: snap.loop.models.subagentModel,
-          subagentEffort: snap.loop.models.subagentEffort,
+          orchestratorModel: initial.loop.models.orchestratorModel,
+          orchestratorEffort: initial.loop.models.orchestratorEffort,
+          subagentModel: initial.loop.models.subagentModel,
+          subagentEffort: initial.loop.models.subagentEffort,
         })
-        setCriticId(snap.loop.models.criticId)
-        setLines(await window.loops.log(snap.loop.id))
+        setCriticId(initial.loop.models.criticId)
+        setExpandedRuns(new Set([initial.loop.id]))
+        setLines(await window.loops.log(initial.loop.id))
       } else {
         setComposing(true)
       }
@@ -245,10 +531,37 @@ export function RunView(): React.JSX.Element {
   const critic = findCritic(criticId)
   const running = loop?.status === 'running'
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
+  const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
+  const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
+  const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
+  const initialImplementPrompt = snapshot?.runs.find((run) => run.role === 'implement')?.prompt ?? ''
+  const systemPrompt = loop && initialImplementPrompt.startsWith(loop.prompt)
+    ? initialImplementPrompt.slice(loop.prompt.length).trim()
+    : initialImplementPrompt
+  const critiqueRubric = snapshot?.runs.find((run) => run.role === 'critique')?.prompt ?? ''
+  const detailStatus = selectedRound == null
+    ? loop?.status
+    : visibleRuns.some((run) => run.status === 'running')
+      ? 'running'
+      : (visibleRuns.at(-1)?.status ?? 'queued')
+  const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
+  const totals = visibleRuns.reduce(
+    (sum, run) => ({
+      costUsd: sum.costUsd + (run.costUsd ?? 0),
+      inputTokens: sum.inputTokens + (run.inputTokens ?? 0),
+      outputTokens: sum.outputTokens + (run.outputTokens ?? 0),
+      durationMs: sum.durationMs + (run.durationMs ?? 0),
+      bestScore: Math.max(sum.bestScore, run.verdict?.score ?? 0),
+      hasScore: sum.hasScore || Boolean(run.verdict),
+    }),
+    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
+  )
+  const totalTokens = totals.inputTokens + totals.outputTokens
 
   const start = async (): Promise<void> => {
     setBusy(true)
     setError(null)
+    setNotice(null)
     try {
       const result = await window.loops.start({
         prompt,
@@ -265,79 +578,197 @@ export function RunView(): React.JSX.Element {
       loopIdRef.current = result.loopId ?? null
       setLines([])
       setExpanded(new Set())
+      setSelectedRound(null)
       setComposing(false)
-      const snap = await window.loops.active()
-      if (snap) setSnapshot(snap)
+      setProjectOpen(false)
+      const snap = result.loopId ? await window.loops.get(result.loopId) : await window.loops.active()
+      if (snap) {
+        setSnapshot(snap)
+        setSnapshots((current) => [snap, ...current.filter((item) => item.loop.id !== snap.loop.id)])
+        setExpandedRuns((current) => new Set(current).add(snap.loop.id))
+      }
+      setPrompt('')
     } finally {
       setBusy(false)
     }
   }
 
+  const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
+    loopIdRef.current = next.loop.id
+    setSnapshot(next)
+    setImpl({
+      orchestratorModel: next.loop.models.orchestratorModel,
+      orchestratorEffort: next.loop.models.orchestratorEffort,
+      subagentModel: next.loop.models.subagentModel,
+      subagentEffort: next.loop.models.subagentEffort,
+    })
+    setCriticId(next.loop.models.criticId)
+    setSelectedRound(round)
+    setRenaming(false)
+    setComposing(false)
+    setProjectOpen(false)
+    setExpanded(new Set())
+    setReportOpen(false)
+    setCritiqueOpen(false)
+    setNotice(null)
+    setLines(await window.loops.log(next.loop.id))
+  }
+
+  const beginNewRun = (): void => {
+    setComposing(true)
+    setSelectedRound(null)
+    setPrompt('')
+    setError(null)
+    setNotice(null)
+    setProjectOpen(false)
+  }
+
+  const saveTitle = async (): Promise<void> => {
+    if (!loop) return
+    const title = titleDraft.trim()
+    if (!title || title === loop.title) {
+      setRenaming(false)
+      setTitleDraft(loop.title)
+      return
+    }
+    const updated = await window.loops.rename(loop.id, title)
+    if (!updated) return
+    setSnapshot((current) => current && current.loop.id === updated.id ? { ...current, loop: updated } : current)
+    setSnapshots((current) => current.map((item) => item.loop.id === updated.id ? { ...item, loop: updated } : item))
+    setTitleDraft(updated.title)
+    setRenaming(false)
+  }
+
+  const importRun = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.loops.importRun()
+      if (result.canceled) return
+      if (!result.ok || !result.snapshot) {
+        setError(result.error ?? 'Failed to import run.')
+        return
+      }
+      const imported = result.snapshot
+      const importedSnapshots = result.snapshots ?? [imported]
+      const importedIds = new Set(importedSnapshots.map((item) => item.loop.id))
+      loopIdRef.current = imported.loop.id
+      setSnapshot(imported)
+      setSnapshots((current) => [...importedSnapshots, ...current.filter((item) => !importedIds.has(item.loop.id))])
+      setWorkspaceDir(imported.loop.workspaceDir)
+      setLines(await window.loops.log(imported.loop.id, LOG_LIMIT))
+      setExpanded(new Set())
+      setExpandedRuns((current) => new Set(current).add(imported.loop.id))
+      setSelectedRound(null)
+      setRenaming(false)
+      setReportOpen(false)
+      setCritiqueOpen(false)
+      setProjectOpen(false)
+      setComposing(false)
+      setNotice(`Opened the complete run folder at ${imported.loop.workspaceDir}. Its project files and SQLite history remain together.`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exportRun = async (): Promise<void> => {
+    if (!loop) return
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.loops.exportRun(loop.id)
+      if (result.canceled) return
+      if (!result.ok) {
+        setError(result.error ?? 'Failed to export run.')
+        return
+      }
+      setNotice(`Exported the complete project and SQLite history to ${result.filePath ?? 'the selected folder'}.`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
+
   if (!loaded) {
     return (
-      <main className="mx-auto w-[min(980px,calc(100%-48px))] py-12">
+      <main className="grid h-screen place-items-center bg-[#100d0e]">
         <LoaderCircle className="size-5 animate-spin text-[#68615f]" />
       </main>
     )
   }
 
   return (
-    <main className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
-      <h1 className="mb-8 text-[27px] font-semibold tracking-[-0.02em]">Run</h1>
+    <div className="flex h-screen overflow-hidden bg-[#100d0e]">
+      <RunSidebar
+        snapshots={snapshots}
+        selectedLoopId={composing ? null : (snapshot?.loop.id ?? null)}
+        selectedRound={selectedRound}
+        expandedRuns={expandedRuns}
+        visibleRounds={visibleRounds}
+        onNewRun={beginNewRun}
+        onImportRun={() => void importRun()}
+        onSelectRun={(next) => void selectRun(next)}
+        onSelectRound={(next, round) => void selectRun(next, round)}
+        onToggleRun={(loopId) =>
+          setExpandedRuns((current) => {
+            const next = new Set(current)
+            if (next.has(loopId)) next.delete(loopId)
+            else next.add(loopId)
+            return next
+          })
+        }
+        onLoadMore={(loopId) =>
+          setVisibleRounds((current) => ({ ...current, [loopId]: (current[loopId] ?? ROUNDS_PAGE_SIZE) + ROUNDS_PAGE_SIZE }))
+        }
+        onOpenAgents={onOpenAgents}
+      />
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
+
+      {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
 
       {composing || !loop ? (
-        <Card className="gap-5 border-[#332e2e] bg-[#1a1616] p-5 shadow-none">
+        <Card className="gap-0 overflow-visible border-[#393433] bg-[#1d1919] p-0 shadow-2xl shadow-black/20">
+          <div className="border-b border-[#393433] p-3">
+            <ProjectChooser
+              value={workspaceDir}
+              projects={projects}
+              open={projectOpen}
+              onOpenChange={setProjectOpen}
+              onChange={setWorkspaceDir}
+              onAddProject={() => {
+                void window.loops.pickWorkspace().then((dir) => {
+                  if (dir) setWorkspaceDir(dir)
+                  setProjectOpen(false)
+                })
+              }}
+            />
+          </div>
           <textarea
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            rows={12}
+            rows={14}
             spellCheck={false}
-            placeholder={'Paste your goal prompt.\n\ne.g. "I want you to build a first-person shooter at the level of the most recent Call of Duty games. It should be utterly perfect, visually beautiful, with every single thing done at AAA quality…"'}
-            className="w-full resize-y rounded-lg border border-[#393433] bg-[#141010] p-3.5 text-[13px] leading-relaxed text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]"
+            autoFocus
+            placeholder="What do you want to work on?"
+            className="min-h-[360px] w-full resize-y bg-transparent px-5 py-5 text-[15px] leading-relaxed text-[#eeeae7] outline-none placeholder:text-[#68615f]"
           />
-          <div className="grid grid-cols-[1fr_auto] items-end gap-3 max-sm:grid-cols-1">
-            <label className="grid gap-1.5 text-xs text-[#96908d]">
-              Workspace (created if missing)
-              <input
-                value={workspaceDir}
-                onChange={(event) => setWorkspaceDir(event.target.value)}
-                spellCheck={false}
-                className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 font-mono text-xs text-[#eeeae7] outline-none focus:border-[#5a524f]"
-              />
-            </label>
-            <Button
-              variant="outline"
-              className="h-9 border-[#494343] bg-transparent text-[#b5afac] hover:bg-white/5 hover:text-white"
-              onClick={() => void window.loops.pickWorkspace().then((dir) => dir && setWorkspaceDir(dir))}
-            >
-              <FolderOpen /> Browse
-            </Button>
-          </div>
-          <div className="grid gap-2.5 rounded-lg border border-[#332e2e] bg-[#161212] p-3">
+          <div className="mx-5 mb-4 grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Orchestrator</span>
-              <Select value={impl.orchestratorModel} onValueChange={(v) => setImpl((c) => ({ ...c, orchestratorModel: v }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+              <Select value={impl.orchestratorModel} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorModel: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MODEL_CHOICES.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
+                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Select value={impl.orchestratorEffort} onValueChange={(v) => setImpl((c) => ({ ...c, orchestratorEffort: v }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+              <Select value={impl.orchestratorEffort} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorEffort: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {ORCHESTRATOR_EFFORTS.map((e) => (
-                    <SelectItem key={e} value={e}>
-                      {e === 'ultracode' ? 'ultracode (xhigh + workflows)' : e}
-                    </SelectItem>
-                  ))}
+                  {ORCHESTRATOR_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort === 'ultracode' ? 'ultracode (xhigh + workflows)' : effort}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -345,113 +776,141 @@ export function RunView(): React.JSX.Element {
               <span className="text-xs text-[#7d7772]">Subagents</span>
               <Select
                 value={impl.subagentModel ?? SOLO_SUBAGENT}
-                onValueChange={(v) => setImpl((c) => ({ ...c, subagentModel: v === SOLO_SUBAGENT ? null : v }))}
+                onValueChange={(value) => setImpl((current) => ({ ...current, subagentModel: value === SOLO_SUBAGENT ? null : value }))}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MODEL_CHOICES.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
+                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
                   <SelectItem value={SOLO_SUBAGENT}>none (solo)</SelectItem>
                 </SelectContent>
               </Select>
               <Select
                 value={impl.subagentEffort}
-                onValueChange={(v) => setImpl((c) => ({ ...c, subagentEffort: v }))}
+                onValueChange={(value) => setImpl((current) => ({ ...current, subagentEffort: value }))}
                 disabled={impl.subagentModel === null}
               >
-                <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {SUBAGENT_EFFORTS.map((e) => (
-                    <SelectItem key={e} value={e}>
-                      {e}
-                    </SelectItem>
-                  ))}
+                  {SUBAGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-[92px_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
               <Select value={criticId} onValueChange={setCriticId}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {CRITICS.map((preset) => (
-                    <SelectItem key={preset.id} value={preset.id}>
-                      {preset.label}
-                    </SelectItem>
-                  ))}
+                  {CRITICS.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+              <label className="grid gap-1.5 text-xs text-[#96908d]">
+                Max rounds
+                <input value={maxRounds} onChange={(event) => setMaxRounds(event.target.value)} inputMode="numeric" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none focus:border-[#5a524f]" />
+              </label>
+              <label className="grid gap-1.5 text-xs text-[#96908d]">
+                Budget $ (optional)
+                <input value={budget} onChange={(event) => setBudget(event.target.value)} inputMode="decimal" placeholder="none" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]" />
+              </label>
+            </div>
+            <p className="text-xs leading-relaxed text-[#7d7772]">
+              {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
+              {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
+              {critic.detail}
+            </p>
           </div>
-          <div className="grid grid-cols-[140px_160px_1fr] items-end gap-6 max-sm:grid-cols-1 max-sm:gap-3">
-            <label className="grid gap-1.5 text-xs text-[#96908d]">
-              Max rounds
-              <input
-                value={maxRounds}
-                onChange={(event) => setMaxRounds(event.target.value)}
-                inputMode="numeric"
-                className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none focus:border-[#5a524f]"
-              />
-            </label>
-            <label className="grid gap-1.5 text-xs text-[#96908d]">
-              Budget $ (optional)
-              <input
-                value={budget}
-                onChange={(event) => setBudget(event.target.value)}
-                inputMode="decimal"
-                placeholder="none"
-                className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]"
-              />
-            </label>
-          </div>
-          <p className="text-xs leading-relaxed text-[#7d7772]">
-            {modelLabel(impl.orchestratorModel)} orchestrates at {impl.orchestratorEffort} effort
-            {impl.orchestratorEffort === 'ultracode' ? ' (xhigh reasoning plus automatic workflow fan-out)' : ''}
-            {impl.subagentModel
-              ? `, delegating to ${modelLabel(impl.subagentModel)} implementer subagents at ${impl.subagentEffort} effort.`
-              : ', doing the work itself with no subagents.'}{' '}
-            Permissions are bypassed inside the workspace. {critic.detail} The critic judges with fresh eyes each round; its verdict is written to the
-            SQLite ledger and seeds the next round. Costs shown are equivalent API cost estimates — runs use your subscription logins.
-          </p>
-          {error && <p className="rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
-          <div className="flex items-center gap-3">
+          {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
+          <div className="flex justify-end px-5 pb-5">
             <Button
-              className="bg-[#e9c9bc] text-[#1c1412] hover:bg-[#f2d6ca]"
-              disabled={busy || !prompt.trim()}
+              className="h-10 bg-[#eeeae7] px-5 text-[#1c1716] hover:bg-white"
+              disabled={busy || !prompt.trim() || !workspaceDir}
               onClick={() => void start()}
             >
-              {busy ? <LoaderCircle className="animate-spin" /> : <Play className="fill-current" />} Start loop
+              {busy ? <LoaderCircle className="animate-spin" /> : null} Create
             </Button>
-            {snapshot && (
-              <Button variant="ghost" className="text-[#96908d] hover:bg-white/5 hover:text-white" onClick={() => setComposing(false)}>
-                Back to last run
-              </Button>
-            )}
           </div>
         </Card>
       ) : (
         <>
+          {selectedRound != null && (
+            <button
+              type="button"
+              onClick={() => setSelectedRound(null)}
+              className="mb-4 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#8f8885] hover:bg-white/[0.04] hover:text-[#ded9d6]"
+            >
+              <ArrowLeft className="size-3.5" /> Run detail
+            </button>
+          )}
+          <div className="mb-6 flex max-w-3xl items-center gap-2">
+            {selectedRound == null && renaming ? (
+              <>
+                <input
+                  value={titleDraft}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void saveTitle()
+                    if (event.key === 'Escape') {
+                      setTitleDraft(loop.title)
+                      setRenaming(false)
+                    }
+                  }}
+                  autoFocus
+                  maxLength={80}
+                  aria-label="Run name"
+                  className="h-10 min-w-0 flex-1 rounded-lg border border-[#514947] bg-[#181414] px-3 text-[20px] font-semibold text-[#eeeae7] outline-none focus:border-[#716763]"
+                />
+                <button type="button" onClick={() => void saveTitle()} className="grid size-9 place-items-center rounded-lg text-[#9f9895] hover:bg-white/[0.05] hover:text-white" aria-label="Save run name">
+                  <Check className="size-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTitleDraft(loop.title)
+                    setRenaming(false)
+                  }}
+                  className="grid size-9 place-items-center rounded-lg text-[#77706d] hover:bg-white/[0.05] hover:text-white"
+                  aria-label="Cancel rename"
+                >
+                  <X className="size-4" />
+                </button>
+              </>
+            ) : (
+              <>
+                <h1 className="line-clamp-2 text-[22px] font-semibold leading-tight tracking-[-0.02em] text-[#eeeae7]" title={loop.title}>
+                  {selectedRound == null ? loop.title : `Round ${selectedRound}`}
+                </h1>
+                {selectedRound == null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTitleDraft(loop.title)
+                      setRenaming(true)
+                    }}
+                    className="grid size-8 shrink-0 place-items-center rounded-lg text-[#68615f] hover:bg-white/[0.05] hover:text-[#ded9d6]"
+                    aria-label="Rename run"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
           <div className="mb-5 flex flex-wrap items-center gap-3">
-            <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[loop.status] ?? ''}`}>{loop.status}</Badge>
+            <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus ?? ''] ?? ''}`}>{detailStatus}</Badge>
             <span className="text-sm text-[#ded9d6]">
-              round {loop.round}/{loop.maxRounds}
+              {selectedRound == null ? `round ${loop.round}/${loop.maxRounds}` : visibleRuns.length === 1 ? '1 attempt' : `${visibleRuns.length} attempts`}
             </span>
             <span className="font-mono text-sm text-[#9fb2c8]">
-              ${snapshot!.runs.reduce((sum, r) => sum + (r.costUsd ?? 0), 0).toFixed(2)} equiv
+              ${totals.costUsd.toFixed(2)} equiv
+            </span>
+            <span className="font-mono text-sm text-[#b7cbe0]" title={`${totalTokens.toLocaleString()} combined tokens`}>
+              {fmtTokens(totalTokens)} tokens
             </span>
             <span className="max-w-[320px] truncate font-mono text-[11px] text-[#68615f]" title={loop.workspaceDir}>
               {loop.workspaceDir}
             </span>
-            <div className="ml-auto flex items-center gap-2">
+            {selectedRound == null && <div className="ml-auto flex items-center gap-2">
               {play.running && play.url && (
                 <button
                   type="button"
@@ -493,6 +952,15 @@ export function RunView(): React.JSX.Element {
               >
                 <FileText /> Report
               </Button>
+              <Button
+                variant="outline"
+                className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
+                disabled={busy || running}
+                title={running ? 'Stop the run first to export an exact folder snapshot' : 'Export the complete project folder and SQLite history'}
+                onClick={() => void exportRun()}
+              >
+                <Upload /> Export
+              </Button>
               {running ? (
                 <Button
                   variant="outline"
@@ -519,16 +987,16 @@ export function RunView(): React.JSX.Element {
                   <Button
                     variant="outline"
                     className="border-[#494343] bg-transparent text-[#eeeae7] hover:bg-white/5 hover:text-white"
-                    onClick={() => setComposing(true)}
+                    onClick={beginNewRun}
                   >
                     <Plus /> New run
                   </Button>
                 </>
               )}
-            </div>
+            </div>}
           </div>
 
-          {loop.stopReason && !running && (
+          {selectedRound == null && loop.stopReason && !running && (
             <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>
           )}
 
@@ -537,7 +1005,42 @@ export function RunView(): React.JSX.Element {
           )}
           {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
 
-          {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (
+          {selectedRound == null && (
+            <>
+              <div className="mb-5 grid grid-cols-4 gap-3 max-md:grid-cols-2">
+                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
+                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Total tokens</div>
+                  <div className="mt-1 font-mono text-lg text-[#d7e2ed]" title={totalTokens.toLocaleString()}>{fmtTokens(totalTokens)}</div>
+                </div>
+                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
+                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Input / output</div>
+                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
+                </div>
+                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
+                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Equivalent cost</div>
+                  <div className="mt-1 font-mono text-lg text-[#b7cbe0]">${totals.costUsd.toFixed(2)}</div>
+                </div>
+                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
+                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Attempts / runtime</div>
+                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(totals.durationMs)}</div>
+                </div>
+              </div>
+              <div className="mb-5 grid gap-3">
+                <PromptBlock title="Original prompt" value={loop.prompt} />
+                <PromptBlock title="System / implementer prompt" value={systemPrompt} />
+                <PromptBlock title="Critique evaluation rubric" value={critiqueRubric} />
+              </div>
+            </>
+          )}
+
+          {selectedRound != null && selectedCritique && (
+            <section className="mb-5 rounded-lg border border-[#332e2e] bg-[#151212] p-4">
+              <h2 className="mb-3 text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">Round {selectedRound} critique</h2>
+              <CritiqueRoundView loopId={loop.id} round={selectedCritique} />
+            </section>
+          )}
+
+          {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (selectedRound == null || liveRun.round === selectedRound) && (
             <div className="mb-5 flex flex-wrap items-center gap-2">
               <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
               {liveRun.metrics.agents.map((agent) => {
@@ -565,9 +1068,9 @@ export function RunView(): React.JSX.Element {
             </div>
           )}
 
-          {critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={finishedCritiques} />}
+          {selectedRound == null && critiqueOpen && <CritiquePanel loopId={loop.id} refreshKey={finishedCritiques} />}
 
-          {reportOpen && (
+          {selectedRound == null && reportOpen && (
             <pre className="mb-5 max-h-[360px] overflow-y-auto whitespace-pre-wrap rounded-lg border border-[#332e2e] bg-[#151111] p-4 font-mono text-[11px] leading-[1.65] text-[#c9c3c0]">
               {reportMd || 'Building report…'}
             </pre>
@@ -589,7 +1092,7 @@ export function RunView(): React.JSX.Element {
                 </TableRow>
               </TableHeader>
               <TableBody className="text-xs">
-                {snapshot!.runs.map((run) => (
+                {visibleRuns.map((run) => (
                   <RunRow
                     key={run.id}
                     run={run}
@@ -606,6 +1109,23 @@ export function RunView(): React.JSX.Element {
                     }
                   />
                 ))}
+                <TableRow className="border-t-2 border-[#4a4342] bg-[#181414] font-medium hover:bg-[#181414]">
+                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">
+                    Total · {visibleRuns.length} attempts
+                  </TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">
+                    {totals.hasScore ? `best ${totals.bestScore.toFixed(2)}` : '—'}
+                  </TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${totals.costUsd.toFixed(2)}</TableCell>
+                  <TableCell
+                    className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]"
+                    title={`${totalTokens.toLocaleString()} combined tokens · ${totals.inputTokens.toLocaleString()} input (including cache) / ${totals.outputTokens.toLocaleString()} output`}
+                  >
+                    <div>{fmtTokens(totalTokens)} total</div>
+                    <div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
+                  </TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]">{fmtDuration(totals.durationMs)}</TableCell>
+                </TableRow>
               </TableBody>
             </Table>
           </div>
@@ -618,8 +1138,8 @@ export function RunView(): React.JSX.Element {
             }}
             className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]"
           >
-            {lines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
-            {lines.map((line, index) => (
+            {visibleLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
+            {visibleLines.map((line, index) => (
               <div key={index} className="flex gap-2 whitespace-pre-wrap break-all">
                 <span className="shrink-0 text-[#4d4744]">{fmtTs(line.ts)}</span>
                 <span className={KIND_COLORS[line.kind] ?? 'text-[#b5afac]'}>{line.text}</span>
@@ -628,6 +1148,8 @@ export function RunView(): React.JSX.Element {
           </div>
         </>
       )}
-    </main>
+        </div>
+      </main>
+    </div>
   )
 }

@@ -20,6 +20,7 @@ import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { buildReport, scanCritiqueArtifacts } from './report'
+import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
 
 const IMPLEMENT_TIMEOUT_MS = 150 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
@@ -48,6 +49,26 @@ function orchestrationSuffix(models: LoopModels): string {
     ? ` When you orchestrate through a workflow, pass \`{agentType: 'implementer'}\` on every \`agent()\` call so each one runs ${models.subagentModel} at ${models.subagentEffort} effort rather than inheriting yours.`
     : ''
   return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} Verify the game actually builds and runs before you finish.`
+}
+
+/**
+ * Which cost figure to trust for an implement run.
+ *
+ * `total_cost_usd` covers the main thread only. On a run that fanned out
+ * through a workflow it reported $5.11 while the CLI's own per-model
+ * accounting reported $14.39 for the same run — the fan-out is missing from
+ * it. `modelUsage` counts every agent and is what the run's breakdown itemises,
+ * so the headline total comes from there whenever the CLI provides it, and the
+ * total always equals the sum of the parts shown beneath it.
+ */
+export function implementCostUsd(
+  perModel: RunMetrics['perModel'],
+  totalCostUsd: number | null,
+  liveEstimate: number | null,
+): number | null {
+  const costs = Object.values(perModel).map((m) => m.costUsd)
+  if (costs.some((c) => c != null)) return costs.reduce((sum: number, c) => sum + (c ?? 0), 0)
+  return totalCostUsd ?? liveEstimate
 }
 
 function trunc(value: string, max: number): string {
@@ -256,7 +277,7 @@ export class LoopRunner {
       const runs = this.ledger.runsForLoop(loop.id)
       const active = runs.find((r) => r.status === 'running')
       if (active) {
-        const meta = this.readMeta(active.id)
+        const meta = this.readMeta(loop.workspaceDir, active.id)
         if (meta) {
           const alive = this.pidAlive(meta.pid)
           this.log(
@@ -386,21 +407,21 @@ export class LoopRunner {
     setTimeout(() => this.pidAlive(pid) && tryKill('SIGKILL'), 15_000).unref()
   }
 
-  private metaPath(runId: string): string {
-    return path.join(runsDir(), `${runId}.json`)
+  private metaPath(workspaceDir: string, runId: string): string {
+    return path.join(runsDir(workspaceDir), `${runId}.json`)
   }
 
-  private readMeta(runId: string): ProcMeta | null {
+  private readMeta(workspaceDir: string, runId: string): ProcMeta | null {
     try {
-      return JSON.parse(fs.readFileSync(this.metaPath(runId), 'utf8')) as ProcMeta
+      return JSON.parse(fs.readFileSync(this.metaPath(workspaceDir, runId), 'utf8')) as ProcMeta
     } catch {
       return null
     }
   }
 
-  private writeMeta(runId: string, meta: ProcMeta): void {
+  private writeMeta(workspaceDir: string, runId: string, meta: ProcMeta): void {
     try {
-      fs.writeFileSync(this.metaPath(runId), JSON.stringify(meta))
+      fs.writeFileSync(this.metaPath(workspaceDir, runId), JSON.stringify(meta))
     } catch {
       /* non-fatal */
     }
@@ -460,8 +481,8 @@ export class LoopRunner {
     args: string[],
     env: Record<string, string>,
   ): { meta: ProcMeta; own: ExitHolder } | null {
-    const outPath = path.join(runsDir(), `${run.id}.out.ndjson`)
-    const errPath = path.join(runsDir(), `${run.id}.err.log`)
+    const outPath = path.join(runsDir(loop.workspaceDir), `${run.id}.out.ndjson`)
+    const errPath = path.join(runsDir(loop.workspaceDir), `${run.id}.err.log`)
     const own: ExitHolder = { exited: false, code: null, spawnError: null }
     let outFd: number
     let errFd: number
@@ -487,7 +508,7 @@ export class LoopRunner {
     })
     child.unref()
     const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
-    this.writeMeta(run.id, meta)
+    this.writeMeta(loop.workspaceDir, run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
     this.broadcast(loop.id)
     return { meta, own }
@@ -567,7 +588,7 @@ export class LoopRunner {
       }
       if (Date.now() - lastMetaWrite > 1_000) {
         lastMetaWrite = Date.now()
-        this.writeMeta(run.id, meta)
+        this.writeMeta(loop.workspaceDir, run.id, meta)
       }
     }
 
@@ -599,7 +620,7 @@ export class LoopRunner {
     this.current = null
     await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
     try {
-      fs.unlinkSync(this.metaPath(run.id))
+      fs.unlinkSync(this.metaPath(loop.workspaceDir, run.id))
     } catch {
       /* already gone */
     }
@@ -672,6 +693,11 @@ export class LoopRunner {
         // Binds the subagent model on both delegation paths: it is what a
         // workflow agent falls back to when the script names no model.
         ...(models.subagentModel ? { CLAUDE_CODE_SUBAGENT_MODEL: models.subagentModel } : {}),
+        // Workflow agents are background tasks, and `claude -p` terminates
+        // those after 600s by default — which kills a fan-out mid-write and
+        // leaves stub files behind. Wait instead; IMPLEMENT_TIMEOUT_MS is the
+        // real bound.
+        CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
       }),
     )
     if (!spawned) return
@@ -691,12 +717,33 @@ export class LoopRunner {
     let fallbackId = 0
     let lastTokenFlush = Date.now()
     let liveCostEstimate: number | null = null
+    // Filled from the init event; without it we cannot locate the workflow dir.
+    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
+    let workflowAgents: AgentMetric[] = []
+    let workflowRuns: WorkflowRunSummary[] = []
+    let workflowTokens = 0
+    const loggedWorkflowRuns = new Set<string>()
+
+    const pollWorkflows = (): void => {
+      if (!sessionId) return
+      const progress = readWorkflowProgress(workflowDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      workflowAgents = progress.agents
+      workflowRuns = progress.runs
+      workflowTokens = progress.totalTokens
+      for (const wf of progress.runs) {
+        const key = `${wf.runId}:${wf.status}`
+        if (loggedWorkflowRuns.has(key)) continue
+        loggedWorkflowRuns.add(key)
+        plog('spawn', `⇉ workflow "${wf.name}" ${wf.status} — ${wf.agentCount} agents · ${formatTokens(wf.totalTokens)} tokens`)
+      }
+    }
 
     // Live token + cost visibility: persist running totals every ~15s so the
     // ledger, dashboard, and report show tokens and estimated cost mid-run.
     const flushTokens = (): void => {
       if (Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
+      pollWorkflows()
       let input = 0
       let output = 0
       const perModel = new Map<string, TokenTotals>()
@@ -719,7 +766,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents),
       })
       this.broadcast(loop.id)
     }
@@ -739,7 +786,7 @@ export class LoopRunner {
 
       if (type === 'system' && obj.subtype === 'init') {
         const model = obj.model as string | undefined
-        const sessionId = (obj.session_id as string | undefined) ?? null
+        sessionId = (obj.session_id as string | undefined) ?? sessionId
         if (model || sessionId) this.ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
         plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
@@ -798,12 +845,22 @@ export class LoopRunner {
     }
 
     const finalize = (exit: ExitInfo): void => {
-      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents)
+      pollWorkflows()
+      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents)
+      if (workflowRuns.length) {
+        plog(
+          'metric',
+          `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens`,
+        )
+      }
       const res = result as Record<string, unknown> | null
       const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
       const finishedAt = new Date().toISOString()
-      // Prefer the CLI's own figure (costBasis 'cli'); fall back to the live table estimate.
-      const costUsd = typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : liveCostEstimate
+      const costUsd = implementCostUsd(
+        metrics.perModel,
+        typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null,
+        liveCostEstimate,
+      )
 
       this.ledger.patchRun(run.id, {
         metrics,
@@ -813,7 +870,7 @@ export class LoopRunner {
           : undefined,
         outputTokens: usage?.output_tokens ?? undefined,
         numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(run.id)?.startedAtMs ?? Date.now()),
+        durationMs: typeof res?.duration_ms === 'number' ? (res.duration_ms as number) : Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()),
         sessionId: (res?.session_id as string | undefined) ?? null,
         summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
         finishedAt,
@@ -859,6 +916,7 @@ export class LoopRunner {
     msgUsage: Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>,
     result: Record<string, unknown> | null,
     finished: Set<string> = new Set(),
+    workflowAgents: AgentMetric[] = [],
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
@@ -910,7 +968,9 @@ export class LoopRunner {
     }
     const list = [...agents.values()]
     list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
-    return { agents: list, perModel }
+    // Workflow agents carry only a scalar token count, so they cannot join
+    // perModel — that stays priced off the stream and the CLI's own figures.
+    return { agents: [...list, ...workflowAgents], perModel }
   }
 
   private logRunMetrics(
@@ -946,8 +1006,8 @@ export class LoopRunner {
 
   // ---------------------------------------------------------------- critique
 
-  private verdictFilePath(runId: string): string {
-    return path.join(runsDir(), `${runId}.verdict.txt`)
+  private verdictFilePath(workspaceDir: string, runId: string): string {
+    return path.join(runsDir(workspaceDir), `${runId}.verdict.txt`)
   }
 
   private async executeCritique(loop: LoopRecord, run: RunRecord): Promise<void> {
@@ -976,7 +1036,7 @@ export class LoopRunner {
               '--effort',
               models.criticEffort,
             ],
-            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude') }),
+            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude'), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }),
           )
         : this.spawnDetached(
             loop,
@@ -1003,7 +1063,7 @@ export class LoopRunner {
               '-c',
               `model_reasoning_effort=${models.criticEffort}`,
               '-o',
-              this.verdictFilePath(run.id),
+              this.verdictFilePath(loop.workspaceDir, run.id),
               run.prompt,
             ],
             subscriptionEnv({ CODEX_HOME: cliHome('codex') }),
@@ -1024,7 +1084,7 @@ export class LoopRunner {
     const tokens = emptyTokens()
     let sawUsage = false
     let failure: string | null = null
-    const startedAtMs = this.readMeta(run.id)?.startedAtMs ?? Date.now()
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
 
     /** Push the running critic totals into the ledger so cost shows mid-run. */
     const flushCritic = (): void => {
@@ -1176,8 +1236,8 @@ export class LoopRunner {
         // codex writes its final message to the -o file; claude streams it in
         // the result event, which onClaudeLine already captured.
         try {
-          verdictText = fs.readFileSync(this.verdictFilePath(run.id), 'utf8') || lastAgentMessage
-          fs.unlinkSync(this.verdictFilePath(run.id))
+          verdictText = fs.readFileSync(this.verdictFilePath(loop.workspaceDir, run.id), 'utf8') || lastAgentMessage
+          fs.unlinkSync(this.verdictFilePath(loop.workspaceDir, run.id))
         } catch {
           /* fall back to streamed message */
         }

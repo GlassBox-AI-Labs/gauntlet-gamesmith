@@ -18,6 +18,12 @@ function Winner({ active }: { active: boolean }): React.JSX.Element | null {
   return <Badge className="absolute right-1.5 top-1.5 border border-emerald-500/50 bg-emerald-500/20 px-1.5 py-0 text-[10px] text-emerald-300">wins</Badge>
 }
 
+const FINDING_STYLES: Record<string, string> = {
+  critical: 'border-red-500/35 bg-red-500/10 text-red-300',
+  major: 'border-amber-500/35 bg-amber-500/10 text-amber-300',
+  minor: 'border-sky-500/35 bg-sky-500/10 text-sky-300',
+}
+
 /** Full drill-down for one critique round: verdict, thoughts, video, side-by-sides. */
 export function CritiqueRoundView({ loopId, round }: { loopId: string; round: CritiqueRound }): React.JSX.Element {
   const [thoughtsOpen, setThoughtsOpen] = useState(false)
@@ -115,13 +121,23 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
       )}
 
       {round.verdict && round.verdict.findings.length > 0 && (
-        <div className="grid gap-1 text-[11px] leading-relaxed">
+        <div className="grid gap-2 text-[11px] leading-relaxed">
           <span className="text-[11px] uppercase tracking-wide text-[#68615f]">Findings</span>
-          {round.verdict.findings.map((finding, index) => (
-            <span key={index} className="text-[#c9c3c0]">
-              <span className="text-[#f2d98c]">[{finding.severity}]</span> {finding.text}
-            </span>
-          ))}
+          {round.verdict.findings.map((finding, index) => {
+            const severity = finding.severity.toLowerCase()
+            return (
+              <div key={index} className="flex items-start gap-2 rounded-md border border-[#332e2e] bg-[#181414] px-2.5 py-2 text-[#c9c3c0]">
+                <span
+                  className={`mt-px shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide ${
+                    FINDING_STYLES[severity] ?? 'border-[#494343] bg-white/[0.03] text-[#96908d]'
+                  }`}
+                >
+                  {finding.severity}
+                </span>
+                <span>{finding.text}</span>
+              </div>
+            )
+          })}
         </div>
       )}
 

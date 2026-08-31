@@ -186,10 +186,28 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
     lines.push(`## Agent breakdown (round ${lastWithAgents.round} ${lastWithAgents.role})`)
     lines.push('')
     for (const agent of lastWithAgents.metrics.agents) {
+      if (agent.source === 'workflow') continue
       const indent = agent.id === 'orchestrator' || agent.id === 'critic' ? '- ' : '  - ↳ '
       lines.push(
         `${indent}**${agent.label}** (${agent.model ?? '?'}): ${agent.messages} msgs · in ${fmtTokens(agent.tokens.input)} · out ${fmtTokens(agent.tokens.output)} · cache r/w ${fmtTokens(agent.tokens.cacheRead)}/${fmtTokens(agent.tokens.cacheWrite)}`,
       )
+    }
+    // Workflow agents report one scalar token count, so they get their own
+    // section rather than columns they cannot fill.
+    const workflow = lastWithAgents.metrics.agents.filter((a) => a.source === 'workflow')
+    if (workflow.length > 0) {
+      const wfTokens = workflow.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0)
+      lines.push(`- **workflow fan-out**: ${workflow.length} agents · ${fmtTokens(wfTokens)} tokens`)
+      let phase: string | null = null
+      for (const agent of workflow) {
+        if (agent.phase !== phase) {
+          phase = agent.phase ?? null
+          if (phase) lines.push(`  - _${phase}_`)
+        }
+        lines.push(
+          `    - ${agent.state === 'done' ? '✓' : '⋯'} **${agent.label}** (${agent.model ?? '?'}): ${fmtTokens(agent.totalTokens ?? 0)} tokens · ${agent.toolCalls ?? 0} tools`,
+        )
+      }
     }
     for (const [model, mu] of Object.entries(lastWithAgents.metrics.perModel)) {
       lines.push(`- ${model}: ${mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in ${fmtTokens(mu.tokens.input)} · out ${fmtTokens(mu.tokens.output)}`)
@@ -198,7 +216,7 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
   }
 
   lines.push(
-    `_Costs are equivalent API cost estimates (claude: CLI-reported at run end, table mid-run; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
+    `_Costs are equivalent API cost estimates (claude: the CLI's per-model breakdown at run end, which counts workflow agents that its total_cost_usd omits, and a price-table estimate mid-run that undercounts a fan-out in flight; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
   )
   return lines.join('\n')
 }
