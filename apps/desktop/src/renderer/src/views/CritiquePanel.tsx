@@ -26,7 +26,7 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
   const mediaUrl = (rel: string): string => (base ? `${base}/${loopId}/${rel.split('/').map(encodeURIComponent).join('/')}` : '')
 
   return (
-    <div className="grid gap-4">
+    <div className="grid grid-cols-1 gap-4">
       {round.verdict && (
         <p className="text-xs leading-relaxed text-[#c9c3c0]">
           <span className="font-mono text-[#f2d98c]">★ {round.verdict.score.toFixed(2)}</span>
@@ -50,7 +50,7 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
       )}
 
       {round.videos.length > 0 && (
-        <div className="grid gap-2">
+        <div className="grid grid-cols-1 gap-2">
           <span className="text-[11px] uppercase tracking-wide text-[#68615f]">Gameplay recording</span>
           {round.videos.map((video) => (
             <video key={video} controls muted className="max-h-[320px] w-full rounded-lg border border-[#332e2e] bg-black" src={mediaUrl(video)} />
@@ -59,10 +59,10 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
       )}
 
       {round.pairs && round.pairs.length > 0 ? (
-        <div className="grid gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <span className="text-[11px] uppercase tracking-wide text-[#68615f]">Blind side-by-side ({round.pairs.length} pairs)</span>
           {round.pairs.map((pair, index) => (
-            <div key={index} className="grid gap-1.5">
+            <div key={index} className="grid grid-cols-1 gap-1.5">
               <div className="grid grid-cols-2 gap-2">
                 <figure className="relative">
                   <Winner active={pair.winner === 'shot'} />
@@ -156,7 +156,7 @@ export function CritiquePanel({ loopId, refreshKey }: { loopId: string; refreshK
   }
 
   return (
-    <div className="mb-5 grid gap-4 rounded-lg border border-[#332e2e] bg-[#151111] p-4">
+    <div className="mb-5 grid grid-cols-1 gap-4 rounded-lg border border-[#332e2e] bg-[#151111] p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[11px] uppercase tracking-wide text-[#68615f]">Critique round</span>
         {rounds.map((r) => (
