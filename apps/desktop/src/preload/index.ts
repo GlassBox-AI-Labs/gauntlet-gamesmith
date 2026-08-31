@@ -23,6 +23,9 @@ const harnesses: HarnessApi = {
 }
 
 const loops: LoopApi = {
+  list: () => ipcRenderer.invoke('loop:list'),
+  get: (loopId) => ipcRenderer.invoke('loop:get', loopId),
+  rename: (loopId, title) => ipcRenderer.invoke('loop:rename', loopId, title),
   critique: (loopId) => ipcRenderer.invoke('loop:critique', loopId),
   mediaBase: () => ipcRenderer.invoke('media:base'),
   playStart: (loopId) => ipcRenderer.invoke('play:start', loopId),

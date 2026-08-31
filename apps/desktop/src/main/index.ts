@@ -274,6 +274,20 @@ function registerLoopIpc(): void {
   })
   ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })
   ipcMain.handle('loop:stop', (_event, value: unknown) => loopRunner?.stop(String(value)))
+  ipcMain.handle('loop:list', () =>
+    ledger?.loops().map((loop) => ({ loop, runs: ledger!.runsForLoop(loop.id) })) ?? [],
+  )
+  ipcMain.handle('loop:get', (_event, value: unknown) => {
+    const loop = ledger?.getLoop(String(value))
+    return loop && ledger ? { loop, runs: ledger.runsForLoop(loop.id) } : null
+  })
+  ipcMain.handle('loop:rename', (_event, loopId: unknown, value: unknown) => {
+    if (!ledger) return null
+    const title = String(value ?? '').trim().slice(0, 80)
+    if (!title || !ledger.getLoop(String(loopId))) return null
+    ledger.patchLoop(String(loopId), { title })
+    return ledger.getLoop(String(loopId))
+  })
   ipcMain.handle('loop:active', () => loopRunner?.snapshot() ?? null)
   ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) =>
     ledger?.eventsForLoop(String(loopId), Math.min(2000, Math.max(1, Number(limit) || 800))) ?? [],

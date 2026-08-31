@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { LoopModels } from '../shared/loop'
-import { Ledger } from './ledger'
+import { defaultLoopTitle, Ledger } from './ledger'
 
 const models: LoopModels = {
   orchestratorModel: 'claude-fable-5',
@@ -27,10 +27,16 @@ afterEach(() => {
 })
 
 describe('Ledger', () => {
+  it('derives concise, tasteful run titles from prompts', () => {
+    expect(defaultLoopTitle('Build "Pac-Claude" — a modern AAA game')).toBe('Pac-claude')
+    expect(defaultLoopTitle('Create a polished authentication flow: include passkeys')).toBe('A polished authentication flow')
+  })
+
   it('round-trips loops, runs, verdicts and metrics', () => {
     const ledger = makeLedger()
     const loop = ledger.createLoop({ prompt: 'build it', workspaceDir: '/tmp/w', maxRounds: 5, budgetUsd: 50, models })
     expect(loop.status).toBe('running')
+    expect(loop.title).toBe('It')
     expect(loop.models.criticModel).toBe('gpt-5.6-sol')
 
     const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'p1' })
@@ -54,12 +60,30 @@ describe('Ledger', () => {
     ledger.close()
   })
 
+  it('persists an operator-supplied run title', () => {
+    const ledger = makeLedger()
+    const loop = ledger.createLoop({ prompt: 'Build a game', workspaceDir: '/tmp/w', maxRounds: 1, budgetUsd: null, models })
+    ledger.patchLoop(loop.id, { title: 'Arcade study' })
+
+    expect(ledger.getLoop(loop.id)?.title).toBe('Arcade study')
+    ledger.close()
+  })
+
   it('appends and reads back events in order', () => {
     const ledger = makeLedger()
     const loop = ledger.createLoop({ prompt: 'p', workspaceDir: '/tmp/w', maxRounds: 1, budgetUsd: null, models })
     for (let i = 0; i < 5; i += 1) ledger.appendEvent({ loopId: loop.id, runId: null, ts: `t${i}`, kind: 'system', text: `line ${i}` })
     const lines = ledger.eventsForLoop(loop.id, 3)
     expect(lines.map((l) => l.text)).toEqual(['line 2', 'line 3', 'line 4'])
+    ledger.close()
+  })
+
+  it('lists every run with the newest prompt first', () => {
+    const ledger = makeLedger()
+    const first = ledger.createLoop({ prompt: 'first', workspaceDir: '/tmp/one', maxRounds: 1, budgetUsd: null, models })
+    const second = ledger.createLoop({ prompt: 'second', workspaceDir: '/tmp/two', maxRounds: 1, budgetUsd: null, models })
+
+    expect(ledger.loops().map((loop) => loop.id)).toEqual([second.id, first.id])
     ledger.close()
   })
 

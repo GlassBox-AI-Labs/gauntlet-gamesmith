@@ -75,6 +75,7 @@ export interface RunRecord {
 
 export interface LoopRecord {
   id: string
+  title: string
   prompt: string
   workspaceDir: string
   maxRounds: number
@@ -141,6 +142,9 @@ export interface CritiqueRound {
 }
 
 export interface LoopApi {
+  list(): Promise<LoopSnapshot[]>
+  get(loopId: string): Promise<LoopSnapshot | null>
+  rename(loopId: string, title: string): Promise<LoopRecord | null>
   critique(loopId: string): Promise<CritiqueRound[]>
   mediaBase(): Promise<string | null>
   playStart(loopId: string): Promise<PlayState>

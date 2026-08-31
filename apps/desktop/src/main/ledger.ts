@@ -18,6 +18,7 @@ import { RESUME_PREFIX } from '../shared/loop'
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS loops (
   id TEXT PRIMARY KEY,
+  title TEXT,
   prompt TEXT NOT NULL,
   workspace_dir TEXT NOT NULL,
   max_rounds INTEGER NOT NULL,
@@ -71,6 +72,7 @@ function now(): string {
 
 interface LoopRow {
   id: string
+  title: string | null
   prompt: string
   workspace_dir: string
   max_rounds: number
@@ -108,9 +110,21 @@ interface RunRow {
   finished_at: string | null
 }
 
+export function defaultLoopTitle(prompt: string): string {
+  const compact = prompt.replace(/\s+/g, ' ').trim()
+  const quoted = compact.match(/["“]([^"”]{1,80})["”]/)?.[1]
+  const unquoted = compact
+    .replace(/^(?:please\s+)?(?:build|create|make|develop|implement)\s+/i, '')
+    .split(/\s+[—–]\s+|:\s+/)[0]
+  const candidate = (quoted ?? unquoted).replace(/[.!?]+$/, '').trim().slice(0, 56) || 'Untitled run'
+  const normalized = candidate.replace(/-([A-Z])([a-z]+)/g, (_match, initial: string, rest: string) => `-${initial.toLowerCase()}${rest}`)
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
 function toLoop(row: LoopRow): LoopRecord {
   return {
     id: row.id,
+    title: row.title || defaultLoopTitle(row.prompt),
     prompt: row.prompt,
     workspaceDir: row.workspace_dir,
     maxRounds: row.max_rounds,
@@ -169,6 +183,7 @@ export interface RunPatch {
 }
 
 export interface LoopPatch {
+  title?: string
   status?: LoopStatus
   round?: number
   totalCostUsd?: number
@@ -183,6 +198,8 @@ export class Ledger {
     this.db = new DatabaseSync(dbPath)
     this.db.exec('PRAGMA journal_mode = WAL;')
     this.db.exec(SCHEMA)
+    const loopColumns = this.db.prepare('PRAGMA table_info(loops)').all() as unknown as { name: string }[]
+    if (!loopColumns.some((column) => column.name === 'title')) this.db.exec('ALTER TABLE loops ADD COLUMN title TEXT;')
   }
 
   createLoop(input: {
@@ -196,16 +213,17 @@ export class Ledger {
     const ts = now()
     this.db
       .prepare(
-        `INSERT INTO loops (id, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'running', 1, 0, ?, ?)`,
+        `INSERT INTO loops (id, title, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 1, 0, ?, ?)`,
       )
-      .run(id, input.prompt, input.workspaceDir, input.maxRounds, input.budgetUsd, JSON.stringify(input.models), ts, ts)
+      .run(id, defaultLoopTitle(input.prompt), input.prompt, input.workspaceDir, input.maxRounds, input.budgetUsd, JSON.stringify(input.models), ts, ts)
     return this.getLoop(id)!
   }
 
   patchLoop(id: string, patch: LoopPatch): void {
     const sets: string[] = ['updated_at = ?']
     const values: (string | number | null)[] = [now()]
+    if (patch.title !== undefined) (sets.push('title = ?'), values.push(patch.title))
     if (patch.status !== undefined) (sets.push('status = ?'), values.push(patch.status))
     if (patch.round !== undefined) (sets.push('round = ?'), values.push(patch.round))
     if (patch.totalCostUsd !== undefined) (sets.push('total_cost_usd = ?'), values.push(patch.totalCostUsd))
@@ -221,6 +239,11 @@ export class Ledger {
   latestLoop(): LoopRecord | null {
     const row = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC LIMIT 1').get() as LoopRow | undefined
     return row ? toLoop(row) : null
+  }
+
+  loops(): LoopRecord[] {
+    const rows = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC').all() as unknown as LoopRow[]
+    return rows.map(toLoop)
   }
 
   runningLoop(): LoopRecord | null {

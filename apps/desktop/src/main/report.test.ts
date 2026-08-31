@@ -4,6 +4,7 @@ import { buildReport } from './report'
 
 const loop: LoopRecord = {
   id: 'l1',
+  title: 'Pac-man',
   prompt: 'Build Pac-Man at AAA quality',
   workspaceDir: '/tmp/w',
   maxRounds: 10,
