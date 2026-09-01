@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { Check, Copy, FileText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { Button } from '@/components/ui/button'
@@ -12,7 +12,7 @@ export interface PromptItem {
   value: string
 }
 
-function MarkdownPrompt({ value }: { value: string }): React.JSX.Element {
+const MarkdownPrompt = memo(function MarkdownPrompt({ value }: { value: string }): React.JSX.Element {
   return (
     <ReactMarkdown
       components={{
@@ -36,7 +36,7 @@ function MarkdownPrompt({ value }: { value: string }): React.JSX.Element {
       {value}
     </ReactMarkdown>
   )
-}
+})
 
 /** Compact prompt tiles backed by one shadcn Sheet reader. */
 export function PromptBrowser({ prompts }: { prompts: PromptItem[] }): React.JSX.Element {
