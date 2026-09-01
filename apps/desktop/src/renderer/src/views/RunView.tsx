@@ -25,15 +25,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
-  CRITICS,
-  DEFAULT_CRITIC_ID,
+  AGENT_EFFORTS,
+  AGENT_MODEL_CHOICES,
+  DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
-  findCritic,
-  MODEL_CHOICES,
+  describeCritic,
   modelLabel,
-  ORCHESTRATOR_EFFORTS,
+  orchestratorEfforts,
   SOLO_SUBAGENT,
-  SUBAGENT_EFFORTS,
+  type CriticFields,
   type ImplementerFields,
 } from '../../../shared/models'
 
@@ -75,6 +75,15 @@ function fmtTokens(n: number | null | undefined): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+/**
+ * Working right now: not finished, and it wrote something in the last 90s.
+ * A run that ended long ago fails the time test on its own, so a finished
+ * run's breakdown shows no live dots without tracking that separately.
+ */
+function agentActive(agent: AgentMetric): boolean {
+  return !agent.done && agent.lastTs != null && Date.now() - new Date(agent.lastTs).getTime() < 90_000
 }
 
 function fmtDuration(ms: number | null | undefined): string {
@@ -450,6 +459,10 @@ function RunRow({
                 .filter((agent) => agent.source !== 'workflow')
                 .map((agent) => (
                   <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
+                    {/* Transparent when idle so every row keeps the same indent. */}
+                    <span
+                      className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${agentActive(agent) ? 'animate-pulse bg-emerald-400' : 'bg-transparent'}`}
+                    />
                     {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
                     {agent.label}
                     <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
@@ -483,7 +496,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [maxRounds, setMaxRounds] = useState('10')
   const [budget, setBudget] = useState('')
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
-  const [criticId, setCriticId] = useState(DEFAULT_CRITIC_ID)
+  const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -530,7 +543,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           subagentModel: initial.loop.models.subagentModel,
           subagentEffort: initial.loop.models.subagentEffort,
         })
-        setCriticId(initial.loop.models.criticId)
+        setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -566,7 +579,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   }, [activeLoopId])
 
   const loop = snapshot?.loop ?? null
-  const critic = findCritic(criticId)
   const running = loop?.status === 'running'
   const now = useNow(running)
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
@@ -615,7 +627,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         maxRounds: Number(maxRounds) || 10,
         budgetUsd: budget.trim() ? Number(budget) : null,
         ...impl,
-        criticId,
+        ...critic,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -648,7 +660,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       subagentModel: next.loop.models.subagentModel,
       subagentEffort: next.loop.models.subagentEffort,
     })
-    setCriticId(next.loop.models.criticId)
+    setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
     setSelectedRound(round)
     setRenaming(false)
     setComposing(false)
@@ -801,16 +813,33 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           <div className="mx-5 mb-4 grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Orchestrator</span>
-              <Select value={impl.orchestratorModel} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorModel: value }))}>
+              <Select
+                value={impl.orchestratorModel}
+                onValueChange={(value) =>
+                  setImpl((current) => ({
+                    ...current,
+                    orchestratorModel: value,
+                    // ultracode and ultra belong to different CLIs, so a switch
+                    // between harnesses must not carry the old level across.
+                    orchestratorEffort: orchestratorEfforts(value).includes(current.orchestratorEffort)
+                      ? current.orchestratorEffort
+                      : 'high',
+                  }))
+                }
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
                 </SelectContent>
               </Select>
               <Select value={impl.orchestratorEffort} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorEffort: value }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {ORCHESTRATOR_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort === 'ultracode' ? 'ultracode (xhigh + workflows)' : effort}</SelectItem>)}
+                  {orchestratorEfforts(impl.orchestratorModel).map((effort) => (
+                    <SelectItem key={effort} value={effort}>
+                      {effort === 'ultracode' ? 'ultracode (xhigh + workflows)' : effort === 'ultra' ? 'ultra (max + delegation)' : effort}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -822,7 +851,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
                   <SelectItem value={SOLO_SUBAGENT}>none (solo)</SelectItem>
                 </SelectContent>
               </Select>
@@ -833,16 +862,28 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               >
                 <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {SUBAGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-[92px_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
-              <Select value={criticId} onValueChange={setCriticId}>
+              <Select
+                value={critic.criticModel}
+                onValueChange={(value) => setCritic((current) => ({ ...current, criticModel: value }))}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {CRITICS.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select
+                value={critic.criticEffort}
+                onValueChange={(value) => setCritic((current) => ({ ...current, criticEffort: value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -859,7 +900,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             <p className="text-xs leading-relaxed text-[#7d7772]">
               {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
               {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
-              {critic.detail}
+              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}
             </p>
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
@@ -1108,7 +1149,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             <div className="mb-5 flex flex-wrap items-center gap-2">
               <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
               {liveRun.metrics.agents.map((agent) => {
-                const active = !agent.done && agent.lastTs != null && Date.now() - new Date(agent.lastTs).getTime() < 90_000
+                const active = agentActive(agent)
                 return (
                   <span
                     key={agent.id}

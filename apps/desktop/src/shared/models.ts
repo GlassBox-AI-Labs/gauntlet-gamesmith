@@ -1,27 +1,69 @@
 import type { HarnessKind } from './harness'
 import type { LoopModels } from './loop'
 
+/** Per-agent effort. Both CLIs accept these five for any agent. */
+export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
 /**
- * Effort levels the claude CLI accepts. `ultracode` is not in `--help` and not
- * in the CLI's own "valid values" warning, but v2.1.203+ accepts it: it sends
- * xhigh to the model AND turns on automatic workflow orchestration. Verified on
- * v2.1.231 — an unknown value warns, `ultracode` does not.
+ * Session-level efforts that also switch on the CLI's own fan-out.
+ *
+ * `ultracode` is not in claude's `--help` and not in its "valid values"
+ * warning, but v2.1.203+ accepts it: it sends xhigh to the model AND turns on
+ * automatic workflow orchestration. Codex's equivalent is `ultra`, which its
+ * model metadata describes as "Maximum reasoning with automatic task
+ * delegation" — offered by sol and terra, not luna.
  */
-export const ORCHESTRATOR_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'] as const
-/** Subagent effort is per-agent, so the session-level `ultracode` has no meaning here. */
-export const SUBAGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export const CLAUDE_ORCHESTRATOR_EFFORTS = [...AGENT_EFFORTS, 'ultracode'] as const
+export const CODEX_ORCHESTRATOR_EFFORTS = [...AGENT_EFFORTS, 'ultra'] as const
 
 export interface ModelChoice {
   id: string
   label: string
 }
 
-/** All three support xhigh, so `ultracode` is available whichever one orchestrates. */
-export const MODEL_CHOICES: readonly ModelChoice[] = [
+const CLAUDE_MODELS: readonly ModelChoice[] = [
   { id: 'claude-opus-5', label: 'Opus 5' },
   { id: 'claude-fable-5', label: 'Fable 5' },
   { id: 'claude-sonnet-5', label: 'Sonnet 5' },
 ]
+
+/**
+ * Every model any role can be given. The harness follows from the model name,
+ * so a run never stores it separately.
+ *
+ * The codex entries are the gpt-5.6 models it offers, in its own words: sol is
+ * the frontier coder, terra is balanced for everyday work, luna is fast and
+ * cheap. The list comes from `$CODEX_HOME/models_cache.json`; plain `gpt-5.6`
+ * and `gpt-5.6-codex` are not in it and are refused with a 400.
+ */
+export const AGENT_MODEL_CHOICES: readonly ModelChoice[] = [
+  ...CLAUDE_MODELS,
+  { id: 'gpt-5.6-sol', label: 'Codex · gpt-5.6-sol' },
+  { id: 'gpt-5.6-terra', label: 'Codex · gpt-5.6-terra' },
+  { id: 'gpt-5.6-luna', label: 'Codex · gpt-5.6-luna' },
+]
+
+export function isCodexModel(id: string | null | undefined): boolean {
+  return !!id && id.startsWith('gpt-')
+}
+
+/** Which CLI a model runs on. Every role derives its harness this way. */
+export function harnessFor(model: string | null | undefined): HarnessKind {
+  return isCodexModel(model) ? 'codex' : 'claude'
+}
+
+export function orchestratorEfforts(model: string): readonly string[] {
+  return isCodexModel(model) ? CODEX_ORCHESTRATOR_EFFORTS : CLAUDE_ORCHESTRATOR_EFFORTS
+}
+
+/**
+ * True when the workers run on a different CLI than the orchestrator. Neither
+ * CLI can host the other's model, so these runs delegate by shelling out —
+ * see the delegation rules in loop-runner.
+ */
+export function isCrossHarness(models: Pick<LoopModels, 'orchestratorModel' | 'subagentModel'>): boolean {
+  return !!models.subagentModel && harnessFor(models.subagentModel) !== harnessFor(models.orchestratorModel)
+}
 
 export const SOLO_SUBAGENT = 'none'
 
@@ -33,15 +75,6 @@ export interface ImplementerFields {
   subagentEffort: string
 }
 
-export interface CriticPreset {
-  id: string
-  label: string
-  detail: string
-  harness: HarnessKind
-  model: string
-  effort: string
-}
-
 /** Where the run form starts: the combination worth reaching for by default. */
 export const DEFAULT_IMPLEMENTER: ImplementerFields = {
   orchestratorModel: 'claude-opus-5',
@@ -50,62 +83,29 @@ export const DEFAULT_IMPLEMENTER: ImplementerFields = {
   subagentEffort: 'high',
 }
 
-export const CRITICS: readonly CriticPreset[] = [
-  {
-    id: 'codex-sol-medium',
-    label: 'Codex · gpt-5.6-sol (medium)',
-    detail: 'A different model family from the implementer, so the critic has no attachment to the code.',
-    harness: 'codex',
-    model: 'gpt-5.6-sol',
-    effort: 'medium',
-  },
-  {
-    id: 'codex-sol-high',
-    label: 'Codex · gpt-5.6-sol (high)',
-    detail: 'Same critic, more reasoning per round — slower and dearer, but harder to fool.',
-    harness: 'codex',
-    model: 'gpt-5.6-sol',
-    effort: 'high',
-  },
-  {
-    id: 'claude-opus-high',
-    label: 'Claude · Opus 5 (high)',
-    detail: 'Strongest Claude critic. Same family as the implementer, so expect a friendlier grader.',
-    harness: 'claude',
-    model: 'claude-opus-5',
-    effort: 'high',
-  },
-  {
-    id: 'claude-fable-high',
-    label: 'Claude · Fable 5 (high)',
-    detail: 'Claude critic on the Fable model. Same family as the implementer.',
-    harness: 'claude',
-    model: 'claude-fable-5',
-    effort: 'high',
-  },
-  {
-    id: 'claude-sonnet-medium',
-    label: 'Claude · Sonnet 5 (medium)',
-    detail: 'Cheapest critic. Good for long cheap loops, weaker at spotting subtle visual shortfalls.',
-    harness: 'claude',
-    model: 'claude-sonnet-5',
-    effort: 'medium',
-  },
-]
+/** The critic is picked as a model and an effort, the same way subagents are. */
+export interface CriticFields {
+  criticModel: string
+  criticEffort: string
+}
 
-export const DEFAULT_CRITIC_ID = CRITICS[0].id
+/** Where the run form starts: a critic outside the implementer's model family. */
+export const DEFAULT_CRITIC: CriticFields = { criticModel: 'gpt-5.6-sol', criticEffort: 'medium' }
 
-export function findCritic(id: string | null | undefined): CriticPreset {
-  return CRITICS.find((p) => p.id === id) ?? CRITICS[0]
+/** The one-line note under the run form, judged against who is implementing. */
+export function describeCritic(criticModel: string, implementerModel: string): string {
+  return isCodexModel(criticModel) === isCodexModel(implementerModel)
+    ? 'Same model family as the implementer, so expect a friendlier grader.'
+    : 'A different model family from the implementer, so the critic has no attachment to the code.'
 }
 
 export function modelLabel(id: string | null | undefined): string {
-  return MODEL_CHOICES.find((m) => m.id === id)?.label ?? id ?? 'none'
+  return AGENT_MODEL_CHOICES.find((m) => m.id === id)?.label ?? id ?? 'none'
 }
 
-/** Ultracode is an orchestrator effort level, not a separate switch. */
+/** Fan-out is an orchestrator effort level, not a separate switch: `ultracode` on claude, `ultra` on codex. */
 export function isUltracode(models: Pick<LoopModels, 'orchestratorEffort'>): boolean {
-  return models.orchestratorEffort === 'ultracode'
+  return models.orchestratorEffort === 'ultracode' || models.orchestratorEffort === 'ultra'
 }
 
 function pick<T extends string>(allowed: readonly T[], value: string | null | undefined, fallback: T): T {
@@ -113,41 +113,50 @@ function pick<T extends string>(allowed: readonly T[], value: string | null | un
 }
 
 /** Clamp whatever the form sent to values the CLIs actually accept. */
-export function resolveModels(fields: Partial<ImplementerFields> | null | undefined, criticId: string | null | undefined): LoopModels {
+export function resolveModels(
+  fields: Partial<ImplementerFields> | null | undefined,
+  critic: Partial<CriticFields> | null | undefined,
+): LoopModels {
   const base = DEFAULT_IMPLEMENTER
-  const critic = findCritic(criticId)
   const subagentModel =
     fields?.subagentModel === null || fields?.subagentModel === SOLO_SUBAGENT
       ? null
-      : MODEL_CHOICES.some((m) => m.id === fields?.subagentModel)
+      : AGENT_MODEL_CHOICES.some((m) => m.id === fields?.subagentModel)
         ? fields!.subagentModel!
         : base.subagentModel
+  const criticModel = AGENT_MODEL_CHOICES.some((m) => m.id === critic?.criticModel)
+    ? critic!.criticModel!
+    : DEFAULT_CRITIC.criticModel
+  const orchestratorModel = AGENT_MODEL_CHOICES.some((m) => m.id === fields?.orchestratorModel)
+    ? fields!.orchestratorModel!
+    : base.orchestratorModel
   const resolved: ImplementerFields = {
-    orchestratorModel: MODEL_CHOICES.some((m) => m.id === fields?.orchestratorModel)
-      ? fields!.orchestratorModel!
-      : base.orchestratorModel,
-    orchestratorEffort: pick(ORCHESTRATOR_EFFORTS, fields?.orchestratorEffort, base.orchestratorEffort as 'ultracode'),
+    orchestratorModel,
+    orchestratorEffort: pick(
+      orchestratorEfforts(orchestratorModel),
+      fields?.orchestratorEffort,
+      isCodexModel(orchestratorModel) ? 'high' : base.orchestratorEffort,
+    ),
     subagentModel,
-    subagentEffort: pick(SUBAGENT_EFFORTS, fields?.subagentEffort, base.subagentEffort as 'high'),
+    subagentEffort: pick(AGENT_EFFORTS, fields?.subagentEffort, base.subagentEffort as 'high'),
   }
   return {
     ...resolved,
-    criticId: critic.id,
-    criticHarness: critic.harness,
-    criticModel: critic.model,
-    criticEffort: critic.effort,
+    criticHarness: harnessFor(criticModel),
+    criticModel,
+    criticEffort: pick(AGENT_EFFORTS, critic?.criticEffort, DEFAULT_CRITIC.criticEffort as 'medium'),
   }
 }
 
 /**
  * Older ledger rows predate these fields. Older still are rows written before
  * ultracode moved from a prompt keyword to an effort level — those carry an
- * `ultracode: true` boolean, which becomes the ultracode effort here.
+ * `ultracode: true` boolean, which becomes the ultracode effort here. Rows from
+ * the critic-preset era carry a `criticId`, which is ignored: they store the
+ * model and effort that preset stood for anyway.
  */
 export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolean }) | null | undefined): LoopModels {
-  if (!raw) return resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC_ID)
-  const criticId =
-    raw.criticId ?? CRITICS.find((c) => c.model === raw.criticModel && c.effort === raw.criticEffort)?.id ?? DEFAULT_CRITIC_ID
+  if (!raw) return resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
   const models = resolveModels(
     {
       orchestratorModel: raw.orchestratorModel,
@@ -155,17 +164,17 @@ export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolea
       subagentModel: raw.subagentModel,
       subagentEffort: raw.subagentEffort,
     },
-    criticId,
+    { criticModel: raw.criticModel, criticEffort: raw.criticEffort },
   )
-  // Keep a model name a preset no longer offers rather than silently retitling
-  // an old run, but only where it is still a name the CLI would accept.
+  // Keep a model name the picker no longer offers rather than silently
+  // retitling an old run, but only where it is still a name a CLI would accept.
   const criticModel = raw.criticModel ?? models.criticModel
   return {
     ...models,
     orchestratorModel: raw.orchestratorModel ?? models.orchestratorModel,
-    // A stored model name the preset list no longer matches must still spawn on
-    // the right CLI, so fall back to reading the harness off the model name.
-    criticHarness: raw.criticHarness ?? (criticModel.startsWith('claude') ? 'claude' : models.criticHarness),
+    // A stored model name the picker no longer matches must still spawn on the
+    // right CLI, so fall back to reading the harness off the model name.
+    criticHarness: raw.criticHarness ?? harnessFor(criticModel),
     criticModel,
     criticEffort: raw.criticEffort ?? models.criticEffort,
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { implementCostUsd } from './loop-runner'
+import { implementCostUsd, implementTokens } from './loop-runner'
 import type { RunMetrics } from '../shared/loop'
 
 const perModel = (entries: Record<string, number | null>): RunMetrics['perModel'] =>
@@ -39,5 +39,27 @@ describe('implementCostUsd', () => {
 
   it('counts a zero-cost model instead of discarding the breakdown', () => {
     expect(implementCostUsd(perModel({ a: 0, b: 3 }), 99, null)).toBe(3)
+  })
+})
+
+describe('implementTokens', () => {
+  const usage = { input_tokens: 100, cache_read_input_tokens: 900, cache_creation_input_tokens: 0, output_tokens: 50 }
+
+  it('counts the whole fan-out, not just the orchestrator thread', () => {
+    // The CLI's per-model figures include every agent; result.usage does not,
+    // so preferring usage made the live count collapse at the end of a round.
+    const perModel = {
+      'claude-opus-5': { costUsd: 14, tokens: { input: 1_000, output: 2_000, cacheRead: 30_000, cacheWrite: 500 } },
+      'gpt-5.6-sol': { costUsd: 3, tokens: { input: 400, output: 100, cacheRead: 0, cacheWrite: 0 } },
+    }
+    expect(implementTokens(perModel, usage)).toEqual({ input: 31_900, output: 2_100 })
+  })
+
+  it('falls back to the orchestrator thread when the CLI reports no per-model split', () => {
+    expect(implementTokens({}, usage)).toEqual({ input: 1_000, output: 50 })
+  })
+
+  it('reports nothing rather than zero when neither source knows', () => {
+    expect(implementTokens({}, undefined)).toBeNull()
   })
 })

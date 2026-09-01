@@ -9,9 +9,15 @@ describe('estimateCostUsd', () => {
   })
 
   it('prices the codex critic', () => {
-    // 200k in ($1.00) + 50k out ($1.50) + 1M cached ($0.50)
+    // 200k in ($0.80) + 50k out ($1.00) + 1M cached ($0.40)
     const cost = estimateCostUsd('gpt-5.6-sol', { input: 200_000, output: 50_000, cacheRead: 1_000_000, cacheWrite: 0 })
-    expect(cost).toBeCloseTo(1 + 1.5 + 0.5, 5)
+    expect(cost).toBeCloseTo(0.8 + 1 + 0.4, 5)
+  })
+
+  it('prices the cheaper codex subagent tiers', () => {
+    // luna: 1M in ($0.20) + 1M out ($1.20)
+    expect(estimateCostUsd('gpt-5.6-luna', { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(1.4, 5)
+    expect(estimateCostUsd('gpt-5.6-terra', { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(14, 5)
   })
 
   it('matches model id variants and rejects unknown models', () => {

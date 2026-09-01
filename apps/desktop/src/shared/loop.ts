@@ -69,8 +69,6 @@ export interface LoopModels {
   /** null = the orchestrator implements by itself, with no subagents. */
   subagentModel: string | null
   subagentEffort: string
-  /** Id of the critic preset picked on the run form. */
-  criticId: string
   criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
@@ -141,7 +139,8 @@ export interface StartLoopInput {
   /** null = no implementer subagents; the orchestrator does the work itself. */
   subagentModel: string | null
   subagentEffort: string
-  criticId: string
+  criticModel: string
+  criticEffort: string
 }
 
 export interface StartLoopResult {

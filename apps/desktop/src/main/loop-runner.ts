@@ -15,7 +15,11 @@ import type {
   Verdict,
 } from '../shared/loop'
 import { RESUME_PREFIX } from '../shared/loop'
-import { describeModels, isUltracode, resolveModels } from '../shared/models'
+import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
+import { agentsDir, childrenActive, readChildAgents } from './child-agents'
+import { codexTokens, readCodexUsage } from './codex-usage'
+import { delegationRules, implementerAgentMd } from './delegation'
+import { critiquePlan, implementPlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
@@ -33,32 +37,9 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
+/** No write to a delegated worker's stream for this long counts as finished. */
+const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
-
-function implementerAgentMd(models: LoopModels): string {
-  return `---
-name: implementer
-description: Builds and polishes one assigned slice of the game to AAA quality. Use for ALL substantial implementation work.
-model: ${models.subagentModel ?? models.orchestratorModel}
-effort: ${models.subagentEffort}
----
-You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, level design, ...). Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
-`
-}
-
-function orchestrationSuffix(models: LoopModels): string {
-  if (!models.subagentModel) {
-    return 'Working rules: you implement this yourself — do NOT delegate to subagents. Verify the game actually builds and runs before you finish.'
-  }
-  // A workflow agent picks its model as: model the script names → the agent
-  // file's frontmatter → CLAUDE_CODE_SUBAGENT_MODEL → the session model. The env
-  // var (set on the spawn) pins the model either way, but effort only binds
-  // through the agent file, so the script has to name the agent type to get it.
-  const workflowRule = isUltracode(models)
-    ? ` When you orchestrate through a workflow, pass \`{agentType: 'implementer'}\` on every \`agent()\` call so each one runs ${models.subagentModel} at ${models.subagentEffort} effort rather than inheriting yours.`
-    : ''
-  return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} Verify the game actually builds and runs before you finish.`
-}
 
 /**
  * Which cost figure to trust for an implement run.
@@ -78,6 +59,34 @@ export function implementCostUsd(
   const costs = Object.values(perModel).map((m) => m.costUsd)
   if (costs.some((c) => c != null)) return costs.reduce((sum: number, c) => sum + (c ?? 0), 0)
   return totalCostUsd ?? liveEstimate
+}
+
+/**
+ * Token totals for an implement run.
+ *
+ * `result.usage` covers the orchestrator's own thread. On a fan-out that is a
+ * sliver of the run, so writing it over the live figures at finalize made the
+ * counter collapse the moment the round ended — the same trap implementCostUsd
+ * already avoids for cost. `perModel` comes from the CLI's own modelUsage,
+ * which counts every agent, so it wins whenever the CLI provides it. Null means
+ * neither source knows, and the live figures should be left alone.
+ */
+export function implementTokens(
+  perModel: RunMetrics['perModel'],
+  usage: Record<string, number> | undefined,
+): { input: number; output: number } | null {
+  const models = Object.values(perModel)
+  if (models.length) {
+    return {
+      input: models.reduce((sum, m) => sum + m.tokens.input + m.tokens.cacheRead + m.tokens.cacheWrite, 0),
+      output: models.reduce((sum, m) => sum + m.tokens.output, 0),
+    }
+  }
+  if (!usage) return null
+  return {
+    input: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+    output: usage.output_tokens ?? 0,
+  }
 }
 
 function trunc(value: string, max: number): string {
@@ -152,7 +161,7 @@ function normalizeVerdict(value: unknown): Verdict | null {
 }
 
 function buildImplementPrompt(models: LoopModels, userPrompt: string, round: number, verdict: Verdict | null): string {
-  if (round <= 1 || !verdict) return `${userPrompt}\n\n${orchestrationSuffix(models)}`
+  if (round <= 1 || !verdict) return `${userPrompt}\n\n${delegationRules(models)}`
   const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
   return [
     userPrompt,
@@ -163,7 +172,7 @@ function buildImplementPrompt(models: LoopModels, userPrompt: string, round: num
     findings || '- (no itemized findings — raise overall quality)',
     '---',
     'Fix every finding above, then keep raising quality toward the bar.',
-    orchestrationSuffix(models),
+    delegationRules(models),
   ].join('\n\n')
 }
 
@@ -179,7 +188,7 @@ Protocol:
 1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
    Real gameplay in motion: yt-dlp and ffmpeg are installed. Find one good YouTube gameplay video of the AAA reference and pull a ~30s slice (e.g. \`yt-dlp --download-sections "*60-90" -f "bv*[height<=1080]" -o reference/aaa-gameplay.%(ext)s "<url>"\`), then extract ~10 frames at 1s intervals with \`ffmpeg -i reference/aaa-gameplay.* -vf fps=1 ./${evidenceDir}/refs/motion/aaa-%02d.png\` and VIEW them. Later, extract frames from your own gameplay recording the same way (into ./${evidenceDir}/shots/motion/) and compare motion-to-motion: mid-action chaos, trails, feedback timing — not just posed stills. If yt-dlp fails on one video, try another; do not burn more than a few minutes on it.
 2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish.
+3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`, \`recordVideo\` on the context). Never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.
 4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
 5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
 
@@ -206,6 +215,20 @@ interface ExitHolder {
   exited: boolean
   code: number | null
   spawnError: string | null
+}
+
+/** What an implement parser hands back once its process has exited. */
+interface ImplementOutcome {
+  metrics: RunMetrics
+  costUsd: number | null
+  tokens: { input: number; output: number } | null
+  numTurns: number | null
+  sessionId: string | null
+  summary: string | null
+  /** Non-null when the harness reported the run as failed. */
+  error: string | null
+  /** The CLI's own result event, for the metric log line. */
+  logResult: Record<string, unknown> | null
 }
 
 interface ExitInfo {
@@ -266,7 +289,7 @@ export class LoopRunner {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const models = resolveModels(input, input.criticId)
+    const models = resolveModels(input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
     this.log(
@@ -275,7 +298,13 @@ export class LoopRunner {
       'system',
       describeModels(models),
     )
-    this.ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(models, prompt, 1, null) })
+    this.ledger.createRun({
+      loopId: loop.id,
+      round: 1,
+      role: 'implement',
+      harness: harnessFor(models.orchestratorModel),
+      prompt: buildImplementPrompt(models, prompt, 1, null),
+    })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
     return { ok: true, loopId: loop.id }
@@ -364,6 +393,9 @@ export class LoopRunner {
         prompt: last.role === 'implement' ? RESUME_PREFIX + base : base,
       })
       this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
+    } else if (last?.role === 'implement' && last.round >= loop.maxRounds) {
+      this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${last.round} — no critique, since no round is left for it to gate.`)
+      return { ok: true }
     } else if (last?.role === 'implement') {
       this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, last.round) })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
@@ -378,12 +410,18 @@ export class LoopRunner {
         loopId,
         round: nextRound,
         role: 'implement',
-        harness: 'claude',
+        harness: harnessFor(loop.models.orchestratorModel),
         prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
-      this.ledger.createRun({ loopId, round: 1, role: 'implement', harness: 'claude', prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null) })
+      this.ledger.createRun({
+        loopId,
+        round: 1,
+        role: 'implement',
+        harness: harnessFor(loop.models.orchestratorModel),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null),
+      })
       this.log(loopId, null, 'system', 'Loop resumed by user — starting round 1.')
     }
     this.broadcast(loopId)
@@ -672,16 +710,23 @@ export class LoopRunner {
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
-    if (models.subagentModel) {
+    const harness = harnessFor(models.orchestratorModel)
+    const agentMd = implementerAgentMd(models)
+    if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
       fs.mkdirSync(agentDir, { recursive: true })
-      fs.writeFileSync(path.join(agentDir, 'implementer.md'), implementerAgentMd(models))
+      fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
     }
+    // Delegated workers write their streams here. Clearing the directory keeps
+    // last round's children out of this round's metrics and liveness check.
+    fs.rmSync(agentsDir(loop.workspaceDir), { recursive: true, force: true })
+    fs.mkdirSync(agentsDir(loop.workspaceDir), { recursive: true })
 
     const priorSessionId = this.lastImplementSessionId(loop.id, run.id)
-    const isResume = run.prompt.startsWith(RESUME_PREFIX) && (priorSessionId != null || this.hasClaudeSession(loop.workspaceDir))
+    const canResume = harness === 'claude' ? priorSessionId != null || this.hasClaudeSession(loop.workspaceDir) : priorSessionId != null
+    const isResume = run.prompt.startsWith(RESUME_PREFIX) && canResume
     const prompt = isResume
-      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch implementer subagents only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply.'
+      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch workers only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply.'
       : run.prompt.startsWith(RESUME_PREFIX)
         ? run.prompt.slice(RESUME_PREFIX.length)
         : run.prompt
@@ -690,43 +735,43 @@ export class LoopRunner {
       loop.id,
       run.id,
       'system',
-      `● Round ${run.round} — implement (claude ${models.orchestratorModel}, effort ${models.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
+      `● Round ${run.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
     )
-    const args = [
-      ...(isResume ? (priorSessionId ? ['--resume', priorSessionId] : ['--continue']) : []),
-      '-p',
+    const plan = implementPlan({
+      models,
       prompt,
-      '--output-format',
-      'stream-json',
-      '--verbose',
-      '--forward-subagent-text',
-      '--dangerously-skip-permissions',
-      '--model',
-      models.orchestratorModel,
-      '--effort',
-      models.orchestratorEffort,
-    ]
-    const spawned = this.spawnDetached(
-      loop,
-      run,
-      'claude',
-      args,
-      subscriptionEnv({
-        CLAUDE_CONFIG_DIR: cliHome('claude'),
-        // Binds the subagent model on both delegation paths: it is what a
-        // workflow agent falls back to when the script names no model.
-        ...(models.subagentModel ? { CLAUDE_CODE_SUBAGENT_MODEL: models.subagentModel } : {}),
-        // Workflow agents are background tasks, and `claude -p` terminates
-        // those after 600s by default — which kills a fan-out mid-write and
-        // leaves stub files behind. Wait instead; IMPLEMENT_TIMEOUT_MS is the
-        // real bound.
-        CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0',
-      }),
-    )
+      claudeHome: cliHome('claude'),
+      codexHome: cliHome('codex'),
+      resumeId: isResume ? priorSessionId : null,
+      resumeLatest: isResume && !priorSessionId,
+    })
+    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
     if (!spawned) return
     const gate: LogGate = { suppress: false }
-    const parser = this.makeImplementParser(loop, run, gate)
+    const parser =
+      harness === 'claude' ? this.makeImplementParser(loop, run, gate) : this.makeCodexImplementParser(loop, run, gate)
     await this.driveRun(loop, run, spawned.meta, IMPLEMENT_IDLE_MS, IMPLEMENT_HARD_CAP_MS, parser, gate, spawned.own)
+  }
+
+  /**
+   * Hold the round open while delegated workers are still writing.
+   *
+   * An orchestrator can finish its turn with children still running — a claude
+   * one will not sit and wait, and on a real round it said "still waiting on
+   * the codex runs" and exited, which committed a half-written build eight
+   * minutes before codex finished. Waiting is the app's job, not an agent's.
+   */
+  private async awaitChildren(loop: LoopRecord, run: RunRecord): Promise<void> {
+    const deadline = Date.now() + IMPLEMENT_HARD_CAP_MS
+    let announced = false
+    while (childrenActive(loop.workspaceDir, CHILD_QUIET_MS) && Date.now() < deadline) {
+      if (!announced) {
+        announced = true
+        this.log(loop.id, run.id, 'system', '⏳ orchestrator finished, delegated workers still running — holding the round open.')
+      }
+      await sleep(15_000)
+    }
+    if (announced) this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
   }
 
   private makeImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
@@ -743,6 +788,7 @@ export class LoopRunner {
     // Filled from the init event; without it we cannot locate the workflow dir.
     let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
     let workflowAgents: AgentMetric[] = []
+    let childAgents: AgentMetric[] = []
     let workflowRuns: WorkflowRunSummary[] = []
     let workflowTokens = 0
     const loggedWorkflowRuns = new Set<string>()
@@ -800,12 +846,22 @@ export class LoopRunner {
       }
     }
 
+    // Codex subagents spend outside Claude's accounting entirely, so their
+    // tokens are read from codex's own session logs. Cumulative per session, so
+    // this replaces the previous figures rather than adding to them.
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
+    const pollChildren = (): void => {
+      if (!isCrossHarness(loop.models)) return
+      childAgents = readChildAgents(loop.workspaceDir, loop.models.subagentModel, cliHome('codex'))
+    }
+
     // Live token + cost visibility: persist running totals every ~15s so the
     // ledger, dashboard, and report show tokens and estimated cost mid-run.
     const flushTokens = (force = false): void => {
       if (!force && Date.now() - lastTokenFlush < 15_000) return
       lastTokenFlush = Date.now()
       pollWorkflows()
+      pollChildren()
       let input = 0
       let output = 0
       const perModel = new Map<string, TokenTotals>()
@@ -829,7 +885,7 @@ export class LoopRunner {
       // agent work on one round — so add what the agents' own transcripts say.
       // At finalize this is replaced by the CLI's modelUsage, which already
       // counts them, so the two are never added together.
-      for (const agent of workflowAgents) {
+      for (const agent of [...workflowAgents, ...childAgents]) {
         if (agent.costUsd != null) liveCostEstimate = (liveCostEstimate ?? 0) + agent.costUsd
         input += agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite
         output += agent.tokens.output
@@ -838,7 +894,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents),
       })
       this.broadcast(loop.id)
     }
@@ -918,87 +974,39 @@ export class LoopRunner {
     }
 
     const finalize = async (exit: ExitInfo): Promise<void> => {
-      pollWorkflows()
-      const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents)
-      if (workflowRuns.length) {
-        plog(
-          'metric',
-          `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens`,
-        )
-      }
-      const res = result as Record<string, unknown> | null
-      const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
-      const finishedAt = new Date().toISOString()
-      const costUsd = implementCostUsd(
-        metrics.perModel,
-        typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null,
-        liveCostEstimate,
-      )
-
-      this.ledger.patchRun(run.id, {
-        metrics,
-        costUsd,
-        inputTokens: usage
-          ? (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-          : undefined,
-        outputTokens: usage?.output_tokens ?? undefined,
-        numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-        // res.duration_ms restarts whenever the CLI re-inits mid-run: a 150-minute
-        // run reported 3m16s, the time since its last init event. Our own start
-        // time is the only one that spans the whole run.
-        durationMs: Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.parse(run.startedAt ?? run.createdAt)),
-        sessionId: (res?.session_id as string | undefined) ?? null,
-        summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
-        finishedAt,
+      await this.finishImplement(loop, run, exit, () => {
+        pollWorkflows()
+        pollChildren()
+        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents)
+        if (workflowRuns.length) {
+          plog(
+            'metric',
+            `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens`,
+          )
+        }
+        const res = result as Record<string, unknown> | null
+        const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
+        const succeeded = res !== null && res.is_error !== true && (exit.code === 0 || exit.code === null)
+        return {
+          metrics,
+          costUsd: implementCostUsd(
+            metrics.perModel,
+            typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null,
+            liveCostEstimate,
+          ),
+          tokens: implementTokens(metrics.perModel, usage),
+          numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
+          sessionId: (res?.session_id as string | undefined) ?? null,
+          summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
+          error: succeeded
+            ? null
+            : (exit.spawnError ??
+              (typeof res?.result === 'string'
+                ? trunc(res.result as string, 400)
+                : `claude exited ${exit.code}${res ? ` (${res.subtype})` : ' without a result'}`)),
+          logResult: res,
+        }
       })
-      this.logRunMetrics(loop.id, run.id, 'implement', costUsd, res, metrics)
-      this.accumulateCost(loop.id, costUsd)
-
-      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
-      if (stopReason) {
-        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Implement run timed out.')
-        return
-      }
-      const succeeded = res !== null && res.is_error !== true && (exit.code === 0 || exit.code === null)
-      if (!succeeded) {
-        const errText =
-          exit.spawnError ??
-          (typeof res?.result === 'string' ? trunc(res.result as string, 400) : `claude exited ${exit.code}${res ? ` (${res.subtype})` : ' without a result'}`)
-        const rateLimited = /rate.?limit|usage limit|out of extra usage/i.test(errText)
-        this.ledger.patchRun(run.id, { status: 'failed', error: errText })
-        this.finishLoop(
-          loop.id,
-          'stopped',
-          rateLimited
-            ? `Rate limited — wait for the window to reset, then start a new run in the same workspace. (${errText})`
-            : `Implement run failed: ${errText}`,
-        )
-        return
-      }
-      try {
-        const parentRevision = this.ledger
-          .runsForLoop(loop.id)
-          .filter((prior) => prior.role === 'implement' && prior.round < run.round && prior.revision)
-          .at(-1)?.revision
-        const revision = captureRoundRevision({
-          workspaceDir: loop.workspaceDir,
-          loopId: loop.id,
-          round: run.round,
-          parentRevision,
-        })
-        this.ledger.patchRun(run.id, { status: 'succeeded', revision })
-        this.log(loop.id, run.id, 'system', `Round ${run.round} committed at ${revision.slice(0, 12)}.`)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.ledger.patchRun(run.id, { status: 'failed', error: `Could not commit round revision: ${message}` })
-        this.finishLoop(loop.id, 'failed', `Round ${run.round} finished, but its Git revision could not be saved: ${message}`)
-        return
-      }
-      if (this.overBudget(loop.id)) return
-      this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
-      this.broadcast(loop.id)
-      void this.executeNext(loop.id)
     }
 
     let lastProgressAt = Date.now()
@@ -1007,19 +1015,245 @@ export class LoopRunner {
     const tick = (): void => {
       if (Date.now() - lastTick < 10_000) return
       lastTick = Date.now()
-      const before = workflowAgents.length
+      const before = workflowAgents.length + childAgents.length
       pollWorkflows()
+      pollChildren()
       // Any agent gaining tokens or tool calls counts as the run progressing.
-      const footprint = workflowAgents.map((a) => `${a.id}:${a.totalTokens}:${a.toolCalls}:${a.state}`).join('|')
+      const footprint = [...workflowAgents, ...childAgents].map((a) => `${a.id}:${a.totalTokens}:${a.toolCalls}:${a.state}`).join('|')
       if (footprint !== lastWorkflowFootprint) {
         lastWorkflowFootprint = footprint
         lastProgressAt = Date.now()
       }
-      if (workflowAgents.length === 0 && before === 0) return
+      if (workflowAgents.length + childAgents.length === 0 && before === 0) return
       flushTokens(true)
     }
 
     return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), tick, progressAt: () => lastProgressAt, finalize }
+  }
+
+  /**
+   * Everything that happens after an implement run's process exits, whichever
+   * CLI ran it: wait for delegated workers, record the run, then either stop
+   * the loop or hand the round to the critic.
+   */
+  /**
+   * An implement run driven by codex.
+   *
+   * Codex spawns its workers as threads of its own, each with its own session
+   * log under CODEX_HOME, so per-worker tokens are read from there rather than
+   * from the stream — the stream carries only the orchestrator's turns. Claude
+   * workers, when the run delegates across harnesses, report through their own
+   * stream files instead.
+   */
+  private makeCodexImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const plog = (kind: string, text: string): void => {
+      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
+    }
+    const models = loop.models
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
+    const tokens = emptyTokens()
+    let threadId: string | null = null
+    let lastAgentMessage = ''
+    let failure: string | null = null
+    let turns = 0
+    let workers: AgentMetric[] = []
+    let lastFlush = Date.now()
+    let lastProgressAt = Date.now()
+
+    const pollWorkers = (): void => {
+      // Codex's own subagent threads, minus the orchestrator's own thread,
+      // plus any claude workers this run delegated to a separate CLI.
+      const spawned = readCodexUsage(cliHome('codex'), startedAtMs, models.subagentModel ?? models.orchestratorModel, threadId)
+      const delegated = isCrossHarness(models) ? readChildAgents(loop.workspaceDir, models.subagentModel, cliHome('codex')) : []
+      workers = [...spawned, ...delegated]
+    }
+
+    const metricsNow = (): RunMetrics => {
+      const orchestrator: AgentMetric = {
+        id: 'orchestrator',
+        label: 'orchestrator',
+        model: models.orchestratorModel,
+        messages: turns,
+        tokens,
+        firstTs: new Date(startedAtMs).toISOString(),
+        lastTs: new Date().toISOString(),
+        costUsd: estimateCostUsd(models.orchestratorModel, tokens),
+      }
+      const perModel: RunMetrics['perModel'] = {}
+      for (const agent of [orchestrator, ...workers]) {
+        const key = agent.model ?? models.orchestratorModel
+        const entry = perModel[key] ?? { costUsd: 0, tokens: emptyTokens() }
+        entry.tokens.input += agent.tokens.input
+        entry.tokens.output += agent.tokens.output
+        entry.tokens.cacheRead += agent.tokens.cacheRead
+        entry.tokens.cacheWrite += agent.tokens.cacheWrite
+        entry.costUsd = estimateCostUsd(key, entry.tokens)
+        perModel[key] = entry
+      }
+      return { agents: [orchestrator, ...workers], perModel }
+    }
+
+    const flush = (force = false): void => {
+      if (!force && Date.now() - lastFlush < 15_000) return
+      lastFlush = Date.now()
+      pollWorkers()
+      const metrics = metricsNow()
+      const totals = implementTokens(metrics.perModel, undefined)
+      this.ledger.patchRun(run.id, {
+        metrics,
+        inputTokens: totals?.input,
+        outputTokens: totals?.output,
+        costUsd: Object.values(metrics.perModel).reduce((sum, m) => sum + (m.costUsd ?? 0), 0),
+      })
+      this.broadcast(loop.id)
+    }
+
+    const onLine = (line: string): void => {
+      if (!line.trim()) return
+      lastProgressAt = Date.now()
+      let obj: Record<string, unknown>
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        return
+      }
+      const type = obj.type as string
+      if (type === 'thread.started') {
+        threadId = (obj.thread_id as string | undefined) ?? null
+        this.ledger.patchRun(run.id, { sessionId: threadId })
+        plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
+      } else if (type === 'item.completed' || type === 'item.updated') {
+        const item = obj.item as Record<string, unknown> | undefined
+        if (!item || type !== 'item.completed') return
+        if (item.type === 'agent_message' && typeof item.text === 'string') {
+          lastAgentMessage = item.text
+          plog('codex', trunc(item.text, 400))
+        } else if (item.type === 'reasoning' && typeof item.text === 'string' && item.text.trim()) {
+          plog('thought', `𝜓 ${trunc(item.text, 500)}`)
+        } else if (item.type === 'command_execution' && typeof item.command === 'string') {
+          plog('cmd', `$ ${trunc(item.command, 200)}`)
+        } else if (item.type === 'file_change') {
+          plog('cmd', `✎ ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
+        } else if (item.type === 'SubAgentActivity' || item.type === 'collab_tool_call') {
+          plog('spawn', `⇉ worker ${trunc(JSON.stringify(item.agent_path ?? item.kind ?? ''), 120)}`)
+        } else if (item.type === 'error') {
+          plog('error', trunc(String(item.message ?? 'codex error'), 300))
+        }
+      } else if (type === 'turn.completed') {
+        const turn = codexTokens(obj.usage as Record<string, number> | undefined)
+        tokens.input += turn.input
+        tokens.output += turn.output
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+        turns += 1
+        flush(true)
+      } else if (type === 'turn.failed') {
+        failure = String((obj.error as Record<string, unknown> | undefined)?.message ?? 'codex turn failed')
+        plog('error', failure)
+      }
+    }
+
+    const finalize = async (exit: ExitInfo): Promise<void> => {
+      await this.finishImplement(loop, run, exit, () => {
+        pollWorkers()
+        const metrics = metricsNow()
+        const failed = failure ?? exit.spawnError ?? (exit.code !== 0 && exit.code !== null ? `codex exited ${exit.code}` : null)
+        return {
+          metrics,
+          costUsd: Object.values(metrics.perModel).reduce((sum, m) => sum + (m.costUsd ?? 0), 0),
+          tokens: implementTokens(metrics.perModel, undefined),
+          numTurns: turns,
+          sessionId: threadId,
+          summary: lastAgentMessage ? lastAgentMessage.slice(0, 4000) : null,
+          error: failed,
+          logResult: null,
+        }
+      })
+    }
+
+    return {
+      onLine,
+      onStderr: (text) => plog('stderr', trunc(text, 400)),
+      tick: () => flush(),
+      progressAt: () => lastProgressAt,
+      finalize,
+    }
+  }
+
+  private async finishImplement(
+    loop: LoopRecord,
+    run: RunRecord,
+    exit: ExitInfo,
+    collect: () => ImplementOutcome,
+  ): Promise<void> {
+    // Counted after the wait, so a worker that outlived the orchestrator is in
+    // the round's totals rather than missing from them.
+    await this.awaitChildren(loop, run)
+    const out = collect()
+    this.ledger.patchRun(run.id, {
+      metrics: out.metrics,
+      costUsd: out.costUsd,
+      inputTokens: out.tokens?.input,
+      outputTokens: out.tokens?.output,
+      numTurns: out.numTurns,
+      // A CLI's own duration restarts whenever it re-inits mid-run: a 150-minute
+      // run reported 3m16s, the time since its last init event. Our own start
+      // time is the only one that spans the whole run.
+      durationMs: Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.parse(run.startedAt ?? run.createdAt)),
+      sessionId: out.sessionId,
+      summary: out.summary,
+      finishedAt: new Date().toISOString(),
+    })
+    this.logRunMetrics(loop.id, run.id, 'implement', out.costUsd, out.logResult, out.metrics)
+    this.accumulateCost(loop.id, out.costUsd)
+
+    const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+    if (stopReason) {
+      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Implement run timed out.')
+      return
+    }
+    if (out.error) {
+      const rateLimited = /rate.?limit|usage limit|out of extra usage/i.test(out.error)
+      this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
+      this.finishLoop(
+        loop.id,
+        'stopped',
+        rateLimited
+          ? `Rate limited — wait for the window to reset, then start a new run in the same workspace. (${out.error})`
+          : `Implement run failed: ${out.error}`,
+      )
+      return
+    }
+    try {
+      const parentRevision = this.ledger
+        .runsForLoop(loop.id)
+        .filter((prior) => prior.role === 'implement' && prior.round < run.round && prior.revision)
+        .at(-1)?.revision
+      const revision = captureRoundRevision({
+        workspaceDir: loop.workspaceDir,
+        loopId: loop.id,
+        round: run.round,
+        parentRevision,
+      })
+      this.ledger.patchRun(run.id, { status: 'succeeded', revision })
+      this.log(loop.id, run.id, 'system', `Round ${run.round} committed at ${revision.slice(0, 12)}.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.ledger.patchRun(run.id, { status: 'failed', error: `Could not commit round revision: ${message}` })
+      this.finishLoop(loop.id, 'failed', `Round ${run.round} finished, but its Git revision could not be saved: ${message}`)
+      return
+    }
+    if (this.overBudget(loop.id)) return
+    // A verdict only earns its cost by gating another round. On the last one
+    // there is no round left to gate, so the loop ends with the build itself.
+    if (run.round >= loop.maxRounds) {
+      this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${run.round} — no critique, since no round is left for it to gate.`)
+      return
+    }
+    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
+    this.broadcast(loop.id)
+    void this.executeNext(loop.id)
   }
 
   private buildImplementMetrics(
@@ -1029,15 +1263,23 @@ export class LoopRunner {
     result: Record<string, unknown> | null,
     finished: Set<string> = new Set(),
     workflowAgents: AgentMetric[] = [],
+    childAgents: AgentMetric[] = [],
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
       let agent = agents.get(key)
       if (!agent) {
         const reg = agentLabels.get(key)
+        // On a cross-harness run these subagents write no code — each one
+        // only launches the other CLI — so the row says so rather than reading as a
+        // claude worker that quietly ignored the picked model.
+        const dispatches = key !== 'orchestrator' && isCrossHarness(models)
         agent = {
           id: key,
-          label: key === 'orchestrator' ? 'orchestrator' : (reg?.label ?? `subagent ${key.slice(-6)}`),
+          label:
+            key === 'orchestrator'
+              ? 'orchestrator'
+              : `${reg?.label ?? `subagent ${key.slice(-6)}`}${dispatches ? ' (dispatcher)' : ''}`,
           model: key === 'orchestrator' ? models.orchestratorModel : (reg?.model ?? models.subagentModel ?? models.orchestratorModel),
           messages: 0,
           tokens: emptyTokens(),
@@ -1075,6 +1317,19 @@ export class LoopRunner {
         }
       }
     }
+    // Delegated workers carry a real input/output/cache split, so unlike
+    // workflow agents they can be priced into perModel — which is what implementCostUsd
+    // sums for the headline figure, so their spend reaches the budget ceiling.
+    if (childAgents.length && models.subagentModel) {
+      const tokens = emptyTokens()
+      for (const agent of childAgents) {
+        tokens.input += agent.tokens.input
+        tokens.output += agent.tokens.output
+        tokens.cacheRead += agent.tokens.cacheRead
+        tokens.cacheWrite += agent.tokens.cacheWrite
+      }
+      perModel[models.subagentModel] = { costUsd: estimateCostUsd(models.subagentModel, tokens), tokens }
+    }
     for (const [key, agent] of agents) {
       if (key !== 'orchestrator') agent.done = finished.has(key)
     }
@@ -1082,7 +1337,7 @@ export class LoopRunner {
     list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
     // Workflow agents carry only a scalar token count, so they cannot join
     // perModel — that stays priced off the stream and the CLI's own figures.
-    return { agents: [...list, ...workflowAgents], perModel }
+    return { agents: [...list, ...workflowAgents, ...childAgents], perModel }
   }
 
   private logRunMetrics(
@@ -1130,56 +1385,14 @@ export class LoopRunner {
       'system',
       `● Round ${run.round} — critique (${run.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
     )
-    const spawned =
-      run.harness === 'claude'
-        ? this.spawnDetached(
-            loop,
-            run,
-            'claude',
-            [
-              '-p',
-              run.prompt,
-              '--output-format',
-              'stream-json',
-              '--verbose',
-              '--dangerously-skip-permissions',
-              '--model',
-              models.criticModel,
-              '--effort',
-              models.criticEffort,
-            ],
-            subscriptionEnv({ CLAUDE_CONFIG_DIR: cliHome('claude'), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' }),
-          )
-        : this.spawnDetached(
-            loop,
-            run,
-            'codex',
-            [
-              'exec',
-              '--json',
-              '--skip-git-repo-check',
-              // code_mode fail-closes all command execution when its host binary is
-              // missing (verified live) — the classic shell path works everywhere.
-              '--disable',
-              'code_mode',
-              '-s',
-              'workspace-write',
-              '-c',
-              'sandbox_workspace_write.network_access=true',
-              '-c',
-              'tools.web_search=true',
-              '-c',
-              'model_reasoning_summary=detailed',
-              '-m',
-              models.criticModel,
-              '-c',
-              `model_reasoning_effort=${models.criticEffort}`,
-              '-o',
-              this.verdictFilePath(loop.workspaceDir, run.id),
-              run.prompt,
-            ],
-            subscriptionEnv({ CODEX_HOME: cliHome('codex') }),
-          )
+    const plan = critiquePlan({
+      models,
+      prompt: run.prompt,
+      claudeHome: cliHome('claude'),
+      codexHome: cliHome('codex'),
+      outFile: this.verdictFilePath(loop.workspaceDir, run.id),
+    })
+    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
     if (!spawned) return
     this.ledger.patchRun(run.id, { model: models.criticModel })
     const gate: LogGate = { suppress: false }
@@ -1327,10 +1540,11 @@ export class LoopRunner {
         const usage = obj.usage as Record<string, number> | undefined
         if (usage) {
           sawUsage = true
-          tokens.input += usage.input_tokens ?? 0
-          tokens.cacheRead += usage.cached_input_tokens ?? 0
-          tokens.cacheWrite += usage.cache_write_input_tokens ?? 0
-          tokens.output += usage.output_tokens ?? 0
+          const turn = codexTokens(usage)
+          tokens.input += turn.input
+          tokens.cacheRead += turn.cacheRead
+          tokens.cacheWrite += turn.cacheWrite
+          tokens.output += turn.output
           flushCritic()
         }
       } else if (type === 'turn.failed') {
@@ -1436,7 +1650,7 @@ export class LoopRunner {
         loopId: loop.id,
         round: nextRound,
         role: 'implement',
-        harness: 'claude',
+        harness: harnessFor(loop.models.orchestratorModel),
         prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict),
       })
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)

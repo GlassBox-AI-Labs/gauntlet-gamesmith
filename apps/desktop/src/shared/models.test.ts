@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_IMPLEMENTER, normalizeModels, resolveModels } from './models'
+import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, normalizeModels, resolveModels } from './models'
 
 describe('defaults', () => {
   it('starts on Opus 5 at ultracode over Opus 5 subagents', () => {
-    const models = resolveModels(DEFAULT_IMPLEMENTER, 'claude-opus-high')
+    const models = resolveModels(DEFAULT_IMPLEMENTER, { criticModel: 'claude-opus-5', criticEffort: 'high' })
     expect(models.orchestratorModel).toBe('claude-opus-5')
     expect(models.orchestratorEffort).toBe('ultracode')
     expect(models.criticHarness).toBe('claude')
   })
 
   it('falls back to the defaults when the form sends nothing usable', () => {
-    expect(resolveModels(null, 'nope')).toEqual(resolveModels(DEFAULT_IMPLEMENTER, 'codex-sol-medium'))
+    expect(resolveModels(null, { criticModel: 'nope', criticEffort: 'nope' })).toEqual(resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC))
   })
 
   it('carries a solo orchestrator through with no subagent model', () => {
-    const models = resolveModels({ ...DEFAULT_IMPLEMENTER, subagentModel: null, orchestratorEffort: 'high' }, 'codex-sol-medium')
+    const models = resolveModels({ ...DEFAULT_IMPLEMENTER, subagentModel: null, orchestratorEffort: 'high' }, DEFAULT_CRITIC)
     expect(models.subagentModel).toBeNull()
     expect(models.orchestratorEffort).toBe('high')
   })
@@ -24,19 +24,34 @@ describe('resolveModels', () => {
   it('keeps any valid combination of the four fields', () => {
     const models = resolveModels(
       { orchestratorModel: 'claude-fable-5', orchestratorEffort: 'max', subagentModel: 'claude-sonnet-5', subagentEffort: 'low' },
-      'codex-sol-medium',
+      DEFAULT_CRITIC,
     )
     expect(models.orchestratorModel).toBe('claude-fable-5')
     expect(models.orchestratorEffort).toBe('max')
     expect(models.subagentEffort).toBe('low')
   })
 
-  it('rejects a model the CLI list does not offer', () => {
-    expect(resolveModels({ orchestratorModel: 'gpt-5.6-sol' }, 'codex-sol-medium').orchestratorModel).toBe('claude-opus-5')
+  it('keeps a codex subagent pick, which only the subagent slot offers', () => {
+    const models = resolveModels({ ...DEFAULT_IMPLEMENTER, subagentModel: 'gpt-5.6-sol' }, DEFAULT_CRITIC)
+    expect(models.subagentModel).toBe('gpt-5.6-sol')
+    expect(models.orchestratorModel).toBe('claude-opus-5')
+  })
+
+  it('rejects a model no CLI offers', () => {
+    expect(resolveModels({ orchestratorModel: 'gpt-4' }, DEFAULT_CRITIC).orchestratorModel).toBe('claude-opus-5')
+  })
+
+  it('lets codex orchestrate, and swaps in an effort level codex accepts', () => {
+    const models = resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC)
+    expect(models.orchestratorModel).toBe('gpt-5.6-sol')
+    expect(models.orchestratorEffort).toBe('ultra')
+    // `ultracode` is claude's fan-out level; codex would reject it.
+    expect(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultracode' }, DEFAULT_CRITIC).orchestratorEffort).toBe('high')
+    expect(resolveModels({ orchestratorModel: 'claude-opus-5', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC).orchestratorEffort).toBe('ultracode')
   })
 
   it('rejects effort levels the CLI would not accept', () => {
-    const models = resolveModels({ orchestratorEffort: 'bogus', subagentEffort: 'ultracode' }, 'codex-sol-medium')
+    const models = resolveModels({ orchestratorEffort: 'bogus', subagentEffort: 'ultracode' }, DEFAULT_CRITIC)
     expect(models.orchestratorEffort).toBe('ultracode')
     expect(models.subagentEffort).toBe('high')
   })
@@ -65,7 +80,7 @@ describe('normalizeModels', () => {
     })
     expect(models.orchestratorModel).toBe('claude-fable-5')
     expect(models.criticHarness).toBe('codex')
-    expect(models.criticId).toBe('codex-sol-medium')
+    expect(models.criticModel).toBe('gpt-5.6-sol')
   })
 
   it('infers a claude critic harness from a claude critic model', () => {

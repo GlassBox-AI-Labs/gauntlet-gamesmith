@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { resolveModels } from '../shared/models'
+import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
 import {
   assertExportDestination,
@@ -15,7 +15,7 @@ import {
 
 const MODELS = resolveModels(
   { orchestratorModel: 'claude-fable-5', orchestratorEffort: 'high', subagentModel: 'claude-opus-5', subagentEffort: 'medium' },
-  'codex-sol-medium',
+  DEFAULT_CRITIC,
 )
 
 const tempDirs: string[] = []

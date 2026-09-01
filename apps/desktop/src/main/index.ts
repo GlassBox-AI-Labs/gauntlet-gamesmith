@@ -12,7 +12,7 @@ import type {
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
 import type { CritiqueRound, StartLoopInput } from '../shared/loop'
-import { resolveModels } from '../shared/models'
+import { isCodexModel, resolveModels } from '../shared/models'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
@@ -265,13 +265,14 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:start', async (_event, value: unknown) => {
     if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
     const input = value as Partial<StartLoopInput> | undefined
-    const models = resolveModels(input, input?.criticId)
-    // The implementer always runs on claude; the critic only needs codex when
-    // that is the harness the picked critic model runs on.
-    const needsCodex = models.criticHarness === 'codex'
+    const models = resolveModels(input, input)
+    // Any role can run on either CLI now, so a run needs whichever logins its
+    // three picks actually reach for.
+    const needsCodex = [models.orchestratorModel, models.subagentModel, models.criticModel].some(isCodexModel)
+    const needsClaude = [models.orchestratorModel, models.subagentModel, models.criticModel].some((m) => m != null && !isCodexModel(m))
     const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), needsCodex ? probe('codex') : Promise.resolve(null)])
-    if (!claudeStatus.loggedIn) return { ok: false, error: 'Claude Code (implementer) is not connected. Sign in on the Agents tab.' }
-    if (needsCodex && !codexStatus?.loggedIn) return { ok: false, error: 'Codex (critic) is not connected. Sign in on the Agents tab.' }
+    if (needsClaude && !claudeStatus.loggedIn) return { ok: false, error: 'Claude Code is not connected. Sign in on the Agents tab.' }
+    if (needsCodex && !codexStatus?.loggedIn) return { ok: false, error: 'Codex is not connected. Sign in on the Agents tab.' }
     return loopRunner.start({
       prompt: String(input?.prompt ?? ''),
       workspaceDir: String(input?.workspaceDir ?? ''),
@@ -281,7 +282,8 @@ function registerLoopIpc(): void {
       orchestratorEffort: models.orchestratorEffort,
       subagentModel: models.subagentModel,
       subagentEffort: models.subagentEffort,
-      criticId: models.criticId,
+      criticModel: models.criticModel,
+      criticEffort: models.criticEffort,
     })
   })
   ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })

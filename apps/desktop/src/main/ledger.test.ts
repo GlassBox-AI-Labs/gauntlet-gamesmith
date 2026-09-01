@@ -2,10 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { resolveModels } from '../shared/models'
+import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { defaultLoopTitle, Ledger } from './ledger'
 
-const models = resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5', subagentEffort: 'medium' }, 'codex-sol-medium')
+const models = resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5', subagentEffort: 'medium' }, DEFAULT_CRITIC)
 
 let dir: string | null = null
 
