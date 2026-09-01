@@ -76,4 +76,21 @@ describe('buildReport', () => {
     expect(report).toContain('Gauntlet Loop report')
     expect(report).not.toContain('Score trend')
   })
+
+  it('shows the Reference Study as a pre-round result', () => {
+    const report = buildReport(loop, [run({ role: 'reference', round: 0 })], [], {
+      root: 'reference/l1',
+      ready: true,
+      issues: [],
+      images: Array.from({ length: 8 }, (_, index) => `reference/l1/images/${index}.jpg`),
+      motion: Array.from({ length: 8 }, (_, index) => `reference/l1/motion/${index}.jpg`),
+      videos: ['reference/l1/video/gameplay.webm'],
+      readme: '# Visual target',
+      manifest: '{}',
+    })
+    expect(report).toContain('| — | reference |')
+    expect(report).toContain('## Reference Pack')
+    expect(report).toContain('8 stills · 8 motion frames · 1 videos')
+    expect(report).toContain('# Visual target')
+  })
 })

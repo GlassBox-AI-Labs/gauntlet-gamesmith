@@ -357,7 +357,7 @@ export class Ledger {
     this.db
       .prepare(
         `INSERT INTO loops (id, title, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 1, 0, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 0, 0, ?, ?)`,
       )
       .run(id, defaultLoopTitle(input.prompt), input.prompt, input.workspaceDir, input.maxRounds, input.budgetUsd, JSON.stringify(input.models), ts, ts)
     this.syncWorkspaceFolder(input.workspaceDir)

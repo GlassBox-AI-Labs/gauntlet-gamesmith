@@ -1,6 +1,6 @@
 import type { HarnessKind } from './harness'
 
-export type RunRole = 'implement' | 'critique'
+export type RunRole = 'reference' | 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
@@ -186,11 +186,31 @@ export interface CritiqueRound {
   pairsMd: string | null
 }
 
+export interface ReferencePack {
+  /** Workspace-relative directory owned by this loop, e.g. reference/<loop-id>. */
+  root: string
+  ready: boolean
+  issues: string[]
+  images: string[]
+  motion: string[]
+  videos: string[]
+  readme: string | null
+  manifest: string | null
+}
+
+export interface ReferenceStudy {
+  runId: string
+  status: RunStatus
+  logs: LoopLogLine[]
+  pack: ReferencePack
+}
+
 export interface LoopApi {
   list(): Promise<LoopSnapshot[]>
   get(loopId: string): Promise<LoopSnapshot | null>
   rename(loopId: string, title: string): Promise<LoopRecord | null>
   critique(loopId: string): Promise<CritiqueRound[]>
+  reference(loopId: string, runId: string): Promise<ReferenceStudy | null>
   mediaBase(): Promise<string | null>
   playStart(loopId: string, round?: number | null): Promise<PlayState>
   playStop(loopId: string): Promise<void>

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { LoopRecord, RunRecord } from '../shared/loop'
+import type { LoopRecord, ReferencePack, RunRecord } from '../shared/loop'
 import { elapsedThroughRunMs } from '../shared/run-timing'
 import { describeModels } from '../shared/models'
 import { PRICE_TABLE_VERSION } from './pricing'
@@ -101,7 +101,7 @@ function spark(score: number): string {
   return SPARK[Math.min(SPARK.length - 1, Math.max(0, Math.round(score * (SPARK.length - 1))))]
 }
 
-export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: CritiqueArtifacts[] = []): string {
+export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: CritiqueArtifacts[] = [], referencePack?: ReferencePack): string {
   const done = runs.filter((r) => r.status !== 'queued')
   const totalCost = done.reduce((sum, r) => sum + (r.costUsd ?? 0), 0)
   const totalIn = done.reduce((sum, r) => sum + (r.inputTokens ?? 0), 0)
@@ -140,10 +140,23 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
     const score = run.verdict ? `${run.verdict.score.toFixed(2)}${run.verdict.pass ? ' ✓ PASS' : ''}` : ''
     const elapsedMs = elapsedThroughRunMs(loop.createdAt, run)
     lines.push(
-      `| ${run.round} | ${run.role} | ${run.revision?.slice(0, 12) ?? '—'} | ${run.model ?? '—'} | ${run.status} | ${run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(run.inputTokens)} | ${fmtTokens(run.outputTokens)} | ${elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`} | ${score} |`,
+      `| ${run.role === 'reference' ? '—' : run.round} | ${run.role} | ${run.revision?.slice(0, 12) ?? '—'} | ${run.model ?? '—'} | ${run.status} | ${run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(run.inputTokens)} | ${fmtTokens(run.outputTokens)} | ${elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`} | ${score} |`,
     )
   }
   lines.push('')
+
+  if (referencePack) {
+    lines.push('## Reference Pack')
+    lines.push('')
+    lines.push(`- **Status:** ${referencePack.ready ? 'ready' : 'incomplete'} · **Path:** ${referencePack.root}/`)
+    lines.push(`- **Evidence:** ${referencePack.images.length} stills · ${referencePack.motion.length} motion frames · ${referencePack.videos.length} videos`)
+    if (referencePack.issues.length > 0) lines.push(`- **Missing:** ${referencePack.issues.join('; ')}`)
+    if (referencePack.readme) {
+      lines.push('')
+      lines.push(referencePack.readme.trim().slice(0, 4000))
+    }
+    lines.push('')
+  }
 
   const latest = verdicts.at(-1)
   if (latest) {
