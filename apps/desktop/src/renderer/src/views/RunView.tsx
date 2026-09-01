@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
   CRITICS,
@@ -93,6 +93,22 @@ function fmtTs(iso: string): string {
 
 function projectName(workspaceDir: string): string {
   return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
+}
+
+function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element {
+  const implementer = models.subagentModel
+    ? `${modelLabel(models.subagentModel)} · ${models.subagentEffort}`
+    : 'orchestrator · solo'
+  const criticHarness = models.criticHarness === 'codex' ? 'Codex' : 'Claude'
+  return (
+    <div className="mb-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#68615f]">
+      <span><span className="text-[#857d79]">Orchestrator</span> {modelLabel(models.orchestratorModel)} · {models.orchestratorEffort}</span>
+      <span className="text-[#393433]" aria-hidden="true">/</span>
+      <span><span className="text-[#857d79]">Implementer</span> {implementer}</span>
+      <span className="text-[#393433]" aria-hidden="true">/</span>
+      <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
+    </div>
+  )
 }
 
 function roundNumbers(snapshot: LoopSnapshot): number[] {
@@ -884,7 +900,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               <ArrowLeft className="size-3.5" /> Run detail
             </button>
           )}
-          <div className="mb-6 flex max-w-3xl items-center gap-2">
+          <div className={`${selectedRound == null ? 'mb-2' : 'mb-6'} flex max-w-3xl items-center gap-2`}>
             {selectedRound == null && renaming ? (
               <>
                 <input
@@ -938,6 +954,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               </>
             )}
           </div>
+          {selectedRound == null && <RunModelSummary models={loop.models} />}
           <div className="mb-5 flex flex-wrap items-center gap-3">
             <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus ?? ''] ?? ''}`}>{detailStatus}</Badge>
             <span className="text-sm text-[#ded9d6]">
