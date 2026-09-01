@@ -4,7 +4,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Copy,
   Download,
   FolderGit2,
   FolderPlus,
@@ -18,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
+import { PromptBrowser } from '@/views/PromptBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -319,41 +319,6 @@ function ProjectChooser({
         </div>
       )}
     </div>
-  )
-}
-
-function PromptBlock({ title, value }: { title: string; value: string }): React.JSX.Element {
-  const [copied, setCopied] = useState(false)
-
-  const copyPrompt = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // Leave the icon unchanged if the host denies clipboard access.
-    }
-  }
-
-  return (
-    <section className="overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212]">
-      <header className="flex items-center justify-between border-b border-[#332e2e] px-4 py-1.5">
-        <h2 className="text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">{title}</h2>
-        <button
-          type="button"
-          onClick={() => void copyPrompt()}
-          disabled={!value}
-          aria-label={`${copied ? 'Copied' : 'Copy'} ${title.toLowerCase()}`}
-          title={copied ? 'Copied' : `Copy ${title.toLowerCase()}`}
-          className="grid size-7 place-items-center rounded-md text-[#77706d] transition-colors hover:bg-white/[0.05] hover:text-[#c9c3c0] disabled:opacity-30"
-        >
-          {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
-        </button>
-      </header>
-      <pre className="max-h-[260px] overflow-y-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-[11px] leading-[1.7] text-[#c9c3c0]">
-        {value || 'No additional prompt was recorded.'}
-      </pre>
-    </section>
   )
 }
 
@@ -1265,11 +1230,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(visibleElapsedMs)}</div>
                 </div>
               </div>
-              <div className="mb-5 grid gap-3">
-                <PromptBlock title="Original prompt" value={loop.prompt} />
-                <PromptBlock title="Reference Study prompt" value={activeReferenceRun?.prompt ?? ''} />
-                <PromptBlock title="System / implementer prompt" value={systemPrompt} />
-                <PromptBlock title="Critique evaluation rubric" value={critiqueRubric} />
+              <div className="mb-5">
+                <PromptBrowser
+                  prompts={[
+                    { id: 'original', title: 'Original', description: 'The operator goal and quality bar for this run.', value: loop.prompt },
+                    { id: 'reference', title: 'Reference Study', description: 'Research and validation instructions used to create the frozen Reference Pack.', value: activeReferenceRun?.prompt ?? '' },
+                    { id: 'implementer', title: 'System / Implementer', description: 'Implementation rules, delegation contract, and Reference Pack handoff.', value: systemPrompt },
+                    { id: 'critique', title: 'Critique', description: 'Evaluation protocol, evidence requirements, scoring rubric, and passing threshold.', value: critiqueRubric },
+                  ]}
+                />
               </div>
             </>
           )}
