@@ -38,13 +38,22 @@ function repositoryDir(workspaceDir: string): string {
   return path.join(workspaceDir, RUN_METADATA_DIR, REPOSITORY_DIR)
 }
 
-function run(command: string, args: string[], env?: NodeJS.ProcessEnv): string {
+/**
+ * `git add` exits 1 when a pathspec names a directory the workspace's own
+ * .gitignore already ignores, even though it stages everything else correctly.
+ * Our EXCLUDED_PATHS routinely collide with an agent-written .gitignore, so
+ * that warning must not fail the round.
+ */
+const IGNORED_PATHS_WARNING = /paths are ignored by one of your \.gitignore files/
+
+function run(command: string, args: string[], env?: NodeJS.ProcessEnv, tolerate?: RegExp): string {
   const result = spawnSync(command, args, { env: { ...process.env, ...env }, encoding: 'utf8' })
-  if (result.status !== 0) throw new Error((result.stderr || result.stdout || `${command} exited ${result.status}`).trim())
+  const output = (result.stderr || result.stdout || `${command} exited ${result.status}`).trim()
+  if (result.status !== 0 && !tolerate?.test(output)) throw new Error(output)
   return result.stdout.trim()
 }
 
-function git(workspaceDir: string, args: string[], indexFile?: string): string {
+function git(workspaceDir: string, args: string[], indexFile?: string, tolerate?: RegExp): string {
   return run(
     'git',
     [`--git-dir=${repositoryDir(workspaceDir)}`, `--work-tree=${workspaceDir}`, ...args],
@@ -55,6 +64,7 @@ function git(workspaceDir: string, args: string[], indexFile?: string): string {
       GIT_COMMITTER_NAME: 'Gauntlet Loop',
       GIT_COMMITTER_EMAIL: 'rounds@gauntlet.local',
     },
+    tolerate,
   )
 }
 
@@ -89,7 +99,7 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
 
   const revision = withTemporaryIndex((indexFile) => {
     git(input.workspaceDir, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
-    git(input.workspaceDir, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile)
+    git(input.workspaceDir, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
     const tree = git(input.workspaceDir, ['write-tree'], indexFile)
     const args = ['commit-tree', tree, '-m', `Gauntlet Loop ${input.loopId} round ${input.round}`]
     if (input.parentRevision) args.push('-p', input.parentRevision)

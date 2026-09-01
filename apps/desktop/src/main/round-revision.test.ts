@@ -17,6 +17,24 @@ afterEach(() => {
 })
 
 describe('round revisions', () => {
+  it('captures the round when the workspace .gitignore already ignores excluded folders', () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\ndist\nscreenshots\n.gauntlet-loop\n')
+    for (const excluded of ['node_modules', 'screenshots', 'dist']) {
+      fs.mkdirSync(path.join(dir, excluded), { recursive: true })
+      fs.writeFileSync(path.join(dir, excluded, 'ignored.txt'), excluded)
+    }
+    fs.mkdirSync(path.join(dir, 'src'))
+    fs.writeFileSync(path.join(dir, 'src', 'game.ts'), 'export const round = 1\n')
+
+    const checkout = checkoutRoundRevision(dir, 1, captureRoundRevision({ workspaceDir: dir, loopId: 'loop-1', round: 1 }))
+
+    expect(fs.readFileSync(path.join(checkout, 'src', 'game.ts'), 'utf8')).toContain('round = 1')
+    expect(fs.existsSync(path.join(checkout, 'node_modules'))).toBe(false)
+    expect(fs.existsSync(path.join(checkout, 'screenshots'))).toBe(false)
+    expect(fs.existsSync(path.join(checkout, 'dist'))).toBe(false)
+  })
+
   it('commits playable source while leaving telemetry and artifacts outside Git', () => {
     const dir = workspace()
     fs.mkdirSync(path.join(dir, 'src'))
