@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import type { LoopApi, LoopLogLine, LoopSnapshot, PlayState } from '../shared/loop'
+import type { ReportApi } from '../shared/reports'
 
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke('harness:detect', kind),
@@ -45,6 +46,7 @@ const loops: LoopApi = {
   report: (loopId) => ipcRenderer.invoke('loop:report', loopId),
   exportRun: (loopId) => ipcRenderer.invoke('loop:export', loopId),
   importRun: () => ipcRenderer.invoke('loop:import'),
+  deleteRuns: (loopIds, deleteFiles) => ipcRenderer.invoke('loop:delete', loopIds, deleteFiles),
   pickWorkspace: () => ipcRenderer.invoke('loop:pick-workspace'),
   defaultWorkspace: () => ipcRenderer.invoke('loop:default-workspace'),
   onUpdate: (listener) => {
@@ -59,5 +61,21 @@ const loops: LoopApi = {
   },
 }
 
+const reports: ReportApi = {
+  list: () => ipcRenderer.invoke('report:list'),
+  get: (reportId) => ipcRenderer.invoke('report:get', reportId),
+  create: (name, loopIds) => ipcRenderer.invoke('report:create', name, loopIds),
+  rename: (reportId, name) => ipcRenderer.invoke('report:rename', reportId, name),
+  addRuns: (reportId, loopIds) => ipcRenderer.invoke('report:add-runs', reportId, loopIds),
+  removeRuns: (reportId, loopIds) => ipcRenderer.invoke('report:remove-runs', reportId, loopIds),
+  refresh: (reportId) => ipcRenderer.invoke('report:refresh', reportId),
+  remove: (reportId) => ipcRenderer.invoke('report:delete', reportId),
+  markdown: (reportId) => ipcRenderer.invoke('report:markdown', reportId),
+  exportJson: (reportId) => ipcRenderer.invoke('report:export-json', reportId),
+  exportMarkdown: (reportId) => ipcRenderer.invoke('report:export-markdown', reportId),
+  importReport: () => ipcRenderer.invoke('report:import'),
+}
+
 contextBridge.exposeInMainWorld('harnesses', harnesses)
 contextBridge.exposeInMainWorld('loops', loops)
+contextBridge.exposeInMainWorld('reports', reports)

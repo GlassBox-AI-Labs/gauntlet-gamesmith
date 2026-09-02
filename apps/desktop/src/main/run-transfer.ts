@@ -70,3 +70,29 @@ export function assertRunFolder(workspaceDir: string): string {
   }
   return ledgerPath
 }
+
+/**
+ * Refuse to delete anything that is not plainly a run folder. The proof is the
+ * folder's own `.gauntlet-loop/ledger.db`: without it we would be pointing
+ * `rm -rf` at a directory this app never created.
+ */
+export function assertDeletableRunFolder(workspaceDir: string, homeDir: string): void {
+  const target = path.resolve(workspaceDir)
+  if (!path.isAbsolute(target)) throw new Error('That project path is not absolute.')
+  if (target === path.parse(target).root) throw new Error('That project path is a filesystem root.')
+  const home = path.resolve(homeDir)
+  if (target === home) throw new Error('That project path is your home folder.')
+  const fromHome = path.relative(target, home)
+  if (fromHome === '' || (!fromHome.startsWith('..') && !path.isAbsolute(fromHome))) {
+    throw new Error('That project path contains your home folder.')
+  }
+  if (!fs.existsSync(runLedgerPath(target))) {
+    throw new Error(`No ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE} in that folder, so it may not be a run folder.`)
+  }
+}
+
+/** Remove a run's project folder from disk. Guarded, and not undoable. */
+export async function deleteRunFolder(workspaceDir: string, homeDir: string): Promise<void> {
+  assertDeletableRunFolder(workspaceDir, homeDir)
+  await fs.promises.rm(path.resolve(workspaceDir), { recursive: true, force: true })
+}

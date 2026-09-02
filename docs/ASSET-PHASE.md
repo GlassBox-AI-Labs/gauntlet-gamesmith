@@ -237,12 +237,15 @@ in play, which is the right frame and the kind of finding that routes back as
 
 ### 3.8 The gate learns to see assets
 
-New checks in `GATE_SCRIPT`:
+One new check in `GATE_SCRIPT`, `cast-built`: every object named in the cast has
+a factory at `src/assets/<name>.ts`.
 
-- every `src/assets/<name>.ts` named in `cast.md` exists
-- each has its `.img2threejs/<name>/state.json` and an evidence render
-- a generated factory has not been hand-edited since generation (record a hash
-  at emit time and compare)
+**Provenance is reported, not enforced** — a correction to an earlier draft.
+Requiring `.img2threejs/<name>/state.json` on every factory would fail the
+legitimate path where the Asset Build reports an entry unbuildable and the
+implementer models it instead, and the only thing that pressure buys is a
+worker who fakes a state file. So a factory with no img2threejs run behind it
+is a note on the check, not a violation.
 
 The gate checks that a named asset **exists**, never that anything imports it.
 An unused factory is allowed — nothing imports it so Vite drops it from the

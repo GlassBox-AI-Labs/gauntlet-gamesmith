@@ -1,4 +1,5 @@
 import type { HarnessKind } from './harness'
+import type { DeleteRunsResult } from './reports'
 
 export type RunRole = 'reference' | 'assets' | 'implement' | 'critique'
 
@@ -306,6 +307,8 @@ export interface LoopApi {
   report(loopId: string): Promise<string>
   exportRun(loopId: string): Promise<RunTransferResult>
   importRun(): Promise<RunTransferResult>
+  /** Forget these runs. `deleteFiles` also removes their project folders from disk. */
+  deleteRuns(loopIds: string[], deleteFiles: boolean): Promise<DeleteRunsResult>
   pickWorkspace(): Promise<string | null>
   defaultWorkspace(): Promise<string>
   onUpdate(listener: (snapshot: LoopSnapshot) => void): () => void

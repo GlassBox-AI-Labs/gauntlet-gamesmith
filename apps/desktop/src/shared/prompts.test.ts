@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
+const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
+const gateRules = 'Architecture gate (BLOCKING). Run the gate.'
 
 describe('loop prompts', () => {
   it('gathers a scoped, attributable pack without implementing', () => {
@@ -56,7 +58,7 @@ describe('loop prompts', () => {
   })
 
   it('makes the first implementer consume the completed pack', () => {
-    const prompt = composeImplementPrompt('Build a game like Control', 1, null, rules, 'reference/loop-123')
+    const prompt = composeImplementPrompt('Build a game like Control', 1, null, rules, 'reference/loop-123', contract)
 
     expect(prompt).toContain('read ./reference/loop-123/README.md')
     expect(prompt).toContain('./reference/loop-123/research.md')
@@ -85,6 +87,7 @@ describe('loop prompts', () => {
       },
       rules,
       'reference/loop-123',
+      contract,
     )
 
     expect(prompt).toContain('read ./reference/loop-123/README.md')
@@ -93,7 +96,7 @@ describe('loop prompts', () => {
   })
 
   it('has critics audit the prepared pack instead of redownloading it every round', () => {
-    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123')
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123', gateRules)
 
     expect(prompt).toContain('Build your expertise from the frozen AAA Reference Pack in ./reference/loop-123 FIRST')
     expect(prompt).toContain('read README.md, research.md, journey.md, story.md, and manifest.json')
@@ -110,7 +113,7 @@ describe('loop prompts', () => {
   })
 
   it('demands the verdict as both a file artifact and the entire final message', () => {
-    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123')
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123', gateRules)
 
     expect(prompt).toContain('FIRST write ./critique/round-3/verdict.json')
     expect(prompt).toContain('no code fence, no markdown, nothing else in the file')
@@ -131,7 +134,7 @@ describe('loop prompts', () => {
   })
 
   it('tells the implementer to wire the library up rather than sculpt or edit it', () => {
-    const prompt = composeImplementPrompt('Build it', 1, null, rules, 'reference/loop-1')
+    const prompt = composeImplementPrompt('Build it', 1, null, rules, 'reference/loop-1', contract)
     expect(prompt).toContain('./src/assets/<name>.ts')
     expect(prompt).toContain('WIRE THEM UP, not to sculpt')
     expect(prompt).toContain('Do NOT hand-edit a generated factory')
@@ -141,7 +144,7 @@ describe('loop prompts', () => {
 
   it('keeps the asset contract in front of later rounds too', () => {
     const verdict = { score: 0.4, pass: false, summary: 'thin', findings: [{ severity: 'major', text: 'flat' }] }
-    expect(composeImplementPrompt('Build it', 3, verdict, rules, 'reference/loop-1')).toContain('Do NOT hand-edit a generated factory')
+    expect(composeImplementPrompt('Build it', 3, verdict, rules, 'reference/loop-1', contract)).toContain('Do NOT hand-edit a generated factory')
   })
 })
 
@@ -189,16 +192,45 @@ describe('asset build prompt', () => {
 
 describe('critic routing', () => {
   it('sends model faults back to the pipeline and everything else to the implementer', () => {
-    const prompt = buildCriticPrompt('Build it', 2, 'reference/loop-1')
+    const prompt = buildCriticPrompt('Build it', 2, 'reference/loop-1', gateRules)
     expect(prompt).toContain('"target": "game"')
     expect(prompt).toContain('asset:<name>')
     expect(prompt).toContain('When unsure, use `game`')
   })
 
   it('lets the critic read object shots but never judge the game against them', () => {
-    const prompt = buildCriticPrompt('Build it', 2, 'reference/loop-1')
+    const prompt = buildCriticPrompt('Build it', 2, 'reference/loop-1', gateRules)
     expect(prompt).toContain('reference/loop-1/objects/')
     expect(prompt).toContain('NEVER copy one into ./critique/round-2/refs/')
     expect(prompt).toContain('Pairs are gameplay-to-gameplay only')
+  })
+})
+
+describe('the engine contract inside the reference-study prompts', () => {
+  it('reaches the first implementer alongside the reference pack', () => {
+    const prompt = composeImplementPrompt('Build a game like Control', 1, null, rules, 'reference/loop-123', contract)
+
+    expect(prompt).toContain(contract)
+  })
+
+  it('is repeated on later rounds, and says not to trade it away for a finding', () => {
+    const prompt = composeImplementPrompt(
+      'Build a game like Control',
+      7,
+      { score: 0.4, pass: false, summary: 'Needs work', findings: [{ severity: 'major', text: 'Flat lighting' }] },
+      rules,
+      'reference/loop-123',
+      contract,
+    )
+
+    expect(prompt).toContain(contract)
+    expect(prompt).toContain('Never fix a finding by weakening the engine contract')
+  })
+
+  it('makes the gate block a critic pass, not merely cost score', () => {
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123', gateRules)
+
+    expect(prompt).toContain(gateRules)
+    expect(prompt).toContain('`node tools/engine-gate.mjs` exited 0')
   })
 })

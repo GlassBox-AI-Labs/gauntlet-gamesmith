@@ -21,6 +21,7 @@ import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImpl
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
 import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
+import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
 import { assetsPlan, critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
@@ -206,6 +207,13 @@ function normalizeVerdict(value: unknown): Verdict | null {
   return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
 }
 
+/**
+ * The user's prompt says what game to build; the engine contract says what to
+ * build it out of. It is passed on every round rather than only the first,
+ * because by round seven the critic is pushing hard on lighting and game feel
+ * and the architecture is exactly what gets quietly traded away to fix
+ * findings.
+ */
 function buildImplementPrompt(
   models: LoopModels,
   userPrompt: string,
@@ -213,7 +221,7 @@ function buildImplementPrompt(
   verdict: Verdict | null,
   referenceDir: string,
 ): string {
-  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir)
+  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir, engineContract())
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -309,8 +317,12 @@ export class LoopRunner {
     if (!workspaceDir || !path.isAbsolute(workspaceDir)) return { ok: false, error: 'Workspace must be an absolute path.' }
     const maxRounds = Math.max(1, Math.min(100, Math.floor(input.maxRounds) || 10))
     const budgetUsd = input.budgetUsd && input.budgetUsd > 0 ? input.budgetUsd : null
+    let scaffold: ScaffoldResult
     try {
       fs.mkdirSync(workspaceDir, { recursive: true })
+      // Round one starts on the engine rather than spending its budget
+      // deciding on one — and deciding differently in every workspace.
+      scaffold = scaffoldEngine(workspaceDir)
     } catch (error) {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
@@ -318,6 +330,14 @@ export class LoopRunner {
     const models = resolveModels(input, input, input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
+    this.log(
+      loop.id,
+      null,
+      'system',
+      scaffold.created.length
+        ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
+        : 'Engine contract refreshed; workspace already scaffolded.',
+    )
     this.log(
       loop.id,
       null,
@@ -452,7 +472,7 @@ export class LoopRunner {
         round: last.round,
         role: 'critique',
         harness: loop.models.criticHarness,
-        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId)),
+        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId), engineGateRules()),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
     } else if (last?.role === 'critique') {
@@ -1143,6 +1163,13 @@ export class LoopRunner {
       fs.mkdirSync(agentDir, { recursive: true })
       fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
     }
+    // Rewrite the contract and the gate every round. The gate is the one file
+    // in the workspace a worker has an incentive to weaken, and a gate that
+    // can be edited to pass is not a gate.
+    const scaffold = scaffoldEngine(loop.workspaceDir)
+    if (scaffold.refreshed.length) {
+      this.log(loop.id, run.id, 'system', `Restored app-owned files: ${scaffold.refreshed.join(', ')}.`)
+    }
     // Delegated workers write their streams here. Clearing the directory keeps
     // last round's children out of this round's metrics and liveness check.
     fs.rmSync(agentsDir(loop.workspaceDir), { recursive: true, force: true })
@@ -1721,7 +1748,7 @@ export class LoopRunner {
       round: run.round,
       role: 'critique',
       harness: loop.models.criticHarness,
-      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
     })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
@@ -2055,7 +2082,7 @@ export class LoopRunner {
             round: run.round,
             role: 'critique',
             harness: loop.models.criticHarness,
-            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
           })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
