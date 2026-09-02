@@ -398,7 +398,6 @@ function useNow(active: boolean): number {
 function RunRow({
   run,
   loopCreatedAt,
-  timing,
   loopId,
   critique,
   expanded,
@@ -406,7 +405,6 @@ function RunRow({
 }: {
   run: RunRecord
   loopCreatedAt: string
-  timing: 'elapsed' | 'runtime'
   loopId: string
   critique?: CritiqueRound
   expanded: boolean
@@ -414,14 +412,9 @@ function RunRow({
 }): React.JSX.Element {
   const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
   const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'critique' ? '—' : ''
-  const elapsedMs = elapsedThroughRunMs(loopCreatedAt, run)
+  const now = useNow(run.status === 'running')
   const startedMs = elapsedToRunStartMs(loopCreatedAt, run)
-  const elapsedTitle =
-    elapsedMs == null
-      ? undefined
-      : startedMs != null && startedMs !== elapsedMs
-        ? `Started ${fmtDuration(startedMs)} into the loop · reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
-        : `Reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
+  const runtimeTitle = startedMs == null ? undefined : `Started ${fmtDuration(startedMs)} into the loop`
   return (
     <>
       <TableRow
@@ -453,11 +446,8 @@ function RunRow({
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">
           {fmtTokens(run.inputTokens)} / {fmtTokens(run.outputTokens)}
         </TableCell>
-        <TableCell
-          className={`px-2 py-2.5 font-mono text-[11px] ${timing === 'elapsed' ? 'text-[#b8aaa4]' : 'text-[#96908d]'}`}
-          title={timing === 'elapsed' ? elapsedTitle : undefined}
-        >
-          {timing === 'elapsed' ? (elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`) : fmtDuration(runtimeMs(run))}
+        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]" title={runtimeTitle}>
+          {fmtDuration(runtimeMs(run, now))}
         </TableCell>
       </TableRow>
       {expanded && (critique || run.metrics) && (
@@ -624,13 +614,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
   )
   const totalTokens = totals.inputTokens + totals.outputTokens
-  const playingSelectedBuild = play.running && play.round === selectedRound
-  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
-  const selectedRoundPlayable = selectedRevision != null
+  /** Wall-clock span of the loop, for the summary card only — the table shows per-attempt runtime. */
   const visibleElapsedMs = visibleRuns.reduce<number | null>((latest, run) => {
     const elapsed = loop ? elapsedThroughRunMs(loop.createdAt, run) : null
     return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
   }, null)
+  const playingSelectedBuild = play.running && play.round === selectedRound
+  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
+  const selectedRoundPlayable = selectedRevision != null
 
   const start = async (): Promise<void> => {
     setBusy(true)
@@ -1202,16 +1193,9 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Cost</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead>
-                  {selectedRound == null ? (
-                    <TableHead
-                      className="px-2 text-[11px] text-[#68615f]"
-                      title="Wall-clock time from the beginning of the loop through this attempt"
-                    >
-                      Elapsed
-                    </TableHead>
-                  ) : (
-                    <TableHead className="px-2 text-[11px] text-[#68615f]">Runtime</TableHead>
-                  )}
+                  <TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">
+                    Runtime
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody className="text-xs">
@@ -1220,7 +1204,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                     key={run.id}
                     run={run}
                     loopCreatedAt={loop.createdAt}
-                    timing={selectedRound == null ? 'elapsed' : 'runtime'}
                     loopId={loop.id}
                     critique={run.role === 'critique' ? critiqueRounds.find((c) => c.runId === run.id) : undefined}
                     expanded={expanded.has(run.id)}
@@ -1250,14 +1233,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                     <div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
                   </TableCell>
                   <TableCell
-                    className={`px-2 py-3 font-mono text-[11px] ${selectedRound == null ? 'text-[#b8aaa4]' : 'text-[#c2bbb7]'}`}
-                    title={selectedRound == null ? 'Wall-clock time from the beginning of the loop through the latest visible attempt' : undefined}
+                    className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]"
+                    title="Sum of the runtimes of the visible attempts"
                   >
-                    {selectedRound == null
-                      ? visibleElapsedMs == null
-                        ? '—'
-                        : `+${fmtDuration(visibleElapsedMs)}`
-                      : fmtDuration(totals.durationMs)}
+                    {fmtDuration(totals.durationMs)}
                   </TableCell>
                 </TableRow>
               </TableBody>

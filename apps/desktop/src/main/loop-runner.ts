@@ -780,6 +780,13 @@ export class LoopRunner {
     }
     const agentLabels = new Map<string, { label: string; model: string | null }>()
     const finishedAgents = new Set<string>()
+    // The CLI now launches subagents in the background: the Agent tool_result
+    // comes back within a millisecond saying "launched", and the real ending
+    // arrives much later as a system/task_notification. Treating that launch
+    // receipt as completion marked every agent done the instant it started.
+    const backgrounded = new Set<string>()
+    /** Tracked tasks that are shell commands, not agents. */
+    const notAgents = new Set<string>()
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
@@ -920,6 +927,34 @@ export class LoopRunner {
         plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
       }
+      // The CLI raises task_started/task_notification for every tracked task,
+      // shell commands included — `task_type: 'local_bash'` outnumbered real
+      // agents ten to one on a real round, and each one logged as a subagent.
+      // Only `local_agent` is an agent; the notification carries no task_type,
+      // so the shell ones have to be remembered from their start event.
+      if (type === 'system' && (obj.subtype === 'task_started' || obj.subtype === 'task_notification')) {
+        const toolUseId = obj.tool_use_id as string | undefined
+        if (!toolUseId) return
+        if (obj.subtype === 'task_started') {
+          // Two ways to be an agent: the CLI says so, or we watched the
+          // orchestrator call the Agent tool with this id. Anything else is a
+          // shell command wearing a task notice.
+          if (obj.task_type !== 'local_agent' && !agentLabels.has(toolUseId)) {
+            notAgents.add(toolUseId)
+            return
+          }
+          if (obj.is_backgrounded) backgrounded.add(toolUseId)
+          if (!agentLabels.has(toolUseId)) {
+            agentLabels.set(toolUseId, { label: trunc((obj.description as string | undefined) ?? 'subagent', 30), model: null })
+          }
+          return
+        }
+        if (notAgents.has(toolUseId) || finishedAgents.has(toolUseId)) return
+        finishedAgents.add(toolUseId)
+        const label = agentLabels.get(toolUseId)?.label ?? `agent-${toolUseId.slice(-6)}`
+        plog('spawn', `⇊ subagent "${label}" ${(obj.status as string | undefined) ?? 'finished'}`)
+        return
+      }
       if (type === 'assistant') {
         const message = obj.message as Record<string, unknown> | undefined
         if (!message) return
@@ -958,7 +993,7 @@ export class LoopRunner {
         for (const block of content) {
           if (block.type !== 'tool_result') continue
           const toolUseId = block.tool_use_id as string | undefined
-          if (toolUseId && agentLabels.has(toolUseId) && !finishedAgents.has(toolUseId)) {
+          if (toolUseId && agentLabels.has(toolUseId) && !backgrounded.has(toolUseId) && !finishedAgents.has(toolUseId)) {
             finishedAgents.add(toolUseId)
             plog('spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
           }
@@ -1291,6 +1326,10 @@ export class LoopRunner {
       return agent
     }
     ensure('orchestrator')
+    // Seed from the spawn registry, not just from messages: a backgrounded agent
+    // can start and finish without a single assistant message reaching this
+    // stream, and it still belongs in the list.
+    for (const key of agentLabels.keys()) ensure(key)
     for (const { agentKey, model, usage, ts } of msgUsage.values()) {
       const agent = ensure(agentKey)
       agent.messages += 1
@@ -1334,7 +1373,8 @@ export class LoopRunner {
       if (key !== 'orchestrator') agent.done = finished.has(key)
     }
     const list = [...agents.values()]
-    list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
+    // '\uffff' keeps agents that never spoke at the end, in spawn order.
+    list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '\uffff').localeCompare(b.firstTs ?? '\uffff')))
     // Workflow agents carry only a scalar token count, so they cannot join
     // perModel — that stays priced off the stream and the CLI's own figures.
     return { agents: [...list, ...workflowAgents, ...childAgents], perModel }
