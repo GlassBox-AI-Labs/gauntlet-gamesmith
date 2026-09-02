@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { LoopRecord, ReferencePack, RunRecord } from '../shared/loop'
-import { elapsedThroughRunMs } from '../shared/run-timing'
+import { runtimeMs } from '../shared/run-timing'
 import { describeModels } from '../shared/models'
 import { PRICE_TABLE_VERSION } from './pricing'
 
@@ -134,13 +134,12 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
 
   lines.push('## Rounds')
   lines.push('')
-  lines.push('| Round | Role | Revision | Model | Status | Cost | Tokens in | Tokens out | Elapsed | Score |')
+  lines.push('| Round | Role | Revision | Model | Status | Cost | Tokens in | Tokens out | Runtime | Score |')
   lines.push('|---|---|---|---|---|---|---|---|---|---|')
   for (const run of runs) {
     const score = run.verdict ? `${run.verdict.score.toFixed(2)}${run.verdict.pass ? ' ✓ PASS' : ''}` : ''
-    const elapsedMs = elapsedThroughRunMs(loop.createdAt, run)
     lines.push(
-      `| ${run.role === 'reference' ? '—' : run.round} | ${run.role} | ${run.revision?.slice(0, 12) ?? '—'} | ${run.model ?? '—'} | ${run.status} | ${run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(run.inputTokens)} | ${fmtTokens(run.outputTokens)} | ${elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`} | ${score} |`,
+      `| ${run.role === 'reference' ? '—' : run.round} | ${run.role} | ${run.revision?.slice(0, 12) ?? '—'} | ${run.model ?? '—'} | ${run.status} | ${run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(run.inputTokens)} | ${fmtTokens(run.outputTokens)} | ${fmtDuration(runtimeMs(run))} | ${score} |`,
     )
   }
   lines.push('')

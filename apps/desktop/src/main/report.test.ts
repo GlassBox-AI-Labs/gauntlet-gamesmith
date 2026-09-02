@@ -50,7 +50,7 @@ function run(partial: Partial<RunRecord>): RunRecord {
 describe('buildReport', () => {
   it('sums cost and tokens across finished runs and shows the score trend', () => {
     const report = buildReport(loop, [
-      run({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000 }),
+      run({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 8 * 60_000 }),
       run({
         id: 'b',
         role: 'critique',
@@ -64,9 +64,9 @@ describe('buildReport', () => {
     ])
     expect(report).toContain('**Equivalent cost:** $10.00 of $100.00 budget')
     expect(report).toContain('in 2.00M / out 100.0k')
-    expect(report).toContain('| Elapsed | Score |')
-    expect(report).not.toContain('| Runtime |')
-    expect(report).toContain('| +30m00s |')
+    expect(report).toContain('| Runtime | Score |')
+    // Per-attempt runtime, not time-since-loop-start: this run took 8m of the 30m elapsed.
+    expect(report).toContain('| 8m00s |')
     expect(report).toContain('0.42')
     expect(report).toContain('flat lighting')
   })
