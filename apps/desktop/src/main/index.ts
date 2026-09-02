@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import fixPath from 'fix-path'
 import pty, { type IPty } from 'node-pty'
 import type {
   DetectionResult,
@@ -54,6 +55,7 @@ interface ClaudeStatus {
 
 const runningLogins = new Map<HarnessKind, IPty>()
 const validHarnessKinds = new Set<string>(harnessKinds)
+const smokeTestMode = process.argv.includes('--gauntlet-smoke-test')
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
 let loopRunner: LoopRunner | null = null
@@ -86,7 +88,13 @@ function withPromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[]
 }
 
 app.setName('Gauntlet Loop')
-app.setPath('userData', path.join(app.getPath('appData'), 'Gauntlet Loop'))
+app.setPath(
+  'userData',
+  smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
+    ? process.env.GAUNTLET_SMOKE_USER_DATA
+    : path.join(app.getPath('appData'), 'Gauntlet Loop'),
+)
+fixPath()
 
 function assertHarnessKind(value: unknown): HarnessKind {
   if (typeof value !== 'string' || !validHarnessKinds.has(value)) {
@@ -690,6 +698,12 @@ if (hasSingleInstanceLock) {
     registerLoopIpc()
     registerReportIpc()
     mainWindow = createWindow()
+    if (smokeTestMode) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        console.log('GAUNTLET_SMOKE_TEST_OK')
+        app.quit()
+      })
+    }
     loopRunner.recoverAll()
 
     app.on('activate', () => {
