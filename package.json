@@ -12,6 +12,12 @@
   "scripts": {
     "build": "pnpm --filter @gauntlet/desktop build",
     "dev": "pnpm --filter @gauntlet/desktop dev",
+    "package": "pnpm --filter @gauntlet/desktop package",
+    "package:dir": "pnpm --filter @gauntlet/desktop package:dir",
+    "package:linux": "pnpm --filter @gauntlet/desktop package:linux",
+    "package:mac": "pnpm --filter @gauntlet/desktop package:mac",
+    "package:mac:release": "pnpm --filter @gauntlet/desktop package:mac:release",
+    "package:win": "pnpm --filter @gauntlet/desktop package:win",
     "start": "pnpm --filter @gauntlet/desktop start",
     "test": "pnpm --filter @gauntlet/desktop test",
     "typecheck": "pnpm --filter @gauntlet/desktop typecheck"

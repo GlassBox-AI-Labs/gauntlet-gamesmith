@@ -4,9 +4,18 @@
   "version": "0.1.0",
   "description": "Gauntlet Loop Electron desktop application",
   "main": "./out/main/index.js",
+  "author": "GlassBox AI Labs",
   "scripts": {
     "build": "electron-vite build",
     "dev": "electron-vite dev",
+    "package": "pnpm build && electron-builder --publish never",
+    "package:dir": "pnpm build && electron-builder --dir --publish never",
+    "package:linux": "pnpm build && electron-builder --linux AppImage --x64 --publish never",
+    "package:mac": "pnpm build && electron-builder --mac dmg zip --arm64 --x64 --publish never -c.mac.identity=- -c.mac.hardenedRuntime=false -c.mac.notarize=false",
+    "package:mac:release": "node scripts/verify-mac-release-env.cjs && pnpm build && electron-builder --mac dmg zip --arm64 --x64 --publish never -c.forceCodeSigning=true && node scripts/verify-mac-release.cjs",
+    "smoke:mac": "node scripts/smoke-test-mac-app.cjs",
+    "verify:mac:release": "node scripts/verify-mac-release.cjs",
+    "package:win": "pnpm build && electron-builder --win portable --x64 --publish never",
     "postinstall": "node scripts/prepare-node-pty.cjs",
     "start": "electron-vite preview",
     "test": "vitest run",
@@ -17,6 +26,7 @@
     "@xterm/xterm": "6.0.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "fix-path": "5.0.0",
     "lucide-react": "1.37.0",
     "node-pty": "1.1.0",
     "radix-ui": "1.4.3",
@@ -33,11 +43,44 @@
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "44.0.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "lightningcss": "npm:lightningcss-wasm@1.33.0",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
     "vite": "7.3.6",
     "vitest": "4.1.11"
+  },
+  "build": {
+    "appId": "ai.glassbox.gauntlet-loop",
+    "productName": "Gauntlet Loop",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "../../dist"
+    },
+    "npmRebuild": false,
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "notarize": true,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": "portable"
+    },
+    "linux": {
+      "category": "Development",
+      "target": "AppImage"
+    }
   }
 }

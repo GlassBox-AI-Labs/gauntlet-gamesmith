@@ -26,6 +26,77 @@ pnpm build
 pnpm start    # preview the production build
 ```
 
+## Downloadable app
+
+Create a distributable for the current operating system from the repository root:
+
+```sh
+pnpm package
+```
+
+Artifacts are written to `dist/`. Recipients can run them without installing Node,
+pnpm, or this repository. Platform-specific commands are also available:
+
+```sh
+pnpm package:mac    # ad hoc-signed macOS DMG and ZIP, Apple Silicon and Intel
+pnpm package:mac:release # signed and Apple-notarized macOS DMG and ZIP
+pnpm --filter @gauntlet/desktop verify:mac:release # verify existing trusted DMGs
+pnpm --filter @gauntlet/desktop smoke:mac # launch-test the packaged ARM64 app
+pnpm package:win    # Windows x64 portable EXE (run on Windows)
+pnpm package:linux  # Linux x64 AppImage (run on Linux)
+pnpm package:dir    # unpacked current-platform app for a quick smoke test
+```
+
+### Trusted macOS release
+
+Apple-trusted downloads require an active Apple Developer Program membership and
+a **Developer ID Application** certificate. Create and install that certificate
+with Xcode (Settings → Accounts → Manage Certificates), or provide an exported
+certificate to electron-builder with `CSC_LINK` and `CSC_KEY_PASSWORD`.
+
+Configure notarization using an App Store Connect API key (recommended):
+
+```sh
+export APPLE_API_KEY=/absolute/path/to/AuthKey_ABC123.p8
+export APPLE_API_KEY_ID=ABC123
+export APPLE_API_ISSUER=00000000-0000-0000-0000-000000000000
+pnpm package:mac:release
+```
+
+Alternatively, store Apple ID credentials in the macOS keychain so the password is
+not left in shell history:
+
+```sh
+xcrun notarytool store-credentials gauntlet-notary \
+  --apple-id "developer@example.com" \
+  --team-id "YOUR_TEAM_ID" \
+  --password "APP_SPECIFIC_PASSWORD"
+export APPLE_KEYCHAIN_PROFILE=gauntlet-notary
+pnpm package:mac:release
+```
+
+The release command deliberately fails when notarization credentials or a valid
+distribution certificate are unavailable. electron-builder enables Apple's
+hardened runtime, signs the app and native terminal helper, submits both
+architectures to Apple's notary service, staples the accepted ticket, and creates
+the DMG/ZIP downloads in `dist/`. It then mounts both DMGs and verifies their
+checksums, Developer ID signatures, hardened runtime, architectures, packaged-app
+startup, Gatekeeper acceptance, stapled tickets, and Applications shortcuts before
+succeeding.
+
+The regular `package:mac` command uses a complete ad hoc signature so local builds
+launch cleanly without a partially signed app bundle. Ad hoc signatures do not
+identify the publisher to Gatekeeper, so downloads intended for other users must
+still be created with `package:mac:release`.
+
+Verify an artifact before publishing it:
+
+```sh
+codesign --verify --deep --strict --verbose=2 "dist/mac-arm64/Gauntlet Loop.app"
+spctl --assess --type execute --verbose=2 "dist/mac-arm64/Gauntlet Loop.app"
+xcrun stapler validate "dist/mac-arm64/Gauntlet Loop.app"
+```
+
 The desktop app uses Electron, React, TypeScript, electron-vite, Tailwind CSS, and shadcn/ui. Renderer components live under `src/renderer/src/components`; the typed preload API and shared harness contracts keep Node capabilities out of the renderer.
 
 The app creates isolated CLI homes inside its user-data directory:
