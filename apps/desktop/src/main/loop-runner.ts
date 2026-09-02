@@ -19,6 +19,7 @@ import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels 
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
 import { delegationRules, implementerAgentMd } from './delegation'
+import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
 import { critiquePlan, implementPlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
@@ -160,8 +161,15 @@ function normalizeVerdict(value: unknown): Verdict | null {
   return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
 }
 
+/**
+ * The user's prompt says what game to build; the engine contract says what to
+ * build it out of. It is repeated on every round rather than only the first,
+ * because by round seven the critic is pushing hard on lighting and game feel
+ * and the architecture is exactly what gets quietly traded away to fix
+ * findings.
+ */
 function buildImplementPrompt(models: LoopModels, userPrompt: string, round: number, verdict: Verdict | null): string {
-  if (round <= 1 || !verdict) return `${userPrompt}\n\n${delegationRules(models)}`
+  if (round <= 1 || !verdict) return `${userPrompt}\n\n${engineContract()}\n\n${delegationRules(models)}`
   const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
   return [
     userPrompt,
@@ -171,7 +179,8 @@ function buildImplementPrompt(models: LoopModels, userPrompt: string, round: num
     'Findings you MUST fix this round:',
     findings || '- (no itemized findings — raise overall quality)',
     '---',
-    'Fix every finding above, then keep raising quality toward the bar.',
+    'Fix every finding above, then keep raising quality toward the bar. Never fix a finding by weakening the engine contract below — if one genuinely conflicts with it, say so in your report and fix the rest.',
+    engineContract(),
     delegationRules(models),
   ].join('\n\n')
 }
@@ -191,6 +200,7 @@ Protocol:
 3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`, \`recordVideo\` on the context). Never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.
 4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
 5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
+6. ${engineGateRules()}
 
 End your reply with EXACTLY one fenced JSON block and nothing after it:
 
@@ -198,7 +208,7 @@ End your reply with EXACTLY one fenced JSON block and nothing after it:
 {"score": 0.0, "pass": false, "summary": "<=60 words>", "findings": [{"severity": "critical|major|minor", "text": "one specific, fixable shortfall"}]}
 \`\`\`
 
-"pass" may only be true if score >= 0.90 and you would genuinely mistake screenshots of this game for the AAA reference.`
+"pass" may only be true if score >= 0.90 AND \`node tools/engine-gate.mjs\` exited 0 AND you would genuinely mistake screenshots of this game for the AAA reference.`
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -283,8 +293,12 @@ export class LoopRunner {
     if (!workspaceDir || !path.isAbsolute(workspaceDir)) return { ok: false, error: 'Workspace must be an absolute path.' }
     const maxRounds = Math.max(1, Math.min(100, Math.floor(input.maxRounds) || 10))
     const budgetUsd = input.budgetUsd && input.budgetUsd > 0 ? input.budgetUsd : null
+    let scaffold: ScaffoldResult
     try {
       fs.mkdirSync(workspaceDir, { recursive: true })
+      // Round one starts on the engine rather than spending its budget
+      // deciding on one — and deciding differently in every workspace.
+      scaffold = scaffoldEngine(workspaceDir)
     } catch (error) {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
@@ -292,6 +306,14 @@ export class LoopRunner {
     const models = resolveModels(input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
+    this.log(
+      loop.id,
+      null,
+      'system',
+      scaffold.created.length
+        ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
+        : 'Engine contract refreshed; workspace already scaffolded.',
+    )
     this.log(
       loop.id,
       null,
@@ -716,6 +738,13 @@ export class LoopRunner {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
       fs.mkdirSync(agentDir, { recursive: true })
       fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
+    }
+    // Rewrite the contract and the gate every round. The gate is the one file
+    // in the workspace a worker has an incentive to weaken, and a gate that
+    // can be edited to pass is not a gate.
+    const scaffold = scaffoldEngine(loop.workspaceDir)
+    if (scaffold.refreshed.length) {
+      this.log(loop.id, run.id, 'system', `Restored app-owned files: ${scaffold.refreshed.join(', ')}.`)
     }
     // Delegated workers write their streams here. Clearing the directory keeps
     // last round's children out of this round's metrics and liveness check.
