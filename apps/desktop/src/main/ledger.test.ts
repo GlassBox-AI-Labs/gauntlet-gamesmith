@@ -108,3 +108,58 @@ describe('Ledger', () => {
     ledger.close()
   })
 })
+
+describe('Ledger deletion and report storage', () => {
+  it('forgets a run without touching the folder ledger, so it can be imported back', () => {
+    const ledger = makeLedger()
+    const workspaceDir = workspace('deletable')
+    const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 5, budgetUsd: null, models })
+    const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'do it' })
+    ledger.appendEvent({ loopId: loop.id, runId: run.id, ts: new Date().toISOString(), kind: 'system', text: 'started' })
+    ledger.prepareRunFolder(loop.id)
+
+    expect(ledger.deleteLoop(loop.id)).toBe(true)
+    expect(ledger.getLoop(loop.id)).toBeNull()
+    expect(ledger.runsForLoop(loop.id)).toEqual([])
+    expect(ledger.eventsForLoop(loop.id)).toEqual([])
+    expect(fs.existsSync(path.join(workspaceDir, '.gauntlet-loop', 'ledger.db'))).toBe(true)
+
+    const [reimported] = ledger.importRunFolder(workspaceDir)
+    expect(reimported.loop.id).toBe(loop.id)
+    expect(reimported.runs).toHaveLength(1)
+  })
+
+  it('says so when the run was already gone', () => {
+    expect(makeLedger().deleteLoop('nope')).toBe(false)
+  })
+
+  it('lists the runs sharing a project folder', () => {
+    const ledger = makeLedger()
+    const shared = workspace('shared')
+    const first = ledger.createLoop({ prompt: 'one', workspaceDir: shared, maxRounds: 2, budgetUsd: null, models })
+    const second = ledger.createLoop({ prompt: 'two', workspaceDir: shared, maxRounds: 2, budgetUsd: null, models })
+    ledger.createLoop({ prompt: 'three', workspaceDir: workspace('other'), maxRounds: 2, budgetUsd: null, models })
+    expect(ledger.loopsInWorkspace(shared).map((loop) => loop.id).sort()).toEqual([first.id, second.id].sort())
+  })
+
+  it('stores, updates and removes reports', () => {
+    const ledger = makeLedger()
+    const report = {
+      id: 'rep1',
+      name: 'Opus vs Fable',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+      capturedAt: '2026-09-01T00:00:00.000Z',
+      rows: [],
+    }
+    ledger.saveReport(report)
+    expect(ledger.getReport('rep1')?.name).toBe('Opus vs Fable')
+    ledger.saveReport({ ...report, name: 'Renamed' })
+    expect(ledger.reports()).toHaveLength(1)
+    expect(ledger.getReport('rep1')?.name).toBe('Renamed')
+    expect(ledger.deleteReport('rep1')).toBe(true)
+    expect(ledger.deleteReport('rep1')).toBe(false)
+    expect(ledger.reports()).toEqual([])
+  })
+})
+

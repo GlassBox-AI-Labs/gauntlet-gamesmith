@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
 import {
+  assertDeletableRunFolder,
   assertExportDestination,
   copyRunFolder,
+  deleteRunFolder,
   nextAvailableExportPath,
   runLedgerPath,
   safeExportFolderName,
@@ -116,5 +118,44 @@ describe('run folder transfer', () => {
     fs.mkdirSync(path.join(parent, 'My-Project-gauntlet-run'))
     expect(nextAvailableExportPath(parent, 'My-Project-gauntlet-run')).toBe(path.join(parent, 'My-Project-gauntlet-run-2'))
     expect(() => assertExportDestination(source, path.join(source, 'exports', 'copy'))).toThrow(/outside the project folder/)
+  })
+})
+
+describe('deleting a run folder', () => {
+  function runFolder(root: string, name = 'project'): string {
+    const workspace = path.join(root, name)
+    fs.mkdirSync(path.join(workspace, '.gauntlet-loop'), { recursive: true })
+    fs.writeFileSync(runLedgerPath(workspace), 'db')
+    fs.writeFileSync(path.join(workspace, 'index.html'), '<html></html>')
+    return workspace
+  }
+
+  it('removes a folder that proves it is a run folder', async () => {
+    const root = tempDir()
+    const workspace = runFolder(root)
+    await deleteRunFolder(workspace, path.join(root, 'home'))
+    expect(fs.existsSync(workspace)).toBe(false)
+  })
+
+  it('refuses a folder with no ledger inside it', () => {
+    const root = tempDir()
+    const plain = path.join(root, 'not-a-run')
+    fs.mkdirSync(plain)
+    expect(() => assertDeletableRunFolder(plain, root)).toThrow(/may not be a run folder/)
+  })
+
+  it('refuses the home folder and anything above it', () => {
+    const root = tempDir()
+    const home = path.join(root, 'home')
+    fs.mkdirSync(path.join(home, '.gauntlet-loop'), { recursive: true })
+    fs.writeFileSync(runLedgerPath(home), 'db')
+    expect(() => assertDeletableRunFolder(home, home)).toThrow(/your home folder/)
+    fs.mkdirSync(path.join(root, '.gauntlet-loop'), { recursive: true })
+    fs.writeFileSync(runLedgerPath(root), 'db')
+    expect(() => assertDeletableRunFolder(root, home)).toThrow(/contains your home folder/)
+  })
+
+  it('refuses a filesystem root', () => {
+    expect(() => assertDeletableRunFolder(path.parse(process.cwd()).root, os.homedir())).toThrow(/filesystem root/)
   })
 })

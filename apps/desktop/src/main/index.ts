@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import pty, { type IPty } from 'node-pty'
@@ -11,8 +13,9 @@ import type {
   TerminalDataEvent,
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
-import type { CritiqueRound, StartLoopInput } from '../shared/loop'
+import type { CritiqueRound, LoopRecord, StartLoopInput } from '../shared/loop'
 import { isCodexModel, resolveModels } from '../shared/models'
+import { REPORT_FILE_SUFFIX, type DeleteRunsResult, type ReportRecord, type ReportRunRow } from '../shared/reports'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
@@ -20,7 +23,8 @@ import { startMediaServer } from './media-server'
 import { playState, startPlay, stopAllPlay, stopPlay } from './play'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { checkoutRoundRevision } from './round-revision'
-import { copyRunFolder, nextAvailableExportPath, safeExportFolderName } from './run-transfer'
+import { buildReportRow, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
+import { copyRunFolder, deleteRunFolder, nextAvailableExportPath, safeExportFolderName } from './run-transfer'
 
 interface HarnessSpec {
   command: string
@@ -302,6 +306,40 @@ function registerLoopIpc(): void {
     ledger.patchLoop(String(loopId), { title })
     return ledger.getLoop(String(loopId))
   })
+  ipcMain.handle('loop:delete', async (_event, value: unknown, deleteFilesValue: unknown): Promise<DeleteRunsResult> => {
+    if (!ledger) return { ok: false, deletedIds: [], errors: ['Run storage is not ready.'] }
+    const loopIds = Array.isArray(value) ? value.map((id) => String(id)) : []
+    const deleteFiles = deleteFilesValue === true
+    const home = app.getPath('home')
+    const deletedIds: string[] = []
+    const errors: string[] = []
+    for (const loopId of loopIds) {
+      const loop = ledger.getLoop(loopId)
+      if (!loop) {
+        errors.push('One of the runs was already gone.')
+        continue
+      }
+      if (loop.status === 'running') {
+        errors.push(`"${loop.title}" is still running. Stop it first.`)
+        continue
+      }
+      // Wiping the folder would take the other runs recorded in it with it.
+      const sharing = deleteFiles ? ledger.loopsInWorkspace(loop.workspaceDir).filter((other) => other.id !== loopId) : []
+      if (sharing.length > 0) {
+        errors.push(
+          `"${loop.title}" shares its project folder with ${sharing.length} other ${sharing.length === 1 ? 'run' : 'runs'}, so the files were kept.`,
+        )
+      }
+      try {
+        if (deleteFiles && sharing.length === 0) await deleteRunFolder(loop.workspaceDir, home)
+        ledger.deleteLoop(loopId)
+        deletedIds.push(loopId)
+      } catch (error) {
+        errors.push(`Could not delete "${loop.title}": ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return { ok: errors.length === 0, deletedIds, errors }
+  })
   ipcMain.handle('loop:active', () => loopRunner?.snapshot() ?? null)
   ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) =>
     ledger?.eventsForLoop(String(loopId), Math.min(2000, Math.max(1, Number(limit) || 800))) ?? [],
@@ -469,6 +507,126 @@ if (!hasSingleInstanceLock) {
   app.quit()
 }
 
+function reportRowsFor(loopIds: readonly string[]): ReportRunRow[] {
+  if (!ledger) return []
+  const store = ledger
+  return loopIds
+    .map((id) => store.getLoop(id))
+    .filter((loop): loop is LoopRecord => loop != null)
+    .map((loop) => buildReportRow({ loop, runs: store.runsForLoop(loop.id) }))
+}
+
+/** Save an edited report, stamping the change time. */
+function touchReport(report: ReportRecord, patch: Partial<ReportRecord>): ReportRecord {
+  return ledger!.saveReport({ ...report, ...patch, updatedAt: new Date().toISOString() })
+}
+
+async function saveReportFile(report: ReportRecord, extension: string, body: string, title: string): Promise<unknown> {
+  if (!mainWindow) return { ok: false, error: 'Report export is not ready.' }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title,
+    defaultPath: path.join(app.getPath('downloads'), `${reportFileBase(report.name)}${extension}`),
+    buttonLabel: 'Save report',
+  })
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  await fs.writeFile(result.filePath, body, 'utf8')
+  return { ok: true, filePath: result.filePath }
+}
+
+function registerReportIpc(): void {
+  ipcMain.handle('report:list', () => ledger?.reports() ?? [])
+  ipcMain.handle('report:get', (_event, value: unknown) => ledger?.getReport(String(value)) ?? null)
+  ipcMain.handle('report:create', (_event, nameValue: unknown, value: unknown) => {
+    if (!ledger) return null
+    const loopIds = Array.isArray(value) ? value.map((id) => String(id)) : []
+    const stamp = new Date().toISOString()
+    return ledger.saveReport({
+      id: crypto.randomUUID(),
+      name: String(nameValue ?? '').trim().slice(0, 80) || 'Untitled report',
+      createdAt: stamp,
+      updatedAt: stamp,
+      capturedAt: stamp,
+      rows: reportRowsFor(loopIds),
+    })
+  })
+  ipcMain.handle('report:rename', (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(String(reportId))
+    const name = String(value ?? '').trim().slice(0, 80)
+    if (!report || !name) return null
+    return touchReport(report, { name })
+  })
+  ipcMain.handle('report:add-runs', (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(String(reportId))
+    if (!report) return null
+    const present = new Set(report.rows.map((row) => row.loopId))
+    const loopIds = (Array.isArray(value) ? value.map((id) => String(id)) : []).filter((id) => !present.has(id))
+    if (loopIds.length === 0) return report
+    return touchReport(report, { rows: [...report.rows, ...reportRowsFor(loopIds)] })
+  })
+  ipcMain.handle('report:remove-runs', (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(String(reportId))
+    if (!report) return null
+    const dropped = new Set(Array.isArray(value) ? value.map((id) => String(id)) : [])
+    return touchReport(report, { rows: report.rows.filter((row) => !dropped.has(row.loopId)) })
+  })
+  ipcMain.handle('report:refresh', (_event, value: unknown) => {
+    const report = ledger?.getReport(String(value))
+    if (!report) return null
+    // Rows whose run has since been deleted keep the numbers they were frozen
+    // with, so refreshing never empties a report.
+    const fresh = new Map(reportRowsFor(report.rows.map((row) => row.loopId)).map((row) => [row.loopId, row]))
+    return touchReport(report, {
+      capturedAt: new Date().toISOString(),
+      rows: report.rows.map((row) => fresh.get(row.loopId) ?? row),
+    })
+  })
+  ipcMain.handle('report:delete', (_event, value: unknown) => ledger?.deleteReport(String(value)) ?? false)
+  ipcMain.handle('report:markdown', (_event, value: unknown) => {
+    const report = ledger?.getReport(String(value))
+    return report ? renderReportMarkdown(report) : ''
+  })
+  ipcMain.handle('report:export-json', async (_event, value: unknown) => {
+    try {
+      const report = ledger?.getReport(String(value))
+      if (!report) return { ok: false, error: 'Report not found.' }
+      const body = JSON.stringify(toReportFile(report, new Date().toISOString()), null, 2)
+      return await saveReportFile(report, REPORT_FILE_SUFFIX, body, 'Export report for a teammate')
+    } catch (error) {
+      return { ok: false, error: `Could not export report: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  })
+  ipcMain.handle('report:export-markdown', async (_event, value: unknown) => {
+    try {
+      const report = ledger?.getReport(String(value))
+      if (!report) return { ok: false, error: 'Report not found.' }
+      return await saveReportFile(report, '.md', renderReportMarkdown(report), 'Save report as Markdown')
+    } catch (error) {
+      return { ok: false, error: `Could not save report: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  })
+  ipcMain.handle('report:import', async () => {
+    try {
+      if (!mainWindow || !ledger) return { ok: false, error: 'Report import is not ready.' }
+      const picked = await dialog.showOpenDialog(mainWindow, {
+        title: 'Open a report a teammate sent you',
+        buttonLabel: 'Open report',
+        filters: [{ name: 'Gauntlet Loop report', extensions: ['json'] }],
+        properties: ['openFile'],
+      })
+      const filePath = picked.filePaths[0]
+      if (picked.canceled || !filePath) return { ok: false, canceled: true }
+      const parsed = parseReportFile(await fs.readFile(filePath, 'utf8'))
+      const stamp = new Date().toISOString()
+      // A fresh id every time, so an imported copy never overwrites a report
+      // already on this machine.
+      const report = ledger.saveReport({ ...parsed, id: crypto.randomUUID(), updatedAt: stamp })
+      return { ok: true, report, filePath }
+    } catch (error) {
+      return { ok: false, error: `Could not import report: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  })
+}
+
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
@@ -478,6 +636,7 @@ if (hasSingleInstanceLock) {
     })
     registerIpc()
     registerLoopIpc()
+    registerReportIpc()
     mainWindow = createWindow()
     loopRunner.recoverAll()
 
