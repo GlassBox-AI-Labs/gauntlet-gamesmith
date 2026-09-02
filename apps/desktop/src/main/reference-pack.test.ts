@@ -34,10 +34,10 @@ describe('Reference Pack', () => {
       fs.writeFileSync(path.join(dir, root, 'journey', `${shot}.png`), 'shot')
     }
     fs.writeFileSync(path.join(dir, root, 'video', 'gameplay.webm'), 'video')
-    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Target')
+    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Target\n\nProgression model: level-based')
     fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
     fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
-    fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
     fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources: [{ url: 'https://example.com' }] }))
 
     const pack = scanReferencePack(dir, root)
@@ -55,6 +55,18 @@ describe('Reference Pack', () => {
     expect(pack.journeyMd).toContain('Main menu')
     expect(pack.storyMd).toContain('Premise')
     expect(pack.researchMd).toContain('What players say')
+  })
+
+  it('rejects a shallow study that cannot make the critic a game expert', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Visual mood board')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), '# A few reviews')
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toContain('research.md needs an Expert gameplay dossier for the critic')
+    expect(pack.issues).toContain('README.md needs a level-based or non-level-based progression classification')
   })
 
   it('validates a manifest larger than the display cap without truncating it', () => {

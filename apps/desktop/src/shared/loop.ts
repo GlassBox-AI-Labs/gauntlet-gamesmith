@@ -58,6 +58,13 @@ export interface AgentMetric {
   costUsd?: number | null
   /** Which agent definition the workflow script asked for, e.g. 'implementer'. */
   agentType?: string
+  /**
+   * The agent that launched this one, when it is not the orchestrator. A
+   * delegated worker is started by a shell command, so its owner is whoever
+   * ran that command — a dispatcher on a claude → codex run, the orchestrator
+   * itself on a codex → claude one. The list nests rows under their owner.
+   */
+  parentId?: string
   /** The task this agent was actually given, truncated for display. */
   prompt?: string
   /** Most recent tool call, for the live feed. */

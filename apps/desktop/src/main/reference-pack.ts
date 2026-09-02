@@ -64,9 +64,15 @@ export function scanReferencePack(workspaceDir: string, root: string): Reference
   if (videos.length < 1) issues.push('needs a gameplay video')
   if (journey.length < 4) issues.push(`needs at least 4 ordered journey shots (${journey.length} found)`)
   if (!researchMd?.trim()) issues.push('needs research.md with the deep-research findings')
+  else if (!/expert gameplay dossier/i.test(researchMd)) {
+    issues.push('research.md needs an Expert gameplay dossier for the critic')
+  }
   if (!journeyMd?.trim()) issues.push('needs journey.md with the main menu → Level 1 walkthrough')
   if (!storyMd?.trim()) issues.push('needs story.md with the premise, progression, and captured dialog')
   if (!readme?.trim()) issues.push('needs README.md with the target brief')
+  else if (!/progression model:\s*(?:level-based|non-level-based)/i.test(readme)) {
+    issues.push('README.md needs a level-based or non-level-based progression classification')
+  }
   if (!manifest?.trim()) issues.push('needs manifest.json with source attribution')
   else {
     try {
