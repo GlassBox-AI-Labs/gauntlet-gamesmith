@@ -118,7 +118,8 @@ Note what is *not* here: no crop box, no pixel geometry. The Reference Study
 names the object and points at frames it appears in; finding and cutting it out
 is the asset phase's job.
 
-**It also needs a new folder, `objects/`** — and this is a correction to an
+**It also needs a new folder, `objects/`** (though see §9.2: some games stage
+their own hero shots and need it less) — and this is a correction to an
 earlier claim in this document. Writing a cast list was supposed to be the only
 change to the Reference Study. The spike showed that is not enough: the pack's
 gameplay stills are five different enemies in five different fights, so a cast
@@ -200,12 +201,23 @@ assetModel: string | null
 assetEffort: string
 ```
 
-**Null is the off switch, and it earns its place.** The asset phase is the most
-expensive thing in the loop — a full `img2threejs` pipeline per cast entry, run
-in parallel. Making the model nullable means you can run the same prompt with
-and without the phase and compare the scores, which is the only honest way to
-find out whether it is worth its cost. It also gives every loop written before
-the phase existed a sane value.
+**Null is the off switch, and it turned out to matter more than cost.** The
+asset phase is the most expensive thing in the loop — a full `img2threejs`
+pipeline per cast entry, run in parallel — so a nullable model lets you run the
+same prompt with and without it and compare scores. It also gives every loop
+written before the phase existed a sane value.
+
+But §9.2 found the bigger reason. **Some games should not run this phase at
+all.** In a Pac-Man Championship Edition 2 pack the sculptable cast is a sphere
+with a wedge and four capsules, while everything that makes the game look right
+— extruded neon walls, bloom, score-ladder popups, glow trails — is renderer
+and shader work an asset pipeline cannot touch. Running the phase there burns a
+full round producing trivial models and misses the target entirely.
+
+**The cast list should decide, not the operator.** The Reference Study lists
+only what is worth sculpting; an empty or near-empty `cast.md` means the phase
+no-ops for that loop and the run form's setting never has to be touched. The
+manual null stays as an override and as the A/B switch.
 
 **Default: `claude-opus-5` at `high`** — the same as the subagent default,
 because asset agents *are* fan-out workers. Two reasons not to copy the critic's
@@ -546,3 +558,50 @@ grid, never pixel guessing.
 `tools/crop.py` grew a `sheet` subcommand for the scanning half of this — it
 contact-sheets a folder of stills or samples a video, so choosing which frame
 holds the object costs one look instead of one look per file.
+
+### 9.2 Measured against a real pack (2026-09-02)
+
+`pacman-with-new-reference` has five genuine reference-phase packs in the
+`reference/<loop>/images|motion|journey|video` layout. Everything below is
+measured on the richest one, a Pac-Man Championship Edition 2 pack with 24
+stills.
+
+**The earlier resolution worry does not survive contact with a real pack.**
+Stills are 1920×1080 (12 of them) and 1280×720 (9); motion and journey frames
+are 1280×720; both clips are 1280×720. Nothing is 640×360. `motion/` is a
+usable rung after all, not a dead one, and the ladder in §9.1 should be read
+with that correction.
+
+**The crop guard fires exactly where it should.** The hero Pac-Man close-up in
+`ce2-11.jpg` crops at fill 0.918 with no upscaling. A ghost inside a `dx-01.jpg`
+maze frame is **1.3%** of the frame and is refused; forced through with
+`--allow-upscale` it becomes a ×9.31 smear with no recoverable detail. Same
+tool, same rules, a completely different game from the one it was built on.
+
+**But this pack challenges the phase's premise, and that is the real finding.**
+The pack's own README names what the visual target is: *"extruded neon walls —
+not flat lines... a bright saturated outline, a darker translucent core, and a
+subtle inner grid texture... heavy bloom so every wall bleeds light."* Its
+per-file notes call out score-ladder popups, shockwave rings, chromatic
+sparkle, "READY?" lettering, Pac-Man's glow trail, and how little the camera
+moves during calm play. Almost all of it is **rendering, shading, HUD and
+motion — not sculptable objects.**
+
+The sculptable cast is Pac-Man (a sphere with a wedge), four ghosts (a capsule
+with a scalloped skirt), pellets, and fruit. Running a staged pipeline with
+vision-correction loops on a Pac-Man sprite is enormous overkill, and it would
+spend a whole phase producing five trivial models while missing everything that
+actually makes the game look like the reference.
+
+The pack itself identifies only two object-reference candidates — `ce2-11`
+("hero-quality 3D Pac-Man macro... Our Pac model/shader bar") and the
+`ce2-01..03` giant voxel boss ghost — and both are already near-isolated hero
+shots that need no `objects/` folder to find.
+
+**So `objects/` is right but less universally load-bearing than §4.1 claims.**
+Some games stage their own object references; a creature-heavy game like Dark
+Souls does not. Keep the folder, drop the assumption that every pack needs it
+equally.
+
+**And the asset phase is not universally worth running.** See §4.3 — the
+nullable `assetModel` is doing more work than cost measurement.
