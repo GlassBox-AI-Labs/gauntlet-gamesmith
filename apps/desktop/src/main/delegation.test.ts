@@ -11,6 +11,8 @@ describe('implementerAgentMd', () => {
     expect(md).toContain('model: claude-opus-5')
     expect(md).toContain('effort: high')
     expect(md).toContain('read reference/loop-123/README.md')
+    expect(md).toContain('reference/loop-123/research.md')
+    expect(md).toContain('progression classification, story beats, and difficulty curve')
   })
 
   it('fronts a codex worker with a cheap dispatcher that must not background the child', () => {
@@ -54,6 +56,8 @@ describe('delegationRules', () => {
       expect(rules).toContain('must NOT edit game source yourself')
       expect(rules).toContain('scaffold')
       expect(rules).toContain('reference/loop-123/README.md')
+      expect(rules).toContain('reference/loop-123/research.md')
+      expect(rules).toContain('story, difficulty, level/progression, and gameplay workers')
     }
   })
 

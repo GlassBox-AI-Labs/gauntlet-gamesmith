@@ -52,7 +52,7 @@ effort: ${effort}
 ---
 `
   if (harnessFor(models.subagentModel) === 'claude') {
-    return `${header(models.subagentModel, models.subagentEffort)}You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, level design, ...). Before writing code, read ${referenceDir}/README.md and VIEW the downloaded references relevant to your slice. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
+    return `${header(models.subagentModel, models.subagentEffort)}You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
 `
   }
   // Claude Code runs only claude models as subagents, so a codex worker is
@@ -60,7 +60,7 @@ effort: ${effort}
   return `${header(DISPATCHER_MODEL, 'low')}You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
-2. Read ${referenceDir}/README.md and VIEW the downloaded references relevant to the slice. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`.gauntlet-loop/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must VIEW, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
+2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`.gauntlet-loop/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
 3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
 
    ${codexChildCommand(models.subagentModel, models.subagentEffort, '<slug>')}
@@ -108,7 +108,7 @@ const HANDS_OFF =
   'Before the first hand-off you may scaffold: the project skeleton, a CONTRACTS.md, and stub files. After that you must NOT edit game source yourself — no writes, no `cat >`, no `sed -i`, no scripted rewrites of files a worker owns. Read, build, run, and test all you like; when something is wrong, send it back to a worker instead of fixing it yourself.'
 
 function referenceHandoff(referenceDir: string): string {
-  return `The Reference Study at ${referenceDir} must be complete before the first hand-off. Every worker brief must name that exact path, tell the worker to read ${referenceDir}/README.md, and VIEW the relevant downloaded references before writing code; if the pack is missing, do not spawn workers.`
+  return `The Reference Study at ${referenceDir} must be complete before the first hand-off. Every worker brief must name that exact path, tell the worker to read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant journey.md and story.md sections, and VIEW the relevant downloaded references before writing code. Brief story, difficulty, level/progression, and gameplay workers from the study's sourced expert dossier; if the pack is missing, do not spawn workers.`
 }
 
 /** The rules appended to the implement prompt, per combination. */
