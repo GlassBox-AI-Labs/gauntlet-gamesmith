@@ -108,4 +108,14 @@ describe('loop prompts', () => {
     expect(prompt).toContain('require at least three complete, distinct, playable levels/stages/missions')
     expect(prompt).toContain('test its documented progression model without demanding artificial levels')
   })
+
+  it('demands the verdict as both a file artifact and the entire final message', () => {
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123')
+
+    expect(prompt).toContain('FIRST write ./critique/round-3/verdict.json')
+    expect(prompt).toContain('no code fence, no markdown, nothing else in the file')
+    expect(prompt).toContain('a critique that skips it is invalid')
+    expect(prompt).toContain('Your final message must be NOTHING but the fenced JSON block')
+    expect(prompt).toContain('you personally write verdict.json and output the fenced block yourself')
+  })
 })

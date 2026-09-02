@@ -148,6 +148,22 @@ export function parseVerdict(text: string): Verdict | null {
   return null
 }
 
+/**
+ * Deterministic verdict channel: the critique protocol also writes its verdict
+ * to critique/round-<n>/verdict.json, so a critic that muffs the final-message
+ * format does not throw away a finished evaluation. `sinceMs` rejects files
+ * left behind by an earlier loop that reused the same workspace and round.
+ */
+export function readVerdictArtifact(workspaceDir: string, round: number, sinceMs: number): Verdict | null {
+  const file = path.join(workspaceDir, 'critique', `round-${round}`, 'verdict.json')
+  try {
+    if (fs.statSync(file).mtimeMs < sinceMs) return null
+    return parseVerdict(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 function normalizeVerdict(value: unknown): Verdict | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
@@ -1800,7 +1816,11 @@ export class LoopRunner {
           /* fall back to streamed message */
         }
       }
-      const verdict = parseVerdict(verdictText)
+      let verdict = parseVerdict(verdictText)
+      if (!verdict) {
+        verdict = readVerdictArtifact(loop.workspaceDir, run.round, Date.parse(loop.createdAt))
+        if (verdict) this.log(loop.id, run.id, 'system', `Final message had no parseable verdict — recovered it from critique/round-${run.round}/verdict.json.`)
+      }
       const durationMs = Date.now() - startedAtMs
       const criticAgent: AgentMetric = {
         id: 'critic',

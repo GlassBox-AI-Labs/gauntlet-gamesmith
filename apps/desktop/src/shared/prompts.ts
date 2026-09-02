@@ -64,12 +64,15 @@ Protocol:
 5. Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record gameplay video covering representative expert play and progression (~30-60s, or multiple clips when needed — e.g. Playwright's recordVideo on the served page while simulating real input) and save it under ./${evidenceDir}/video/. Extract frames from your gameplay recording into ./${evidenceDir}/shots/motion/ and compare motion-to-motion against the reference frames: mid-action chaos, trails, feedback timing — not just posed stills. Judge visuals, story, gameplay depth, controls, difficulty curve, level design, performance, completeness, and polish. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`, \`recordVideo\` on the context). Never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.
 6. Compare side by side. Copy the specific frozen reference stills and motion frames you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
 7. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed by both presentation and expert play. Anything unfinished, ugly, shallow, unbalanced, broken, story-incoherent, or missing required progression must score low. Do not be polite. Do not grade on effort or code that you could not demonstrate in play.
+8. Deliver the verdict twice. FIRST write ./${evidenceDir}/verdict.json containing exactly this object as plain valid JSON — no code fence, no markdown, nothing else in the file:
 
-End your reply with EXACTLY one fenced JSON block and nothing after it:
+{"score": 0.0, "pass": false, "summary": "<=60 words", "findings": [{"severity": "critical|major|minor", "text": "one specific, fixable shortfall"}]}
+
+THEN end your reply with EXACTLY one fenced JSON block containing the same object:
 
 \`\`\`json
 {"score": 0.0, "pass": false, "summary": "<=60 words", "findings": [{"severity": "critical|major|minor", "text": "one specific, fixable shortfall"}]}
 \`\`\`
 
-"pass" may only be true if score >= 0.90, the required story/progression/difficulty checks pass, and you would genuinely mistake both screenshots and gameplay of this game for the AAA reference.`
+Verdict rules, non-negotiable: writing ./${evidenceDir}/verdict.json is a required protocol step, not bookkeeping — a critique that skips it is invalid no matter how thorough the report. Your final message must be NOTHING but the fenced JSON block: no lead-in summary, no closing remarks, no text after it. If you delegated any part of the critique to a subagent, its report does not satisfy either requirement — after reading its findings, you personally write verdict.json and output the fenced block yourself. "pass" may only be true if score >= 0.90, the required story/progression/difficulty checks pass, and you would genuinely mistake both screenshots and gameplay of this game for the AAA reference.`
 }
