@@ -23,6 +23,10 @@ export interface ModelChoice {
 
 const CLAUDE_MODELS: readonly ModelChoice[] = [
   { id: 'claude-opus-5', label: 'Opus 5' },
+  // Fable 5.1 needs Claude Code 2.1.251+. An older CLI fails the run with
+  // `400 ... does not support this model`, so a loop picking it on a stale
+  // binary dies on its first call rather than degrading.
+  { id: 'claude-fable-5-1', label: 'Fable 5.1' },
   { id: 'claude-fable-5', label: 'Fable 5' },
   { id: 'claude-sonnet-5', label: 'Sonnet 5' },
 ]
