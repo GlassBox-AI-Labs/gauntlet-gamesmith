@@ -130,8 +130,11 @@ bestiary pages and model viewers — or the cast list can name things the pack
 cannot support.
 
 Enforced the same way everything else in the pack is: extend the `issues[]`
-list in `scanReferencePack` — cast entries present, and an `objects/` shot for
-every entry above a priority threshold.
+list in `scanReferencePack` — every cast entry names at least one still, and
+`objects/` is filled where the Reference Study could find isolated material.
+Missing `objects/` material is a weaker pack, not a failed one: the asset agent
+still has the ladder in §4.2, and reports the entry unbuildable if every rung
+fails.
 
 ### 4.2 A new `assets` run role
 
