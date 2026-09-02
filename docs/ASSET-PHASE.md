@@ -201,23 +201,32 @@ assetModel: string | null
 assetEffort: string
 ```
 
-**Null is the off switch, and it turned out to matter more than cost.** The
-asset phase is the most expensive thing in the loop — a full `img2threejs`
-pipeline per cast entry, run in parallel — so a nullable model lets you run the
-same prompt with and without it and compare scores. It also gives every loop
-written before the phase existed a sane value.
+**Null is the off switch.** The asset phase is the most expensive thing in the
+loop, so a nullable model lets you run the same prompt with and without it and
+compare scores — the only honest way to learn whether it pays for itself. It
+also gives every loop written before the phase existed a sane value.
 
-But §9.2 found the bigger reason. **Some games should not run this phase at
-all.** In a Pac-Man Championship Edition 2 pack the sculptable cast is a sphere
-with a wedge and four capsules, while everything that makes the game look right
-— extruded neon walls, bloom, score-ladder popups, glow trails — is renderer
-and shader work an asset pipeline cannot touch. Running the phase there burns a
-full round producing trivial models and misses the target entirely.
+**Every cast entry runs the pipeline. There is no complexity threshold.** An
+earlier draft proposed skipping "simple" entries; it was wrong twice over. A
+simple entry is not expensive — `DETAIL_MINIMUMS[simple]` sets a low floor, and
+the correction loop's 3-per-pass and 6-total limits are caps, not spend, so a
+sphere with a wedge converges on its first vision comparison. And the case that
+motivated the threshold was never about simple objects at all: extruded neon
+walls, bloom and score-ladder popups are not objects, so they are not cast
+entries, and no tier would have changed that.
 
-**The cast list should decide, not the operator.** The Reference Study lists
-only what is worth sculpting; an empty or near-empty `cast.md` means the phase
-no-ops for that loop and the run form's setting never has to be touched. The
-manual null stays as an override and as the A/B switch.
+Running everything is also what keeps three other things simple. §4.6's gate
+check stays unconditional — every cast entry has its `state.json` and evidence
+render — and a conditional gate is a weaker gate. §4.5's routing stays
+unconditional, because every finding has a pipeline to re-enter. And there is no
+tier for an agent to under-declare to avoid work: `--complexity` is an input
+`new_pre_spec_assessment.py` accepts, not something it measures, so a threshold
+would have rested on an assertion by the party with an interest in the answer.
+
+The filter that remains is the cast list itself, which the Reference Study has
+to write anyway. An empty `cast.md` means there is nothing to sculpt — an empty
+list, not a policy. Fan-out width stays a scheduling question, bounded by
+`overBudget()` and the `priority` field already in §4.1.
 
 **Default: `claude-opus-5` at `high`** — the same as the subagent default,
 because asset agents *are* fan-out workers. Two reasons not to copy the critic's
@@ -603,5 +612,10 @@ Some games stage their own object references; a creature-heavy game like Dark
 Souls does not. Keep the folder, drop the assumption that every pack needs it
 equally.
 
-**And the asset phase is not universally worth running.** See §4.3 — the
-nullable `assetModel` is doing more work than cost measurement.
+**What this does not justify is a complexity threshold.** The tempting
+conclusion was to skip trivial entries, and it does not hold: simple entries are
+cheap to run, and the things that make this game hard are not cast entries in
+the first place. The pack's real lesson is narrower — an asset phase cannot
+reach a game whose quality lives in shaders and motion, however well it runs.
+That gap belongs to the implementer and the engine contract, and no gate in this
+phase closes it. See §4.3.
