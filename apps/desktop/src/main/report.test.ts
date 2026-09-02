@@ -85,12 +85,16 @@ describe('buildReport', () => {
       images: Array.from({ length: 8 }, (_, index) => `reference/l1/images/${index}.jpg`),
       motion: Array.from({ length: 8 }, (_, index) => `reference/l1/motion/${index}.jpg`),
       videos: ['reference/l1/video/gameplay.webm'],
+      journey: Array.from({ length: 4 }, (_, index) => `reference/l1/journey/0${index + 1}-shot.png`),
       readme: '# Visual target',
       manifest: '{}',
+      journeyMd: '# Walkthrough',
+      storyMd: '# Premise',
+      researchMd: '# What players say',
     })
     expect(report).toContain('| — | reference |')
     expect(report).toContain('## Reference Pack')
-    expect(report).toContain('8 stills · 8 motion frames · 1 videos')
+    expect(report).toContain('8 stills · 8 motion frames · 4 journey shots · 1 videos')
     expect(report).toContain('# Visual target')
   })
 })

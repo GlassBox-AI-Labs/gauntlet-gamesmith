@@ -55,6 +55,24 @@ describe('resolveModels', () => {
     expect(models.orchestratorEffort).toBe('ultracode')
     expect(models.subagentEffort).toBe('high')
   })
+
+  it('defaults research fan-out to cheap codex luna at medium effort', () => {
+    const models = resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
+    expect(models.researchModel).toBe('gpt-5.6-luna')
+    expect(models.researchEffort).toBe('medium')
+  })
+
+  it('lets the form turn research fan-out off or repoint it', () => {
+    expect(resolveModels(null, null, { researchModel: null }).researchModel).toBeNull()
+    expect(resolveModels(null, null, { researchModel: 'none' }).researchModel).toBeNull()
+    const models = resolveModels(null, null, { researchModel: 'claude-sonnet-5', researchEffort: 'low' })
+    expect(models.researchModel).toBe('claude-sonnet-5')
+    expect(models.researchEffort).toBe('low')
+    expect(resolveModels(null, null, { researchModel: 'gpt-4', researchEffort: 'bogus' })).toMatchObject({
+      researchModel: 'gpt-5.6-luna',
+      researchEffort: 'medium',
+    })
+  })
 })
 
 describe('normalizeModels', () => {

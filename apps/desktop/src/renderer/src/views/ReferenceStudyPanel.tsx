@@ -28,7 +28,11 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
   const checks = [
     { label: 'stills', value: study.pack.images.length, target: 8 },
     { label: 'motion frames', value: study.pack.motion.length, target: 8 },
+    { label: 'journey shots', value: study.pack.journey.length, target: 4 },
     { label: 'video', value: study.pack.videos.length, target: 1 },
+    { label: 'research', value: study.pack.researchMd ? 1 : 0, target: 1 },
+    { label: 'journey', value: study.pack.journeyMd ? 1 : 0, target: 1 },
+    { label: 'story', value: study.pack.storyMd ? 1 : 0, target: 1 },
     { label: 'brief', value: study.pack.readme ? 1 : 0, target: 1 },
     { label: 'sources', value: study.pack.manifest ? 1 : 0, target: 1 },
   ]
@@ -42,7 +46,7 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
         {study.pack.ready && <span className="ml-auto flex items-center gap-1 text-[11px] text-emerald-300"><Check className="size-3" /> ready</span>}
       </div>
 
-      <div className="grid min-w-0 grid-cols-5 gap-2 max-md:grid-cols-3">
+      <div className="grid min-w-0 grid-cols-9 gap-2 max-md:grid-cols-3">
         {checks.map((check) => {
           const ready = check.value >= check.target
           return (
@@ -65,6 +69,47 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
           <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">Target brief</div>
           <pre className="max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#b8b0ac]">
             {study.pack.readme}
+          </pre>
+        </section>
+      )}
+
+      {study.pack.journey.length > 0 && (
+        <section className="min-w-0">
+          <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">First-play journey ({study.pack.journey.length})</div>
+          <div className="grid min-w-0 grid-cols-4 gap-2 max-md:grid-cols-2">
+            {study.pack.journey.map((file) => (
+              <button key={file} type="button" onClick={() => setZoom(mediaUrl(file))} className="min-w-0 max-w-full overflow-hidden rounded-md border border-[#332e2e] bg-black text-left">
+                <img src={mediaUrl(file)} alt="" className="aspect-video w-full min-w-0 max-w-full object-cover" />
+                <div className="truncate px-2 py-1 font-mono text-[9px] text-[#716a67]">{file.split('/').at(-1)}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {study.pack.researchMd && (
+        <section className="min-w-0">
+          <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">Deep research</div>
+          <pre className="max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#b8b0ac]">
+            {study.pack.researchMd}
+          </pre>
+        </section>
+      )}
+
+      {study.pack.journeyMd && (
+        <section className="min-w-0">
+          <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">Journey walkthrough</div>
+          <pre className="max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#b8b0ac]">
+            {study.pack.journeyMd}
+          </pre>
+        </section>
+      )}
+
+      {study.pack.storyMd && (
+        <section className="min-w-0">
+          <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">Story &amp; dialog</div>
+          <pre className="max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#b8b0ac]">
+            {study.pack.storyMd}
           </pre>
         </section>
       )}

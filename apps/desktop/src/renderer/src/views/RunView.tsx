@@ -32,12 +32,14 @@ import {
   AGENT_MODEL_CHOICES,
   DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
+  DEFAULT_RESEARCH,
   describeCritic,
   modelLabel,
   orchestratorEfforts,
   SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
+  type ResearchFields,
 } from '../../../shared/models'
 
 const LOG_LIMIT = 1500
@@ -120,6 +122,8 @@ function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element 
       <span><span className="text-[#857d79]">Implementer</span> {implementer}</span>
       <span className="text-[#393433]" aria-hidden="true">/</span>
       <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
+      <span className="text-[#393433]" aria-hidden="true">/</span>
+      <span><span className="text-[#857d79]">Research</span> {models.researchModel ? `${modelLabel(models.researchModel)} · ${models.researchEffort}` : 'no fan-out'}</span>
     </div>
   )
 }
@@ -505,6 +509,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [budget, setBudget] = useState('')
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
+  const [research, setResearch] = useState<ResearchFields>(DEFAULT_RESEARCH)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -564,6 +569,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           subagentEffort: initial.loop.models.subagentEffort,
         })
         setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
+        setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -633,6 +639,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       ? 'running'
       : (visibleRuns.at(-1)?.status ?? 'queued')
   const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
+  // The exact prompts those runs were launched with — the implement one carries
+  // the previous round's critic verdict and findings baked in.
+  const roundImplementRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'implement').at(-1)
+  const roundCritiqueRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'critique').at(-1)
   const totals = visibleRuns.reduce(
     (sum, run) => ({
       costUsd: sum.costUsd + (run.costUsd ?? 0),
@@ -665,6 +675,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         budgetUsd: budget.trim() ? Number(budget) : null,
         ...impl,
         ...critic,
+        ...research,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -699,6 +710,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       subagentEffort: next.loop.models.subagentEffort,
     })
     setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
+    setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
     setSelectedRound(round)
     setDetailTab('activity')
     setRenaming(false)
@@ -913,6 +925,29 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               </Select>
             </div>
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Research</span>
+              <Select
+                value={research.researchModel ?? SOLO_SUBAGENT}
+                onValueChange={(value) => setResearch((current) => ({ ...current, researchModel: value === SOLO_SUBAGENT ? null : value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  <SelectItem value={SOLO_SUBAGENT}>none (no fan-out)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={research.researchEffort}
+                onValueChange={(value) => setResearch((current) => ({ ...current, researchEffort: value }))}
+                disabled={research.researchModel === null}
+              >
+                <SelectTrigger className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
               <Select
                 value={critic.criticModel}
@@ -946,7 +981,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             <p className="text-xs leading-relaxed text-[#7d7772]">
               {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
               {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
-              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}
+              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
+              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}
             </p>
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
@@ -1096,7 +1132,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 </Button>
               ) : (
                 <>
-                  {(loop.status === 'stopped' || loop.status === 'exhausted') && (
+                  {(loop.status === 'stopped' || loop.status === 'exhausted' || loop.status === 'failed') && (
                     <Button
                       variant="outline"
                       className="border-amber-500/50 bg-transparent text-amber-300 hover:bg-amber-500/10 hover:text-amber-200"
@@ -1241,6 +1277,29 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 />
               </div>
             </>
+          )}
+
+          {selectedRound != null && (
+            <div className="mb-5">
+              <PromptBrowser
+                prompts={[
+                  {
+                    id: `round-${selectedRound}-implement`,
+                    title: `Round ${selectedRound} implementer`,
+                    description: selectedRound > 1
+                      ? `The exact prompt this round's implementer received, including the previous critic's score, summary, and must-fix findings.`
+                      : `The exact prompt this round's implementer received: the goal, Reference Pack handoff, and delegation rules.`,
+                    value: roundImplementRun?.prompt ?? '',
+                  },
+                  {
+                    id: `round-${selectedRound}-critique`,
+                    title: `Round ${selectedRound} critic`,
+                    description: `The exact prompt this round's critic received, with its evidence and scoring protocol.`,
+                    value: roundCritiqueRun?.prompt ?? '',
+                  },
+                ]}
+              />
+            </div>
           )}
 
           {selectedRound != null && selectedCritique && (

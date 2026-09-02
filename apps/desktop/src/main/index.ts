@@ -11,7 +11,7 @@ import type {
   TerminalDataEvent,
 } from '../shared/harness'
 import { harnessKinds } from '../shared/harness'
-import type { CritiqueRound, LoopLogLine, ReferenceStudy, RunRecord, StartLoopInput } from '../shared/loop'
+import { runPromptLabel, type CritiqueRound, type LoopLogLine, type ReferenceStudy, type RunRecord, type StartLoopInput } from '../shared/loop'
 import { isCodexModel, resolveModels } from '../shared/models'
 import { cliHome, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
@@ -56,11 +56,11 @@ let loopRunner: LoopRunner | null = null
 let mediaBase: string | null = null
 
 /** Backfill prompt entries when reading logs from runs created before prompt logging shipped. */
-function withReferencePromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[] {
+function withPromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[] {
   const lines = [...source]
   const recorded = new Set(lines.filter((line) => line.kind === 'prompt' && line.runId).map((line) => line.runId!))
   for (const run of runs) {
-    if (run.role !== 'reference' || recorded.has(run.id)) continue
+    if (recorded.has(run.id)) continue
     const chunkSize = 3_600
     const chunks = Array.from({ length: Math.ceil(run.prompt.length / chunkSize) }, (_, index) =>
       run.prompt.slice(index * chunkSize, (index + 1) * chunkSize),
@@ -70,7 +70,7 @@ function withReferencePromptLogs(runs: RunRecord[], source: LoopLogLine[]): Loop
       runId: run.id,
       ts: run.startedAt ?? run.createdAt,
       kind: 'prompt',
-      text: `Reference Study execution prompt${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}:\n${chunk}`,
+      text: `${runPromptLabel(run)}${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}:\n${chunk}`,
     }))
     const firstRunLine = lines.findIndex((line) => line.runId === run.id)
     lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, ...promptLines)
@@ -289,11 +289,12 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:start', async (_event, value: unknown) => {
     if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
     const input = value as Partial<StartLoopInput> | undefined
-    const models = resolveModels(input, input)
+    const models = resolveModels(input, input, input)
     // Any role can run on either CLI now, so a run needs whichever logins its
-    // three picks actually reach for.
-    const needsCodex = [models.orchestratorModel, models.subagentModel, models.criticModel].some(isCodexModel)
-    const needsClaude = [models.orchestratorModel, models.subagentModel, models.criticModel].some((m) => m != null && !isCodexModel(m))
+    // four picks actually reach for.
+    const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel]
+    const needsCodex = picks.some(isCodexModel)
+    const needsClaude = picks.some((m) => m != null && !isCodexModel(m))
     const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), needsCodex ? probe('codex') : Promise.resolve(null)])
     if (needsClaude && !claudeStatus.loggedIn) return { ok: false, error: 'Claude Code is not connected. Sign in on the Agents tab.' }
     if (needsCodex && !codexStatus?.loggedIn) return { ok: false, error: 'Codex is not connected. Sign in on the Agents tab.' }
@@ -308,6 +309,8 @@ function registerLoopIpc(): void {
       subagentEffort: models.subagentEffort,
       criticModel: models.criticModel,
       criticEffort: models.criticEffort,
+      researchModel: models.researchModel,
+      researchEffort: models.researchEffort,
     })
   })
   ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })
@@ -330,7 +333,7 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) => {
     if (!ledger) return []
     const id = String(loopId)
-    return withReferencePromptLogs(
+    return withPromptLogs(
       ledger.runsForLoop(id),
       ledger.eventsForLoop(id, Math.min(2000, Math.max(1, Number(limit) || 800))),
     )
@@ -414,7 +417,7 @@ function registerLoopIpc(): void {
     return {
       runId: run.id,
       status: run.status,
-      logs: withReferencePromptLogs([run], ledger.eventsForRun(run.id, undefined, 500)),
+      logs: withPromptLogs([run], ledger.eventsForRun(run.id, undefined, 500)),
       pack: scanReferencePack(loop.workspaceDir, referencePackDir(loop.id)),
     }
   })

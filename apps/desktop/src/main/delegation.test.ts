@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
-import { delegationRules, implementerAgentMd } from './delegation'
+import { delegationRules, implementerAgentMd, researchRules } from './delegation'
 
 const models = (orchestratorModel: string, subagentModel: string | null) =>
   resolveModels({ orchestratorModel, subagentModel, subagentEffort: 'high' }, null)
@@ -63,5 +63,30 @@ describe('delegationRules', () => {
 
   it('keeps the solo run free of delegation', () => {
     expect(delegationRules(models('claude-opus-5', null), 'reference/loop-123')).toContain('do NOT delegate')
+  })
+})
+
+describe('researchRules', () => {
+  it('fans researchers out as CLI children whose streams the app can price', () => {
+    const rules = researchRules(models('claude-opus-5', null), 'reference/loop-123')
+    expect(rules).toContain('gpt-5.6-luna at medium effort')
+    expect(rules).toContain(`'-m' 'gpt-5.6-luna'`)
+    expect(rules).toContain('> .gauntlet-loop/agents/<slug>.codex.jsonl')
+    expect(rules).toContain('reference/loop-123/research/<slug>.md')
+    expect(rules).toContain('reference/loop-123/research.md')
+    expect(rules).toContain('never touch project source')
+  })
+
+  it('routes claude researchers through the claude CLI', () => {
+    const base = models('gpt-5.6-sol', null)
+    const rules = researchRules({ ...base, researchModel: 'claude-sonnet-5', researchEffort: 'low' }, 'reference/loop-123')
+    expect(rules).toContain(`'--model' 'claude-sonnet-5'`)
+    expect(rules).toContain('> .gauntlet-loop/agents/<slug>.claude.jsonl')
+  })
+
+  it('keeps the sweep in-agent when fan-out is off', () => {
+    const base = models('claude-opus-5', null)
+    const rules = researchRules({ ...base, researchModel: null }, 'reference/loop-123')
+    expect(rules).toContain('do NOT spawn researcher subagents')
   })
 })

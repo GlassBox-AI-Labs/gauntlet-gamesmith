@@ -92,6 +92,15 @@ export interface CriticFields {
 /** Where the run form starts: a critic outside the implementer's model family. */
 export const DEFAULT_CRITIC: CriticFields = { criticModel: 'gpt-5.6-sol', criticEffort: 'medium' }
 
+/** The Reference Study's deep-research fan-out is picked the same way. */
+export interface ResearchFields {
+  researchModel: string | null
+  researchEffort: string
+}
+
+/** Where the run form starts: cheap, parallel researchers — luna is codex's fast/cheap tier. */
+export const DEFAULT_RESEARCH: ResearchFields = { researchModel: 'gpt-5.6-luna', researchEffort: 'medium' }
+
 /** The one-line note under the run form, judged against who is implementing. */
 export function describeCritic(criticModel: string, implementerModel: string): string {
   return isCodexModel(criticModel) === isCodexModel(implementerModel)
@@ -116,6 +125,7 @@ function pick<T extends string>(allowed: readonly T[], value: string | null | un
 export function resolveModels(
   fields: Partial<ImplementerFields> | null | undefined,
   critic: Partial<CriticFields> | null | undefined,
+  research?: Partial<ResearchFields> | null,
 ): LoopModels {
   const base = DEFAULT_IMPLEMENTER
   const subagentModel =
@@ -140,11 +150,19 @@ export function resolveModels(
     subagentModel,
     subagentEffort: pick(AGENT_EFFORTS, fields?.subagentEffort, base.subagentEffort as 'high'),
   }
+  const researchModel =
+    research?.researchModel === null || research?.researchModel === SOLO_SUBAGENT
+      ? null
+      : AGENT_MODEL_CHOICES.some((m) => m.id === research?.researchModel)
+        ? research!.researchModel!
+        : DEFAULT_RESEARCH.researchModel
   return {
     ...resolved,
     criticHarness: harnessFor(criticModel),
     criticModel,
     criticEffort: pick(AGENT_EFFORTS, critic?.criticEffort, DEFAULT_CRITIC.criticEffort as 'medium'),
+    researchModel,
+    researchEffort: pick(AGENT_EFFORTS, research?.researchEffort, DEFAULT_RESEARCH.researchEffort as 'medium'),
   }
 }
 
@@ -165,6 +183,7 @@ export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolea
       subagentEffort: raw.subagentEffort,
     },
     { criticModel: raw.criticModel, criticEffort: raw.criticEffort },
+    { researchModel: raw.researchModel, researchEffort: raw.researchEffort },
   )
   // Keep a model name the picker no longer offers rather than silently
   // retitling an old run, but only where it is still a name a CLI would accept.
@@ -185,5 +204,8 @@ export function describeModels(models: LoopModels): string {
   const impl = models.subagentModel
     ? `${models.orchestratorModel} (${models.orchestratorEffort}) orchestrating ${models.subagentModel} (${models.subagentEffort}) subagents`
     : `${models.orchestratorModel} (${models.orchestratorEffort}) solo, no subagents`
-  return `Implementer: ${impl} · Critic: ${models.criticHarness} ${models.criticModel} (${models.criticEffort}), fresh eyes every round.`
+  const research = models.researchModel
+    ? `${models.researchModel} (${models.researchEffort}) researchers fanned out`
+    : 'no fan-out'
+  return `Implementer: ${impl} · Critic: ${models.criticHarness} ${models.criticModel} (${models.criticEffort}), fresh eyes every round. · Research: ${research}.`
 }

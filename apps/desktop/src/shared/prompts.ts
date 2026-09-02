@@ -1,7 +1,7 @@
 import type { Verdict } from './loop'
 
-export function buildReferencePrompt(userPrompt: string, referenceDir: string): string {
-  return `You own the one-time Reference Study for this game loop. Establish a real, attributable quality target before implementation begins. Do not modify project source and do not delegate to subagents.
+export function buildReferencePrompt(userPrompt: string, referenceDir: string, researchRules: string): string {
+  return `You own the one-time Reference Study for this game loop. Establish a real, attributable quality target before implementation begins. Do not modify project source. However the research is gathered, you alone assemble, distill, and validate the final pack.
 
 <goal>
 ${userPrompt}
@@ -9,13 +9,18 @@ ${userPrompt}
 
 Write the complete Reference Pack under ./${referenceDir}; this directory belongs only to this loop.
 
+This may be a retry: a previous attempt may have left a partial or even complete pack in that directory. Audit what already exists FIRST — keep every usable file, do NOT redownload or regenerate anything already present and valid, and spend your effort only on what is missing or broken. If the pack already passes the audit in the final step, verify it and finish without redoing the research.
+
 Protocol:
-1. Identify the real AAA game reference(s) named in the goal. Use web search now; never rely on memory. If the goal names no reference, select and document the closest AAA benchmarks for its genre and visual target.
-2. Create ./${referenceDir}/images, ./${referenceDir}/motion, and ./${referenceDir}/video. Download at least 8 useful, high-resolution stills spanning important gameplay views, environments, characters, HUD, effects, and lighting. Prefer official media and direct, attributable sources. These are research evidence only and must never ship as game assets.
-3. Download a representative ~30-second gameplay clip and extract at least 8 frames into ./${referenceDir}/motion. yt-dlp and ffmpeg are installed; for example: \`yt-dlp --download-sections "*60-90" -f "bv*[height<=1080]" -o "${referenceDir}/video/aaa-gameplay.%(ext)s" "<url>"\`, then \`ffmpeg -i ${referenceDir}/video/aaa-gameplay.<ext> -vf fps=1 ${referenceDir}/motion/aaa-%02d.png\`. If one video fails, try another without spending more than a few minutes on it.
-4. VIEW every selected still and motion frame. Write ./${referenceDir}/README.md with a concise visual/game-feel target, what each file demonstrates, and instructions implementers can act on.
-5. Write ./${referenceDir}/manifest.json as valid JSON: {"title":"reference title","sources":[{"url":"https://…","file":"images/example.jpg","note":"what it demonstrates"}]}. Include a source entry for every downloaded file.
-6. Audit the pack before finishing: README.md, valid manifest.json, 8+ stills, 8+ motion frames, and a gameplay video must all exist. Report what you saved, but do not begin implementation.`
+1. Identify the real AAA game reference(s) named in the goal. Use web search now; never rely on memory. Resolve each reference against an authoritative game catalog — IGDB, MobyGames, or Wikidata — and record its canonical identity: exact title, developer, release year, platforms, and genre. Put that identity at the top of research.md and use the canonical title as manifest.json's "title". If the goal names no reference, browse those catalogs by genre and visual target, select the closest AAA benchmarks, and document why.
+2. Run a deep-research sweep on the reference game — anything related to it, from anywhere on the internet, one angle at a time: (a) official media, press kits, and developer interviews/postmortems; (b) gameplay footage from real players — streams, longplays, speedruns, "first 10 minutes" videos; (c) Reddit threads and forum discussions on what makes the game feel the way it does; (d) professional and player reviews, both praise and complaints; (e) wikis and fan pages for mechanics, levels, enemies, storyline, and dialog. ${researchRules} The final ./${referenceDir}/research.md must capture: the signature qualities players and critics consistently call out, the common criticisms to avoid repeating, and concrete mechanics/level/story details — every claim with its source URL. Add every consulted source to manifest.json (omit "file" for link-only sources).
+3. Create ./${referenceDir}/images, ./${referenceDir}/motion, and ./${referenceDir}/video. Download at least 8 useful, high-resolution stills spanning important gameplay views, environments, characters, HUD, effects, and lighting. Prefer official media and direct, attributable sources. These are research evidence only and must never ship as game assets.
+4. Download a representative ~30-second gameplay clip and extract at least 8 frames into ./${referenceDir}/motion. yt-dlp and ffmpeg are installed; for example: \`yt-dlp --download-sections "*60-90" -f "bv*[height<=1080]" -o "${referenceDir}/video/aaa-gameplay.%(ext)s" "<url>"\`, then \`ffmpeg -i ${referenceDir}/video/aaa-gameplay.<ext> -vf fps=1 ${referenceDir}/motion/aaa-%02d.png\`. If one video fails, try another without spending more than a few minutes on it.
+5. Trace the reference game's first-play journey from the very beginning: boot/title screen → main menu and mode selection → intro story or cutscene → the start of Level 1. Hunt for a browser-playable version first: check the official site, itch.io, and the Internet Archive's in-browser emulation library. If the game is playable in a web browser, actually launch and PLAY it yourself. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`); never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it. Capture ordered screenshots into ./${referenceDir}/journey/ named by sequence — 01-title, 02-main-menu, 03-intro, 04-level-1-start — and keep going as far as you can get: dialogs, HUD states, pause/death screens, transitions, level completion. Capture as much dialog and cutscene text as you can, verbatim. If the game cannot be played, extract the same ordered journey shots from attributable video evidence instead and note why.
+6. Write ./${referenceDir}/journey.md documenting the walkthrough (main menu → intro → Level 1) with what each journey screenshot shows, and ./${referenceDir}/story.md with the premise, characters, storyline progression, and the dialog you captured.
+7. VIEW every selected still and motion frame. Write ./${referenceDir}/README.md with a concise visual/game-feel target, what each file demonstrates, and instructions implementers can act on.
+8. Write ./${referenceDir}/manifest.json as valid JSON: {"title":"reference title","sources":[{"url":"https://…","file":"images/example.jpg","note":"what it demonstrates"}]}. Include a source entry for every downloaded file.
+9. Audit the pack before finishing: README.md, research.md, journey.md, story.md, valid manifest.json, 8+ stills, 8+ motion frames, 4+ ordered journey shots, and a gameplay video must all exist. Report what you saved, but do not begin implementation.`
 }
 
 export function composeImplementPrompt(
@@ -25,7 +30,7 @@ export function composeImplementPrompt(
   delegationRules: string,
   referenceDir: string,
 ): string {
-  const referenceRule = `Before planning or writing code, read ./${referenceDir}/README.md and VIEW the relevant stills and motion frames in the frozen Reference Pack. Do not replace or redownload them.`
+  const referenceRule = `Before planning or writing code, read ./${referenceDir}/README.md, ./${referenceDir}/journey.md, and ./${referenceDir}/story.md, and VIEW the relevant stills, motion frames, and ordered journey shots in the frozen Reference Pack. Match the documented first-play flow (title → main menu → intro → Level 1) and storyline. Do not replace or redownload the pack.`
   if (round <= 1 || !verdict) return `${userPrompt}\n\n${referenceRule}\n\n${delegationRules}`
   const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
   return [

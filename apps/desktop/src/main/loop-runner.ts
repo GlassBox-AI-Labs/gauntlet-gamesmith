@@ -14,12 +14,12 @@ import type {
   TokenTotals,
   Verdict,
 } from '../shared/loop'
-import { RESUME_PREFIX } from '../shared/loop'
+import { RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
 import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
-import { delegationRules, implementerAgentMd } from './delegation'
+import { delegationRules, implementerAgentMd, researchRules } from './delegation'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
@@ -267,7 +267,7 @@ export class LoopRunner {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const models = resolveModels(input, input)
+    const models = resolveModels(input, input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
     this.log(
@@ -282,7 +282,7 @@ export class LoopRunner {
       round: 0,
       role: 'reference',
       harness: harnessFor(models.orchestratorModel),
-      prompt: buildReferencePrompt(prompt, referenceDir),
+      prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
     })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
@@ -422,7 +422,7 @@ export class LoopRunner {
         round: 0,
         role: 'reference',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildReferencePrompt(loop.prompt, referenceDir),
+        prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
       })
       this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
     }
@@ -577,6 +577,9 @@ export class LoopRunner {
       own.code = code
     })
     child.unref()
+    // Every run's exact execution prompt lands in its log, round-labeled, so
+    // the log alone tells the full story of what each agent was asked to do.
+    this.logPrompt(loop.id, run.id, runPromptLabel(run), run.prompt)
     const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
     this.writeMeta(loop.workspaceDir, run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
@@ -732,7 +735,6 @@ export class LoopRunner {
       'system',
       `● Reference Study (${run.harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})`,
     )
-    this.logPrompt(loop.id, run.id, 'Reference Study execution prompt', run.prompt)
     const plan = referencePlan({
       models,
       prompt: run.prompt,
@@ -899,7 +901,7 @@ export class LoopRunner {
             round: 0,
             role: 'reference',
             harness: harnessFor(model),
-            prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id)),
+            prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id), researchRules(loop.models, this.referenceDir(loop.id))),
           })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
@@ -909,7 +911,7 @@ export class LoopRunner {
         return
       }
       this.ledger.patchRun(run.id, { status: 'succeeded' })
-      this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.videos.length} video → ${pack.root}/`)
+      this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
       if (this.overBudget(loop.id)) return
       this.ledger.patchLoop(loop.id, { round: 1 })
       this.ledger.createRun({

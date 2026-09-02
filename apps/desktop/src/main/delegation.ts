@@ -71,6 +71,30 @@ effort: ${effort}
 }
 
 /**
+ * How the Reference Study fans its deep-research sweep out. Researchers are
+ * launched as plain CLI children (the same stream-file mechanism as delegated
+ * implementers, so their tokens and cost are tracked), which works identically
+ * from either orchestrator harness. Null researchModel = no fan-out: the
+ * reference agent does the sweep itself, cheaply.
+ */
+export function researchRules(models: LoopModels, referenceDir: string): string {
+  if (!models.researchModel) {
+    return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
+  }
+  const harness = harnessFor(models.researchModel)
+  const briefFile = `.gauntlet-loop/${harness}-<slug>.md`
+  const command =
+    harness === 'codex'
+      ? codexChildCommand(models.researchModel, models.researchEffort, '<slug>')
+      : claudeChildCommand(models.researchModel, models.researchEffort, '<slug>')
+  return `Fan this sweep out to parallel researchers on ${models.researchModel} at ${models.researchEffort} effort — one per angle, cheap and disposable. For each angle choose a short slug (e.g. research-reddit), write a self-contained brief to \`${briefFile}\` telling the researcher exactly what to find and to write its findings — every claim with its source URL — to ${referenceDir}/research/<slug>.md. Researchers research and write notes only; they must never touch project source or download pack media. Then \`mkdir -p ${STREAM_DIR}\` and launch every researcher from the workspace root in one command, in parallel:
+
+  ${command} &
+
+followed by \`wait\`. When they return, read their notes and distill them into ${referenceDir}/research.md yourself.`
+}
+
+/**
  * What the orchestrator may touch itself.
  *
  * On one real round the orchestrator spent $14.62 against its workers' $15.92

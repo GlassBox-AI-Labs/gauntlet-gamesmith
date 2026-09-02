@@ -4,6 +4,12 @@ export type RunRole = 'reference' | 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
+
+/** The heading a run's execution prompt is logged (and backfilled) under. */
+export function runPromptLabel(run: { role: RunRole; round: number }): string {
+  if (run.role === 'reference') return 'Reference Study execution prompt'
+  return `Round ${run.round} ${run.role === 'implement' ? 'implementer' : 'critic'} execution prompt`
+}
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
 export type LoopStatus = 'running' | 'passed' | 'exhausted' | 'stopped' | 'failed'
 
@@ -72,6 +78,9 @@ export interface LoopModels {
   criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
+  /** null = no deep-research fan-out; the reference agent sweeps by itself. */
+  researchModel: string | null
+  researchEffort: string
 }
 
 export interface RunRecord {
@@ -141,6 +150,9 @@ export interface StartLoopInput {
   subagentEffort: string
   criticModel: string
   criticEffort: string
+  /** null = the Reference Study runs its deep-research sweep without fan-out. */
+  researchModel: string | null
+  researchEffort: string
 }
 
 export interface StartLoopResult {
@@ -194,8 +206,16 @@ export interface ReferencePack {
   images: string[]
   motion: string[]
   videos: string[]
+  /** Ordered first-play screenshots (title → menu → intro → Level 1). */
+  journey: string[]
   readme: string | null
   manifest: string | null
+  /** journey.md — the documented main menu → intro → Level 1 walkthrough. */
+  journeyMd: string | null
+  /** story.md — premise, characters, progression, and captured dialog. */
+  storyMd: string | null
+  /** research.md — distilled deep-research sweep: streams, Reddit, reviews, wikis. */
+  researchMd: string | null
 }
 
 export interface ReferenceStudy {

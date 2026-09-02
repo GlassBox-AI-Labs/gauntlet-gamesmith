@@ -149,7 +149,7 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
     lines.push('## Reference Pack')
     lines.push('')
     lines.push(`- **Status:** ${referencePack.ready ? 'ready' : 'incomplete'} · **Path:** ${referencePack.root}/`)
-    lines.push(`- **Evidence:** ${referencePack.images.length} stills · ${referencePack.motion.length} motion frames · ${referencePack.videos.length} videos`)
+    lines.push(`- **Evidence:** ${referencePack.images.length} stills · ${referencePack.motion.length} motion frames · ${referencePack.journey.length} journey shots · ${referencePack.videos.length} videos`)
     if (referencePack.issues.length > 0) lines.push(`- **Missing:** ${referencePack.issues.join('; ')}`)
     if (referencePack.readme) {
       lines.push('')
