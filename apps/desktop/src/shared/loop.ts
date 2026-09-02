@@ -1,10 +1,16 @@
 import type { HarnessKind } from './harness'
 import type { DeleteRunsResult } from './reports'
 
-export type RunRole = 'implement' | 'critique'
+export type RunRole = 'reference' | 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
+
+/** The heading a run's execution prompt is logged (and backfilled) under. */
+export function runPromptLabel(run: { role: RunRole; round: number }): string {
+  if (run.role === 'reference') return 'Reference Study execution prompt'
+  return `Round ${run.round} ${run.role === 'implement' ? 'implementer' : 'critic'} execution prompt`
+}
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
 export type LoopStatus = 'running' | 'passed' | 'exhausted' | 'stopped' | 'failed'
 
@@ -53,6 +59,13 @@ export interface AgentMetric {
   costUsd?: number | null
   /** Which agent definition the workflow script asked for, e.g. 'implementer'. */
   agentType?: string
+  /**
+   * The agent that launched this one, when it is not the orchestrator. A
+   * delegated worker is started by a shell command, so its owner is whoever
+   * ran that command — a dispatcher on a claude → codex run, the orchestrator
+   * itself on a codex → claude one. The list nests rows under their owner.
+   */
+  parentId?: string
   /** The task this agent was actually given, truncated for display. */
   prompt?: string
   /** Most recent tool call, for the live feed. */
@@ -73,6 +86,9 @@ export interface LoopModels {
   criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
+  /** null = no deep-research fan-out; the reference agent sweeps by itself. */
+  researchModel: string | null
+  researchEffort: string
 }
 
 export interface RunRecord {
@@ -122,12 +138,47 @@ export interface LoopSnapshot {
   runs: RunRecord[]
 }
 
+export type LogChannel = 'prompt' | 'thought' | 'tool' | 'output' | 'search' | 'media' | 'usage' | 'error' | 'system'
+
+const KIND_CHANNEL: Record<string, LogChannel> = {
+  prompt: 'prompt',
+  thought: 'thought',
+  tool: 'tool',
+  cmd: 'tool',
+  spawn: 'tool',
+  claude: 'output',
+  codex: 'output',
+  agent: 'output',
+  verdict: 'output',
+  search: 'search',
+  shot: 'media',
+  metric: 'usage',
+  error: 'error',
+  stderr: 'error',
+  system: 'system',
+  done: 'system',
+}
+
+/** Rows written before the channel column existed derive theirs from the legacy kind. */
+export function channelForKind(kind: string): LogChannel {
+  return KIND_CHANNEL[kind] ?? 'system'
+}
+
 export interface LoopLogLine {
   loopId: string
   runId: string | null
   ts: string
   kind: string
   text: string
+  /** Absent = the run's primary agent; otherwise the delegated child's slug. */
+  agentId?: string
+  /**
+   * Denormalized from the run at write time (reference runs log round 0) so
+   * the UI filter strip is a pure predicate over lines, with no runs join.
+   */
+  round?: number
+  role?: RunRole
+  channel?: LogChannel
 }
 
 export interface StartLoopInput {
@@ -142,6 +193,9 @@ export interface StartLoopInput {
   subagentEffort: string
   criticModel: string
   criticEffort: string
+  /** null = the Reference Study runs its deep-research sweep without fan-out. */
+  researchModel: string | null
+  researchEffort: string
 }
 
 export interface StartLoopResult {
@@ -187,11 +241,39 @@ export interface CritiqueRound {
   pairsMd: string | null
 }
 
+export interface ReferencePack {
+  /** Workspace-relative directory owned by this loop, e.g. reference/<loop-id>. */
+  root: string
+  ready: boolean
+  issues: string[]
+  images: string[]
+  motion: string[]
+  videos: string[]
+  /** Ordered first-play screenshots (title → menu → intro → Level 1). */
+  journey: string[]
+  readme: string | null
+  manifest: string | null
+  /** journey.md — the documented main menu → intro → Level 1 walkthrough. */
+  journeyMd: string | null
+  /** story.md — premise, characters, progression, and captured dialog. */
+  storyMd: string | null
+  /** research.md — distilled deep-research sweep: streams, Reddit, reviews, wikis. */
+  researchMd: string | null
+}
+
+export interface ReferenceStudy {
+  runId: string
+  status: RunStatus
+  logs: LoopLogLine[]
+  pack: ReferencePack
+}
+
 export interface LoopApi {
   list(): Promise<LoopSnapshot[]>
   get(loopId: string): Promise<LoopSnapshot | null>
   rename(loopId: string, title: string): Promise<LoopRecord | null>
   critique(loopId: string): Promise<CritiqueRound[]>
+  reference(loopId: string, runId: string): Promise<ReferenceStudy | null>
   mediaBase(): Promise<string | null>
   playStart(loopId: string, round?: number | null): Promise<PlayState>
   playStop(loopId: string): Promise<void>

@@ -1,0 +1,105 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { referencePackDir, scanReferencePack } from './reference-pack'
+
+const dirs: string[] = []
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+function workspace(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-reference-'))
+  dirs.push(dir)
+  return dir
+}
+
+describe('Reference Pack', () => {
+  it('scopes each pack to its loop', () => {
+    expect(referencePackDir('loop-123')).toBe('reference/loop-123')
+    expect(() => referencePackDir('../elsewhere')).toThrow('Invalid loop id')
+  })
+
+  it('validates and inventories a completed pack', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
+    for (let i = 0; i < 8; i += 1) {
+      fs.writeFileSync(path.join(dir, root, 'images', `still-${i}.jpg`), 'image')
+      fs.writeFileSync(path.join(dir, root, 'motion', `frame-${i}.png`), 'frame')
+    }
+    for (const shot of ['01-title', '02-main-menu', '03-intro', '04-level-1-start']) {
+      fs.writeFileSync(path.join(dir, root, 'journey', `${shot}.png`), 'shot')
+    }
+    fs.writeFileSync(path.join(dir, root, 'video', 'gameplay.webm'), 'video')
+    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Target\n\nProgression model: level-based')
+    fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
+    fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources: [{ url: 'https://example.com' }] }))
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.ready).toBe(true)
+    expect(pack.images).toHaveLength(8)
+    expect(pack.motion).toHaveLength(8)
+    expect(pack.videos).toHaveLength(1)
+    expect(pack.journey).toEqual([
+      `${root}/journey/01-title.png`,
+      `${root}/journey/02-main-menu.png`,
+      `${root}/journey/03-intro.png`,
+      `${root}/journey/04-level-1-start.png`,
+    ])
+    expect(pack.readme).toContain('# Target')
+    expect(pack.journeyMd).toContain('Main menu')
+    expect(pack.storyMd).toContain('Premise')
+    expect(pack.researchMd).toContain('What players say')
+  })
+
+  it('rejects a shallow study that cannot make the critic a game expert', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Visual mood board')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), '# A few reviews')
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toContain('research.md needs an Expert gameplay dossier for the critic')
+    expect(pack.issues).toContain('README.md needs a level-based or non-level-based progression classification')
+  })
+
+  it('validates a manifest larger than the display cap without truncating it', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    const sources = Array.from({ length: 200 }, (_, index) => ({
+      url: `https://example.com/source-${index}`,
+      note: 'a consulted deep-research source with a reasonably long note attached to it',
+    }))
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources }, null, 2))
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.manifest!.length).toBeGreaterThan(12_000)
+    expect(pack.issues).not.toContain('manifest.json is not valid JSON')
+  })
+
+  it('returns actionable issues for an incomplete pack', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), '{bad json')
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.ready).toBe(false)
+    expect(pack.issues).toContain('needs at least 8 stills (0 found)')
+    expect(pack.issues).toContain('needs at least 8 motion frames (0 found)')
+    expect(pack.issues).toContain('needs a gameplay video')
+    expect(pack.issues).toContain('needs at least 4 ordered journey shots (0 found)')
+    expect(pack.issues).toContain('needs research.md with the deep-research findings')
+    expect(pack.issues).toContain('needs journey.md with the main menu → Level 1 walkthrough')
+    expect(pack.issues).toContain('needs story.md with the premise, progression, and captured dialog')
+    expect(pack.issues).toContain('needs README.md with the target brief')
+    expect(pack.issues).toContain('manifest.json is not valid JSON')
+  })
+})

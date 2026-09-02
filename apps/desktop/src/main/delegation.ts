@@ -42,7 +42,7 @@ export function claudeChildCommand(model: string, effort: string, slug: string):
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function implementerAgentMd(models: LoopModels): string | null {
+export function implementerAgentMd(models: LoopModels, referenceDir: string): string | null {
   if (harnessFor(models.orchestratorModel) !== 'claude' || !models.subagentModel) return null
   const header = (model: string, effort: string): string => `---
 name: implementer
@@ -52,7 +52,7 @@ effort: ${effort}
 ---
 `
   if (harnessFor(models.subagentModel) === 'claude') {
-    return `${header(models.subagentModel, models.subagentEffort)}You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, level design, ...). Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
+    return `${header(models.subagentModel, models.subagentEffort)}You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
 `
   }
   // Claude Code runs only claude models as subagents, so a codex worker is
@@ -60,7 +60,7 @@ effort: ${effort}
   return `${header(DISPATCHER_MODEL, 'low')}You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
-2. Write your full brief to \`.gauntlet-loop/codex-<slug>.md\`: the slice, the files it owns, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
+2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`.gauntlet-loop/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
 3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
 
    ${codexChildCommand(models.subagentModel, models.subagentEffort, '<slug>')}
@@ -68,6 +68,30 @@ effort: ${effort}
    Do NOT use \`run_in_background\`, and do NOT poll it. The timeout ceiling is raised for this run, so the call simply returns when the work is done. The app reads that stream file as it is written, so nothing is lost while you wait.
 4. When it returns, read the tail of the stream file to see what codex did, then report exactly what changed and how to verify it. Say plainly if it changed nothing.
 `
+}
+
+/**
+ * How the Reference Study fans its deep-research sweep out. Researchers are
+ * launched as plain CLI children (the same stream-file mechanism as delegated
+ * implementers, so their tokens and cost are tracked), which works identically
+ * from either orchestrator harness. Null researchModel = no fan-out: the
+ * reference agent does the sweep itself, cheaply.
+ */
+export function researchRules(models: LoopModels, referenceDir: string): string {
+  if (!models.researchModel) {
+    return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
+  }
+  const harness = harnessFor(models.researchModel)
+  const briefFile = `.gauntlet-loop/${harness}-<slug>.md`
+  const command =
+    harness === 'codex'
+      ? codexChildCommand(models.researchModel, models.researchEffort, '<slug>')
+      : claudeChildCommand(models.researchModel, models.researchEffort, '<slug>')
+  return `Fan this sweep out to parallel researchers on ${models.researchModel} at ${models.researchEffort} effort — one per angle, cheap and disposable. For each angle choose a short slug (e.g. research-reddit), write a self-contained brief to \`${briefFile}\` telling the researcher exactly what to find and to write its findings — every claim with its source URL — to ${referenceDir}/research/<slug>.md. Researchers research and write notes only; they must never touch project source or download pack media. Then \`mkdir -p ${STREAM_DIR}\` and launch every researcher from the workspace root in one command, in parallel:
+
+  ${command} &
+
+followed by \`wait\`. When they return, read their notes and distill them into ${referenceDir}/research.md yourself.`
 }
 
 /**
@@ -83,15 +107,19 @@ effort: ${effort}
 const HANDS_OFF =
   'Before the first hand-off you may scaffold: the project skeleton, a CONTRACTS.md, and stub files. After that you must NOT edit game source yourself — no writes, no `cat >`, no `sed -i`, no scripted rewrites of files a worker owns. Read, build, run, and test all you like; when something is wrong, send it back to a worker instead of fixing it yourself.'
 
+function referenceHandoff(referenceDir: string): string {
+  return `The Reference Study at ${referenceDir} must be complete before the first hand-off. Every worker brief must name that exact path, tell the worker to read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant journey.md and story.md sections, and VIEW the relevant downloaded references before writing code. Brief story, difficulty, level/progression, and gameplay workers from the study's sourced expert dossier; if the pack is missing, do not spawn workers.`
+}
+
 /** The rules appended to the implement prompt, per combination. */
-export function delegationRules(models: LoopModels): string {
+export function delegationRules(models: LoopModels, referenceDir: string): string {
   const verify =
     'Verify the game actually builds and runs before you finish. ' +
     'Browser checks run inside a macOS sandbox: drive them with Playwright\'s bundled browsers (`chromium.launch({ headless: true })`). Never pass `channel: \'chrome\'` / `\'msedge\'` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.'
   if (!models.subagentModel) {
     return `Working rules: you implement this yourself — do NOT delegate to subagents. ${verify}`
   }
-  const rules = `${HANDS_OFF} ${verify}`
+  const rules = `${HANDS_OFF} ${referenceHandoff(referenceDir)} ${verify}`
   const orchestrator = harnessFor(models.orchestratorModel)
   const worker = harnessFor(models.subagentModel)
 

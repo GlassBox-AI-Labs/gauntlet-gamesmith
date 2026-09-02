@@ -28,6 +28,7 @@ const loops: LoopApi = {
   get: (loopId) => ipcRenderer.invoke('loop:get', loopId),
   rename: (loopId, title) => ipcRenderer.invoke('loop:rename', loopId, title),
   critique: (loopId) => ipcRenderer.invoke('loop:critique', loopId),
+  reference: (loopId, runId) => ipcRenderer.invoke('loop:reference', loopId, runId),
   mediaBase: () => ipcRenderer.invoke('media:base'),
   playStart: (loopId, round) => ipcRenderer.invoke('play:start', loopId, round),
   playStop: (loopId) => ipcRenderer.invoke('play:stop', loopId),

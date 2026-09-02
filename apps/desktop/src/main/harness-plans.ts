@@ -130,6 +130,23 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
   }
 }
 
+/** A one-agent research run using the orchestrator model, with no delegation. */
+export function referencePlan(ctx: PlanContext): SpawnPlan {
+  const { models } = ctx
+  if (harnessFor(models.orchestratorModel) === 'codex') {
+    return {
+      bin: 'codex',
+      args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, ctx.outFile), ctx.prompt],
+      env: bothHomes(ctx),
+    }
+  }
+  return {
+    bin: 'claude',
+    args: claudeArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
+    env: { ...bothHomes(ctx), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
+  }
+}
+
 export function critiquePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
   if (models.criticHarness === 'codex') {

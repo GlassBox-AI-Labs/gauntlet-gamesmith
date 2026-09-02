@@ -50,7 +50,7 @@ function run(partial: Partial<RunRecord>): RunRecord {
 describe('buildReport', () => {
   it('sums cost and tokens across finished runs and shows the score trend', () => {
     const report = buildReport(loop, [
-      run({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000 }),
+      run({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 8 * 60_000 }),
       run({
         id: 'b',
         role: 'critique',
@@ -64,9 +64,9 @@ describe('buildReport', () => {
     ])
     expect(report).toContain('**Equivalent cost:** $10.00 of $100.00 budget')
     expect(report).toContain('in 2.00M / out 100.0k')
-    expect(report).toContain('| Elapsed | Score |')
-    expect(report).not.toContain('| Runtime |')
-    expect(report).toContain('| +30m00s |')
+    expect(report).toContain('| Runtime | Score |')
+    // Per-attempt runtime, not time-since-loop-start: this run took 8m of the 30m elapsed.
+    expect(report).toContain('| 8m00s |')
     expect(report).toContain('0.42')
     expect(report).toContain('flat lighting')
   })
@@ -75,5 +75,26 @@ describe('buildReport', () => {
     const report = buildReport(loop, [run({ id: 'a', status: 'running' })])
     expect(report).toContain('Gauntlet Loop report')
     expect(report).not.toContain('Score trend')
+  })
+
+  it('shows the Reference Study as a pre-round result', () => {
+    const report = buildReport(loop, [run({ role: 'reference', round: 0 })], [], {
+      root: 'reference/l1',
+      ready: true,
+      issues: [],
+      images: Array.from({ length: 8 }, (_, index) => `reference/l1/images/${index}.jpg`),
+      motion: Array.from({ length: 8 }, (_, index) => `reference/l1/motion/${index}.jpg`),
+      videos: ['reference/l1/video/gameplay.webm'],
+      journey: Array.from({ length: 4 }, (_, index) => `reference/l1/journey/0${index + 1}-shot.png`),
+      readme: '# Visual target',
+      manifest: '{}',
+      journeyMd: '# Walkthrough',
+      storyMd: '# Premise',
+      researchMd: '# What players say',
+    })
+    expect(report).toContain('| — | reference |')
+    expect(report).toContain('## Reference Pack')
+    expect(report).toContain('8 stills · 8 motion frames · 4 journey shots · 1 videos')
+    expect(report).toContain('# Visual target')
   })
 })

@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ENGINE_DEPS, engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
+import { ENGINE_DEPS, engineContract, engineGateRules } from '../shared/engine-stack'
+import { scaffoldEngine } from './engine-stack'
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'engine-stack-'))

@@ -22,47 +22,36 @@ import {
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
 import { fmtDuration, fmtTokens } from '@/lib/format'
+import { PromptBrowser } from '@/views/PromptBrowser'
+import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
+import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord } from '../../../shared/loop'
+import { buildCriticPrompt } from '../../../shared/prompts'
+import { engineGateRules } from '../../../shared/engine-stack'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
   AGENT_EFFORTS,
   AGENT_MODEL_CHOICES,
   DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
+  DEFAULT_RESEARCH,
   describeCritic,
   modelLabel,
   orchestratorEfforts,
   SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
+  type ResearchFields,
 } from '../../../shared/models'
 import type { ReportRecord } from '../../../shared/reports'
 
 const LOG_LIMIT = 1500
 const ROUNDS_PAGE_SIZE = 3
-
-const KIND_COLORS: Record<string, string> = {
-  system: 'text-[#8f8a87]',
-  claude: 'text-[#e9c9bc]',
-  agent: 'text-[#cfae9d]',
-  spawn: 'text-[#c0aee6]',
-  tool: 'text-[#7d7772]',
-  codex: 'text-[#9ad1c6]',
-  thought: 'text-[#a99bc4] italic',
-  cmd: 'text-[#7fa8a0]',
-  search: 'text-[#8fc7e6]',
-  shot: 'text-[#e6b8d4]',
-  stderr: 'text-[#a08b6f]',
-  error: 'text-[#f0aaaa]',
-  metric: 'text-[#9fb2c8]',
-  verdict: 'text-[#f2d98c]',
-  done: 'text-[#a9e5b8]',
-}
 
 const STATUS_STYLES: Record<string, string> = {
   running: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
@@ -106,12 +95,14 @@ function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element 
       <span><span className="text-[#857d79]">Implementer</span> {implementer}</span>
       <span className="text-[#393433]" aria-hidden="true">/</span>
       <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
+      <span className="text-[#393433]" aria-hidden="true">/</span>
+      <span><span className="text-[#857d79]">Research</span> {models.researchModel ? `${modelLabel(models.researchModel)} · ${models.researchEffort}` : 'no fan-out'}</span>
     </div>
   )
 }
 
 function roundNumbers(snapshot: LoopSnapshot): number[] {
-  return [...new Set(snapshot.runs.map((run) => run.round))].sort((a, b) => b - a)
+  return [...new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round))].sort((a, b) => b - a)
 }
 
 /**
@@ -459,17 +450,6 @@ function ProjectChooser({
   )
 }
 
-function PromptBlock({ title, value }: { title: string; value: string }): React.JSX.Element {
-  return (
-    <section className="overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212]">
-      <h2 className="border-b border-[#332e2e] px-4 py-3 text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">{title}</h2>
-      <pre className="max-h-[260px] overflow-y-auto whitespace-pre-wrap px-4 py-3.5 font-mono text-[11px] leading-[1.7] text-[#c9c3c0]">
-        {value || 'No additional prompt was recorded.'}
-      </pre>
-    </section>
-  )
-}
-
 /**
  * Agents the ultracode orchestrator ran through the Workflow tool. They never
  * reach the message stream, so their numbers come off disk and read differently
@@ -539,7 +519,6 @@ function useNow(active: boolean): number {
 function RunRow({
   run,
   loopCreatedAt,
-  timing,
   loopId,
   critique,
   expanded,
@@ -547,22 +526,16 @@ function RunRow({
 }: {
   run: RunRecord
   loopCreatedAt: string
-  timing: 'elapsed' | 'runtime'
   loopId: string
   critique?: CritiqueRound
   expanded: boolean
   onToggle: () => void
 }): React.JSX.Element {
   const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
-  const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'critique' ? '—' : ''
-  const elapsedMs = elapsedThroughRunMs(loopCreatedAt, run)
+  const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'implement' ? '' : '—'
+  const now = useNow(run.status === 'running')
   const startedMs = elapsedToRunStartMs(loopCreatedAt, run)
-  const elapsedTitle =
-    elapsedMs == null
-      ? undefined
-      : startedMs != null && startedMs !== elapsedMs
-        ? `Started ${fmtDuration(startedMs)} into the loop · reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
-        : `Reached this point after ${fmtDuration(elapsedMs)} wall-clock time`
+  const runtimeTitle = startedMs == null ? undefined : `Started ${fmtDuration(startedMs)} into the loop`
   return (
     <>
       <TableRow
@@ -572,9 +545,9 @@ function RunRow({
         <TableCell className="w-8 px-2 py-2.5 text-[#68615f]">
           {hasDetail ? (expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />) : null}
         </TableCell>
-        <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.round}</TableCell>
+        <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.role === 'reference' ? '—' : run.round}</TableCell>
         <TableCell className="px-2 py-2.5">
-          <span className={run.role === 'implement' ? 'text-[#e9c9bc]' : 'text-[#9ad1c6]'}>{run.role}</span>
+          <span className={run.role === 'reference' ? 'text-amber-300' : run.role === 'implement' ? 'text-[#e9c9bc]' : 'text-[#9ad1c6]'}>{run.role}</span>
         </TableCell>
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{run.model ?? '—'}</TableCell>
         <TableCell className="px-2 py-2.5">
@@ -594,18 +567,14 @@ function RunRow({
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">
           {fmtTokens(run.inputTokens)} / {fmtTokens(run.outputTokens)}
         </TableCell>
-        <TableCell
-          className={`px-2 py-2.5 font-mono text-[11px] ${timing === 'elapsed' ? 'text-[#b8aaa4]' : 'text-[#96908d]'}`}
-          title={timing === 'elapsed' ? elapsedTitle : undefined}
-        >
-          {timing === 'elapsed' ? (elapsedMs == null ? '—' : `+${fmtDuration(elapsedMs)}`) : fmtDuration(runtimeMs(run))}
+        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]" title={runtimeTitle}>
+          {fmtDuration(runtimeMs(run, now))}
         </TableCell>
       </TableRow>
       {expanded && (critique || run.metrics) && (
         <TableRow className="border-[#3b3636] hover:bg-transparent">
-          <TableCell colSpan={9} className="bg-[#151111] px-4 py-3">
-            {/* w-0 + min-w-full stops wide media from stretching the table sideways */}
-            <div className="w-0 min-w-full">
+          <TableCell colSpan={9} className="min-w-0 overflow-hidden whitespace-normal bg-[#151111] px-4 py-3">
+            <div className="min-w-0 max-w-full overflow-hidden">
             {critique && (
               <div className="mb-3">
                 <CritiqueRoundView loopId={loopId} round={critique} />
@@ -615,7 +584,15 @@ function RunRow({
               {(run.metrics?.agents ?? [])
                 .filter((agent) => agent.source !== 'workflow')
                 .map((agent) => (
-                  <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
+                  <div
+                    key={agent.id}
+                    className={
+                      agent.id === 'orchestrator' || agent.id === 'critic'
+                        ? 'text-[#ded9d6]'
+                        : // A worker launched by another agent nests under it.
+                          `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`
+                    }
+                  >
                     {/* Transparent when idle so every row keeps the same indent. */}
                     <span
                       className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${agentActive(agent) ? 'animate-pulse bg-emerald-400' : 'bg-transparent'}`}
@@ -654,6 +631,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [budget, setBudget] = useState('')
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
+  const [research, setResearch] = useState<ResearchFields>(DEFAULT_RESEARCH)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -661,6 +639,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
+  const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
@@ -671,7 +650,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteFiles, setDeleteFiles] = useState(false)
   const [namingReport, setNamingReport] = useState(false)
+  const [referenceStudies, setReferenceStudies] = useState<Map<string, ReferenceStudy>>(new Map())
+  const [detailTab, setDetailTab] = useState<'activity' | 'references'>('activity')
   const loopIdRef = useRef<string | null>(null)
+  const mainRef = useRef<HTMLElement | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
 
@@ -692,6 +674,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         const next = [...current, line]
         return next.length > LOG_LIMIT ? next.slice(next.length - LOG_LIMIT) : next
       })
+      if (line.runId) {
+        setReferenceStudies((current) => {
+          const study = current.get(line.runId!)
+          if (!study) return current
+          const next = new Map(current)
+          next.set(line.runId!, { ...study, logs: [...study.logs, line].slice(-500) })
+          return next
+        })
+      }
     })
     void (async () => {
       const [all, snap, defaultDir, savedReports] = await Promise.all([
@@ -714,6 +705,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           subagentEffort: initial.loop.models.subagentEffort,
         })
         setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
+        setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -735,11 +727,22 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const finishedCritiques = snapshot?.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length ?? 0
 
   const activeLoopId = snapshot?.loop.id ?? null
+  const referenceSignature = snapshot?.runs
+    .filter((run) => run.role === 'reference')
+    .map((run) => `${run.id}:${run.status}:${run.inputTokens ?? 0}:${run.outputTokens ?? 0}`)
+    .join('|') ?? ''
 
   useEffect(() => {
     if (!activeLoopId) return
     void window.loops.critique(activeLoopId).then(setCritiqueRounds)
   }, [activeLoopId, finishedCritiques])
+  useEffect(() => {
+    if (!activeLoopId || !snapshot) return
+    const runs = snapshot.runs.filter((run) => run.role === 'reference')
+    void Promise.all(runs.map((run) => window.loops.reference(activeLoopId, run.id))).then((studies) => {
+      setReferenceStudies(new Map(studies.filter((study): study is ReferenceStudy => study != null).map((study) => [study.runId, study])))
+    })
+  }, [activeLoopId, referenceSignature])
   useEffect(() => {
     if (!activeLoopId) return
     void window.loops.playState(activeLoopId).then(setPlay)
@@ -752,20 +755,31 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const running = loop?.status === 'running'
   const now = useNow(running)
   const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
+  const referenceRuns = snapshot?.runs.filter((run) => run.role === 'reference') ?? []
+  const activeReferenceRun = referenceRuns.at(-1)
+  const activeReferenceStudy = activeReferenceRun ? referenceStudies.get(activeReferenceRun.id) : undefined
   const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
   const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
   const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
+  const filteredLines = visibleLines.filter((line) => lineMatchesFilter(line, logFilter))
   const initialImplementPrompt = snapshot?.runs.find((run) => run.role === 'implement')?.prompt ?? ''
   const systemPrompt = loop && initialImplementPrompt.startsWith(loop.prompt)
     ? initialImplementPrompt.slice(loop.prompt.length).trim()
     : initialImplementPrompt
-  const critiqueRubric = snapshot?.runs.find((run) => run.role === 'critique')?.prompt ?? ''
+  // The rubric is deterministic loop configuration, so show it from the
+  // moment a loop is created instead of waiting for the first critique job.
+  const critiqueRubric = snapshot?.runs.find((run) => run.role === 'critique')?.prompt
+    ?? (loop ? buildCriticPrompt(loop.prompt, 1, snapshot?.runs.some((run) => run.role === 'reference') ? `reference/${loop.id}` : 'reference', engineGateRules()) : '')
   const detailStatus = selectedRound == null
     ? loop?.status
     : visibleRuns.some((run) => run.status === 'running')
       ? 'running'
       : (visibleRuns.at(-1)?.status ?? 'queued')
   const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
+  // The exact prompts those runs were launched with — the implement one carries
+  // the previous round's critic verdict and findings baked in.
+  const roundImplementRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'implement').at(-1)
+  const roundCritiqueRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'critique').at(-1)
   const totals = visibleRuns.reduce(
     (sum, run) => ({
       costUsd: sum.costUsd + (run.costUsd ?? 0),
@@ -778,13 +792,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
   )
   const totalTokens = totals.inputTokens + totals.outputTokens
-  const playingSelectedBuild = play.running && play.round === selectedRound
-  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
-  const selectedRoundPlayable = selectedRevision != null
+  /** Wall-clock span of the loop, for the summary card only — the table shows per-attempt runtime. */
   const visibleElapsedMs = visibleRuns.reduce<number | null>((latest, run) => {
     const elapsed = loop ? elapsedThroughRunMs(loop.createdAt, run) : null
     return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
   }, null)
+  const playingSelectedBuild = play.running && play.round === selectedRound
+  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
+  const selectedRoundPlayable = selectedRevision != null
 
   const start = async (): Promise<void> => {
     setBusy(true)
@@ -798,6 +813,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         budgetUsd: budget.trim() ? Number(budget) : null,
         ...impl,
         ...critic,
+        ...research,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -808,6 +824,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setLines([])
       setExpanded(new Set())
       setSelectedRound(null)
+      setLogFilter(ALL_LOG_FILTER)
+      setDetailTab('activity')
       setComposing(false)
       setProjectOpen(false)
       const snap = result.loopId ? await window.loops.get(result.loopId) : await window.loops.active()
@@ -833,7 +851,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       subagentEffort: next.loop.models.subagentEffort,
     })
     setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
+    setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
     setSelectedRound(round)
+    setLogFilter(ALL_LOG_FILTER)
+    setDetailTab('activity')
     setRenaming(false)
     setComposing(false)
     setProjectOpen(false)
@@ -846,6 +867,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setComposing(true)
     setSelectedReportId(null)
     setSelectedRound(null)
+    setDetailTab('activity')
     setPrompt('')
     setError(null)
     setNotice(null)
@@ -891,6 +913,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setExpanded(new Set())
       setExpandedRuns((current) => new Set(current).add(imported.loop.id))
       setSelectedRound(null)
+      setLogFilter(ALL_LOG_FILTER)
+      setDetailTab('activity')
       setRenaming(false)
       setProjectOpen(false)
       setComposing(false)
@@ -998,6 +1022,11 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const composeVisible = !selectedReport && (composing || !loop)
   const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
 
+  const selectDetailTab = (tab: 'activity' | 'references'): void => {
+    setDetailTab(tab)
+    requestAnimationFrame(() => mainRef.current?.scrollTo({ top: 0 }))
+  }
+
   if (!loaded) {
     return (
       <main className="grid h-screen place-items-center bg-[#100d0e]">
@@ -1065,7 +1094,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         }}
         onImportReport={() => void importReport()}
       />
-      <main className="min-w-0 flex-1 overflow-y-auto">
+      <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
 
       {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
@@ -1175,6 +1204,29 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               </Select>
             </div>
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Research</span>
+              <Select
+                value={research.researchModel ?? SOLO_SUBAGENT}
+                onValueChange={(value) => setResearch((current) => ({ ...current, researchModel: value === SOLO_SUBAGENT ? null : value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  <SelectItem value={SOLO_SUBAGENT}>none (no fan-out)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={research.researchEffort}
+                onValueChange={(value) => setResearch((current) => ({ ...current, researchEffort: value }))}
+                disabled={research.researchModel === null}
+              >
+                <SelectTrigger className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
               <Select
                 value={critic.criticModel}
@@ -1208,7 +1260,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             <p className="text-xs leading-relaxed text-[#7d7772]">
               {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
               {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
-              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}
+              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
+              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}
             </p>
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
@@ -1291,7 +1344,11 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           <div className="mb-5 flex flex-wrap items-center gap-3">
             <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus ?? ''] ?? ''}`}>{detailStatus}</Badge>
             <span className="text-sm text-[#ded9d6]">
-              {selectedRound == null ? `round ${loop.round}/${loop.maxRounds}` : visibleRuns.length === 1 ? '1 attempt' : `${visibleRuns.length} attempts`}
+              {selectedRound == null
+                ? liveRun?.role === 'reference'
+                  ? 'reference study · rounds not started'
+                  : `round ${loop.round}/${loop.maxRounds}`
+                : visibleRuns.length === 1 ? '1 attempt' : `${visibleRuns.length} attempts`}
             </span>
             <span className="font-mono text-sm text-[#9fb2c8]">
               ${totals.costUsd.toFixed(2)} equiv
@@ -1354,7 +1411,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                 </Button>
               ) : (
                 <>
-                  {(loop.status === 'stopped' || loop.status === 'exhausted') && (
+                  {(loop.status === 'stopped' || loop.status === 'exhausted' || loop.status === 'failed') && (
                     <Button
                       variant="outline"
                       className="border-amber-500/50 bg-transparent text-amber-300 hover:bg-amber-500/10 hover:text-amber-200"
@@ -1420,6 +1477,55 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
 
           {selectedRound == null && (
+            <div role="tablist" aria-label="Run detail" className="mb-5 flex border-b border-[#332e2e]">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={detailTab === 'activity'}
+                onClick={() => selectDetailTab('activity')}
+                className={`relative px-3 py-2.5 text-[12px] transition-colors ${
+                  detailTab === 'activity' ? 'text-[#eeeae7] after:absolute after:inset-x-0 after:bottom-[-1px] after:h-px after:bg-[#c9b5aa]' : 'text-[#77706d] hover:text-[#c9c3c0]'
+                }`}
+              >
+                Run activity
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={detailTab === 'references'}
+                onClick={() => selectDetailTab('references')}
+                className={`relative flex items-center gap-2 px-3 py-2.5 text-[12px] transition-colors ${
+                  detailTab === 'references' ? 'text-amber-200 after:absolute after:inset-x-0 after:bottom-[-1px] after:h-px after:bg-amber-300' : 'text-[#77706d] hover:text-[#c9c3c0]'
+                }`}
+              >
+                Reference assets
+                {activeReferenceStudy && (
+                  <span className="rounded-full border border-[#49413a] bg-amber-500/[0.07] px-1.5 py-0.5 font-mono text-[9px] text-amber-300/80">
+                    {activeReferenceStudy.pack.images.length + activeReferenceStudy.pack.motion.length + activeReferenceStudy.pack.videos.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
+
+          {selectedRound == null && detailTab === 'references' ? (
+            <section role="tabpanel" className="grid min-w-0 gap-4 overflow-hidden">
+              <div className="min-w-0 overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212] p-4">
+                {activeReferenceStudy ? (
+                  <ReferenceStudyPanel loopId={loop.id} study={activeReferenceStudy} />
+                ) : referenceRuns.length > 0 ? (
+                  <div className="flex items-center gap-2 py-10 text-sm text-[#77706d]"><LoaderCircle className="size-4 animate-spin" /> Loading Reference Pack…</div>
+                ) : (
+                  <div className="py-10 text-center">
+                    <div className="text-sm text-[#aaa4a1]">No Reference Study was recorded for this run.</div>
+                    <div className="mt-1 text-xs text-[#68615f]">Reference assets appear here for runs created with the Reference Study workflow.</div>
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : (
+          <>
+          {selectedRound == null && (
             <>
               <div className="mb-5 grid grid-cols-4 gap-3 max-md:grid-cols-2">
                 <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
@@ -1439,12 +1545,40 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(visibleElapsedMs)}</div>
                 </div>
               </div>
-              <div className="mb-5 grid gap-3">
-                <PromptBlock title="Original prompt" value={loop.prompt} />
-                <PromptBlock title="System / implementer prompt" value={systemPrompt} />
-                <PromptBlock title="Critique evaluation rubric" value={critiqueRubric} />
+              <div className="mb-5">
+                <PromptBrowser
+                  prompts={[
+                    { id: 'original', title: 'Original', description: 'The operator goal and quality bar for this run.', value: loop.prompt },
+                    { id: 'reference', title: 'Reference Study', description: 'Research and validation instructions used to create the frozen Reference Pack.', value: activeReferenceRun?.prompt ?? '' },
+                    { id: 'implementer', title: 'System / Implementer', description: 'Implementation rules, delegation contract, and Reference Pack handoff.', value: systemPrompt },
+                    { id: 'critique', title: 'Critique', description: 'Evaluation protocol, evidence requirements, scoring rubric, and passing threshold.', value: critiqueRubric },
+                  ]}
+                />
               </div>
             </>
+          )}
+
+          {selectedRound != null && (
+            <div className="mb-5">
+              <PromptBrowser
+                prompts={[
+                  {
+                    id: `round-${selectedRound}-implement`,
+                    title: `Round ${selectedRound} implementer`,
+                    description: selectedRound > 1
+                      ? `The exact prompt this round's implementer received, including the previous critic's score, summary, and must-fix findings.`
+                      : `The exact prompt this round's implementer received: the goal, Reference Pack handoff, and delegation rules.`,
+                    value: roundImplementRun?.prompt ?? '',
+                  },
+                  {
+                    id: `round-${selectedRound}-critique`,
+                    title: `Round ${selectedRound} critic`,
+                    description: `The exact prompt this round's critic received, with its evidence and scoring protocol.`,
+                    value: roundCritiqueRun?.prompt ?? '',
+                  },
+                ]}
+              />
+            </div>
           )}
 
           {selectedRound != null && selectedCritique && (
@@ -1459,13 +1593,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
               {liveRun.metrics.agents.map((agent) => {
                 const active = agentActive(agent)
-                return (
-                  <span
-                    key={agent.id}
-                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
-                      agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
-                    }`}
-                  >
+                const filterKey = agentFilterKey(agent.id)
+                const selected = filterKey != null && logFilter.agent === filterKey
+                const chip = (
+                  <>
                     <span
                       className={`size-1.5 rounded-full ${
                         agent.done ? 'bg-[#68615f]' : active ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'
@@ -1476,14 +1607,44 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                       {fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}
                     </span>
                     {agent.done && '✓'}
+                  </>
+                )
+                const chipClass = `flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
+                  selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
+                }`
+                // A chip that maps to log lines doubles as the agent filter.
+                return filterKey != null ? (
+                  <button
+                    type="button"
+                    key={agent.id}
+                    title="Filter the log to this agent"
+                    onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))}
+                    className={chipClass}
+                  >
+                    {chip}
+                  </button>
+                ) : (
+                  <span key={agent.id} className={chipClass}>
+                    {chip}
                   </span>
                 )
               })}
             </div>
           )}
 
-          <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e]">
-            <Table>
+          <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e] [&_[data-slot=table-container]]:overflow-x-hidden [&_td]:overflow-hidden [&_th]:overflow-hidden">
+            <Table className="table-fixed">
+              <colgroup>
+                <col className="w-8" />
+                <col className="w-[58px]" />
+                <col className="w-[76px]" />
+                <col className="w-[160px]" />
+                <col className="w-[88px]" />
+                <col className="w-[58px]" />
+                <col className="w-[70px]" />
+                <col className="w-[120px]" />
+                <col className="w-[85px]" />
+              </colgroup>
               <TableHeader>
                 <TableRow className="border-[#3b3636] hover:bg-transparent">
                   <TableHead className="w-8 px-2 text-[11px] text-[#68615f]" />
@@ -1494,16 +1655,9 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Cost</TableHead>
                   <TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead>
-                  {selectedRound == null ? (
-                    <TableHead
-                      className="px-2 text-[11px] text-[#68615f]"
-                      title="Wall-clock time from the beginning of the loop through this attempt"
-                    >
-                      Elapsed
-                    </TableHead>
-                  ) : (
-                    <TableHead className="px-2 text-[11px] text-[#68615f]">Runtime</TableHead>
-                  )}
+                  <TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">
+                    Runtime
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody className="text-xs">
@@ -1512,7 +1666,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                     key={run.id}
                     run={run}
                     loopCreatedAt={loop.createdAt}
-                    timing={selectedRound == null ? 'elapsed' : 'runtime'}
                     loopId={loop.id}
                     critique={run.role === 'critique' ? critiqueRounds.find((c) => c.runId === run.id) : undefined}
                     expanded={expanded.has(run.id)}
@@ -1542,20 +1695,17 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                     <div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
                   </TableCell>
                   <TableCell
-                    className={`px-2 py-3 font-mono text-[11px] ${selectedRound == null ? 'text-[#b8aaa4]' : 'text-[#c2bbb7]'}`}
-                    title={selectedRound == null ? 'Wall-clock time from the beginning of the loop through the latest visible attempt' : undefined}
+                    className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]"
+                    title="Sum of the runtimes of the visible attempts"
                   >
-                    {selectedRound == null
-                      ? visibleElapsedMs == null
-                        ? '—'
-                        : `+${fmtDuration(visibleElapsedMs)}`
-                      : fmtDuration(totals.durationMs)}
+                    {fmtDuration(totals.durationMs)}
                   </TableCell>
                 </TableRow>
               </TableBody>
             </Table>
           </div>
 
+          <LogFilterStrip lines={visibleLines} filter={logFilter} onChange={setLogFilter} />
           <div
             ref={logRef}
             onScroll={() => {
@@ -1564,14 +1714,19 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             }}
             className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]"
           >
-            {visibleLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
-            {visibleLines.map((line, index) => (
+            {filteredLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
+            {filteredLines.map((line, index) => (
               <div key={index} className="flex gap-2 whitespace-pre-wrap break-all">
                 <span className="shrink-0 text-[#4d4744]">{fmtTs(line.ts)}</span>
-                <span className={KIND_COLORS[line.kind] ?? 'text-[#b5afac]'}>{line.text}</span>
+                <span className={logLineColor(line)}>
+                  {line.agentId && <span className="text-[#c0aee6]">[{line.agentId}] </span>}
+                  {line.text}
+                </span>
               </div>
             ))}
           </div>
+          </>
+          )}
         </>
       )}
         </div>

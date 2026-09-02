@@ -9,23 +9,29 @@ import type {
   LoopSnapshot,
   RunMetrics,
   RunRecord,
+  RunRole,
   StartLoopInput,
   StartLoopResult,
   TokenTotals,
   Verdict,
 } from '../shared/loop'
-import { RESUME_PREFIX } from '../shared/loop'
+import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
+import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
-import { delegationRules, implementerAgentMd } from './delegation'
+import { delegationRules, implementerAgentMd, researchRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
-import { critiquePlan, implementPlan } from './harness-plans'
+import { critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
+import { referencePackDir, scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
+import { translateClaudeLine } from './streams/claude-stream'
+import { ChildStreamTailer } from './streams/child-tailer'
+import { translateCodexLine } from './streams/codex-stream'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
 import { WorkflowTail, workflowTailDir } from './workflow-tail'
 
@@ -38,9 +44,11 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
+const REFERENCE_TIMEOUT_MS = 60 * 60_000
 /** No write to a delegated worker's stream for this long counts as finished. */
 const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
+const MAX_REFERENCE_ATTEMPTS = 2
 
 /**
  * Which cost figure to trust for an implement run.
@@ -141,6 +149,22 @@ export function parseVerdict(text: string): Verdict | null {
   return null
 }
 
+/**
+ * Deterministic verdict channel: the critique protocol also writes its verdict
+ * to critique/round-<n>/verdict.json, so a critic that muffs the final-message
+ * format does not throw away a finished evaluation. `sinceMs` rejects files
+ * left behind by an earlier loop that reused the same workspace and round.
+ */
+export function readVerdictArtifact(workspaceDir: string, round: number, sinceMs: number): Verdict | null {
+  const file = path.join(workspaceDir, 'critique', `round-${round}`, 'verdict.json')
+  try {
+    if (fs.statSync(file).mtimeMs < sinceMs) return null
+    return parseVerdict(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 function normalizeVerdict(value: unknown): Verdict | null {
   if (!value || typeof value !== 'object') return null
   const raw = value as Record<string, unknown>
@@ -163,52 +187,19 @@ function normalizeVerdict(value: unknown): Verdict | null {
 
 /**
  * The user's prompt says what game to build; the engine contract says what to
- * build it out of. It is repeated on every round rather than only the first,
+ * build it out of. It is passed on every round rather than only the first,
  * because by round seven the critic is pushing hard on lighting and game feel
  * and the architecture is exactly what gets quietly traded away to fix
  * findings.
  */
-function buildImplementPrompt(models: LoopModels, userPrompt: string, round: number, verdict: Verdict | null): string {
-  if (round <= 1 || !verdict) return `${userPrompt}\n\n${engineContract()}\n\n${delegationRules(models)}`
-  const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
-  return [
-    userPrompt,
-    '---',
-    `A harsh external critic (fresh eyes, a different model) reviewed round ${round - 1}. Score: ${verdict.score.toFixed(2)}/1.00.`,
-    `Critic summary: ${verdict.summary}`,
-    'Findings you MUST fix this round:',
-    findings || '- (no itemized findings — raise overall quality)',
-    '---',
-    'Fix every finding above, then keep raising quality toward the bar. Never fix a finding by weakening the engine contract below — if one genuinely conflicts with it, say so in your report and fix the rest.',
-    engineContract(),
-    delegationRules(models),
-  ].join('\n\n')
-}
-
-function buildCriticPrompt(userPrompt: string, round: number): string {
-  const evidenceDir = `critique/round-${round}`
-  return `You are a brutally harsh AAA game quality critic with fresh eyes. You did not build this project and you have no attachment to it. Judge the project in the current working directory against this bar:
-
-<goal>
-${userPrompt}
-</goal>
-
-Protocol:
-1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
-   Real gameplay in motion: yt-dlp and ffmpeg are installed. Find one good YouTube gameplay video of the AAA reference and pull a ~30s slice (e.g. \`yt-dlp --download-sections "*60-90" -f "bv*[height<=1080]" -o reference/aaa-gameplay.%(ext)s "<url>"\`), then extract ~10 frames at 1s intervals with \`ffmpeg -i reference/aaa-gameplay.* -vf fps=1 ./${evidenceDir}/refs/motion/aaa-%02d.png\` and VIEW them. Later, extract frames from your own gameplay recording the same way (into ./${evidenceDir}/shots/motion/) and compare motion-to-motion: mid-action chaos, trails, feedback timing — not just posed stills. If yt-dlp fails on one video, try another; do not burn more than a few minutes on it.
-2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`, \`recordVideo\` on the context). Never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.
-4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
-5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
-6. ${engineGateRules()}
-
-End your reply with EXACTLY one fenced JSON block and nothing after it:
-
-\`\`\`json
-{"score": 0.0, "pass": false, "summary": "<=60 words>", "findings": [{"severity": "critical|major|minor", "text": "one specific, fixable shortfall"}]}
-\`\`\`
-
-"pass" may only be true if score >= 0.90 AND \`node tools/engine-gate.mjs\` exited 0 AND you would genuinely mistake screenshots of this game for the AAA reference.`
+function buildImplementPrompt(
+  models: LoopModels,
+  userPrompt: string,
+  round: number,
+  verdict: Verdict | null,
+  referenceDir: string,
+): string {
+  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir, engineContract())
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -219,6 +210,8 @@ interface ProcMeta {
   startedAtMs: number
   loggedOutLines: number
   loggedErrLines: number
+  /** Byte offsets into each child stream, so a re-attach does not replay child logs. */
+  childOffsets?: Record<string, number>
 }
 
 interface ExitHolder {
@@ -273,6 +266,10 @@ interface LogGate {
 export class LoopRunner {
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
+  /** Round/role of a run never change, so stamping log lines needs one lookup per run. */
+  private runStamps = new Map<string, { round: number; role: RunRole }>()
+  /** Child streams of the run being driven; also pumped while awaiting stragglers. */
+  private childTail: { loopId: string; runId: string; tailer: ChildStreamTailer } | null = null
 
   constructor(
     private ledger: Ledger,
@@ -283,6 +280,11 @@ export class LoopRunner {
     const loop = this.ledger.runningLoop() ?? this.ledger.latestLoop()
     if (!loop) return null
     return { loop, runs: this.ledger.runsForLoop(loop.id) }
+  }
+
+  /** New loops own a scoped pack; pre-v1 loops keep using their legacy root. */
+  private referenceDir(loopId: string): string {
+    return this.ledger.runsForLoop(loopId).some((run) => run.role === 'reference') ? referencePackDir(loopId) : 'reference'
   }
 
   start(input: StartLoopInput): StartLoopResult {
@@ -303,7 +305,7 @@ export class LoopRunner {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const models = resolveModels(input, input)
+    const models = resolveModels(input, input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
     this.log(
@@ -320,12 +322,13 @@ export class LoopRunner {
       'system',
       describeModels(models),
     )
+    const referenceDir = referencePackDir(loop.id)
     this.ledger.createRun({
       loopId: loop.id,
-      round: 1,
-      role: 'implement',
+      round: 0,
+      role: 'reference',
       harness: harnessFor(models.orchestratorModel),
-      prompt: buildImplementPrompt(models, prompt, 1, null),
+      prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
     })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
@@ -356,9 +359,14 @@ export class LoopRunner {
           )
           this.broadcast(loop.id)
           const gate: LogGate = { suppress: false }
-          const parser = active.role === 'implement' ? this.makeImplementParser(loop, active, gate) : this.makeCritiqueParser(loop, active, gate)
-          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : CRITIQUE_TIMEOUT_MS
-          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : CRITIQUE_TIMEOUT_MS
+          const parser =
+            active.role === 'reference'
+              ? this.makeReferenceParser(loop, active, gate)
+              : active.role === 'implement'
+                ? this.makeImplementParser(loop, active, gate)
+                : this.makeCritiqueParser(loop, active, gate)
+          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
           void this.driveRun(loop, active, meta, idle, cap, parser, gate, null)
           continue
         }
@@ -415,11 +423,28 @@ export class LoopRunner {
         prompt: last.role === 'implement' ? RESUME_PREFIX + base : base,
       })
       this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
+    } else if (last?.role === 'reference') {
+      const referenceDir = this.referenceDir(loopId)
+      this.ledger.patchLoop(loopId, { round: 1 })
+      this.ledger.createRun({
+        loopId,
+        round: 1,
+        role: 'implement',
+        harness: harnessFor(loop.models.orchestratorModel),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, referenceDir),
+      })
+      this.log(loopId, null, 'system', 'Loop resumed by user — Reference Pack ready; starting round 1.')
     } else if (last?.role === 'implement' && last.round >= loop.maxRounds) {
       this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${last.round} — no critique, since no round is left for it to gate.`)
       return { ok: true }
     } else if (last?.role === 'implement') {
-      this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, last.round) })
+      this.ledger.createRun({
+        loopId,
+        round: last.round,
+        role: 'critique',
+        harness: loop.models.criticHarness,
+        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId), engineGateRules()),
+      })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
     } else if (last?.role === 'critique') {
       const nextRound = last.round + 1
@@ -433,18 +458,19 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict, this.referenceDir(loopId)),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
+      const referenceDir = referencePackDir(loopId)
       this.ledger.createRun({
         loopId,
-        round: 1,
-        role: 'implement',
+        round: 0,
+        role: 'reference',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null),
+        prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
       })
-      this.log(loopId, null, 'system', 'Loop resumed by user — starting round 1.')
+      this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
     }
     this.broadcast(loopId)
     void this.executeNext(loopId)
@@ -503,10 +529,42 @@ export class LoopRunner {
     }
   }
 
-  private log(loopId: string, runId: string | null, kind: string, text: string): void {
-    const line: LoopLogLine = { loopId, runId, ts: new Date().toISOString(), kind, text: text.slice(0, 4000) }
+  private log(loopId: string, runId: string | null, kind: string, text: string, agentId?: string): void {
+    const line: LoopLogLine = { loopId, runId, ts: new Date().toISOString(), kind, channel: channelForKind(kind), text: text.slice(0, 4000) }
+    if (agentId) line.agentId = agentId
+    if (runId) {
+      let stamp = this.runStamps.get(runId)
+      if (!stamp) {
+        const run = this.ledger.getRun(runId)
+        if (run) {
+          stamp = { round: run.round, role: run.role }
+          this.runStamps.set(runId, stamp)
+        }
+      }
+      if (stamp) {
+        line.round = stamp.round
+        line.role = stamp.role
+      }
+    }
     this.ledger.appendEvent(line)
     this.send('loop:log', line)
+  }
+
+  /** Surface every delegated child's stream in the run log, attributed to its slug. */
+  private pumpChildStreams(): void {
+    if (!this.childTail) return
+    const { loopId, runId, tailer } = this.childTail
+    for (const event of tailer.poll()) this.log(loopId, runId, event.kind, event.text, event.agentId)
+  }
+
+  /** Preserve a complete execution prompt in the event log without hitting the per-line cap. */
+  private logPrompt(loopId: string, runId: string, label: string, prompt: string): void {
+    const chunkSize = 3_600
+    const chunks = Array.from({ length: Math.ceil(prompt.length / chunkSize) }, (_, index) => prompt.slice(index * chunkSize, (index + 1) * chunkSize))
+    for (const [index, chunk] of chunks.entries()) {
+      const suffix = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''
+      this.log(loopId, runId, 'prompt', `${label}${suffix}:\n${chunk}`)
+    }
   }
 
   private broadcast(loopId: string): void {
@@ -515,7 +573,10 @@ export class LoopRunner {
     const runs = this.ledger.runsForLoop(loopId)
     this.send('loop:update', { loop, runs })
     try {
-      fs.writeFileSync(path.join(loop.workspaceDir, 'gauntlet-report.md'), buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir)))
+      fs.writeFileSync(
+        path.join(loop.workspaceDir, 'gauntlet-report.md'),
+        buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir), scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))),
+      )
     } catch {
       /* workspace may be gone; the in-app report still works */
     }
@@ -540,7 +601,8 @@ export class LoopRunner {
     const run = this.ledger.nextQueuedRun(loopId)
     if (!run) return
     try {
-      if (run.role === 'implement') await this.executeImplement(loop, run)
+      if (run.role === 'reference') await this.executeReference(loop, run)
+      else if (run.role === 'implement') await this.executeImplement(loop, run)
       else await this.executeCritique(loop, run)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -583,6 +645,9 @@ export class LoopRunner {
       own.code = code
     })
     child.unref()
+    // Every run's exact execution prompt lands in its log, round-labeled, so
+    // the log alone tells the full story of what each agent was asked to do.
+    this.logPrompt(loop.id, run.id, runPromptLabel(run), run.prompt)
     const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
     this.writeMeta(loop.workspaceDir, run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
@@ -607,6 +672,8 @@ export class LoopRunner {
   ): Promise<void> {
     const att: Attachment = { loopId: loop.id, runId: run.id, pid: meta.pid, timedOut: false }
     this.current = att
+    const childTailer = new ChildStreamTailer(agentsDir(loop.workspaceDir), meta.startedAtMs, meta.childOffsets)
+    this.childTail = { loopId: loop.id, runId: run.id, tailer: childTailer }
 
     let outOffset = 0
     let outRemainder = ''
@@ -663,8 +730,10 @@ export class LoopRunner {
         gate.suppress = false
         meta.loggedErrLines = Math.max(meta.loggedErrLines, errLine)
       }
+      this.pumpChildStreams()
       if (Date.now() - lastMetaWrite > 1_000) {
         lastMetaWrite = Date.now()
+        meta.childOffsets = childTailer.snapshot()
         this.writeMeta(loop.workspaceDir, run.id, meta)
       }
     }
@@ -701,7 +770,10 @@ export class LoopRunner {
     if (outRemainder.trim()) parser.onLine(outRemainder)
 
     this.current = null
+    // finalize may keep waiting on delegated children; their streams stay tailed until it returns.
     await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
+    this.pumpChildStreams()
+    this.childTail = null
     try {
       fs.unlinkSync(this.metaPath(loop.workspaceDir, run.id))
     } catch {
@@ -728,12 +800,186 @@ export class LoopRunner {
     }
   }
 
+  // --------------------------------------------------------------- reference
+
+  private async executeReference(loop: LoopRecord, run: RunRecord): Promise<void> {
+    const models = loop.models
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `● Reference Study (${run.harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})`,
+    )
+    const plan = referencePlan({
+      models,
+      prompt: run.prompt,
+      claudeHome: cliHome('claude'),
+      codexHome: cliHome('codex'),
+    })
+    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
+    if (!spawned) return
+    this.ledger.patchRun(run.id, { model: models.orchestratorModel })
+    const gate: LogGate = { suppress: false }
+    const parser = this.makeReferenceParser(loop, run, gate)
+    await this.driveRun(loop, run, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own)
+  }
+
+  private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const model = loop.models.orchestratorModel
+    const tokens = emptyTokens()
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
+    let sawUsage = false
+    let failure: string | null = null
+    let summary = ''
+    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
+    const plog = (kind: string, text: string): void => {
+      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
+    }
+    const flush = (): void => {
+      const costUsd = estimateCostUsd(model, tokens)
+      const agent: AgentMetric = {
+        id: 'reference',
+        label: 'reference researcher',
+        model,
+        messages: 1,
+        tokens: { ...tokens },
+        firstTs: new Date(startedAtMs).toISOString(),
+        lastTs: new Date().toISOString(),
+      }
+      this.ledger.patchRun(run.id, {
+        inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
+        outputTokens: tokens.output,
+        costUsd,
+        metrics: { agents: [agent], perModel: { [model]: { costUsd, tokens: { ...tokens } } } },
+      })
+      this.broadcast(loop.id)
+    }
+    const onClaudeLine = (line: string): void => {
+      const t = translateClaudeLine(line)
+      if (!t) return
+      if (t.init) {
+        sessionId = t.init.sessionId ?? sessionId
+        this.ledger.patchRun(run.id, { sessionId })
+        plog('system', `claude session ${sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? model}`)
+      }
+      if (t.usage) {
+        sawUsage = true
+        tokens.input += t.usage.usage.input_tokens ?? 0
+        tokens.output += t.usage.usage.output_tokens ?? 0
+        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
+        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
+        flush()
+      }
+      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
+      if (t.summary !== undefined) summary = t.summary
+      if (t.result) {
+        if (t.result.text !== null) summary = t.result.text
+        const usage = t.result.usage
+        if (usage) {
+          sawUsage = true
+          tokens.input = usage.input_tokens ?? tokens.input
+          tokens.output = usage.output_tokens ?? tokens.output
+          tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
+          tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
+        }
+        if (t.result.isError) failure = t.result.text !== null ? trunc(t.result.text, 400) : 'claude reference study failed'
+      }
+    }
+    const onCodexLine = (line: string): void => {
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        sessionId = t.threadStarted ?? sessionId
+        this.ledger.patchRun(run.id, { sessionId })
+        plog('system', `codex thread ${sessionId?.slice(0, 8) ?? '?'}`)
+      }
+      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
+      if (t.summary !== undefined) summary = t.summary
+      if (t.turn?.usage) {
+        sawUsage = true
+        const turn = codexTokens(t.turn.usage)
+        tokens.input += turn.input
+        tokens.output += turn.output
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+        flush()
+      }
+      if (t.error) {
+        failure = t.error
+        plog('error', failure)
+      }
+    }
+    const finalize = (exit: ExitInfo): void => {
+      const durationMs = Date.now() - startedAtMs
+      const costUsd = sawUsage ? estimateCostUsd(model, tokens) : null
+      const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))
+      const processError = exit.spawnError ?? failure ?? (exit.code !== 0 && exit.code !== null ? `${run.harness} exited ${exit.code}` : null)
+      const artifactError = pack.ready ? null : pack.issues.join('; ')
+      this.ledger.patchRun(run.id, {
+        inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
+        outputTokens: sawUsage ? tokens.output : null,
+        costUsd,
+        durationMs,
+        sessionId,
+        summary: summary ? summary.slice(0, 4000) : null,
+        finishedAt: new Date().toISOString(),
+      })
+      this.accumulateCost(loop.id, costUsd)
+      this.log(loop.id, run.id, 'metric', `▤ reference metrics: ${costUsd != null ? `$${costUsd.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`)
+      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+      if (stopReason) {
+        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Reference Study timed out.')
+        return
+      }
+      if (processError || artifactError) {
+        const error = processError ?? artifactError!
+        this.ledger.patchRun(run.id, { status: 'failed', error })
+        const attempts = this.ledger.runsForLoop(loop.id).filter((item) => item.role === 'reference').length
+        if (attempts < MAX_REFERENCE_ATTEMPTS) {
+          this.log(loop.id, run.id, 'system', `Reference Study incomplete (${error}) — retrying and preserving downloaded files.`)
+          this.ledger.createRun({
+            loopId: loop.id,
+            round: 0,
+            role: 'reference',
+            harness: harnessFor(model),
+            prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id), researchRules(loop.models, this.referenceDir(loop.id))),
+          })
+          this.broadcast(loop.id)
+          void this.executeNext(loop.id)
+          return
+        }
+        this.finishLoop(loop.id, 'failed', `Reference Study failed twice: ${error}`)
+        return
+      }
+      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
+      if (this.overBudget(loop.id)) return
+      this.ledger.patchLoop(loop.id, { round: 1 })
+      this.ledger.createRun({
+        loopId: loop.id,
+        round: 1,
+        role: 'implement',
+        harness: harnessFor(model),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, this.referenceDir(loop.id)),
+      })
+      this.log(loop.id, null, 'system', 'Reference Pack frozen — round 1 queued.')
+      this.broadcast(loop.id)
+      void this.executeNext(loop.id)
+    }
+    return {
+      onLine: run.harness === 'claude' ? onClaudeLine : onCodexLine,
+      onStderr: (text) => plog('stderr', trunc(text, 400)),
+      finalize,
+    }
+  }
+
   // ---------------------------------------------------------------- implement
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
     const harness = harnessFor(models.orchestratorModel)
-    const agentMd = implementerAgentMd(models)
+    const agentMd = implementerAgentMd(models, this.referenceDir(loop.id))
     if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
       fs.mkdirSync(agentDir, { recursive: true })
@@ -799,6 +1045,7 @@ export class LoopRunner {
         this.log(loop.id, run.id, 'system', '⏳ orchestrator finished, delegated workers still running — holding the round open.')
       }
       await sleep(15_000)
+      this.pumpChildStreams()
     }
     if (announced) this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
   }
@@ -809,6 +1056,23 @@ export class LoopRunner {
     }
     const agentLabels = new Map<string, { label: string; model: string | null }>()
     const finishedAgents = new Set<string>()
+    // The CLI now launches subagents in the background: the Agent tool_result
+    // comes back within a millisecond saying "launched", and the real ending
+    // arrives much later as a system/task_notification. Treating that launch
+    // receipt as completion marked every agent done the instant it started.
+    const backgrounded = new Set<string>()
+    /** Tracked tasks that are shell commands, not agents. */
+    const notAgents = new Set<string>()
+    /**
+     * slice → the agent whose tool call launched that delegated worker.
+     *
+     * A cross-harness worker is a process the app never started, so nothing
+     * links it to its owner except the command that started it: the redirect
+     * into `.gauntlet-loop/agents/<slice>.<harness>.jsonl` names the slice, and
+     * the tool call carrying it names the agent. Without this every delegated
+     * worker hung off the bottom of the list instead of under its dispatcher.
+     */
+    const childParents = new Map<string, string>()
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
@@ -923,7 +1187,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents, childParents),
       })
       this.broadcast(loop.id)
     }
@@ -949,6 +1213,34 @@ export class LoopRunner {
         plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
         return
       }
+      // The CLI raises task_started/task_notification for every tracked task,
+      // shell commands included — `task_type: 'local_bash'` outnumbered real
+      // agents ten to one on a real round, and each one logged as a subagent.
+      // Only `local_agent` is an agent; the notification carries no task_type,
+      // so the shell ones have to be remembered from their start event.
+      if (type === 'system' && (obj.subtype === 'task_started' || obj.subtype === 'task_notification')) {
+        const toolUseId = obj.tool_use_id as string | undefined
+        if (!toolUseId) return
+        if (obj.subtype === 'task_started') {
+          // Two ways to be an agent: the CLI says so, or we watched the
+          // orchestrator call the Agent tool with this id. Anything else is a
+          // shell command wearing a task notice.
+          if (obj.task_type !== 'local_agent' && !agentLabels.has(toolUseId)) {
+            notAgents.add(toolUseId)
+            return
+          }
+          if (obj.is_backgrounded) backgrounded.add(toolUseId)
+          if (!agentLabels.has(toolUseId)) {
+            agentLabels.set(toolUseId, { label: trunc((obj.description as string | undefined) ?? 'subagent', 30), model: null })
+          }
+          return
+        }
+        if (notAgents.has(toolUseId) || finishedAgents.has(toolUseId)) return
+        finishedAgents.add(toolUseId)
+        const label = agentLabels.get(toolUseId)?.label ?? `agent-${toolUseId.slice(-6)}`
+        plog('spawn', `⇊ subagent "${label}" ${(obj.status as string | undefined) ?? 'finished'}`)
+        return
+      }
       if (type === 'assistant') {
         const message = obj.message as Record<string, unknown> | undefined
         if (!message) return
@@ -962,22 +1254,25 @@ export class LoopRunner {
           })
           flushTokens()
         }
+        // Register spawns before displaying: the translator narrates them, but
+        // only this parser tracks the tool_use id that later events reference.
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            plog(parentId ? 'agent' : 'claude', `[${who}] ${trunc(block.text, 400)}`)
-          } else if (block.type === 'tool_use') {
-            const name = block.name as string
-            const input = block.input as Record<string, unknown> | undefined
-            if ((name === 'Agent' || name === 'Task') && block.id) {
-              const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
-              const model = (input?.model as string | undefined) ?? null
-              agentLabels.set(block.id as string, { label, model })
-              plog('spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
-            } else {
-              plog('tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
-            }
+          if (block.type !== 'tool_use') continue
+          const name = block.name as string
+          const input = block.input as Record<string, unknown> | undefined
+          if ((name === 'Agent' || name === 'Task') && block.id) {
+            const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
+            const model = (input?.model as string | undefined) ?? null
+            agentLabels.set(block.id as string, { label, model })
+          } else {
+            const raw = input ? JSON.stringify(input) : ''
+            const stream = /agents[\\/]+([^/'"\s\\]+)\.(?:claude|codex)\.jsonl/.exec(raw)
+            if (stream && parentId) childParents.set(stream[1], parentId)
           }
+        }
+        for (const event of translateClaudeLine(line)?.events ?? []) {
+          plog(event.kind === 'claude' && parentId ? 'agent' : event.kind, `[${who}] ${event.text}`)
         }
         return
       }
@@ -987,14 +1282,12 @@ export class LoopRunner {
         for (const block of content) {
           if (block.type !== 'tool_result') continue
           const toolUseId = block.tool_use_id as string | undefined
-          if (toolUseId && agentLabels.has(toolUseId) && !finishedAgents.has(toolUseId)) {
+          if (toolUseId && agentLabels.has(toolUseId) && !backgrounded.has(toolUseId) && !finishedAgents.has(toolUseId)) {
             finishedAgents.add(toolUseId)
             plog('spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
           }
-          if (block.is_error) {
-            plog('error', `[${who}] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
-          }
         }
+        for (const event of translateClaudeLine(line)?.events ?? []) plog(event.kind, `[${who}] ${event.text}`)
         return
       }
       if (type === 'result') {
@@ -1006,7 +1299,7 @@ export class LoopRunner {
       await this.finishImplement(loop, run, exit, () => {
         pollWorkflows()
         pollChildren()
-        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents)
+        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents, childParents)
         if (workflowRuns.length) {
           plog(
             'metric',
@@ -1140,44 +1433,26 @@ export class LoopRunner {
     const onLine = (line: string): void => {
       if (!line.trim()) return
       lastProgressAt = Date.now()
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
-      }
-      const type = obj.type as string
-      if (type === 'thread.started') {
-        threadId = (obj.thread_id as string | undefined) ?? null
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        threadId = t.threadStarted
         this.ledger.patchRun(run.id, { sessionId: threadId })
         plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
-      } else if (type === 'item.completed' || type === 'item.updated') {
-        const item = obj.item as Record<string, unknown> | undefined
-        if (!item || type !== 'item.completed') return
-        if (item.type === 'agent_message' && typeof item.text === 'string') {
-          lastAgentMessage = item.text
-          plog('codex', trunc(item.text, 400))
-        } else if (item.type === 'reasoning' && typeof item.text === 'string' && item.text.trim()) {
-          plog('thought', `𝜓 ${trunc(item.text, 500)}`)
-        } else if (item.type === 'command_execution' && typeof item.command === 'string') {
-          plog('cmd', `$ ${trunc(item.command, 200)}`)
-        } else if (item.type === 'file_change') {
-          plog('cmd', `✎ ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
-        } else if (item.type === 'SubAgentActivity' || item.type === 'collab_tool_call') {
-          plog('spawn', `⇉ worker ${trunc(JSON.stringify(item.agent_path ?? item.kind ?? ''), 120)}`)
-        } else if (item.type === 'error') {
-          plog('error', trunc(String(item.message ?? 'codex error'), 300))
-        }
-      } else if (type === 'turn.completed') {
-        const turn = codexTokens(obj.usage as Record<string, number> | undefined)
+      }
+      for (const event of t.events) plog(event.kind, event.text)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.turn) {
+        const turn = codexTokens(t.turn.usage)
         tokens.input += turn.input
         tokens.output += turn.output
         tokens.cacheRead += turn.cacheRead
         tokens.cacheWrite += turn.cacheWrite
         turns += 1
         flush(true)
-      } else if (type === 'turn.failed') {
-        failure = String((obj.error as Record<string, unknown> | undefined)?.message ?? 'codex turn failed')
+      }
+      if (t.error) {
+        failure = t.error
         plog('error', failure)
       }
     }
@@ -1280,7 +1555,13 @@ export class LoopRunner {
       this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${run.round} — no critique, since no round is left for it to gate.`)
       return
     }
-    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
+    this.ledger.createRun({
+      loopId: loop.id,
+      round: run.round,
+      role: 'critique',
+      harness: loop.models.criticHarness,
+      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
+    })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
   }
@@ -1293,6 +1574,7 @@ export class LoopRunner {
     finished: Set<string> = new Set(),
     workflowAgents: AgentMetric[] = [],
     childAgents: AgentMetric[] = [],
+    childParents: Map<string, string> = new Map(),
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
@@ -1309,7 +1591,13 @@ export class LoopRunner {
             key === 'orchestrator'
               ? 'orchestrator'
               : `${reg?.label ?? `subagent ${key.slice(-6)}`}${dispatches ? ' (dispatcher)' : ''}`,
-          model: key === 'orchestrator' ? models.orchestratorModel : (reg?.model ?? models.subagentModel ?? models.orchestratorModel),
+          // A dispatcher is a claude subagent whatever the workers are, so its
+          // fallback is the model implementer.md pins it to — never the codex
+          // model, which claude cannot run as a subagent.
+          model:
+            key === 'orchestrator'
+              ? models.orchestratorModel
+              : (reg?.model ?? (dispatches ? DISPATCHER_MODEL : (models.subagentModel ?? models.orchestratorModel))),
           messages: 0,
           tokens: emptyTokens(),
           firstTs: null,
@@ -1320,6 +1608,10 @@ export class LoopRunner {
       return agent
     }
     ensure('orchestrator')
+    // Seed from the spawn registry, not just from messages: a backgrounded agent
+    // can start and finish without a single assistant message reaching this
+    // stream, and it still belongs in the list.
+    for (const key of agentLabels.keys()) ensure(key)
     for (const { agentKey, model, usage, ts } of msgUsage.values()) {
       const agent = ensure(agentKey)
       agent.messages += 1
@@ -1363,10 +1655,22 @@ export class LoopRunner {
       if (key !== 'orchestrator') agent.done = finished.has(key)
     }
     const list = [...agents.values()]
-    list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '').localeCompare(b.firstTs ?? '')))
+    // '\uffff' keeps agents that never spoke at the end, in spawn order.
+    list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '\uffff').localeCompare(b.firstTs ?? '\uffff')))
+    // A delegated worker sits under whoever launched it; one nobody claims
+    // stays at the end of the list.
+    const byParent = new Map<string, AgentMetric[]>()
+    const orphans: AgentMetric[] = []
+    for (const child of childAgents) {
+      const parent = childParents.get(child.id.replace(/^child:/, ''))
+      child.parentId = parent
+      if (parent && agents.has(parent)) byParent.set(parent, [...(byParent.get(parent) ?? []), child])
+      else orphans.push(child)
+    }
+    const nested = list.flatMap((agent) => [agent, ...(byParent.get(agent.id) ?? [])])
     // Workflow agents carry only a scalar token count, so they cannot join
     // perModel — that stays priced off the stream and the CLI's own figures.
-    return { agents: [...list, ...workflowAgents, ...childAgents], perModel }
+    return { agents: [...nested, ...workflowAgents, ...orphans], perModel }
   }
 
   private logRunMetrics(
@@ -1382,7 +1686,7 @@ export class LoopRunner {
     this.log(loopId, runId, 'metric', `▤ ${role} metrics: ${costUsd !== null ? `$${costUsd.toFixed(2)} equiv` : 'cost n/a'} · ${turns} turns · ${duration}`)
     for (const agent of metrics.agents) {
       const t = agent.tokens
-      const indent = agent.id === 'orchestrator' ? '  ' : '    ↳ '
+      const indent = agent.id === 'orchestrator' ? '  ' : agent.parentId && agent.parentId !== 'orchestrator' ? '        ↳ ' : '    ↳ '
       this.log(
         loopId,
         runId,
@@ -1464,65 +1768,30 @@ export class LoopRunner {
       this.broadcast(loop.id)
     }
 
-    // Claude and Codex stream different JSON shapes; each reader feeds the same
-    // state above, so everything downstream of here is harness-agnostic.
+    // Claude and Codex stream different JSON shapes; each translator feeds the
+    // same state above, so everything downstream of here is harness-agnostic.
     const onClaudeLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
+      const t = translateClaudeLine(line)
+      if (!t) return
+      if (t.init) {
+        plog('system', `claude session ${t.init.sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? '?'}`)
         return
       }
-      const type = obj.type as string
-      if (type === 'system' && obj.subtype === 'init') {
-        plog('system', `claude session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${(obj.model as string | undefined) ?? '?'}`)
-        return
+      if (t.usage) {
+        sawUsage = true
+        tokens.input += t.usage.usage.input_tokens ?? 0
+        tokens.output += t.usage.usage.output_tokens ?? 0
+        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
+        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
+        flushCritic()
       }
-      if (type === 'assistant') {
-        const message = obj.message as Record<string, unknown> | undefined
-        if (!message) return
-        const usage = message.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          tokens.input += usage.input_tokens ?? 0
-          tokens.output += usage.output_tokens ?? 0
-          tokens.cacheRead += usage.cache_read_input_tokens ?? 0
-          tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
-          flushCritic()
-        }
-        const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            lastAgentMessage = block.text
-            plog('claude', `[critic] ${trunc(block.text, 400)}`)
-          } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
-            plog('thought', `[critic] 𝜓 ${trunc(block.thinking, 500)}`)
-          } else if (block.type === 'tool_use') {
-            const name = block.name as string
-            const input = block.input as Record<string, unknown> | undefined
-            if (name === 'WebSearch') plog('search', `[critic] ⌕ ${trunc(String(input?.query ?? ''), 200)}`)
-            else if (name === 'Bash') plog('cmd', `[critic] $ ${trunc(String(input?.command ?? ''), 200)}`)
-            else plog('tool', `[critic] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
-          }
-        }
-        return
-      }
-      if (type === 'user') {
-        const message = obj.message as Record<string, unknown> | undefined
-        const content = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type === 'tool_result' && block.is_error) {
-            plog('error', `[critic] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
-          }
-        }
-        return
-      }
-      if (type === 'result') {
+      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.result) {
         // The final result text is the critic's verdict; it also carries the
         // authoritative usage totals, which replace the per-message tally.
-        if (typeof obj.result === 'string' && obj.result.trim()) lastAgentMessage = obj.result
-        const usage = obj.usage as Record<string, number> | undefined
+        if (t.result.text?.trim()) lastAgentMessage = t.result.text
+        const usage = t.result.usage
         if (usage) {
           sawUsage = true
           tokens.input = usage.input_tokens ?? tokens.input
@@ -1530,55 +1799,32 @@ export class LoopRunner {
           tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
           tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
         }
-        if (obj.subtype !== 'success' && obj.is_error === true) {
-          failure = typeof obj.result === 'string' ? trunc(obj.result, 400) : `claude critique ${String(obj.subtype ?? 'failed')}`
+        if (t.result.subtype !== 'success' && t.result.isError) {
+          failure = t.result.text !== null ? trunc(t.result.text, 400) : `claude critique ${t.result.subtype ?? 'failed'}`
           plog('error', failure)
         }
       }
     }
 
     const onCodexLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        plog('system', `codex thread ${t.threadStarted?.slice(0, 8) ?? '?'}`)
       }
-      const type = obj.type as string
-      if (type === 'thread.started') {
-        plog('system', `codex thread ${(obj.thread_id as string | undefined)?.slice(0, 8) ?? '?'}`)
-      } else if (type === 'item.completed' || type === 'item.updated') {
-        const item = obj.item as Record<string, unknown> | undefined
-        if (!item) return
-        if (item.type === 'agent_message' && typeof item.text === 'string' && type === 'item.completed') {
-          lastAgentMessage = item.text
-          plog('codex', `[critic] ${trunc(item.text, 400)}`)
-        } else if (item.type === 'reasoning' && typeof item.text === 'string' && type === 'item.completed' && item.text.trim()) {
-          plog('thought', `[critic] 𝜓 ${trunc(item.text, 500)}`)
-        } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
-          plog('cmd', `[critic] $ ${trunc(item.command, 200)}`)
-        } else if (item.type === 'web_search' && type === 'item.completed') {
-          plog('search', `[critic] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
-        } else if (item.type === 'file_change' && type === 'item.completed') {
-          plog('cmd', `[critic] ✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
-        } else if (item.type === 'error') {
-          plog('error', `[critic] ${trunc(String(item.message ?? 'codex error'), 300)}`)
-        }
-      } else if (type === 'turn.completed') {
-        const usage = obj.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          const turn = codexTokens(usage)
-          tokens.input += turn.input
-          tokens.cacheRead += turn.cacheRead
-          tokens.cacheWrite += turn.cacheWrite
-          tokens.output += turn.output
-          flushCritic()
-        }
-      } else if (type === 'turn.failed') {
-        const error = obj.error as Record<string, unknown> | undefined
-        failure = String(error?.message ?? 'codex turn failed')
+      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.turn?.usage) {
+        sawUsage = true
+        const turn = codexTokens(t.turn.usage)
+        tokens.input += turn.input
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+        tokens.output += turn.output
+        flushCritic()
+      }
+      if (t.error) {
+        failure = t.error
         plog('error', failure)
       }
     }
@@ -1597,7 +1843,11 @@ export class LoopRunner {
           /* fall back to streamed message */
         }
       }
-      const verdict = parseVerdict(verdictText)
+      let verdict = parseVerdict(verdictText)
+      if (!verdict) {
+        verdict = readVerdictArtifact(loop.workspaceDir, run.round, Date.parse(loop.createdAt))
+        if (verdict) this.log(loop.id, run.id, 'system', `Final message had no parseable verdict — recovered it from critique/round-${run.round}/verdict.json.`)
+      }
       const durationMs = Date.now() - startedAtMs
       const criticAgent: AgentMetric = {
         id: 'critic',
@@ -1639,7 +1889,13 @@ export class LoopRunner {
         this.ledger.patchRun(run.id, { status: 'failed', error: errText })
         if (attempts < MAX_CRITIQUE_ATTEMPTS) {
           this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-          this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
+          this.ledger.createRun({
+            loopId: loop.id,
+            round: run.round,
+            role: 'critique',
+            harness: loop.models.criticHarness,
+            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
+          })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
           return
@@ -1680,7 +1936,7 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict, this.referenceDir(loop.id)),
       })
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
       this.broadcast(loop.id)
