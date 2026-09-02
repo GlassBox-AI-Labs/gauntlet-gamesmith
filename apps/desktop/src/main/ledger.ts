@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type {
+  LogChannel,
   LoopLogLine,
   LoopModels,
   LoopRecord,
@@ -15,7 +16,7 @@ import type {
   Verdict,
 } from '../shared/loop'
 import { normalizeModels } from '../shared/models'
-import { RESUME_PREFIX } from '../shared/loop'
+import { channelForKind, RESUME_PREFIX } from '../shared/loop'
 import { assertRunFolder, runLedgerPath } from './run-transfer'
 
 const SCHEMA = `
@@ -64,7 +65,11 @@ CREATE TABLE IF NOT EXISTS events (
   run_id TEXT,
   ts TEXT NOT NULL,
   kind TEXT NOT NULL,
-  text TEXT NOT NULL
+  text TEXT NOT NULL,
+  agent_id TEXT,
+  round INTEGER,
+  role TEXT,
+  channel TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_loop ON runs(loop_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_loop ON events(loop_id, seq);
@@ -122,6 +127,10 @@ interface EventRow {
   ts: string
   kind: string
   text: string
+  agent_id: string | null
+  round: number | null
+  role: string | null
+  channel: string | null
 }
 
 function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void {
@@ -131,6 +140,10 @@ function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void
   if (!loopColumns.some((column) => column.name === 'title')) db.exec('ALTER TABLE loops ADD COLUMN title TEXT;')
   const runColumns = db.prepare('PRAGMA table_info(runs)').all() as unknown as { name: string }[]
   if (!runColumns.some((column) => column.name === 'revision')) db.exec('ALTER TABLE runs ADD COLUMN revision TEXT;')
+  const eventColumns = db.prepare('PRAGMA table_info(events)').all() as unknown as { name: string }[]
+  if (!eventColumns.some((column) => column.name === 'agent_id')) {
+    db.exec('ALTER TABLE events ADD COLUMN agent_id TEXT; ALTER TABLE events ADD COLUMN round INTEGER; ALTER TABLE events ADD COLUMN role TEXT; ALTER TABLE events ADD COLUMN channel TEXT;')
+  }
 }
 
 function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
@@ -189,22 +202,21 @@ function putRunRow(db: DatabaseSync, row: RunRow): void {
 
 function putEventRow(db: DatabaseSync, row: EventRow, preserveSeq: boolean): void {
   if (preserveSeq) {
-    db.prepare('INSERT OR REPLACE INTO events (seq, loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?, ?)').run(
-      row.seq,
-      row.loop_id,
-      row.run_id,
-      row.ts,
-      row.kind,
-      row.text,
-    )
+    db.prepare(
+      'INSERT OR REPLACE INTO events (seq, loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(row.seq, row.loop_id, row.run_id, row.ts, row.kind, row.text, row.agent_id ?? null, row.round ?? null, row.role ?? null, row.channel ?? null)
     return
   }
-  db.prepare('INSERT INTO events (loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO events (loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     row.loop_id,
     row.run_id,
     row.ts,
     row.kind,
     row.text,
+    row.agent_id ?? null,
+    row.round ?? null,
+    row.role ?? null,
+    row.channel ?? null,
   )
 }
 
@@ -469,40 +481,67 @@ export class Ledger {
   }
 
   appendEvent(line: LoopLogLine): void {
-    this.db
-      .prepare('INSERT INTO events (loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)')
-      .run(line.loopId, line.runId, line.ts, line.kind, line.text)
-    const folderDb = this.ensureFolderDbForLoop(line.loopId)
-    if (folderDb) {
-      putEventRow(
-        folderDb,
-        {
-          seq: 0,
-          loop_id: line.loopId,
-          run_id: line.runId,
-          ts: line.ts,
-          kind: line.kind,
-          text: line.text,
-        },
-        false,
-      )
+    const row: EventRow = {
+      seq: 0,
+      loop_id: line.loopId,
+      run_id: line.runId,
+      ts: line.ts,
+      kind: line.kind,
+      text: line.text,
+      agent_id: line.agentId ?? null,
+      round: line.round ?? null,
+      role: line.role ?? null,
+      channel: line.channel ?? null,
     }
+    this.db
+      .prepare('INSERT INTO events (loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(row.loop_id, row.run_id, row.ts, row.kind, row.text, row.agent_id, row.round, row.role, row.channel)
+    const folderDb = this.ensureFolderDbForLoop(line.loopId)
+    if (folderDb) putEventRow(folderDb, row, false)
+  }
+
+  /** Rows written before the schema grew derive channel from kind and round/role from their run. */
+  private toLogLine(row: EventRow, run: { round: number; role: RunRole } | undefined): LoopLogLine {
+    const line: LoopLogLine = {
+      loopId: row.loop_id,
+      runId: row.run_id,
+      ts: row.ts,
+      kind: row.kind,
+      text: row.text,
+      channel: (row.channel as LogChannel | null) ?? channelForKind(row.kind),
+    }
+    if (row.agent_id) line.agentId = row.agent_id
+    const round = row.round ?? run?.round
+    if (round != null) line.round = round
+    const role = (row.role as RunRole | null) ?? run?.role
+    if (role != null) line.role = role
+    return line
   }
 
   eventsForRun(runId: string, kind?: string, limit = 500): LoopLogLine[] {
     const rows = (
       kind
-        ? this.db.prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE run_id = ? AND kind = ? ORDER BY seq ASC LIMIT ?').all(runId, kind, limit)
-        : this.db.prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE run_id = ? ORDER BY seq ASC LIMIT ?').all(runId, limit)
-    ) as { loop_id: string; run_id: string | null; ts: string; kind: string; text: string }[]
-    return rows.map((row) => ({ loopId: row.loop_id, runId: row.run_id, ts: row.ts, kind: row.kind, text: row.text }))
+        ? this.db.prepare('SELECT * FROM events WHERE run_id = ? AND kind = ? ORDER BY seq ASC LIMIT ?').all(runId, kind, limit)
+        : this.db.prepare('SELECT * FROM events WHERE run_id = ? ORDER BY seq ASC LIMIT ?').all(runId, limit)
+    ) as unknown as EventRow[]
+    let run: RunRecord | null | undefined
+    return rows.map((row) => {
+      if (row.round == null || row.role == null) run ??= this.getRun(runId)
+      return this.toLogLine(row, run ?? undefined)
+    })
   }
 
   eventsForLoop(loopId: string, limit = 800): LoopLogLine[] {
-    const rows = this.db
-      .prepare('SELECT loop_id, run_id, ts, kind, text FROM events WHERE loop_id = ? ORDER BY seq DESC LIMIT ?')
-      .all(loopId, limit) as { loop_id: string; run_id: string | null; ts: string; kind: string; text: string }[]
-    return rows.reverse().map((row) => ({ loopId: row.loop_id, runId: row.run_id, ts: row.ts, kind: row.kind, text: row.text }))
+    const rows = this.db.prepare('SELECT * FROM events WHERE loop_id = ? ORDER BY seq DESC LIMIT ?').all(loopId, limit) as unknown as EventRow[]
+    let runsById: Map<string, RunRecord> | null = null
+    return rows.reverse().map((row) => {
+      let run: RunRecord | undefined
+      if (row.run_id && (row.round == null || row.role == null)) {
+        runsById ??= new Map(this.runsForLoop(loopId).map((r) => [r.id, r]))
+        run = runsById.get(row.run_id)
+      }
+      return this.toLogLine(row, run)
+    })
   }
 
   runningLoops(): LoopRecord[] {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, LoaderCircle, X } from 'lucide-react'
+import { ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, type LogFilterState } from '@/components/LogFilter'
 import type { ReferenceStudy } from '../../../shared/loop'
 
 let mediaBasePromise: Promise<string | null> | null = null
@@ -23,6 +24,8 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
   const base = useMediaBase()
   const [zoom, setZoom] = useState<string | null>(null)
   const [manifestOpen, setManifestOpen] = useState(false)
+  const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
+  const visibleLogs = study.logs.filter((line) => lineMatchesFilter(line, logFilter))
   const mediaUrl = (relative: string): string =>
     base ? `${base}/${loopId}/${relative.split('/').map(encodeURIComponent).join('/')}` : ''
   const checks = [
@@ -157,13 +160,16 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
 
       <section className="min-w-0">
         <div className="mb-2 text-[10px] uppercase tracking-wide text-[#716a67]">Reference Study log ({study.logs.length})</div>
+        <LogFilterStrip lines={study.logs} filter={logFilter} onChange={setLogFilter} showRounds={false} primaryLabel="researcher" />
         <div className="max-h-64 min-w-0 overflow-y-auto rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed">
-          {study.logs.map((line, index) => (
+          {visibleLogs.map((line, index) => (
             <div key={`${line.ts}-${index}`} className={`whitespace-pre-wrap break-words ${line.kind === 'error' || line.kind === 'stderr' ? 'text-red-300/80' : line.kind === 'search' ? 'text-sky-300/80' : line.kind === 'prompt' ? 'text-amber-100/90' : line.kind === 'shot' ? 'text-amber-200' : 'text-[#8f8885]'}`}>
-              <span className="mr-2 text-[#4f4947]">{time(line.ts)}</span>{line.text}
+              <span className="mr-2 text-[#4f4947]">{time(line.ts)}</span>
+              {line.agentId && <span className="text-[#c0aee6]">[{line.agentId}] </span>}
+              {line.text}
             </div>
           ))}
-          {study.logs.length === 0 && <div className="text-[#68615f]">Waiting for Reference Study activity…</div>}
+          {visibleLogs.length === 0 && <div className="text-[#68615f]">Waiting for Reference Study activity…</div>}
         </div>
       </section>
 

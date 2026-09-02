@@ -9,12 +9,13 @@ import type {
   LoopSnapshot,
   RunMetrics,
   RunRecord,
+  RunRole,
   StartLoopInput,
   StartLoopResult,
   TokenTotals,
   Verdict,
 } from '../shared/loop'
-import { RESUME_PREFIX, runPromptLabel } from '../shared/loop'
+import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
 import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
@@ -27,6 +28,9 @@ import { estimateCostUsd } from './pricing'
 import { referencePackDir, scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
+import { translateClaudeLine } from './streams/claude-stream'
+import { ChildStreamTailer } from './streams/child-tailer'
+import { translateCodexLine } from './streams/codex-stream'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
 import { WorkflowTail, workflowTailDir } from './workflow-tail'
 
@@ -182,6 +186,8 @@ interface ProcMeta {
   startedAtMs: number
   loggedOutLines: number
   loggedErrLines: number
+  /** Byte offsets into each child stream, so a re-attach does not replay child logs. */
+  childOffsets?: Record<string, number>
 }
 
 interface ExitHolder {
@@ -236,6 +242,10 @@ interface LogGate {
 export class LoopRunner {
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
+  /** Round/role of a run never change, so stamping log lines needs one lookup per run. */
+  private runStamps = new Map<string, { round: number; role: RunRole }>()
+  /** Child streams of the run being driven; also pumped while awaiting stragglers. */
+  private childTail: { loopId: string; runId: string; tailer: ChildStreamTailer } | null = null
 
   constructor(
     private ledger: Ledger,
@@ -483,10 +493,32 @@ export class LoopRunner {
     }
   }
 
-  private log(loopId: string, runId: string | null, kind: string, text: string): void {
-    const line: LoopLogLine = { loopId, runId, ts: new Date().toISOString(), kind, text: text.slice(0, 4000) }
+  private log(loopId: string, runId: string | null, kind: string, text: string, agentId?: string): void {
+    const line: LoopLogLine = { loopId, runId, ts: new Date().toISOString(), kind, channel: channelForKind(kind), text: text.slice(0, 4000) }
+    if (agentId) line.agentId = agentId
+    if (runId) {
+      let stamp = this.runStamps.get(runId)
+      if (!stamp) {
+        const run = this.ledger.getRun(runId)
+        if (run) {
+          stamp = { round: run.round, role: run.role }
+          this.runStamps.set(runId, stamp)
+        }
+      }
+      if (stamp) {
+        line.round = stamp.round
+        line.role = stamp.role
+      }
+    }
     this.ledger.appendEvent(line)
     this.send('loop:log', line)
+  }
+
+  /** Surface every delegated child's stream in the run log, attributed to its slug. */
+  private pumpChildStreams(): void {
+    if (!this.childTail) return
+    const { loopId, runId, tailer } = this.childTail
+    for (const event of tailer.poll()) this.log(loopId, runId, event.kind, event.text, event.agentId)
   }
 
   /** Preserve a complete execution prompt in the event log without hitting the per-line cap. */
@@ -604,6 +636,8 @@ export class LoopRunner {
   ): Promise<void> {
     const att: Attachment = { loopId: loop.id, runId: run.id, pid: meta.pid, timedOut: false }
     this.current = att
+    const childTailer = new ChildStreamTailer(agentsDir(loop.workspaceDir), meta.startedAtMs, meta.childOffsets)
+    this.childTail = { loopId: loop.id, runId: run.id, tailer: childTailer }
 
     let outOffset = 0
     let outRemainder = ''
@@ -660,8 +694,10 @@ export class LoopRunner {
         gate.suppress = false
         meta.loggedErrLines = Math.max(meta.loggedErrLines, errLine)
       }
+      this.pumpChildStreams()
       if (Date.now() - lastMetaWrite > 1_000) {
         lastMetaWrite = Date.now()
+        meta.childOffsets = childTailer.snapshot()
         this.writeMeta(loop.workspaceDir, run.id, meta)
       }
     }
@@ -698,7 +734,10 @@ export class LoopRunner {
     if (outRemainder.trim()) parser.onLine(outRemainder)
 
     this.current = null
+    // finalize may keep waiting on delegated children; their streams stay tailed until it returns.
     await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
+    this.pumpChildStreams()
+    this.childTail = null
     try {
       fs.unlinkSync(this.metaPath(loop.workspaceDir, run.id))
     } catch {
@@ -780,45 +819,26 @@ export class LoopRunner {
       this.broadcast(loop.id)
     }
     const onClaudeLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
-      }
-      if (obj.type === 'system' && obj.subtype === 'init') {
-        sessionId = (obj.session_id as string | undefined) ?? sessionId
+      const t = translateClaudeLine(line)
+      if (!t) return
+      if (t.init) {
+        sessionId = t.init.sessionId ?? sessionId
         this.ledger.patchRun(run.id, { sessionId })
-        plog('system', `claude session ${sessionId?.slice(0, 8) ?? '?'} · model ${(obj.model as string | undefined) ?? model}`)
-      } else if (obj.type === 'assistant') {
-        const message = obj.message as Record<string, unknown> | undefined
-        const usage = message?.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          tokens.input += usage.input_tokens ?? 0
-          tokens.output += usage.output_tokens ?? 0
-          tokens.cacheRead += usage.cache_read_input_tokens ?? 0
-          tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
-          flush()
-        }
-        const content = Array.isArray(message?.content) ? (message.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            summary = block.text
-            plog('claude', `[reference] ${trunc(block.text, 400)}`)
-          } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
-            plog('thought', `[reference] 𝜓 ${trunc(block.thinking, 500)}`)
-          } else if (block.type === 'tool_use') {
-            const input = block.input as Record<string, unknown> | undefined
-            if (block.name === 'WebSearch') plog('search', `[reference] ⌕ ${trunc(String(input?.query ?? ''), 200)}`)
-            else if (block.name === 'Bash') plog('cmd', `[reference] $ ${trunc(String(input?.command ?? ''), 200)}`)
-            else plog('tool', `[reference] → ${String(block.name)} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
-          }
-        }
-      } else if (obj.type === 'result') {
-        if (typeof obj.result === 'string') summary = obj.result
-        const usage = obj.usage as Record<string, number> | undefined
+        plog('system', `claude session ${sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? model}`)
+      }
+      if (t.usage) {
+        sawUsage = true
+        tokens.input += t.usage.usage.input_tokens ?? 0
+        tokens.output += t.usage.usage.output_tokens ?? 0
+        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
+        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
+        flush()
+      }
+      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
+      if (t.summary !== undefined) summary = t.summary
+      if (t.result) {
+        if (t.result.text !== null) summary = t.result.text
+        const usage = t.result.usage
         if (usage) {
           sawUsage = true
           tokens.input = usage.input_tokens ?? tokens.input
@@ -826,44 +846,30 @@ export class LoopRunner {
           tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
           tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
         }
-        if (obj.is_error === true) failure = typeof obj.result === 'string' ? trunc(obj.result, 400) : 'claude reference study failed'
+        if (t.result.isError) failure = t.result.text !== null ? trunc(t.result.text, 400) : 'claude reference study failed'
       }
     }
     const onCodexLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
-      }
-      if (obj.type === 'thread.started') {
-        sessionId = (obj.thread_id as string | undefined) ?? sessionId
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        sessionId = t.threadStarted ?? sessionId
         this.ledger.patchRun(run.id, { sessionId })
         plog('system', `codex thread ${sessionId?.slice(0, 8) ?? '?'}`)
-      } else if (obj.type === 'item.completed') {
-        const item = obj.item as Record<string, unknown> | undefined
-        if (item?.type === 'agent_message' && typeof item.text === 'string') {
-          summary = item.text
-          plog('codex', `[reference] ${trunc(item.text, 400)}`)
-        } else if (item?.type === 'reasoning' && typeof item.text === 'string') plog('thought', `[reference] 𝜓 ${trunc(item.text, 500)}`)
-        else if (item?.type === 'command_execution') plog('cmd', `[reference] $ ${trunc(String(item.command ?? ''), 200)}`)
-        else if (item?.type === 'web_search') plog('search', `[reference] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
-        else if (item?.type === 'error') plog('error', `[reference] ${trunc(String(item.message ?? 'codex error'), 300)}`)
-      } else if (obj.type === 'turn.completed') {
-        const usage = obj.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          const turn = codexTokens(usage)
-          tokens.input += turn.input
-          tokens.output += turn.output
-          tokens.cacheRead += turn.cacheRead
-          tokens.cacheWrite += turn.cacheWrite
-          flush()
-        }
-      } else if (obj.type === 'turn.failed') {
-        const error = obj.error as Record<string, unknown> | undefined
-        failure = String(error?.message ?? 'codex reference study failed')
+      }
+      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
+      if (t.summary !== undefined) summary = t.summary
+      if (t.turn?.usage) {
+        sawUsage = true
+        const turn = codexTokens(t.turn.usage)
+        tokens.input += turn.input
+        tokens.output += turn.output
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+        flush()
+      }
+      if (t.error) {
+        failure = t.error
         plog('error', failure)
       }
     }
@@ -996,6 +1002,7 @@ export class LoopRunner {
         this.log(loop.id, run.id, 'system', '⏳ orchestrator finished, delegated workers still running — holding the round open.')
       }
       await sleep(15_000)
+      this.pumpChildStreams()
     }
     if (announced) this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
   }
@@ -1194,22 +1201,21 @@ export class LoopRunner {
           })
           flushTokens()
         }
+        // Register spawns before displaying: the translator narrates them, but
+        // only this parser tracks the tool_use id that later events reference.
         const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
         for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            plog(parentId ? 'agent' : 'claude', `[${who}] ${trunc(block.text, 400)}`)
-          } else if (block.type === 'tool_use') {
-            const name = block.name as string
+          if (block.type !== 'tool_use') continue
+          const name = block.name as string
+          if ((name === 'Agent' || name === 'Task') && block.id) {
             const input = block.input as Record<string, unknown> | undefined
-            if ((name === 'Agent' || name === 'Task') && block.id) {
-              const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
-              const model = (input?.model as string | undefined) ?? null
-              agentLabels.set(block.id as string, { label, model })
-              plog('spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
-            } else {
-              plog('tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
-            }
+            const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
+            const model = (input?.model as string | undefined) ?? null
+            agentLabels.set(block.id as string, { label, model })
           }
+        }
+        for (const event of translateClaudeLine(line)?.events ?? []) {
+          plog(event.kind === 'claude' && parentId ? 'agent' : event.kind, `[${who}] ${event.text}`)
         }
         return
       }
@@ -1223,10 +1229,8 @@ export class LoopRunner {
             finishedAgents.add(toolUseId)
             plog('spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
           }
-          if (block.is_error) {
-            plog('error', `[${who}] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
-          }
         }
+        for (const event of translateClaudeLine(line)?.events ?? []) plog(event.kind, `[${who}] ${event.text}`)
         return
       }
       if (type === 'result') {
@@ -1372,44 +1376,26 @@ export class LoopRunner {
     const onLine = (line: string): void => {
       if (!line.trim()) return
       lastProgressAt = Date.now()
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
-      }
-      const type = obj.type as string
-      if (type === 'thread.started') {
-        threadId = (obj.thread_id as string | undefined) ?? null
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        threadId = t.threadStarted
         this.ledger.patchRun(run.id, { sessionId: threadId })
         plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
-      } else if (type === 'item.completed' || type === 'item.updated') {
-        const item = obj.item as Record<string, unknown> | undefined
-        if (!item || type !== 'item.completed') return
-        if (item.type === 'agent_message' && typeof item.text === 'string') {
-          lastAgentMessage = item.text
-          plog('codex', trunc(item.text, 400))
-        } else if (item.type === 'reasoning' && typeof item.text === 'string' && item.text.trim()) {
-          plog('thought', `𝜓 ${trunc(item.text, 500)}`)
-        } else if (item.type === 'command_execution' && typeof item.command === 'string') {
-          plog('cmd', `$ ${trunc(item.command, 200)}`)
-        } else if (item.type === 'file_change') {
-          plog('cmd', `✎ ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
-        } else if (item.type === 'SubAgentActivity' || item.type === 'collab_tool_call') {
-          plog('spawn', `⇉ worker ${trunc(JSON.stringify(item.agent_path ?? item.kind ?? ''), 120)}`)
-        } else if (item.type === 'error') {
-          plog('error', trunc(String(item.message ?? 'codex error'), 300))
-        }
-      } else if (type === 'turn.completed') {
-        const turn = codexTokens(obj.usage as Record<string, number> | undefined)
+      }
+      for (const event of t.events) plog(event.kind, event.text)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.turn) {
+        const turn = codexTokens(t.turn.usage)
         tokens.input += turn.input
         tokens.output += turn.output
         tokens.cacheRead += turn.cacheRead
         tokens.cacheWrite += turn.cacheWrite
         turns += 1
         flush(true)
-      } else if (type === 'turn.failed') {
-        failure = String((obj.error as Record<string, unknown> | undefined)?.message ?? 'codex turn failed')
+      }
+      if (t.error) {
+        failure = t.error
         plog('error', failure)
       }
     }
@@ -1707,65 +1693,30 @@ export class LoopRunner {
       this.broadcast(loop.id)
     }
 
-    // Claude and Codex stream different JSON shapes; each reader feeds the same
-    // state above, so everything downstream of here is harness-agnostic.
+    // Claude and Codex stream different JSON shapes; each translator feeds the
+    // same state above, so everything downstream of here is harness-agnostic.
     const onClaudeLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
+      const t = translateClaudeLine(line)
+      if (!t) return
+      if (t.init) {
+        plog('system', `claude session ${t.init.sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? '?'}`)
         return
       }
-      const type = obj.type as string
-      if (type === 'system' && obj.subtype === 'init') {
-        plog('system', `claude session ${(obj.session_id as string | undefined)?.slice(0, 8) ?? '?'} · model ${(obj.model as string | undefined) ?? '?'}`)
-        return
+      if (t.usage) {
+        sawUsage = true
+        tokens.input += t.usage.usage.input_tokens ?? 0
+        tokens.output += t.usage.usage.output_tokens ?? 0
+        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
+        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
+        flushCritic()
       }
-      if (type === 'assistant') {
-        const message = obj.message as Record<string, unknown> | undefined
-        if (!message) return
-        const usage = message.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          tokens.input += usage.input_tokens ?? 0
-          tokens.output += usage.output_tokens ?? 0
-          tokens.cacheRead += usage.cache_read_input_tokens ?? 0
-          tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
-          flushCritic()
-        }
-        const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-            lastAgentMessage = block.text
-            plog('claude', `[critic] ${trunc(block.text, 400)}`)
-          } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
-            plog('thought', `[critic] 𝜓 ${trunc(block.thinking, 500)}`)
-          } else if (block.type === 'tool_use') {
-            const name = block.name as string
-            const input = block.input as Record<string, unknown> | undefined
-            if (name === 'WebSearch') plog('search', `[critic] ⌕ ${trunc(String(input?.query ?? ''), 200)}`)
-            else if (name === 'Bash') plog('cmd', `[critic] $ ${trunc(String(input?.command ?? ''), 200)}`)
-            else plog('tool', `[critic] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
-          }
-        }
-        return
-      }
-      if (type === 'user') {
-        const message = obj.message as Record<string, unknown> | undefined
-        const content = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type === 'tool_result' && block.is_error) {
-            plog('error', `[critic] ✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}`)
-          }
-        }
-        return
-      }
-      if (type === 'result') {
+      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.result) {
         // The final result text is the critic's verdict; it also carries the
         // authoritative usage totals, which replace the per-message tally.
-        if (typeof obj.result === 'string' && obj.result.trim()) lastAgentMessage = obj.result
-        const usage = obj.usage as Record<string, number> | undefined
+        if (t.result.text?.trim()) lastAgentMessage = t.result.text
+        const usage = t.result.usage
         if (usage) {
           sawUsage = true
           tokens.input = usage.input_tokens ?? tokens.input
@@ -1773,55 +1724,32 @@ export class LoopRunner {
           tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
           tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
         }
-        if (obj.subtype !== 'success' && obj.is_error === true) {
-          failure = typeof obj.result === 'string' ? trunc(obj.result, 400) : `claude critique ${String(obj.subtype ?? 'failed')}`
+        if (t.result.subtype !== 'success' && t.result.isError) {
+          failure = t.result.text !== null ? trunc(t.result.text, 400) : `claude critique ${t.result.subtype ?? 'failed'}`
           plog('error', failure)
         }
       }
     }
 
     const onCodexLine = (line: string): void => {
-      if (!line.trim()) return
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
+      const t = translateCodexLine(line)
+      if (!t) return
+      if (t.threadStarted !== undefined) {
+        plog('system', `codex thread ${t.threadStarted?.slice(0, 8) ?? '?'}`)
       }
-      const type = obj.type as string
-      if (type === 'thread.started') {
-        plog('system', `codex thread ${(obj.thread_id as string | undefined)?.slice(0, 8) ?? '?'}`)
-      } else if (type === 'item.completed' || type === 'item.updated') {
-        const item = obj.item as Record<string, unknown> | undefined
-        if (!item) return
-        if (item.type === 'agent_message' && typeof item.text === 'string' && type === 'item.completed') {
-          lastAgentMessage = item.text
-          plog('codex', `[critic] ${trunc(item.text, 400)}`)
-        } else if (item.type === 'reasoning' && typeof item.text === 'string' && type === 'item.completed' && item.text.trim()) {
-          plog('thought', `[critic] 𝜓 ${trunc(item.text, 500)}`)
-        } else if (item.type === 'command_execution' && typeof item.command === 'string' && type === 'item.completed') {
-          plog('cmd', `[critic] $ ${trunc(item.command, 200)}`)
-        } else if (item.type === 'web_search' && type === 'item.completed') {
-          plog('search', `[critic] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
-        } else if (item.type === 'file_change' && type === 'item.completed') {
-          plog('cmd', `[critic] ✎ file change: ${trunc(JSON.stringify(item.changes ?? ''), 160)}`)
-        } else if (item.type === 'error') {
-          plog('error', `[critic] ${trunc(String(item.message ?? 'codex error'), 300)}`)
-        }
-      } else if (type === 'turn.completed') {
-        const usage = obj.usage as Record<string, number> | undefined
-        if (usage) {
-          sawUsage = true
-          const turn = codexTokens(usage)
-          tokens.input += turn.input
-          tokens.cacheRead += turn.cacheRead
-          tokens.cacheWrite += turn.cacheWrite
-          tokens.output += turn.output
-          flushCritic()
-        }
-      } else if (type === 'turn.failed') {
-        const error = obj.error as Record<string, unknown> | undefined
-        failure = String(error?.message ?? 'codex turn failed')
+      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
+      if (t.summary !== undefined) lastAgentMessage = t.summary
+      if (t.turn?.usage) {
+        sawUsage = true
+        const turn = codexTokens(t.turn.usage)
+        tokens.input += turn.input
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+        tokens.output += turn.output
+        flushCritic()
+      }
+      if (t.error) {
+        failure = t.error
         plog('error', failure)
       }
     }

@@ -91,7 +91,8 @@ describe('run folder transfer', () => {
     expect(imported[0].loop.workspaceDir).toBe(exportedWorkspace)
     expect(imported[0].runs[0]).toMatchObject({ id: sourceRun.id, loopId: sourceLoop.id, finishedAt: eventTs })
     expect(target.eventsForLoop(sourceLoop.id)).toEqual([
-      { loopId: sourceLoop.id, runId: sourceRun.id, ts: eventTs, kind: 'verdict', text: 'Score 0.72' },
+      // round/role/channel come from the read-time backfill for legacy rows.
+      { loopId: sourceLoop.id, runId: sourceRun.id, ts: eventTs, kind: 'verdict', channel: 'output', round: 1, role: 'critique', text: 'Score 0.72' },
     ])
     target.appendEvent({ loopId: sourceLoop.id, runId: sourceRun.id, ts: eventTs, kind: 'done', text: 'Continued on teammate machine' })
 

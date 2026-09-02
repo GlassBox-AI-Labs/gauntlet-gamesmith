@@ -70,6 +70,9 @@ function withPromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[]
       runId: run.id,
       ts: run.startedAt ?? run.createdAt,
       kind: 'prompt',
+      channel: 'prompt',
+      round: run.round,
+      role: run.role,
       text: `${runPromptLabel(run)}${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}:\n${chunk}`,
     }))
     const firstRunLine = lines.findIndex((line) => line.runId === run.id)

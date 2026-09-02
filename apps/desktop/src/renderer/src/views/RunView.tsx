@@ -19,6 +19,7 @@ import {
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
+import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -44,25 +45,6 @@ import {
 
 const LOG_LIMIT = 1500
 const ROUNDS_PAGE_SIZE = 3
-
-const KIND_COLORS: Record<string, string> = {
-  system: 'text-[#8f8a87]',
-  claude: 'text-[#e9c9bc]',
-  agent: 'text-[#cfae9d]',
-  spawn: 'text-[#c0aee6]',
-  tool: 'text-[#7d7772]',
-  codex: 'text-[#9ad1c6]',
-  thought: 'text-[#a99bc4] italic',
-  cmd: 'text-[#7fa8a0]',
-  search: 'text-[#8fc7e6]',
-  prompt: 'text-[#d9c59e]',
-  shot: 'text-[#e6b8d4]',
-  stderr: 'text-[#a08b6f]',
-  error: 'text-[#f0aaaa]',
-  metric: 'text-[#9fb2c8]',
-  verdict: 'text-[#f2d98c]',
-  done: 'text-[#a9e5b8]',
-}
 
 const STATUS_STYLES: Record<string, string> = {
   running: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
@@ -507,6 +489,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
+  const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
@@ -615,6 +598,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
   const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
   const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
+  const filteredLines = visibleLines.filter((line) => lineMatchesFilter(line, logFilter))
   const initialImplementPrompt = snapshot?.runs.find((run) => run.role === 'implement')?.prompt ?? ''
   const systemPrompt = loop && initialImplementPrompt.startsWith(loop.prompt)
     ? initialImplementPrompt.slice(loop.prompt.length).trim()
@@ -676,6 +660,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setLines([])
       setExpanded(new Set())
       setSelectedRound(null)
+      setLogFilter(ALL_LOG_FILTER)
       setDetailTab('activity')
       setComposing(false)
       setProjectOpen(false)
@@ -703,6 +688,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
     setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
     setSelectedRound(round)
+    setLogFilter(ALL_LOG_FILTER)
     setDetailTab('activity')
     setRenaming(false)
     setComposing(false)
@@ -760,6 +746,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setExpanded(new Set())
       setExpandedRuns((current) => new Set(current).add(imported.loop.id))
       setSelectedRound(null)
+      setLogFilter(ALL_LOG_FILTER)
       setDetailTab('activity')
       setRenaming(false)
       setProjectOpen(false)
@@ -1305,13 +1292,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
               {liveRun.metrics.agents.map((agent) => {
                 const active = agentActive(agent)
-                return (
-                  <span
-                    key={agent.id}
-                    className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
-                      agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
-                    }`}
-                  >
+                const filterKey = agentFilterKey(agent.id)
+                const selected = filterKey != null && logFilter.agent === filterKey
+                const chip = (
+                  <>
                     <span
                       className={`size-1.5 rounded-full ${
                         agent.done ? 'bg-[#68615f]' : active ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'
@@ -1322,6 +1306,25 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
                       {fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}
                     </span>
                     {agent.done && '✓'}
+                  </>
+                )
+                const chipClass = `flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
+                  selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
+                }`
+                // A chip that maps to log lines doubles as the agent filter.
+                return filterKey != null ? (
+                  <button
+                    type="button"
+                    key={agent.id}
+                    title="Filter the log to this agent"
+                    onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))}
+                    className={chipClass}
+                  >
+                    {chip}
+                  </button>
+                ) : (
+                  <span key={agent.id} className={chipClass}>
+                    {chip}
                   </span>
                 )
               })}
@@ -1401,6 +1404,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             </Table>
           </div>
 
+          <LogFilterStrip lines={visibleLines} filter={logFilter} onChange={setLogFilter} />
           <div
             ref={logRef}
             onScroll={() => {
@@ -1409,11 +1413,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
             }}
             className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]"
           >
-            {visibleLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
-            {visibleLines.map((line, index) => (
+            {filteredLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
+            {filteredLines.map((line, index) => (
               <div key={index} className="flex gap-2 whitespace-pre-wrap break-all">
                 <span className="shrink-0 text-[#4d4744]">{fmtTs(line.ts)}</span>
-                <span className={KIND_COLORS[line.kind] ?? 'text-[#b5afac]'}>{line.text}</span>
+                <span className={logLineColor(line)}>
+                  {line.agentId && <span className="text-[#c0aee6]">[{line.agentId}] </span>}
+                  {line.text}
+                </span>
               </div>
             ))}
           </div>

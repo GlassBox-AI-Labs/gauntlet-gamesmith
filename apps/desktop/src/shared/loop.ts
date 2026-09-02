@@ -130,12 +130,47 @@ export interface LoopSnapshot {
   runs: RunRecord[]
 }
 
+export type LogChannel = 'prompt' | 'thought' | 'tool' | 'output' | 'search' | 'media' | 'usage' | 'error' | 'system'
+
+const KIND_CHANNEL: Record<string, LogChannel> = {
+  prompt: 'prompt',
+  thought: 'thought',
+  tool: 'tool',
+  cmd: 'tool',
+  spawn: 'tool',
+  claude: 'output',
+  codex: 'output',
+  agent: 'output',
+  verdict: 'output',
+  search: 'search',
+  shot: 'media',
+  metric: 'usage',
+  error: 'error',
+  stderr: 'error',
+  system: 'system',
+  done: 'system',
+}
+
+/** Rows written before the channel column existed derive theirs from the legacy kind. */
+export function channelForKind(kind: string): LogChannel {
+  return KIND_CHANNEL[kind] ?? 'system'
+}
+
 export interface LoopLogLine {
   loopId: string
   runId: string | null
   ts: string
   kind: string
   text: string
+  /** Absent = the run's primary agent; otherwise the delegated child's slug. */
+  agentId?: string
+  /**
+   * Denormalized from the run at write time (reference runs log round 0) so
+   * the UI filter strip is a pure predicate over lines, with no runs join.
+   */
+  round?: number
+  role?: RunRole
+  channel?: LogChannel
 }
 
 export interface StartLoopInput {
