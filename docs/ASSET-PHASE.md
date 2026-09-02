@@ -140,8 +140,32 @@ fails.
 
 `RunRole` becomes `'reference' | 'assets' | 'implement' | 'critique'`.
 
-One agent per cast entry — assets are independent, so this fans out. Each
-agent:
+**One run, fanning out to one subagent per cast entry** (decided 2026-09-02).
+Not N parallel runs: `LoopRunner` holds a single `private current: Attachment`
+(`loop-runner.ts:259`) and drives one child process per loop, so parallel runs
+would mean restructuring the runner. Fanning out from inside one run is exactly
+what implement already does, and it means the asset phase inherits machinery
+that already exists rather than adding any:
+
+- `delegationRules(models, referenceDir)` already covers all four harness
+  combinations — claude→claude through the Task tool and an agent file,
+  codex→codex through `spawn_agent`, and the two cross-harness forms through a
+  dispatcher. It needs a parameter for which model pair to bind, since today it
+  reads `subagentModel` directly.
+- `implementerAgentMd()` gains a sibling that writes `.claude/agents/sculptor.md`
+  with `model: assetModel` and `effort: assetEffort` in its frontmatter.
+- Cross-harness workers already redirect their stream into
+  `.gauntlet-loop/agents/<slug>.<harness>.jsonl`, which the app parses for
+  tokens and cost, so per-asset spend shows up with no new accounting.
+- `awaitChildren` (`loop-runner.ts:1039`) and `childrenActive` already handle
+  waiting on workers after the orchestrator exits.
+
+The orchestrator runs on `orchestratorModel`/`orchestratorEffort` like every
+other role; `assetModel`/`assetEffort` bind the workers. That mapping is the
+right one — asset agents are fan-out workers, which is why §4.3 defaults them
+to the subagent default rather than the critic's.
+
+Each worker:
 
 1. **Finds and crops its object** with `tools/crop.py`, scaffolded into the
    workspace the way `tools/engine-gate.mjs` already is. It contact-sheets the
@@ -427,6 +451,11 @@ for now. Three reasons this is safe to defer:
 The consequence for §4.6: the gate checks that a named asset exists, never that
 something imports it. A build must not fail for carrying a factory nobody
 calls.
+
+**The asset phase is one run that fans out, not N parallel runs** (2026-09-02).
+The runner drives one child process per loop, so parallel runs would mean
+restructuring it; fanning out from inside one run reuses the delegation, agent
+streaming and child-waiting that implement already uses. Details in §4.2.
 
 **`objects/` shots are critic evidence but never critic comparison pairs**
 (2026-09-02). Judging a gameplay screenshot against studio art scores the
