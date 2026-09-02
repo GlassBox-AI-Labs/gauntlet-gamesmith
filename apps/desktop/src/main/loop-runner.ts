@@ -14,15 +14,17 @@ import type {
   TokenTotals,
   Verdict,
 } from '../shared/loop'
-import { RESUME_PREFIX } from '../shared/loop'
+import { RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
+import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
-import { delegationRules, implementerAgentMd } from './delegation'
-import { critiquePlan, DISPATCHER_MODEL, implementPlan } from './harness-plans'
+import { delegationRules, implementerAgentMd, researchRules } from './delegation'
+import { critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
+import { referencePackDir, scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
@@ -37,9 +39,11 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
+const REFERENCE_TIMEOUT_MS = 60 * 60_000
 /** No write to a delegated worker's stream for this long counts as finished. */
 const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
+const MAX_REFERENCE_ATTEMPTS = 2
 
 /**
  * Which cost figure to trust for an implement run.
@@ -160,45 +164,14 @@ function normalizeVerdict(value: unknown): Verdict | null {
   return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
 }
 
-function buildImplementPrompt(models: LoopModels, userPrompt: string, round: number, verdict: Verdict | null): string {
-  if (round <= 1 || !verdict) return `${userPrompt}\n\n${delegationRules(models)}`
-  const findings = verdict.findings.map((f) => `- [${f.severity}] ${f.text}`).join('\n')
-  return [
-    userPrompt,
-    '---',
-    `A harsh external critic (fresh eyes, a different model) reviewed round ${round - 1}. Score: ${verdict.score.toFixed(2)}/1.00.`,
-    `Critic summary: ${verdict.summary}`,
-    'Findings you MUST fix this round:',
-    findings || '- (no itemized findings — raise overall quality)',
-    '---',
-    'Fix every finding above, then keep raising quality toward the bar.',
-    delegationRules(models),
-  ].join('\n\n')
-}
-
-function buildCriticPrompt(userPrompt: string, round: number): string {
-  const evidenceDir = `critique/round-${round}`
-  return `You are a brutally harsh AAA game quality critic with fresh eyes. You did not build this project and you have no attachment to it. Judge the project in the current working directory against this bar:
-
-<goal>
-${userPrompt}
-</goal>
-
-Protocol:
-1. Research the real AAA reference named in the goal FIRST. Web search is enabled and the workspace has network access: query for official screenshots and gameplay footage, consult YouTube gameplay videos and analyses (transcripts, stills, thumbnails), and download the best reference stills into ./reference — then VIEW the images you downloaded. Do not judge from memory.
-   Real gameplay in motion: yt-dlp and ffmpeg are installed. Find one good YouTube gameplay video of the AAA reference and pull a ~30s slice (e.g. \`yt-dlp --download-sections "*60-90" -f "bv*[height<=1080]" -o reference/aaa-gameplay.%(ext)s "<url>"\`), then extract ~10 frames at 1s intervals with \`ffmpeg -i reference/aaa-gameplay.* -vf fps=1 ./${evidenceDir}/refs/motion/aaa-%02d.png\` and VIEW them. Later, extract frames from your own gameplay recording the same way (into ./${evidenceDir}/shots/motion/) and compare motion-to-motion: mid-action chaos, trails, feedback timing — not just posed stills. If yt-dlp fails on one video, try another; do not burn more than a few minutes on it.
-2. Inspect the project. Install dependencies and build/run it if needed. You may write to the workspace to install, build, serve, or capture screenshots — but do NOT modify project source files and do NOT fix anything yourself.
-3. Actually look at the running result whenever possible (serve it, screenshot it with any tooling available). Save every screenshot you capture of this project into ./${evidenceDir}/shots/. ALSO record a short gameplay video (~15-30s of actual play — e.g. Playwright's recordVideo on the served page while simulating input) and save it as ./${evidenceDir}/video/gameplay.webm. Judge visuals, gameplay, performance, completeness, polish. You run inside a macOS sandbox: use Playwright's bundled browsers (\`chromium.launch({ headless: true })\`, \`recordVideo\` on the context). Never pass \`channel: 'chrome'\` / \`'msedge'\` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.
-4. Compare side by side. Copy the specific reference stills you compare against into ./${evidenceDir}/refs/. For each comparison pair, judge purely on what is in frame — as if you did not know which image is which — and record every pair TWICE: human-readable notes in ./${evidenceDir}/pairs.md, and machine-readable ./${evidenceDir}/pairs.json — a JSON array of {"shot": "shots/<file>", "ref": "refs/<file>", "winner": "shot"|"ref"|"tie", "why": "<one specific sentence>"}. Be specific about every place this project falls short: textures, lighting, models, animation, physics, audio, UI, game feel.
-5. Score 0.00-1.00 where 1.00 = indistinguishable from the AAA reference and 0.90 = you are genuinely wowed. Anything unfinished, ugly, or broken must score low. Do not be polite. Do not grade on effort.
-
-End your reply with EXACTLY one fenced JSON block and nothing after it:
-
-\`\`\`json
-{"score": 0.0, "pass": false, "summary": "<=60 words>", "findings": [{"severity": "critical|major|minor", "text": "one specific, fixable shortfall"}]}
-\`\`\`
-
-"pass" may only be true if score >= 0.90 and you would genuinely mistake screenshots of this game for the AAA reference.`
+function buildImplementPrompt(
+  models: LoopModels,
+  userPrompt: string,
+  round: number,
+  verdict: Verdict | null,
+  referenceDir: string,
+): string {
+  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir)
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -275,6 +248,11 @@ export class LoopRunner {
     return { loop, runs: this.ledger.runsForLoop(loop.id) }
   }
 
+  /** New loops own a scoped pack; pre-v1 loops keep using their legacy root. */
+  private referenceDir(loopId: string): string {
+    return this.ledger.runsForLoop(loopId).some((run) => run.role === 'reference') ? referencePackDir(loopId) : 'reference'
+  }
+
   start(input: StartLoopInput): StartLoopResult {
     if (this.current || this.ledger.runningLoop()) return { ok: false, error: 'A loop is already running. Stop it first.' }
     const prompt = input.prompt.trim()
@@ -289,7 +267,7 @@ export class LoopRunner {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const models = resolveModels(input, input)
+    const models = resolveModels(input, input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
     this.log(
@@ -298,12 +276,13 @@ export class LoopRunner {
       'system',
       describeModels(models),
     )
+    const referenceDir = referencePackDir(loop.id)
     this.ledger.createRun({
       loopId: loop.id,
-      round: 1,
-      role: 'implement',
+      round: 0,
+      role: 'reference',
       harness: harnessFor(models.orchestratorModel),
-      prompt: buildImplementPrompt(models, prompt, 1, null),
+      prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
     })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
@@ -334,9 +313,14 @@ export class LoopRunner {
           )
           this.broadcast(loop.id)
           const gate: LogGate = { suppress: false }
-          const parser = active.role === 'implement' ? this.makeImplementParser(loop, active, gate) : this.makeCritiqueParser(loop, active, gate)
-          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : CRITIQUE_TIMEOUT_MS
-          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : CRITIQUE_TIMEOUT_MS
+          const parser =
+            active.role === 'reference'
+              ? this.makeReferenceParser(loop, active, gate)
+              : active.role === 'implement'
+                ? this.makeImplementParser(loop, active, gate)
+                : this.makeCritiqueParser(loop, active, gate)
+          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
           void this.driveRun(loop, active, meta, idle, cap, parser, gate, null)
           continue
         }
@@ -393,11 +377,28 @@ export class LoopRunner {
         prompt: last.role === 'implement' ? RESUME_PREFIX + base : base,
       })
       this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
+    } else if (last?.role === 'reference') {
+      const referenceDir = this.referenceDir(loopId)
+      this.ledger.patchLoop(loopId, { round: 1 })
+      this.ledger.createRun({
+        loopId,
+        round: 1,
+        role: 'implement',
+        harness: harnessFor(loop.models.orchestratorModel),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, referenceDir),
+      })
+      this.log(loopId, null, 'system', 'Loop resumed by user — Reference Pack ready; starting round 1.')
     } else if (last?.role === 'implement' && last.round >= loop.maxRounds) {
       this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${last.round} — no critique, since no round is left for it to gate.`)
       return { ok: true }
     } else if (last?.role === 'implement') {
-      this.ledger.createRun({ loopId, round: last.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, last.round) })
+      this.ledger.createRun({
+        loopId,
+        round: last.round,
+        role: 'critique',
+        harness: loop.models.criticHarness,
+        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId)),
+      })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
     } else if (last?.role === 'critique') {
       const nextRound = last.round + 1
@@ -411,18 +412,19 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict, this.referenceDir(loopId)),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
+      const referenceDir = referencePackDir(loopId)
       this.ledger.createRun({
         loopId,
-        round: 1,
-        role: 'implement',
+        round: 0,
+        role: 'reference',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null),
+        prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
       })
-      this.log(loopId, null, 'system', 'Loop resumed by user — starting round 1.')
+      this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
     }
     this.broadcast(loopId)
     void this.executeNext(loopId)
@@ -487,13 +489,26 @@ export class LoopRunner {
     this.send('loop:log', line)
   }
 
+  /** Preserve a complete execution prompt in the event log without hitting the per-line cap. */
+  private logPrompt(loopId: string, runId: string, label: string, prompt: string): void {
+    const chunkSize = 3_600
+    const chunks = Array.from({ length: Math.ceil(prompt.length / chunkSize) }, (_, index) => prompt.slice(index * chunkSize, (index + 1) * chunkSize))
+    for (const [index, chunk] of chunks.entries()) {
+      const suffix = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''
+      this.log(loopId, runId, 'prompt', `${label}${suffix}:\n${chunk}`)
+    }
+  }
+
   private broadcast(loopId: string): void {
     const loop = this.ledger.getLoop(loopId)
     if (!loop) return
     const runs = this.ledger.runsForLoop(loopId)
     this.send('loop:update', { loop, runs })
     try {
-      fs.writeFileSync(path.join(loop.workspaceDir, 'gauntlet-report.md'), buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir)))
+      fs.writeFileSync(
+        path.join(loop.workspaceDir, 'gauntlet-report.md'),
+        buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir), scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))),
+      )
     } catch {
       /* workspace may be gone; the in-app report still works */
     }
@@ -518,7 +533,8 @@ export class LoopRunner {
     const run = this.ledger.nextQueuedRun(loopId)
     if (!run) return
     try {
-      if (run.role === 'implement') await this.executeImplement(loop, run)
+      if (run.role === 'reference') await this.executeReference(loop, run)
+      else if (run.role === 'implement') await this.executeImplement(loop, run)
       else await this.executeCritique(loop, run)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -561,6 +577,9 @@ export class LoopRunner {
       own.code = code
     })
     child.unref()
+    // Every run's exact execution prompt lands in its log, round-labeled, so
+    // the log alone tells the full story of what each agent was asked to do.
+    this.logPrompt(loop.id, run.id, runPromptLabel(run), run.prompt)
     const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
     this.writeMeta(loop.workspaceDir, run.id, meta)
     this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
@@ -706,12 +725,219 @@ export class LoopRunner {
     }
   }
 
+  // --------------------------------------------------------------- reference
+
+  private async executeReference(loop: LoopRecord, run: RunRecord): Promise<void> {
+    const models = loop.models
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `● Reference Study (${run.harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})`,
+    )
+    const plan = referencePlan({
+      models,
+      prompt: run.prompt,
+      claudeHome: cliHome('claude'),
+      codexHome: cliHome('codex'),
+    })
+    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
+    if (!spawned) return
+    this.ledger.patchRun(run.id, { model: models.orchestratorModel })
+    const gate: LogGate = { suppress: false }
+    const parser = this.makeReferenceParser(loop, run, gate)
+    await this.driveRun(loop, run, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own)
+  }
+
+  private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const model = loop.models.orchestratorModel
+    const tokens = emptyTokens()
+    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
+    let sawUsage = false
+    let failure: string | null = null
+    let summary = ''
+    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
+    const plog = (kind: string, text: string): void => {
+      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
+    }
+    const flush = (): void => {
+      const costUsd = estimateCostUsd(model, tokens)
+      const agent: AgentMetric = {
+        id: 'reference',
+        label: 'reference researcher',
+        model,
+        messages: 1,
+        tokens: { ...tokens },
+        firstTs: new Date(startedAtMs).toISOString(),
+        lastTs: new Date().toISOString(),
+      }
+      this.ledger.patchRun(run.id, {
+        inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
+        outputTokens: tokens.output,
+        costUsd,
+        metrics: { agents: [agent], perModel: { [model]: { costUsd, tokens: { ...tokens } } } },
+      })
+      this.broadcast(loop.id)
+    }
+    const onClaudeLine = (line: string): void => {
+      if (!line.trim()) return
+      let obj: Record<string, unknown>
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        return
+      }
+      if (obj.type === 'system' && obj.subtype === 'init') {
+        sessionId = (obj.session_id as string | undefined) ?? sessionId
+        this.ledger.patchRun(run.id, { sessionId })
+        plog('system', `claude session ${sessionId?.slice(0, 8) ?? '?'} · model ${(obj.model as string | undefined) ?? model}`)
+      } else if (obj.type === 'assistant') {
+        const message = obj.message as Record<string, unknown> | undefined
+        const usage = message?.usage as Record<string, number> | undefined
+        if (usage) {
+          sawUsage = true
+          tokens.input += usage.input_tokens ?? 0
+          tokens.output += usage.output_tokens ?? 0
+          tokens.cacheRead += usage.cache_read_input_tokens ?? 0
+          tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
+          flush()
+        }
+        const content = Array.isArray(message?.content) ? (message.content as Record<string, unknown>[]) : []
+        for (const block of content) {
+          if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+            summary = block.text
+            plog('claude', `[reference] ${trunc(block.text, 400)}`)
+          } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
+            plog('thought', `[reference] 𝜓 ${trunc(block.thinking, 500)}`)
+          } else if (block.type === 'tool_use') {
+            const input = block.input as Record<string, unknown> | undefined
+            if (block.name === 'WebSearch') plog('search', `[reference] ⌕ ${trunc(String(input?.query ?? ''), 200)}`)
+            else if (block.name === 'Bash') plog('cmd', `[reference] $ ${trunc(String(input?.command ?? ''), 200)}`)
+            else plog('tool', `[reference] → ${String(block.name)} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
+          }
+        }
+      } else if (obj.type === 'result') {
+        if (typeof obj.result === 'string') summary = obj.result
+        const usage = obj.usage as Record<string, number> | undefined
+        if (usage) {
+          sawUsage = true
+          tokens.input = usage.input_tokens ?? tokens.input
+          tokens.output = usage.output_tokens ?? tokens.output
+          tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
+          tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
+        }
+        if (obj.is_error === true) failure = typeof obj.result === 'string' ? trunc(obj.result, 400) : 'claude reference study failed'
+      }
+    }
+    const onCodexLine = (line: string): void => {
+      if (!line.trim()) return
+      let obj: Record<string, unknown>
+      try {
+        obj = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        return
+      }
+      if (obj.type === 'thread.started') {
+        sessionId = (obj.thread_id as string | undefined) ?? sessionId
+        this.ledger.patchRun(run.id, { sessionId })
+        plog('system', `codex thread ${sessionId?.slice(0, 8) ?? '?'}`)
+      } else if (obj.type === 'item.completed') {
+        const item = obj.item as Record<string, unknown> | undefined
+        if (item?.type === 'agent_message' && typeof item.text === 'string') {
+          summary = item.text
+          plog('codex', `[reference] ${trunc(item.text, 400)}`)
+        } else if (item?.type === 'reasoning' && typeof item.text === 'string') plog('thought', `[reference] 𝜓 ${trunc(item.text, 500)}`)
+        else if (item?.type === 'command_execution') plog('cmd', `[reference] $ ${trunc(String(item.command ?? ''), 200)}`)
+        else if (item?.type === 'web_search') plog('search', `[reference] ⌕ ${trunc(String(item.query ?? ''), 200)}`)
+        else if (item?.type === 'error') plog('error', `[reference] ${trunc(String(item.message ?? 'codex error'), 300)}`)
+      } else if (obj.type === 'turn.completed') {
+        const usage = obj.usage as Record<string, number> | undefined
+        if (usage) {
+          sawUsage = true
+          const turn = codexTokens(usage)
+          tokens.input += turn.input
+          tokens.output += turn.output
+          tokens.cacheRead += turn.cacheRead
+          tokens.cacheWrite += turn.cacheWrite
+          flush()
+        }
+      } else if (obj.type === 'turn.failed') {
+        const error = obj.error as Record<string, unknown> | undefined
+        failure = String(error?.message ?? 'codex reference study failed')
+        plog('error', failure)
+      }
+    }
+    const finalize = (exit: ExitInfo): void => {
+      const durationMs = Date.now() - startedAtMs
+      const costUsd = sawUsage ? estimateCostUsd(model, tokens) : null
+      const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))
+      const processError = exit.spawnError ?? failure ?? (exit.code !== 0 && exit.code !== null ? `${run.harness} exited ${exit.code}` : null)
+      const artifactError = pack.ready ? null : pack.issues.join('; ')
+      this.ledger.patchRun(run.id, {
+        inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
+        outputTokens: sawUsage ? tokens.output : null,
+        costUsd,
+        durationMs,
+        sessionId,
+        summary: summary ? summary.slice(0, 4000) : null,
+        finishedAt: new Date().toISOString(),
+      })
+      this.accumulateCost(loop.id, costUsd)
+      this.log(loop.id, run.id, 'metric', `▤ reference metrics: ${costUsd != null ? `$${costUsd.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`)
+      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+      if (stopReason) {
+        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Reference Study timed out.')
+        return
+      }
+      if (processError || artifactError) {
+        const error = processError ?? artifactError!
+        this.ledger.patchRun(run.id, { status: 'failed', error })
+        const attempts = this.ledger.runsForLoop(loop.id).filter((item) => item.role === 'reference').length
+        if (attempts < MAX_REFERENCE_ATTEMPTS) {
+          this.log(loop.id, run.id, 'system', `Reference Study incomplete (${error}) — retrying and preserving downloaded files.`)
+          this.ledger.createRun({
+            loopId: loop.id,
+            round: 0,
+            role: 'reference',
+            harness: harnessFor(model),
+            prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id), researchRules(loop.models, this.referenceDir(loop.id))),
+          })
+          this.broadcast(loop.id)
+          void this.executeNext(loop.id)
+          return
+        }
+        this.finishLoop(loop.id, 'failed', `Reference Study failed twice: ${error}`)
+        return
+      }
+      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
+      if (this.overBudget(loop.id)) return
+      this.ledger.patchLoop(loop.id, { round: 1 })
+      this.ledger.createRun({
+        loopId: loop.id,
+        round: 1,
+        role: 'implement',
+        harness: harnessFor(model),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, this.referenceDir(loop.id)),
+      })
+      this.log(loop.id, null, 'system', 'Reference Pack frozen — round 1 queued.')
+      this.broadcast(loop.id)
+      void this.executeNext(loop.id)
+    }
+    return {
+      onLine: run.harness === 'claude' ? onClaudeLine : onCodexLine,
+      onStderr: (text) => plog('stderr', trunc(text, 400)),
+      finalize,
+    }
+  }
+
   // ---------------------------------------------------------------- implement
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
     const harness = harnessFor(models.orchestratorModel)
-    const agentMd = implementerAgentMd(models)
+    const agentMd = implementerAgentMd(models, this.referenceDir(loop.id))
     if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
       fs.mkdirSync(agentDir, { recursive: true })
@@ -1299,7 +1525,13 @@ export class LoopRunner {
       this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${run.round} — no critique, since no round is left for it to gate.`)
       return
     }
-    this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
+    this.ledger.createRun({
+      loopId: loop.id,
+      round: run.round,
+      role: 'critique',
+      harness: loop.models.criticHarness,
+      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+    })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
   }
@@ -1681,7 +1913,13 @@ export class LoopRunner {
         this.ledger.patchRun(run.id, { status: 'failed', error: errText })
         if (attempts < MAX_CRITIQUE_ATTEMPTS) {
           this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-          this.ledger.createRun({ loopId: loop.id, round: run.round, role: 'critique', harness: loop.models.criticHarness, prompt: buildCriticPrompt(loop.prompt, run.round) })
+          this.ledger.createRun({
+            loopId: loop.id,
+            round: run.round,
+            role: 'critique',
+            harness: loop.models.criticHarness,
+            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+          })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
           return
@@ -1722,7 +1960,7 @@ export class LoopRunner {
         round: nextRound,
         role: 'implement',
         harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict),
+        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict, this.referenceDir(loop.id)),
       })
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
       this.broadcast(loop.id)

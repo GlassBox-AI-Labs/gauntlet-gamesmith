@@ -36,6 +36,7 @@ describe('Ledger', () => {
     const ledger = makeLedger()
     const loop = ledger.createLoop({ prompt: 'build it', workspaceDir: workspace(), maxRounds: 5, budgetUsd: 50, models })
     expect(loop.status).toBe('running')
+    expect(loop.round).toBe(0)
     expect(loop.title).toBe('It')
     expect(loop.models.criticModel).toBe('gpt-5.6-sol')
 

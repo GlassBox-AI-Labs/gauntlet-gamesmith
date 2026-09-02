@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
-import { critiquePlan, implementPlan } from './harness-plans'
+import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
 
 const homes = { claudeHome: '/homes/claude', codexHome: '/homes/codex' }
 const ctx = (models: ReturnType<typeof resolveModels>) => ({ models, prompt: 'build it', ...homes })
@@ -48,5 +48,19 @@ describe('critiquePlan', () => {
     const claude = critiquePlan({ ...ctx(resolveModels(null, { criticModel: 'claude-opus-5', criticEffort: 'high' })), outFile: '/w/verdict.txt' })
     expect(claude.bin).toBe('claude')
     expect(claude.args).not.toContain('-o')
+  })
+})
+
+describe('referencePlan', () => {
+  it('uses the orchestrator model without subagent flags', () => {
+    const claude = referencePlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5' }, null)))
+    expect(claude.bin).toBe('claude')
+    expect(claude.args.join(' ')).toContain('--model claude-fable-5')
+    expect(claude.args).not.toContain('--forward-subagent-text')
+    expect(claude.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined()
+
+    const codex = referencePlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', subagentModel: 'claude-opus-5' }, null)))
+    expect(codex.bin).toBe('codex')
+    expect(codex.args.join(' ')).toContain('-m gpt-5.6-sol')
   })
 })
