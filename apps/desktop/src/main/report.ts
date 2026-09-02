@@ -188,7 +188,8 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
     lines.push('')
     for (const agent of lastWithAgents.metrics.agents) {
       if (agent.source === 'workflow') continue
-      const indent = agent.id === 'orchestrator' || agent.id === 'critic' ? '- ' : '  - ↳ '
+      const indent =
+        agent.id === 'orchestrator' || agent.id === 'critic' ? '- ' : agent.parentId && agent.parentId !== 'orchestrator' ? '    - ↳ ' : '  - ↳ '
       lines.push(
         `${indent}**${agent.label}** (${agent.model ?? '?'}): ${agent.messages} msgs · in ${fmtTokens(agent.tokens.input)} · out ${fmtTokens(agent.tokens.output)} · cache r/w ${fmtTokens(agent.tokens.cacheRead)}/${fmtTokens(agent.tokens.cacheWrite)}`,
       )

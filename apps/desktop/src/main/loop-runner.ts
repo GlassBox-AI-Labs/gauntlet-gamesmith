@@ -19,7 +19,7 @@ import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels 
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
 import { delegationRules, implementerAgentMd } from './delegation'
-import { critiquePlan, implementPlan } from './harness-plans'
+import { critiquePlan, DISPATCHER_MODEL, implementPlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
@@ -787,6 +787,16 @@ export class LoopRunner {
     const backgrounded = new Set<string>()
     /** Tracked tasks that are shell commands, not agents. */
     const notAgents = new Set<string>()
+    /**
+     * slice → the agent whose tool call launched that delegated worker.
+     *
+     * A cross-harness worker is a process the app never started, so nothing
+     * links it to its owner except the command that started it: the redirect
+     * into `.gauntlet-loop/agents/<slice>.<harness>.jsonl` names the slice, and
+     * the tool call carrying it names the agent. Without this every delegated
+     * worker hung off the bottom of the list instead of under its dispatcher.
+     */
+    const childParents = new Map<string, string>()
     const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
     let result: Record<string, unknown> | null = null
     let fallbackId = 0
@@ -901,7 +911,7 @@ export class LoopRunner {
         inputTokens: input,
         outputTokens: output,
         costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents),
+        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents, childParents),
       })
       this.broadcast(loop.id)
     }
@@ -981,6 +991,9 @@ export class LoopRunner {
               agentLabels.set(block.id as string, { label, model })
               plog('spawn', `[${who}] ⇉ spawns "${label}"${model ? ` (${model})` : ''}`)
             } else {
+              const raw = input ? JSON.stringify(input) : ''
+              const stream = /agents[\\/]+([^/'"\s\\]+)\.(?:claude|codex)\.jsonl/.exec(raw)
+              if (stream && parentId) childParents.set(stream[1], parentId)
               plog('tool', `[${who}] → ${name} ${input ? trunc(JSON.stringify(input), 160) : ''}`)
             }
           }
@@ -1012,7 +1025,7 @@ export class LoopRunner {
       await this.finishImplement(loop, run, exit, () => {
         pollWorkflows()
         pollChildren()
-        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents)
+        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents, childParents)
         if (workflowRuns.length) {
           plog(
             'metric',
@@ -1299,6 +1312,7 @@ export class LoopRunner {
     finished: Set<string> = new Set(),
     workflowAgents: AgentMetric[] = [],
     childAgents: AgentMetric[] = [],
+    childParents: Map<string, string> = new Map(),
   ): RunMetrics {
     const agents = new Map<string, AgentMetric>()
     const ensure = (key: string): AgentMetric => {
@@ -1315,7 +1329,13 @@ export class LoopRunner {
             key === 'orchestrator'
               ? 'orchestrator'
               : `${reg?.label ?? `subagent ${key.slice(-6)}`}${dispatches ? ' (dispatcher)' : ''}`,
-          model: key === 'orchestrator' ? models.orchestratorModel : (reg?.model ?? models.subagentModel ?? models.orchestratorModel),
+          // A dispatcher is a claude subagent whatever the workers are, so its
+          // fallback is the model implementer.md pins it to — never the codex
+          // model, which claude cannot run as a subagent.
+          model:
+            key === 'orchestrator'
+              ? models.orchestratorModel
+              : (reg?.model ?? (dispatches ? DISPATCHER_MODEL : (models.subagentModel ?? models.orchestratorModel))),
           messages: 0,
           tokens: emptyTokens(),
           firstTs: null,
@@ -1375,9 +1395,20 @@ export class LoopRunner {
     const list = [...agents.values()]
     // '\uffff' keeps agents that never spoke at the end, in spawn order.
     list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '\uffff').localeCompare(b.firstTs ?? '\uffff')))
+    // A delegated worker sits under whoever launched it; one nobody claims
+    // stays at the end of the list.
+    const byParent = new Map<string, AgentMetric[]>()
+    const orphans: AgentMetric[] = []
+    for (const child of childAgents) {
+      const parent = childParents.get(child.id.replace(/^child:/, ''))
+      child.parentId = parent
+      if (parent && agents.has(parent)) byParent.set(parent, [...(byParent.get(parent) ?? []), child])
+      else orphans.push(child)
+    }
+    const nested = list.flatMap((agent) => [agent, ...(byParent.get(agent.id) ?? [])])
     // Workflow agents carry only a scalar token count, so they cannot join
     // perModel — that stays priced off the stream and the CLI's own figures.
-    return { agents: [...list, ...workflowAgents, ...childAgents], perModel }
+    return { agents: [...nested, ...workflowAgents, ...orphans], perModel }
   }
 
   private logRunMetrics(
@@ -1393,7 +1424,7 @@ export class LoopRunner {
     this.log(loopId, runId, 'metric', `▤ ${role} metrics: ${costUsd !== null ? `$${costUsd.toFixed(2)} equiv` : 'cost n/a'} · ${turns} turns · ${duration}`)
     for (const agent of metrics.agents) {
       const t = agent.tokens
-      const indent = agent.id === 'orchestrator' ? '  ' : '    ↳ '
+      const indent = agent.id === 'orchestrator' ? '  ' : agent.parentId && agent.parentId !== 'orchestrator' ? '        ↳ ' : '    ↳ '
       this.log(
         loopId,
         runId,

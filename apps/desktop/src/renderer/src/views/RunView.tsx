@@ -489,7 +489,15 @@ function RunRow({
               {(run.metrics?.agents ?? [])
                 .filter((agent) => agent.source !== 'workflow')
                 .map((agent) => (
-                  <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : 'pl-5 text-[#a89f9a]'}>
+                  <div
+                    key={agent.id}
+                    className={
+                      agent.id === 'orchestrator' || agent.id === 'critic'
+                        ? 'text-[#ded9d6]'
+                        : // A worker launched by another agent nests under it.
+                          `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`
+                    }
+                  >
                     {/* Transparent when idle so every row keeps the same indent. */}
                     <span
                       className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${agentActive(agent) ? 'animate-pulse bg-emerald-400' : 'bg-transparent'}`}
