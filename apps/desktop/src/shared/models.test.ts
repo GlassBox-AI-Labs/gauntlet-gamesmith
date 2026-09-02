@@ -112,4 +112,30 @@ describe('normalizeModels critic harness', () => {
     expect(models.criticHarness).toBe('claude')
     expect(models.criticModel).toBe('claude-opus-5')
   })
+
+  it('gives sculptors the subagent default, not the critic pick or the cheap research tier', () => {
+    const models = resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
+    expect(models.assetModel).toBe('claude-opus-5')
+    expect(models.assetEffort).toBe('high')
+  })
+
+  it('keeps the asset phase off when the operator turned it off', () => {
+    expect(resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC, null, { assetModel: null }).assetModel).toBeNull()
+    expect(resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC, null, { assetModel: 'none' }).assetModel).toBeNull()
+  })
+
+  it('clamps an asset pick the CLIs would refuse', () => {
+    const models = resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC, null, { assetModel: 'gpt-4', assetEffort: 'ultracode' })
+    expect(models.assetModel).toBe('claude-opus-5')
+    // Sculptors are workers, so the orchestrator-only effort levels do not apply.
+    expect(models.assetEffort).toBe('high')
+  })
+
+  it('runs the phase for a loop written before it existed, rather than reading silence as off', () => {
+    expect(normalizeModels({ criticModel: 'claude-opus-5' }).assetModel).toBe('claude-opus-5')
+  })
+
+  it('keeps the phase off for a loop that stored it off', () => {
+    expect(normalizeModels({ criticModel: 'claude-opus-5', assetModel: null }).assetModel).toBeNull()
+  })
 })

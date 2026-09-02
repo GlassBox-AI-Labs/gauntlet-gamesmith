@@ -148,3 +148,89 @@ followed by \`wait\`. Each command runs to completion on its own — do not inte
     : ''
   return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} ${rules}`
 }
+
+
+/**
+ * What one sculptor is told, wherever it runs.
+ *
+ * The same words go into `.claude/agents/sculptor.md` and into a cross-harness
+ * brief file, because a delegated worker starts with no memory of the run and
+ * has to be able to work from this alone.
+ */
+export function sculptorBrief(referenceDir: string): string {
+  return `You rebuild ONE object from the reference game as a procedural Three.js model, using the \`img2threejs\` skill. You build models and nothing else: never touch gameplay, rendering, HUD or level code, and never write outside \`src/assets/\` and \`.img2threejs/\`.
+
+1. Read your entry in ${referenceDir}/cast.md. You are given its slug, what it is, where it appears, and how it behaves in play.
+2. Find it. \`python3 tools/crop.py sheet <dir-or-video> --out .img2threejs/<name>/sheet.png\` contact-sheets candidates so you can pick a frame in one look. Try ${referenceDir}/objects/ FIRST — isolated shots are the only reliably good source — then images/, journey/, motion/, video/.
+3. Crop it. \`python3 tools/crop.py grid <still> --out .img2threejs/<name>/grid.png\`, LOOK at the grid, then \`python3 tools/crop.py cut <still> --cells B3:D8 --out .img2threejs/<name>/crop/<name>.jpg\`. Name grid cells; do not guess pixel coordinates, they are reliably wrong. LOOK at the crop and adjust — the first box is usually a little too tight, and \`--pad\` fixes it. The tool refuses a crop whose object fills less than a quarter of the frame: that is not a bug, it means the object is too small in that still and you should try another. \`--allow-upscale\` is the deliberate fallback when nothing better exists; if you use it, record low detail confidence in the spec.
+4. If no source gives a usable crop, STOP and report the entry unbuildable, naming what you tried. Do not force a bad crop through — every later pass inherits it and nothing downstream can tell. Do not model it from memory.
+5. Run the skill properly: \`python3 forge/state.py init --state .img2threejs/<name>/state.json --reference <crop> ...\`, then gate every step through \`forge/next.py\`. Never reconstruct progress from what you remember doing.
+6. Emit \`src/assets/<name>.ts\`: a factory returning a \`THREE.Group\` with \`userData.sculptRuntime\` (nodes, sockets, colliders) and \`userData.rig\`. Colliders must map to Rapier primitives — box, sphere, capsule, cylinder. The game spawns from this record, so sockets are where things attach and colliders are what it collides with; both come from the entry's stated role in play.
+7. Report: which source you cut from, what you built, and any detail you had to guess.`
+}
+
+/**
+ * The claude agent definition written to `.claude/agents/sculptor.md`.
+ * Null when the orchestrator is not claude — codex takes its rules in the
+ * prompt instead of from a file.
+ */
+export function sculptorAgentMd(models: LoopModels, referenceDir: string): string | null {
+  if (harnessFor(models.orchestratorModel) !== 'claude' || !models.assetModel) return null
+  const claudeWorker = harnessFor(models.assetModel) === 'claude'
+  const model = claudeWorker ? models.assetModel : DISPATCHER_MODEL
+  const effort = claudeWorker ? models.assetEffort : 'low'
+  const header = `---
+name: sculptor
+description: Rebuilds one named object from the Reference Pack as a procedural Three.js model. Use for ALL asset work.
+model: ${model}
+effort: ${effort}
+---
+`
+  if (claudeWorker) return `${header}${sculptorBrief(referenceDir)}`
+  return `${header}You are a dispatcher, not a modeller. ${models.assetModel} does the sculpting through the codex CLI; you hand it one object and report back. Never model anything yourself.
+
+1. Your slug is the cast entry's name.
+2. Write the full brief for your object to \`.gauntlet-loop/codex-<slug>.md\` — it must stand alone, because codex starts with no memory of this run. Include the entry's line from ${referenceDir}/cast.md and these rules verbatim:
+
+${sculptorBrief(referenceDir)}
+
+3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
+
+   ${codexChildCommand(models.assetModel, models.assetEffort, '<slug>')}
+
+   Do NOT use \`run_in_background\`, and do NOT poll it. The app reads that stream file as it is written, so nothing is lost while you wait.
+4. When it returns, read the tail of the stream file and report what was built, or that the entry was unbuildable and why.
+`
+}
+
+/**
+ * How the Asset Build hands each cast entry to its own sculptor. Same four
+ * combinations as the implement side, and null assetModel never reaches here —
+ * the runner skips the phase entirely rather than running it solo, because one
+ * agent sculpting a whole cast in sequence is the thing this phase exists to
+ * stop.
+ */
+export function sculptorRules(models: LoopModels, referenceDir: string): string {
+  if (!models.assetModel) return ''
+  const orchestrator = harnessFor(models.orchestratorModel)
+  const worker = harnessFor(models.assetModel)
+  const shared =
+    'One sculptor per cast entry, all launched together — they share no files, so nothing is gained by staging them. Do not sculpt anything yourself; you read the cast, hand out the work, check what came back, and report.'
+
+  if (orchestrator === 'codex' && worker === 'codex') {
+    return `${shared} Delegate each entry with \`spawn_agent\`, passing model="${models.assetModel}", reasoning_effort="${models.assetEffort}", and fork_turns="none" — the model override is refused on a full-history fork, so each brief must stand alone. Give every agent this brief, with its own entry's line from cast.md at the top:\n\n${sculptorBrief(referenceDir)}`
+  }
+
+  if (orchestrator === 'codex' && worker === 'claude') {
+    return `${shared} For each entry, write a self-contained brief to \`.gauntlet-loop/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch every sculptor from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
+  }
+
+  if (orchestrator === 'claude' && worker === 'codex') {
+    return `${shared} Delegate every entry to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — each hands its object to ${models.assetModel} through the codex CLI), one per cast entry. Each dispatcher holds its call open until codex finishes, so expect them to take a long time and do not chase them.`
+  }
+
+  const workflowRule = isUltracode(models)
+    ? ` When you orchestrate through a workflow, pass \`{agentType: 'sculptor'}\` on every \`agent()\` call so each one runs ${models.assetModel} at ${models.assetEffort} effort rather than inheriting yours.`
+    : ''
+  return `${shared} Delegate every entry to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — they run ${models.assetModel} at ${models.assetEffort} effort), one per cast entry.${workflowRule}`
+}

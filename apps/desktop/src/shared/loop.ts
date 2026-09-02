@@ -1,6 +1,6 @@
 import type { HarnessKind } from './harness'
 
-export type RunRole = 'reference' | 'implement' | 'critique'
+export type RunRole = 'reference' | 'assets' | 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
@@ -8,6 +8,7 @@ export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
 /** The heading a run's execution prompt is logged (and backfilled) under. */
 export function runPromptLabel(run: { role: RunRole; round: number }): string {
   if (run.role === 'reference') return 'Reference Study execution prompt'
+  if (run.role === 'assets') return 'Asset Build execution prompt'
   return `Round ${run.round} ${run.role === 'implement' ? 'implementer' : 'critic'} execution prompt`
 }
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
@@ -16,6 +17,13 @@ export type LoopStatus = 'running' | 'passed' | 'exhausted' | 'stopped' | 'faile
 export interface VerdictFinding {
   severity: string
   text: string
+  /**
+   * `asset:<name>` sends this finding back through the asset pipeline for that
+   * one model; anything else (including absent) is the implementer's to fix.
+   * Absent on every verdict written before the asset phase existed, which is
+   * why it is optional rather than defaulted at the type level.
+   */
+  target?: string
 }
 
 export interface Verdict {
@@ -88,6 +96,9 @@ export interface LoopModels {
   /** null = no deep-research fan-out; the reference agent sweeps by itself. */
   researchModel: string | null
   researchEffort: string
+  /** null = no asset phase; implement rounds build their own models, as before. */
+  assetModel: string | null
+  assetEffort: string
 }
 
 export interface RunRecord {
@@ -195,6 +206,9 @@ export interface StartLoopInput {
   /** null = the Reference Study runs its deep-research sweep without fan-out. */
   researchModel: string | null
   researchEffort: string
+  /** null = skip the Asset Build phase; implement rounds sculpt their own models. */
+  assetModel: string | null
+  assetEffort: string
 }
 
 export interface StartLoopResult {
@@ -258,6 +272,12 @@ export interface ReferencePack {
   storyMd: string | null
   /** research.md — distilled deep-research sweep: streams, Reddit, reviews, wikis. */
   researchMd: string | null
+  /** Isolated object shots — the best source a sculptor can crop from. */
+  objects: string[]
+  /** cast.md — the prose list of things worth sculpting. */
+  castMd: string | null
+  /** How many well-formed cast entries the manifest carries. */
+  castCount: number
 }
 
 export interface ReferenceStudy {

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { ReferencePack } from '../shared/loop'
+import { parseCast } from './asset-phase'
 
 const IMAGE = /\.(png|jpe?g|webp|gif)$/i
 const VIDEO = /\.(webm|mp4|mov)$/i
@@ -41,6 +42,18 @@ function filesBelow(workspaceDir: string, relativeDir: string): string[] {
   return files.sort()
 }
 
+/**
+ * True when cast.md opens by saying the game has nothing to sculpt.
+ *
+ * Read from the first real line rather than anywhere in the file, so the word
+ * has to be the document's answer — "None — the look is neon walls and bloom"
+ * counts, a stray "none of these" halfway down a list does not.
+ */
+function declaresNoCast(castMd: string): boolean {
+  const first = castMd.split(/\r?\n/).map((line) => line.replace(/^[#\-*\s]+/, '').trim()).find(Boolean) ?? ''
+  return /^none\b/i.test(first)
+}
+
 /** The sole filesystem seam for Reference Pack discovery and validation. */
 export function scanReferencePack(workspaceDir: string, root: string): ReferencePack {
   const files = filesBelow(workspaceDir, root)
@@ -50,6 +63,7 @@ export function scanReferencePack(workspaceDir: string, root: string): Reference
   const motion = under('motion', IMAGE)
   const videos = under('video', VIDEO)
   const journey = under('journey', IMAGE)
+  const objects = under('objects', IMAGE)
   const readme = readText(path.join(workspaceDir, root, 'README.md'))
   // The manifest is parsed, not just displayed, so it must never be truncated
   // mid-document — deep-research manifests list every consulted source and
@@ -58,6 +72,7 @@ export function scanReferencePack(workspaceDir: string, root: string): Reference
   const journeyMd = readText(path.join(workspaceDir, root, 'journey.md'))
   const storyMd = readText(path.join(workspaceDir, root, 'story.md'))
   const researchMd = readText(path.join(workspaceDir, root, 'research.md'))
+  const castMd = readText(path.join(workspaceDir, root, 'cast.md'))
   const issues: string[] = []
   if (images.length < 8) issues.push(`needs at least 8 stills (${images.length} found)`)
   if (motion.length < 8) issues.push(`needs at least 8 motion frames (${motion.length} found)`)
@@ -82,5 +97,31 @@ export function scanReferencePack(workspaceDir: string, root: string): Reference
       issues.push('manifest.json is not valid JSON')
     }
   }
-  return { root, ready: issues.length === 0, issues, images, motion, videos, journey, readme, manifest, journeyMd, storyMd, researchMd }
+  const cast = parseCast(manifest)
+  // An empty cast is legal — a game whose look lives in shaders and motion has
+  // nothing to sculpt — so the pack is only faulted for a cast list that exists
+  // in prose but not in the manifest, or for entries that name no frame.
+  if (!castMd?.trim()) issues.push('needs cast.md listing the objects worth sculpting (write "none" if the game has none)')
+  else if (cast.length === 0 && !declaresNoCast(castMd)) {
+    issues.push('cast.md lists objects but manifest.json has no matching "cast" array')
+  }
+  const castNoStills = cast.filter((entry) => entry.stills.length === 0).map((entry) => entry.name)
+  if (castNoStills.length > 0) issues.push(`cast entries name no reference frame: ${castNoStills.join(', ')}`)
+  return {
+    root,
+    ready: issues.length === 0,
+    issues,
+    images,
+    motion,
+    videos,
+    journey,
+    objects,
+    readme,
+    manifest,
+    journeyMd,
+    storyMd,
+    researchMd,
+    castMd,
+    castCount: cast.length,
+  }
 }

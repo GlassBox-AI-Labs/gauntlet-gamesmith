@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
-import { delegationRules, implementerAgentMd, researchRules } from './delegation'
+import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 
 const models = (orchestratorModel: string, subagentModel: string | null) =>
   resolveModels({ orchestratorModel, subagentModel, subagentEffort: 'high' }, null)
@@ -92,5 +92,64 @@ describe('researchRules', () => {
     const base = models('claude-opus-5', null)
     const rules = researchRules({ ...base, researchModel: null }, 'reference/loop-123')
     expect(rules).toContain('do NOT spawn researcher subagents')
+  })
+})
+
+const sculptors = (orchestratorModel: string, assetModel: string | null) =>
+  resolveModels({ orchestratorModel }, null, null, { assetModel, assetEffort: 'high' })
+
+describe('sculptorAgentMd', () => {
+  it('names the sculptor model directly when both sides are claude', () => {
+    const md = sculptorAgentMd(sculptors('claude-fable-5', 'claude-opus-5'), 'reference/loop-1')!
+    expect(md).toContain('name: sculptor')
+    expect(md).toContain('model: claude-opus-5')
+    expect(md).toContain('effort: high')
+  })
+
+  it('fronts a codex sculptor with a cheap dispatcher that must not background the child', () => {
+    const md = sculptorAgentMd(sculptors('claude-fable-5', 'gpt-5.6-sol'), 'reference/loop-1')!
+    expect(md).toContain('model: claude-sonnet-5')
+    expect(md).toContain('effort: low')
+    expect(md).toContain('run_in_background')
+    // The brief has to stand alone: codex starts with no memory of the run.
+    expect(md).toContain('tools/crop.py')
+  })
+
+  it('writes no agent file when there is no asset phase or codex orchestrates', () => {
+    expect(sculptorAgentMd(sculptors('claude-fable-5', null), 'reference/loop-1')).toBeNull()
+    expect(sculptorAgentMd(sculptors('gpt-5.6-sol', 'claude-opus-5'), 'reference/loop-1')).toBeNull()
+  })
+})
+
+describe('sculptorRules', () => {
+  it('holds every pairing to one sculptor per entry, launched together', () => {
+    for (const [orchestrator, worker] of [
+      ['claude-fable-5', 'claude-opus-5'],
+      ['claude-fable-5', 'gpt-5.6-sol'],
+      ['gpt-5.6-sol', 'claude-opus-5'],
+      ['gpt-5.6-sol', 'gpt-5.6-terra'],
+    ] as const) {
+      const rules = sculptorRules(sculptors(orchestrator, worker), 'reference/loop-1')
+      expect(rules).toContain('One sculptor per cast entry')
+      // The orchestrator hands out work and checks it; it never sculpts.
+      expect(rules).toContain('Do not sculpt anything yourself')
+    }
+  })
+
+  it('tells a codex orchestrator to override the model per spawn, which needs a bare fork', () => {
+    const rules = sculptorRules(sculptors('gpt-5.6-sol', 'gpt-5.6-terra'), 'reference/loop-1')
+    expect(rules).toContain('model="gpt-5.6-terra"')
+    expect(rules).toContain('fork_turns="none"')
+  })
+
+  it('gives a cross-harness pairing a brief that stands alone', () => {
+    const rules = sculptorRules(sculptors('gpt-5.6-sol', 'claude-opus-5'), 'reference/loop-1')
+    expect(rules).toContain('.gauntlet-loop/claude-<slug>.md')
+    expect(rules).toContain('tools/crop.py')
+    expect(rules).toContain('reference/loop-1/objects/')
+  })
+
+  it('says nothing when the phase is off — the runner never queues it', () => {
+    expect(sculptorRules(sculptors('claude-fable-5', null), 'reference/loop-1')).toBe('')
   })
 })

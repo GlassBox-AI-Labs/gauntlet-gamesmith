@@ -292,10 +292,10 @@ function registerLoopIpc(): void {
   ipcMain.handle('loop:start', async (_event, value: unknown) => {
     if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
     const input = value as Partial<StartLoopInput> | undefined
-    const models = resolveModels(input, input, input)
+    const models = resolveModels(input, input, input, input)
     // Any role can run on either CLI now, so a run needs whichever logins its
-    // four picks actually reach for.
-    const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel]
+    // picks actually reach for.
+    const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel, models.assetModel]
     const needsCodex = picks.some(isCodexModel)
     const needsClaude = picks.some((m) => m != null && !isCodexModel(m))
     const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), needsCodex ? probe('codex') : Promise.resolve(null)])
@@ -314,6 +314,8 @@ function registerLoopIpc(): void {
       criticEffort: models.criticEffort,
       researchModel: models.researchModel,
       researchEffort: models.researchEffort,
+      assetModel: models.assetModel,
+      assetEffort: models.assetEffort,
     })
   })
   ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })

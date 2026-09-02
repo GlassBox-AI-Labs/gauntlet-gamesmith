@@ -101,6 +101,22 @@ export interface ResearchFields {
 /** Where the run form starts: cheap, parallel researchers — luna is codex's fast/cheap tier. */
 export const DEFAULT_RESEARCH: ResearchFields = { researchModel: 'gpt-5.6-luna', researchEffort: 'medium' }
 
+/** The Asset Build's sculptors. Null skips the phase entirely. */
+export interface AssetFields {
+  assetModel: string | null
+  assetEffort: string
+}
+
+/**
+ * Where the run form starts: the subagent default, because sculptors are
+ * fan-out workers. Not the critic's cross-family pick — the critic is in a
+ * different model family so it has no attachment to the code, and no such
+ * adversarial argument applies to production work. And not the cheap tier
+ * research uses: this phase judges its own renders against a reference photo
+ * pass after pass, so the vision is the job.
+ */
+export const DEFAULT_ASSET: AssetFields = { assetModel: 'claude-opus-5', assetEffort: 'high' }
+
 /** The one-line note under the run form, judged against who is implementing. */
 export function describeCritic(criticModel: string, implementerModel: string): string {
   return isCodexModel(criticModel) === isCodexModel(implementerModel)
@@ -126,6 +142,7 @@ export function resolveModels(
   fields: Partial<ImplementerFields> | null | undefined,
   critic: Partial<CriticFields> | null | undefined,
   research?: Partial<ResearchFields> | null,
+  asset?: Partial<AssetFields> | null,
 ): LoopModels {
   const base = DEFAULT_IMPLEMENTER
   const subagentModel =
@@ -156,6 +173,14 @@ export function resolveModels(
       : AGENT_MODEL_CHOICES.some((m) => m.id === research?.researchModel)
         ? research!.researchModel!
         : DEFAULT_RESEARCH.researchModel
+  // `asset` undefined means the caller predates the field and gets the default;
+  // an explicit null is the operator turning the phase off, and must survive.
+  const assetModel =
+    asset?.assetModel === null || asset?.assetModel === SOLO_SUBAGENT
+      ? null
+      : AGENT_MODEL_CHOICES.some((m) => m.id === asset?.assetModel)
+        ? asset!.assetModel!
+        : DEFAULT_ASSET.assetModel
   return {
     ...resolved,
     criticHarness: harnessFor(criticModel),
@@ -163,6 +188,8 @@ export function resolveModels(
     criticEffort: pick(AGENT_EFFORTS, critic?.criticEffort, DEFAULT_CRITIC.criticEffort as 'medium'),
     researchModel,
     researchEffort: pick(AGENT_EFFORTS, research?.researchEffort, DEFAULT_RESEARCH.researchEffort as 'medium'),
+    assetModel,
+    assetEffort: pick(AGENT_EFFORTS, asset?.assetEffort, DEFAULT_ASSET.assetEffort as 'high'),
   }
 }
 
@@ -184,6 +211,10 @@ export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolea
     },
     { criticModel: raw.criticModel, criticEffort: raw.criticEffort },
     { researchModel: raw.researchModel, researchEffort: raw.researchEffort },
+    // A row written before the asset phase has no key at all, and must not be
+    // read as "the operator turned it off" — `undefined` takes the default,
+    // and only a stored null keeps the phase off.
+    'assetModel' in raw ? { assetModel: raw.assetModel, assetEffort: raw.assetEffort } : undefined,
   )
   // Keep a model name the picker no longer offers rather than silently
   // retitling an old run, but only where it is still a name a CLI would accept.
@@ -207,5 +238,8 @@ export function describeModels(models: LoopModels): string {
   const research = models.researchModel
     ? `${models.researchModel} (${models.researchEffort}) researchers fanned out`
     : 'no fan-out'
-  return `Implementer: ${impl} · Critic: ${models.criticHarness} ${models.criticModel} (${models.criticEffort}), fresh eyes every round. · Research: ${research}.`
+  const assets = models.assetModel
+    ? `${models.assetModel} (${models.assetEffort}) sculptors, one per cast entry`
+    : 'no asset phase'
+  return `Implementer: ${impl} · Critic: ${models.criticHarness} ${models.criticModel} (${models.criticEffort}), fresh eyes every round. · Research: ${research}. · Assets: ${assets}.`
 }

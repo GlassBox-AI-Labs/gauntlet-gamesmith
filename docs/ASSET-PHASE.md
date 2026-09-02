@@ -118,8 +118,9 @@ Each worker:
 
 ### 3.3 `tools/crop.py`
 
-Working tool at `docs/asset-phase/crop.py`. Scaffolded into the workspace like
-`tools/engine-gate.mjs` and rewritten every round for the same reason.
+Lives as `CROP_SCRIPT` in `main/asset-phase.ts` and is scaffolded into the
+workspace like `tools/engine-gate.mjs`, rewritten every round for the same
+reason.
 
 Three subcommands: `sheet` contact-sheets a stills folder or samples a video,
 `grid` overlays a labelled grid on a still, `cut` takes a cell range or pixel

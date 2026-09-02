@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord, RunRole } from '../../../shared/loop'
 import { buildCriticPrompt } from '../../../shared/prompts'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
@@ -33,6 +33,7 @@ import {
   AGENT_MODEL_CHOICES,
   DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
+  DEFAULT_ASSET,
   DEFAULT_RESEARCH,
   describeCritic,
   modelLabel,
@@ -40,6 +41,7 @@ import {
   SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
+  type AssetFields,
   type ResearchFields,
 } from '../../../shared/models'
 
@@ -92,6 +94,13 @@ function projectName(workspaceDir: string): string {
   return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
 }
 
+const ROLE_COLOR: Partial<Record<RunRole, string>> = {
+  reference: 'text-amber-300',
+  assets: 'text-[#c9bce9]',
+  implement: 'text-[#e9c9bc]',
+  critique: 'text-[#9ad1c6]',
+}
+
 function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element {
   const implementer = models.subagentModel
     ? `${modelLabel(models.subagentModel)} · ${models.subagentEffort}`
@@ -106,6 +115,7 @@ function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element 
       <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
       <span className="text-[#393433]" aria-hidden="true">/</span>
       <span><span className="text-[#857d79]">Research</span> {models.researchModel ? `${modelLabel(models.researchModel)} · ${models.researchEffort}` : 'no fan-out'}</span>
+      <span><span className="text-[#857d79]">Assets</span> {models.assetModel ? `${modelLabel(models.assetModel)} · ${models.assetEffort}` : 'no asset phase'}</span>
     </div>
   )
 }
@@ -405,7 +415,7 @@ function RunRow({
         </TableCell>
         <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.role === 'reference' ? '—' : run.round}</TableCell>
         <TableCell className="px-2 py-2.5">
-          <span className={run.role === 'reference' ? 'text-amber-300' : run.role === 'implement' ? 'text-[#e9c9bc]' : 'text-[#9ad1c6]'}>{run.role}</span>
+          <span className={ROLE_COLOR[run.role] ?? 'text-[#9ad1c6]'}>{run.role}</span>
         </TableCell>
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{run.model ?? '—'}</TableCell>
         <TableCell className="px-2 py-2.5">
@@ -490,6 +500,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
   const [research, setResearch] = useState<ResearchFields>(DEFAULT_RESEARCH)
+  const [asset, setAsset] = useState<AssetFields>(DEFAULT_ASSET)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -551,6 +562,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         })
         setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
         setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
+        setAsset({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -659,6 +671,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         ...impl,
         ...critic,
         ...research,
+        ...asset,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
@@ -695,6 +708,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     })
     setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
     setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
+    setAsset({ assetModel: next.loop.models.assetModel, assetEffort: next.loop.models.assetEffort })
     setSelectedRound(round)
     setLogFilter(ALL_LOG_FILTER)
     setDetailTab('activity')
@@ -934,6 +948,29 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               </Select>
             </div>
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Assets</span>
+              <Select
+                value={asset.assetModel ?? SOLO_SUBAGENT}
+                onValueChange={(value) => setAsset((current) => ({ ...current, assetModel: value === SOLO_SUBAGENT ? null : value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  <SelectItem value={SOLO_SUBAGENT}>none (no asset phase)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={asset.assetEffort}
+                onValueChange={(value) => setAsset((current) => ({ ...current, assetEffort: value }))}
+                disabled={asset.assetModel === null}
+              >
+                <SelectTrigger className={asset.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
               <Select
                 value={critic.criticModel}
@@ -968,7 +1005,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
               {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
               {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
-              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}
+              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}{' '}
+              {asset.assetModel ? `Each cast entry gets its own sculptor on ${modelLabel(asset.assetModel)} at ${asset.assetEffort} effort.` : 'No asset phase — implement rounds sculpt their own models.'}
             </p>
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}

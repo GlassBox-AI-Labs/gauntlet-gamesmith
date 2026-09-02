@@ -1,4 +1,113 @@
-#!/usr/bin/env python3
+import fs from 'node:fs'
+import path from 'node:path'
+
+/**
+ * The parts of the Asset Build that touch disk.
+ *
+ * A worker sculpts one cast entry with the `img2threejs` skill, which takes one
+ * object per image. The Reference Pack holds whole scenes, so the crop below is
+ * the seam between them: it is the only new tool the phase needs, and like the
+ * engine gate it is rewritten into the workspace every round rather than left
+ * for a worker to edit.
+ */
+
+/** One thing worth sculpting, as the Reference Study recorded it. */
+export interface CastEntry {
+  /** Stable slug; becomes `src/assets/<name>.ts`. */
+  name: string
+  kind: string
+  /** Frames the object is visible in, best first. */
+  stills: string[]
+  /** Where in the frame it is — "the white dog, front left". */
+  locator: string
+  /** What it does in play: what it collides with, what attaches to it. */
+  role: string
+  priority: number
+}
+
+/**
+ * Where a worker keeps everything about one asset: the crop it cut, the skill's
+ * state file, the spec, and the render it was judged against. Outside `src/` so
+ * the engine gate never walks it, and outside the Reference Pack because that
+ * is frozen.
+ */
+export function assetWorkDir(name: string): string {
+  return path.posix.join('.img2threejs', name)
+}
+
+const SLUG = /^[a-z0-9][a-z0-9-]*$/
+
+/**
+ * Read the cast out of the pack manifest.
+ *
+ * `cast.md` is the prose a worker reads; the manifest is what the app parses,
+ * the same split the pack already uses for its sources. Malformed entries are
+ * dropped rather than thrown on: a half-written cast should cost the entries it
+ * broke, not the whole phase, and `scanReferencePack` reports the shortfall.
+ */
+export function parseCast(manifestJson: string | null): CastEntry[] {
+  if (!manifestJson?.trim()) return []
+  let value: unknown
+  try {
+    value = JSON.parse(manifestJson)
+  } catch {
+    return []
+  }
+  const raw = (value as { cast?: unknown }).cast
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const cast: CastEntry[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const entry = item as Record<string, unknown>
+    const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+    // The name becomes a file path and a work directory, so anything that is
+    // not a plain slug is rejected here rather than sanitised into something
+    // the worker did not ask for.
+    if (!SLUG.test(name) || seen.has(name)) continue
+    const stills = Array.isArray(entry.stills) ? entry.stills.filter((s): s is string => typeof s === 'string' && !!s.trim()) : []
+    seen.add(name)
+    cast.push({
+      name,
+      kind: typeof entry.kind === 'string' ? entry.kind : 'prop',
+      stills,
+      locator: typeof entry.locator === 'string' ? entry.locator : '',
+      role: typeof entry.role === 'string' ? entry.role : '',
+      priority: Number.isFinite(entry.priority) ? Number(entry.priority) : 100,
+    })
+  }
+  // Lowest priority number first, so a run that runs out of budget has spent it
+  // on the things the Reference Study said mattered most.
+  return cast.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
+}
+
+/**
+ * Cast slugs the critic blamed the model itself for, deduped.
+ *
+ * A verdict written before the asset phase carries no targets at all, which
+ * reads here as "nothing to re-sculpt" and sends every finding to the
+ * implementer — exactly what those runs already did.
+ */
+export function assetTargets(findings: { target?: string }[]): string[] {
+  const names = findings
+    .map((finding) => finding.target?.trim() ?? '')
+    .filter((target) => target.startsWith('asset:'))
+    .map((target) => target.slice('asset:'.length).trim())
+    .filter(Boolean)
+  return [...new Set(names)]
+}
+
+/** Cast entries with no factory yet — what a re-entrant round still owes. */
+export function unbuiltCast(workspaceDir: string, cast: CastEntry[]): CastEntry[] {
+  return cast.filter((entry) => !fs.existsSync(path.join(workspaceDir, 'src/assets', `${entry.name}.ts`)))
+}
+
+/**
+ * The crop tool. Pure stdlib plus PIL, and deliberately not clever: the
+ * judgement is the worker's, and the script only holds it to rules that a model
+ * reliably breaks on its own.
+ */
+export const CROP_SCRIPT = `#!/usr/bin/env python3
 """Cut one object out of a gameplay still so img2threejs will accept it.
 
 The Reference Pack holds whole scenes; img2threejs takes one object per image
@@ -279,3 +388,17 @@ def main() -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
+`
+
+/**
+ * Put the crop tool in the workspace. Rewritten every round for the same reason
+ * the gate is: a tool a worker can weaken is not a tool.
+ */
+export function scaffoldAssetTools(workspaceDir: string): boolean {
+  const full = path.join(workspaceDir, 'tools/crop.py')
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  const before = fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null
+  if (before === CROP_SCRIPT) return false
+  fs.writeFileSync(full, CROP_SCRIPT, { mode: 0o755 })
+  return true
+}

@@ -130,6 +130,36 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
   }
 }
 
+/**
+ * The Asset Build. Shaped like the implement plan because it is the same
+ * thing structurally — an orchestrator that fans out — but its workers are
+ * sculptors, so `assetModel` binds them instead of `subagentModel`.
+ */
+export function assetsPlan(ctx: PlanContext): SpawnPlan {
+  const { models } = ctx
+  if (harnessFor(models.orchestratorModel) === 'codex') {
+    return {
+      bin: 'codex',
+      args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, null, ctx.resumeId), ctx.prompt],
+      env: bothHomes(ctx),
+    }
+  }
+  return {
+    bin: 'claude',
+    args: [
+      ...claudeArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
+      '--forward-subagent-text',
+    ],
+    env: {
+      ...bothHomes(ctx),
+      ...CLAUDE_RUN_ENV,
+      ...(models.assetModel
+        ? { CLAUDE_CODE_SUBAGENT_MODEL: harnessFor(models.assetModel) === 'claude' ? models.assetModel : DISPATCHER_MODEL }
+        : {}),
+    },
+  }
+}
+
 /** A one-agent research run using the orchestrator model, with no delegation. */
 export function referencePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
