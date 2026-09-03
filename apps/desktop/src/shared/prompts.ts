@@ -54,10 +54,23 @@ You are the orchestrator and own the integrated game, not just its build. Before
 }
 
 /**
+ * How many sculptors the Asset Build runs at once.
+ *
+ * Width sets the burn rate, not the total: the same cast costs about the same
+ * whether it is built four at a time or all at once. What a narrow wave buys
+ * is a bounded loss. A sculptor banks its work only by finishing — it writes
+ * `src/assets/<name>.ts` and its evidence at the end — so everything still in
+ * flight when a usage limit ends the run is gone. One run launched 27 at once,
+ * banked 8 in a six-minute burst, then hit the wall: the other 19 left no
+ * crops, no zone analysis, no blockouts, nothing to resume from.
+ */
+export const ASSET_WAVE_SIZE = 4
+
+/**
  * The Asset Build.
  *
- * One run that fans out: the orchestrator reads the cast and hands each entry
- * to its own sculptor, because assets are independent of one another and the
+ * One run that fans out: the orchestrator reads the cast and hands the entries
+ * to sculptors in waves, because assets are independent of one another and the
  * runner drives one process per loop. `only` is the re-entrant case — a later
  * round rebuilding just what the critic faulted.
  */
@@ -88,10 +101,10 @@ ${list || '(the cast is empty — report that and finish without building anythi
 
 Protocol:
 1. Read ./${referenceDir}/cast.md and ./${referenceDir}/README.md so you know what each model is and how it behaves in play.
-2. Hand each entry to its own sculptor, in parallel — they share no files and must not wait on each other. ${sculptorRules}
+2. Hand the entries out one sculptor each, in waves of at most ${ASSET_WAVE_SIZE} at a time. Wait for a wave to report before launching the next. Do NOT launch the whole cast at once: sculptors share no files, so a wide fan-out is tempting, but a sculptor only banks its work by finishing, and a usage limit that lands mid-wave throws away everything still in flight. Four at a time is what caps that loss. ${sculptorRules}
 3. Every sculptor works from a CROP, never a whole gameplay still. \`tools/crop.py\` is in the workspace: \`sheet\` contact-sheets a stills folder or samples a video, \`grid\` overlays a labelled grid on a still, \`cut\` takes a grid range (\`--cells B3:D8\`) or a pixel box. Aim by naming grid cells; guessing pixel coordinates does not work. Crops belong in \`.img2threejs/<name>/crop/\` and NEVER in ./${referenceDir}, which is frozen.
 4. Source order, best first: \`${referenceDir}/objects/\` (isolated shots — always try these first), then \`images/\`, \`journey/\`, \`motion/\`, \`video/\`. If a crop cannot be made good — the object is a smear, or half of it is out of frame — ABANDON that frame and try another. A bad crop poisons every later pass and nothing downstream can notice. If every source fails, report that entry as unbuildable and move on; do not force a bad crop through, and do not invent a model from memory.
-5. Collect the sculptors' reports. Verify each finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\`. Run \`npx tsc --noEmit\` if a tsconfig exists, and fix nothing yourself — send a broken factory back to its sculptor.
+5. Check each wave as it lands, not just at the end: verify every finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\` before the next wave goes out. Run \`npx tsc --noEmit\` if a tsconfig exists, and fix nothing yourself — send a broken factory back to its sculptor.
 6. Finish with a plain report: which entries were built, which were unbuildable and why, and which source each model was cut from. Do not begin implementation.`
 }
 
