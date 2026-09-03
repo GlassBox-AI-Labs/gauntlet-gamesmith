@@ -31,8 +31,17 @@ export function composeImplementPrompt(
   delegationRules: string,
   referenceDir: string,
   engineContract: string,
+  wanted: { name: string; kind: string; stills: string[]; locator: string; role: string }[] = [],
 ): string {
-  const assetRule = `Assets — the Asset Build phase has already sculpted the game's models into ./src/assets/<name>.ts, one procedural factory per cast entry, each returning a \`THREE.Group\` carrying \`userData.sculptRuntime\` (nodes, sockets, colliders) and \`userData.rig\`. Your job is to WIRE THEM UP, not to sculpt: call each factory ONCE, extract what it carries into a plain record, and spawn cheaply from that — calling a factory per enemy is the mistake that eats the frame budget. Read ./${referenceDir}/cast.md for what each model is and how it behaves in play. Do NOT hand-edit a generated factory: if a model needs a different collider, socket or scale, say so in your report and it is regenerated. If ./src/assets is empty or a cast entry has no factory — the phase reports entries it could not build — model that one yourself and say which in your report.`
+  const wireUpRule = `Assets — the Asset Build phase has already sculpted the game's models into ./src/assets/<name>.ts, one procedural factory per cast entry, each returning a \`THREE.Group\` carrying \`userData.sculptRuntime\` (nodes, sockets, colliders) and \`userData.rig\`. Your job is to WIRE THEM UP, not to sculpt: call each factory ONCE, extract what it carries into a plain record, and spawn cheaply from that — calling a factory per enemy is the mistake that eats the frame budget. Read ./${referenceDir}/cast.md for what each model is and how it behaves in play. Do NOT hand-edit a generated factory: if a model needs a different collider, socket or scale, say so in your report and it is regenerated. If ./src/assets is empty or a cast entry has no factory — the phase reports entries it could not build — model that one yourself and say which in your report.`
+  const assetRule =
+    wanted.length === 0
+      ? wireUpRule
+      : `Assets — ${wanted.length} cast ${wanted.length === 1 ? 'entry has' : 'entries have'} no factory yet, or the critic faulted the model itself rather than how it is wired. Sculpt these BEFORE wiring anything up:
+${wanted.map((entry) => `- \`${entry.name}\` (${entry.kind}) — ${entry.locator || 'see cast.md'}. Plays as: ${entry.role || 'see cast.md'}. Frames: ${entry.stills.join(', ') || 'none named; search the pack'}`).join('\n')}
+Hand the entries out one sculptor each, in waves of at most ${ASSET_WAVE_SIZE} at a time (the \`sculptor\` subagent's dispatch rules are below, alongside the implementer's). Wait for a wave to report before launching the next. Do NOT launch them all at once: sculptors share no files, so a wide fan-out is tempting, but a sculptor only banks its work by finishing, and a usage limit that lands mid-wave throws away everything still in flight. Every sculptor works from a CROP, never a whole gameplay still: \`tools/crop.py\` is in the workspace (\`sheet\`/\`grid\`/\`cut\`) — aim by naming grid cells, never pixel guesses. Source order, best first: \`${referenceDir}/objects/\`, then \`images/\`, \`journey/\`, \`motion/\`, \`video/\` — abandon a bad crop rather than force it through, since a bad crop poisons every later pass and nothing downstream can notice. Check each wave as it lands, not just at the end: verify every finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\` before the next wave goes out; report anything unbuildable rather than forcing it.
+
+${wireUpRule}`
   const referenceRule = `Before planning, delegating, or writing code, read ./${referenceDir}/README.md, ./${referenceDir}/research.md, ./${referenceDir}/journey.md, and ./${referenceDir}/story.md; VIEW the relevant stills, motion frames, and ordered journey shots; and WATCH the gameplay clip in the frozen Reference Pack. Treat the Expert gameplay dossier in research.md as the authority for controls, mechanics, advanced techniques, enemies, fail/win states, difficulty, and progression — do not substitute memory. Do not replace or redownload the pack.
 
 You are the orchestrator and own the integrated game, not just its build. Before delegating, turn the Reference Study into explicit acceptance criteria for story, gameplay, difficulty, and progression, then include the relevant criteria and exact reference files in every worker brief. Match the documented first-play flow and story arc. Tune difficulty through actual end-to-end play so challenge escalates deliberately, mechanics are taught before they are tested, failure is fair and recoverable, and no difficulty spike or trivial exploit breaks the curve. If the Reference Study classifies the game as level-based, ship at least three complete, distinct, playable levels/stages/missions with real transitions, escalating mechanics and difficulty, story progression, and reachable completion states; menus, reskins, empty rooms, and placeholders do not count. If it classifies the game as non-level-based, preserve its documented progression structure instead of inventing levels. Do not finish after a build-only check: play the full implemented progression, verify every required level or milestone is reachable and completable, and verify the story and difficulty curve in the running game.`
@@ -65,48 +74,6 @@ You are the orchestrator and own the integrated game, not just its build. Before
  * crops, no zone analysis, no blockouts, nothing to resume from.
  */
 export const ASSET_WAVE_SIZE = 4
-
-/**
- * The Asset Build.
- *
- * One run that fans out: the orchestrator reads the cast and hands the entries
- * to sculptors in waves, because assets are independent of one another and the
- * runner drives one process per loop. `only` is the re-entrant case — a later
- * round rebuilding just what the critic faulted.
- */
-export function buildAssetsPrompt(
-  userPrompt: string,
-  referenceDir: string,
-  cast: { name: string; kind: string; stills: string[]; locator: string; role: string }[],
-  sculptorRules: string,
-  only: string[] = [],
-): string {
-  const wanted = only.length > 0 ? cast.filter((entry) => only.includes(entry.name)) : cast
-  const list = wanted
-    .map((entry) => `- \`${entry.name}\` (${entry.kind}) — ${entry.locator || 'see cast.md'}. Plays as: ${entry.role || 'see cast.md'}. Frames: ${entry.stills.join(', ') || 'none named; search the pack'}`)
-    .join('\n')
-  const scope =
-    only.length > 0
-      ? `This is a REBUILD round. Only these entries are in scope — every other model in ./src/assets is finished and must not be touched:`
-      : `Build every entry in the cast:`
-  return `You own the Asset Build for this game loop. You produce the game's 3D models and nothing else: no gameplay, no rendering, no HUD, no level code. Do not touch ./src outside ./src/assets.
-
-<goal>
-${userPrompt}
-</goal>
-
-${scope}
-
-${list || '(the cast is empty — report that and finish without building anything)'}
-
-Protocol:
-1. Read ./${referenceDir}/cast.md and ./${referenceDir}/README.md so you know what each model is and how it behaves in play.
-2. Hand the entries out one sculptor each, in waves of at most ${ASSET_WAVE_SIZE} at a time. Wait for a wave to report before launching the next. Do NOT launch the whole cast at once: sculptors share no files, so a wide fan-out is tempting, but a sculptor only banks its work by finishing, and a usage limit that lands mid-wave throws away everything still in flight. Four at a time is what caps that loss. ${sculptorRules}
-3. Every sculptor works from a CROP, never a whole gameplay still. \`tools/crop.py\` is in the workspace: \`sheet\` contact-sheets a stills folder or samples a video, \`grid\` overlays a labelled grid on a still, \`cut\` takes a grid range (\`--cells B3:D8\`) or a pixel box. Aim by naming grid cells; guessing pixel coordinates does not work. Crops belong in \`.img2threejs/<name>/crop/\` and NEVER in ./${referenceDir}, which is frozen.
-4. Source order, best first: \`${referenceDir}/objects/\` (isolated shots — always try these first), then \`images/\`, \`journey/\`, \`motion/\`, \`video/\`. If a crop cannot be made good — the object is a smear, or half of it is out of frame — ABANDON that frame and try another. A bad crop poisons every later pass and nothing downstream can notice. If every source fails, report that entry as unbuildable and move on; do not force a bad crop through, and do not invent a model from memory.
-5. Check each wave as it lands, not just at the end: verify every finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\` before the next wave goes out. Run \`npx tsc --noEmit\` if a tsconfig exists, and fix nothing yourself — send a broken factory back to its sculptor.
-6. Finish with a plain report: which entries were built, which were unbuildable and why, and which source each model was cut from. Do not begin implementation.`
-}
 
 export function buildCriticPrompt(userPrompt: string, round: number, referenceDir: string, engineGateRules: string): string {
   const evidenceDir = `critique/round-${round}`

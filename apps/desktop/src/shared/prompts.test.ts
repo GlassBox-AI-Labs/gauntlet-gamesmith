@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from './prompts'
+import { ASSET_WAVE_SIZE, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
 const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
@@ -153,40 +153,44 @@ const cast = [
   { name: 'wolf', kind: 'creature', stills: ['images/still-2.jpg'], locator: 'centre', role: 'chases the player' },
 ]
 
-describe('asset build prompt', () => {
-  it('hands out the whole cast with what each thing is and where to find it', () => {
-    const prompt = buildAssetsPrompt('Build a soulslike', 'reference/loop-1', cast, 'one sculptor each')
-    expect(prompt).toContain('Build every entry in the cast')
+describe('sculpting inside the implement prompt', () => {
+  it('leaves the wire-up-only text untouched when nothing needs sculpting', () => {
+    const withDefault = composeImplementPrompt('Build it', 1, null, rules, 'reference/loop-1', contract)
+    const withEmpty = composeImplementPrompt('Build it', 1, null, rules, 'reference/loop-1', contract, [])
+    expect(withEmpty).toBe(withDefault)
+    expect(withDefault).not.toContain('Sculpt these BEFORE wiring anything up')
+  })
+
+  it('lists what still needs a sculptor before the wire-up instructions', () => {
+    const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
+    expect(prompt).toContain('Sculpt these BEFORE wiring anything up')
     expect(prompt).toContain('`samoyed` (character) — front left')
     expect(prompt).toContain('`wolf` (creature) — centre')
-    expect(prompt).toContain('one sculptor each')
+    expect(prompt.indexOf('Sculpt these BEFORE')).toBeLessThan(prompt.indexOf('WIRE THEM UP'))
   })
 
-  it('scopes a rebuild round to the models the critic faulted', () => {
-    const prompt = buildAssetsPrompt('Build a soulslike', 'reference/loop-1', cast, 'one sculptor each', ['wolf'])
-    expect(prompt).toContain('This is a REBUILD round')
-    expect(prompt).toContain('`wolf` (creature)')
-    expect(prompt).not.toContain('`samoyed` (character)')
+  it('sculpts in waves rather than fanning the whole list out at once', () => {
+    const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
+    expect(prompt).toContain(`in waves of at most ${ASSET_WAVE_SIZE} at a time`)
+    expect(prompt).toContain('Wait for a wave to report before launching the next')
+    // The old wording said "in parallel", which overrode the wave rule in the
+    // delegation text. Assert it is gone so a revert cannot pass silently.
+    expect(prompt).not.toContain('in parallel')
   })
 
-  it('makes abandoning a bad crop the rule, not forcing one through', () => {
-    const prompt = buildAssetsPrompt('Build a soulslike', 'reference/loop-1', cast, 'one sculptor each')
-    expect(prompt).toContain('ABANDON that frame and try another')
-    expect(prompt).toContain('report that entry as unbuildable')
-    expect(prompt).toContain('do not invent a model from memory')
+  it('still tells the orchestrator to crop properly and never force a bad one', () => {
+    const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
+    expect(prompt).toContain('tools/crop.py')
+    expect(prompt).toContain('abandon a bad crop rather than force it through')
     // Source order matters: isolated shots first, the derived clip last.
-    expect(prompt.indexOf('objects/')).toBeLessThan(prompt.indexOf('`video/`'))
+    expect(prompt.indexOf('reference/loop-1/objects/')).toBeLessThan(prompt.indexOf('`video/`'))
   })
 
-  it('keeps the asset run out of the rest of the game', () => {
-    const prompt = buildAssetsPrompt('Build a soulslike', 'reference/loop-1', cast, 'one sculptor each')
-    expect(prompt).toContain('Do not touch ./src outside ./src/assets')
-    expect(prompt).toContain('NEVER in ./reference/loop-1')
-  })
-
-  it('says so plainly when a game has nothing to sculpt', () => {
-    const prompt = buildAssetsPrompt('Build a maze game', 'reference/loop-1', [], 'one sculptor each')
-    expect(prompt).toContain('the cast is empty')
+  it('keeps the wire-up and unbuildable-fallback text after the sculpt list', () => {
+    const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
+    expect(prompt).toContain('WIRE THEM UP, not to sculpt')
+    expect(prompt).toContain('Do NOT hand-edit a generated factory')
+    expect(prompt).toContain('model that one yourself')
   })
 })
 

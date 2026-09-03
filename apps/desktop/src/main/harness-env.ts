@@ -4,6 +4,7 @@ import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
 import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
 import { RUN_METADATA_DIR } from './run-transfer'
+import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 
 export function harnessesRoot(): string {
   return path.join(app.getPath('userData'), 'harnesses')
@@ -27,6 +28,24 @@ export function sharedHome(kind: HarnessKind): string {
   fs.mkdirSync(shared, { recursive: true, mode: 0o700 })
   fs.chmodSync(shared, 0o700)
   return shared
+}
+
+/**
+ * Put the vendored `img2threejs` skill where the Claude CLI will find it.
+ *
+ * Installed into the *shared* home, not the active account's. Every account
+ * reaches `skills/` through the same store — the primary account's dir is that
+ * store, and the others symlink into it — so installing once here is what makes
+ * a mid-loop account switch keep finding the skill. Installing into
+ * `cliHome()` would land in whichever account happened to be active and only
+ * reach the shared store by symlink, which `prepareAccountDir` declines to
+ * create when a real directory is already sitting there.
+ *
+ * Packaged, the source is the `extraResources` copy under `resourcesPath`; in
+ * dev it is `vendor/` in the repo.
+ */
+export function ensureSkill(): SkillInstall {
+  return installSkill(sharedHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
 }
 
 /** Run transcripts live with the project so a folder transfer is complete. */

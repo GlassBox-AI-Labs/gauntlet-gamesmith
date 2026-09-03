@@ -63,6 +63,12 @@
       "out/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "../../vendor/img2threejs",
+        "to": "vendor/img2threejs"
+      }
+    ],
     "asarUnpack": [
       "node_modules/node-pty/**/*"
     ],
