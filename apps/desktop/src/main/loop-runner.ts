@@ -28,7 +28,7 @@ import { cliHome, runsDir, sharedHome, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { referencePackDir, scanReferencePack } from './reference-pack'
-import { assetTargets, type CastEntry, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
+import { assetPassProgress, assetTargets, type CastEntry, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
 import { translateClaudeLine } from './streams/claude-stream'
@@ -94,6 +94,12 @@ const MAX_REFERENCE_ATTEMPTS = 2
  * loosely on purpose, which is why rotation is capped rather than trusted to
  * stop on its own.
  */
+/** " (2/8 passes)" when the sculptor recorded its progress, else nothing. */
+function passLabel(workspaceDir: string, name: string): string {
+  const progress = assetPassProgress(workspaceDir, name)
+  return progress ? ` (${progress.completed}/${progress.total} passes)` : ''
+}
+
 const USAGE_LIMIT = /rate.?limit|(?:usage|session|weekly) limit|limit reached|out of extra usage/i
 /** Account changes one loop may spend on usage limits before it gives up. */
 const MAX_ACCOUNT_ROTATIONS = 3
@@ -1167,7 +1173,7 @@ export class LoopRunner {
    *
    * Three ways to have no work: the operator turned the phase off, the game has
    * no sculptable objects (a maze of neon walls and bloom is rendering, not
-   * models), or every named entry already has a factory. All three are normal,
+   * models), or every named entry already finished its passes. All three are normal,
    * and the caller moves straight on to implement.
    */
   private queueAssets(loop: LoopRecord, round: number, only: string[] = []): boolean {
@@ -1304,8 +1310,8 @@ export class LoopRunner {
         run.id,
         'system',
         built.length === 0
-          ? '▦ Asset Build complete — every cast entry has a factory.'
-          : `▦ Asset Build complete — ${built.length} entry(s) still unbuilt: ${built.map((e) => e.name).join(', ')}. The implementer models those itself.`,
+          ? '▦ Asset Build complete — every cast entry finished its sculpt passes.'
+          : `▦ Asset Build complete — ${built.length} entry(s) unfinished: ${built.map((e) => `${e.name}${passLabel(loop.workspaceDir, e.name)}`).join(', ')}. The implementer models those itself, and a later round picks them up where they stopped.`,
       )
     }
     if (this.overBudget(loop.id)) return

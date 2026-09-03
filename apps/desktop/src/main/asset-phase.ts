@@ -97,9 +97,62 @@ export function assetTargets(findings: { target?: string }[]): string[] {
   return [...new Set(names)]
 }
 
-/** Cast entries with no factory yet — what a re-entrant round still owes. */
+/** How far one cast entry got through the sculpt pipeline, if it recorded that. */
+export interface PassProgress {
+  completed: number
+  total: number
+  currentPass: string
+}
+
+/**
+ * Read an entry's pipeline position out of the sculptor's own spec.
+ *
+ * The factory file is not the signal: `generate_threejs_factory.py` writes
+ * `src/assets/<name>.ts` for the current unlocked pass, so the file exists from
+ * the first rough blockout onward. The spec's `sculptPipeline` is what knows
+ * whether the other seven passes ever ran.
+ *
+ * Returns null when there is no readable spec — an entry sculpted before the
+ * pipeline recorded passes, or by hand.
+ */
+export function assetPassProgress(workspaceDir: string, name: string): PassProgress | null {
+  try {
+    const raw = fs.readFileSync(path.join(workspaceDir, '.img2threejs', name, 'object-sculpt-spec.json'), 'utf8')
+    const pipeline = (JSON.parse(raw) as { sculptPipeline?: unknown }).sculptPipeline
+    if (!pipeline || typeof pipeline !== 'object') return null
+    const { passOrder, completedPasses, currentPass } = pipeline as {
+      passOrder?: unknown
+      completedPasses?: unknown
+      currentPass?: unknown
+    }
+    if (!Array.isArray(passOrder) || passOrder.length === 0 || !Array.isArray(completedPasses)) return null
+    const done = new Set(completedPasses.filter((pass): pass is string => typeof pass === 'string'))
+    return {
+      completed: passOrder.filter((pass) => typeof pass === 'string' && done.has(pass)).length,
+      total: passOrder.length,
+      currentPass: typeof currentPass === 'string' ? currentPass : String(passOrder[0]),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Cast entries a re-entrant round still owes — including ones that have a
+ * factory but never finished refining it.
+ *
+ * This used to ask only whether `src/assets/<name>.ts` existed. Because that
+ * file is written at every pass, eight models stopped at pass 1 of 8 by a usage
+ * limit all counted as done, and no later round would ever have touched them
+ * again. An entry is finished only when its spec says every pass completed;
+ * with no spec to consult, the file's existence is all there is to go on.
+ */
 export function unbuiltCast(workspaceDir: string, cast: CastEntry[]): CastEntry[] {
-  return cast.filter((entry) => !fs.existsSync(path.join(workspaceDir, 'src/assets', `${entry.name}.ts`)))
+  return cast.filter((entry) => {
+    const progress = assetPassProgress(workspaceDir, entry.name)
+    if (progress) return progress.completed < progress.total
+    return !fs.existsSync(path.join(workspaceDir, 'src/assets', `${entry.name}.ts`))
+  })
 }
 
 /**
