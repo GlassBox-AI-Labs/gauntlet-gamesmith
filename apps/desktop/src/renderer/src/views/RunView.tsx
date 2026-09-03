@@ -5,7 +5,7 @@ import { RunForm } from '@/views/RunForm'
 import { RunSidebar, RUN_ROUNDS_PAGE_SIZE } from '@/views/RunSidebar'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
 import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts, selectSnapshotInList } from '@/lib/run-pages'
-import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RevealStreamInput } from '../../../shared/loop'
+import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy } from '../../../shared/loop'
 import {
   DEFAULT_CRITIC,
   DEFAULT_ASSET,
@@ -56,7 +56,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [historyPageCount, setHistoryPageCount] = useState(0)
   const [runPageBusy, setRunPageBusy] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [revealing, setRevealing] = useState<Set<string>>(new Set())
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
   const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
@@ -435,21 +434,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     }
   }
 
-  const revealStream = async (input: RevealStreamInput): Promise<void> => {
-    const key = `${input.runId}:${input.stream}:${input.agentId ?? ''}`
-    if (revealing.has(key)) return
-    setRevealing((current) => new Set(current).add(key))
-    setError(null)
-    try {
-      const result = await window.loops.revealStream(input)
-      if (!result.ok) setError(result.error ?? 'Could not reveal the raw stream.')
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not reveal the raw stream.')
-    } finally {
-      setRevealing((current) => { const next = new Set(current); next.delete(key); return next })
-    }
-  }
-
   const resumeLoop = async (): Promise<void> => {
     if (!loop || busy) return
     setBusy(true)
@@ -611,7 +595,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               referenceStudies={referenceStudies}
               play={play}
               busy={busy}
-              revealing={revealing}
               error={error}
               projectionWarning={snapshot.projectionWarning ?? null}
               exactImplementPrompt={exactPrompts.implement}
@@ -627,7 +610,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               onStop={() => { void stopLoop() }}
               onResume={() => void resumeLoop()}
               onNewRun={beginNewRun}
-              onReveal={(input) => void revealStream(input)}
               onLoadOlderRuns={() => { const offset = olderRunPageOffset(snapshot); if (offset != null) void loadRunPage(offset) }}
               onLoadNewestRuns={() => void loadRunPage(0)}
               onScrollTop={() => requestAnimationFrame(() => mainRef.current?.scrollTo({ top: 0 }))}

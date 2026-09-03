@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, FileText, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { agentDisplayStatus, agentRawStreamInput, logEmptyMessage } from '@/lib/run-visibility'
+import { agentDisplayStatus, logEmptyMessage } from '@/lib/run-visibility'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
 import { HARNESS_LABELS } from '../../../shared/harness'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RevealStreamInput, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RunRecord } from '../../../shared/loop'
 import { harnessFor, modelLabel } from '../../../shared/models'
 import { buildCriticPrompt, buildImplementPromptPreview } from '../../../shared/prompts'
 import { referenceRootForLoop } from '../../../shared/reference-path'
@@ -65,17 +65,7 @@ function RunModelSummary({ models }: { models: LoopSnapshot['loop']['models'] })
   )
 }
 
-function WorkflowAgents({
-  agents,
-  runId,
-  revealing,
-  onReveal,
-}: {
-  agents: AgentMetric[]
-  runId: string
-  revealing: Set<string>
-  onReveal: (input: RevealStreamInput) => void
-}): React.JSX.Element | null {
+function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Element | null {
   const workflow = agents.filter((agent) => agent.source === 'workflow')
   if (workflow.length === 0) return null
   const phases: { phase: string; agents: AgentMetric[] }[] = []
@@ -96,37 +86,22 @@ function WorkflowAgents({
       {phases.map((group, index) => (
         <div key={`${group.phase}-${index}`} className="pl-5">
           <div className="text-[#8f8a87]">{group.phase}</div>
-          {group.agents.map((agent) => {
-            const raw = agentRawStreamInput(runId, agent.id)
-            const rawKey = raw ? `${raw.runId}:${raw.stream}:${raw.agentId}` : null
-            return (
-              <div key={agent.id} className="pl-4 text-[#a89f9a]">
-                <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓ done' : '⋯ running'}</span>{' '}
-                {agent.label}
-                <span className="text-[#68615f]"> ({agent.model ?? '?'}{agent.agentType ? `, ${agent.agentType}` : ''})</span>{' '}
-                · {agent.costUsd != null ? `$${agent.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(agent.tokens.input + agent.tokens.cacheRead)} · out{' '}
-                {fmtTokens(agent.tokens.output)} · {agent.toolCalls ?? 0} tools · {fmtDuration(agent.durationMs)}
-                {raw && rawKey && (
-                  <button
-                    type="button"
-                    aria-label={`Reveal ${agent.label} raw stream in Finder`}
-                    disabled={revealing.has(rawKey)}
-                    onClick={() => onReveal(raw)}
-                    className="ml-2 inline-grid size-6 place-items-center rounded text-[#8f8885] hover:bg-white/[0.05] hover:text-white disabled:opacity-40"
-                  >
-                    {revealing.has(rawKey) ? <LoaderCircle className="size-3 animate-spin" /> : <FileText className="size-3" />}
-                  </button>
-                )}
-                {agent.prompt && (
-                  <details className="pl-4">
-                    <summary className="cursor-pointer text-[#68615f] hover:text-[#96908d]">task given to this agent</summary>
-                    <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#332e2e] bg-[#141010] p-2 text-[10px] leading-relaxed text-[#8f8a87]">{agent.prompt}</pre>
-                  </details>
-                )}
-                {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
-              </div>
-            )
-          })}
+          {group.agents.map((agent) => (
+            <div key={agent.id} className="pl-4 text-[#a89f9a]">
+              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓ done' : '⋯ running'}</span>{' '}
+              {agent.label}
+              <span className="text-[#68615f]"> ({agent.model ?? '?'}{agent.agentType ? `, ${agent.agentType}` : ''})</span>{' '}
+              · {agent.costUsd != null ? `$${agent.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(agent.tokens.input + agent.tokens.cacheRead)} · out{' '}
+              {fmtTokens(agent.tokens.output)} · {agent.toolCalls ?? 0} tools · {fmtDuration(agent.durationMs)}
+              {agent.prompt && (
+                <details className="pl-4">
+                  <summary className="cursor-pointer text-[#68615f] hover:text-[#96908d]">task given to this agent</summary>
+                  <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#332e2e] bg-[#141010] p-2 text-[10px] leading-relaxed text-[#8f8a87]">{agent.prompt}</pre>
+                </details>
+              )}
+              {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
+            </div>
+          ))}
         </div>
       ))}
     </>
@@ -150,12 +125,6 @@ function RunRow({
   critique,
   expanded,
   onToggle,
-  revealing,
-  onReveal,
-  revealingErr,
-  onRevealErr,
-  revealingStreams,
-  onRevealStream,
 }: {
   run: RunRecord
   loopCreatedAt: string
@@ -163,12 +132,6 @@ function RunRow({
   critique?: CritiqueRound
   expanded: boolean
   onToggle: () => void
-  revealing: boolean
-  onReveal: () => void
-  revealingErr: boolean
-  onRevealErr: () => void
-  revealingStreams: Set<string>
-  onRevealStream: (input: RevealStreamInput) => void
 }): React.JSX.Element {
   const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
   const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'implement' ? '' : '—'
@@ -178,27 +141,19 @@ function RunRow({
   return (
     <>
       <TableRow className={`border-[#3b3636] ${hasDetail ? 'hover:bg-white/[0.03]' : 'hover:bg-transparent'}`}>
-        <TableCell className="px-1 py-2.5 text-[#68615f]">
-          <div className="flex items-center gap-0.5">
-            {hasDetail ? (
-              <button
-                type="button"
-                aria-expanded={expanded}
-                aria-controls={`run-detail-${run.id}`}
-                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${run.role} attempt details`}
-                onClick={onToggle}
-                className="grid size-7 place-items-center rounded hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#c9b5aa]"
-              >
-                {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-              </button>
-            ) : <span className="size-7" />}
-            <button type="button" aria-label={`Reveal raw ${run.role} output in Finder`} title="Reveal raw output in Finder" disabled={revealing} onClick={onReveal} className="grid size-7 place-items-center rounded hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#c9b5aa] disabled:opacity-40">
-              {revealing ? <LoaderCircle className="size-3 animate-spin" /> : <FileText className="size-3.5" />}
+        <TableCell className="w-8 px-1 py-2.5 text-[#68615f]">
+          {hasDetail ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={`run-detail-${run.id}`}
+              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${run.role} attempt details`}
+              onClick={onToggle}
+              className="grid size-7 place-items-center rounded hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#c9b5aa]"
+            >
+              {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
             </button>
-            <button type="button" aria-label={`Reveal raw ${run.role} errors in Finder`} title="Reveal raw errors in Finder" disabled={revealingErr} onClick={onRevealErr} className="grid size-7 place-items-center rounded font-mono text-[8px] hover:bg-white/[0.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#c9b5aa] disabled:opacity-40">
-              {revealingErr ? <LoaderCircle className="size-3 animate-spin" /> : 'ERR'}
-            </button>
-          </div>
+          ) : null}
         </TableCell>
         <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.role === 'reference' ? '—' : run.round}</TableCell>
         <TableCell className="px-2 py-2.5"><span className={run.role === 'reference' ? 'text-amber-300' : run.role === 'implement' ? 'text-[#e9c9bc]' : 'text-[#9ad1c6]'}>{run.role}</span></TableCell>
@@ -218,23 +173,16 @@ function RunRow({
               {critique && <div className="mb-3"><CritiqueRoundView loopId={loopId} round={critique} /></div>}
               <div className="grid gap-1.5 font-mono text-[11px]">
                 {(run.metrics?.agents ?? []).filter((agent) => agent.source !== 'workflow').map((agent) => {
-                  const raw = agentRawStreamInput(run.id, agent.id)
-                  const rawKey = raw ? `${raw.runId}:${raw.stream}:${raw.agentId}` : null
                   const display = agentDisplayStatus(agent)
                   return (
                     <div key={agent.id} title={agent.note} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`}>
                       <span className={`mr-1.5 ${display === 'active' ? 'text-emerald-300' : display === 'failed' ? 'text-red-300' : display === 'done' ? 'text-[#77706d]' : 'text-amber-300'}`}>{display === 'active' ? '● active' : display === 'failed' ? '✗ failed' : display === 'done' ? '✓ done' : '○ idle'}</span>
                       {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}{agent.label}
                       <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
-                      {raw && rawKey && (
-                        <button type="button" aria-label={`Reveal ${agent.label} raw stream in Finder`} disabled={revealingStreams.has(rawKey)} onClick={() => onRevealStream(raw)} className="ml-2 inline-grid size-6 place-items-center rounded text-[#8f8885] hover:bg-white/[0.05] hover:text-white disabled:opacity-40">
-                          {revealingStreams.has(rawKey) ? <LoaderCircle className="size-3 animate-spin" /> : <FileText className="size-3" />}
-                        </button>
-                      )}
                     </div>
                   )
                 })}
-                <WorkflowAgents agents={run.metrics?.agents ?? []} runId={run.id} revealing={revealingStreams} onReveal={onRevealStream} />
+                <WorkflowAgents agents={run.metrics?.agents ?? []} />
                 {Object.entries(run.metrics?.perModel ?? {}).map(([model, usage]) => (
                   <div key={model} className="text-[#9fb2c8]">{model}: {usage.costUsd != null ? `$${usage.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(usage.tokens.input)} · out {fmtTokens(usage.tokens.output)}</div>
                 ))}
@@ -256,7 +204,6 @@ export interface RunDetailProps {
   referenceStudies: Map<string, ReferenceStudy>
   play: PlayState
   busy: boolean
-  revealing: Set<string>
   error: string | null
   projectionWarning: string | null
   exactImplementPrompt: string | null
@@ -272,7 +219,6 @@ export interface RunDetailProps {
   onStop: () => void
   onResume: () => void
   onNewRun: () => void
-  onReveal: (input: RevealStreamInput) => void
   onLoadOlderRuns: () => void
   onLoadNewestRuns: () => void
   onScrollTop: () => void
@@ -288,7 +234,6 @@ export function RunDetail({
   referenceStudies,
   play,
   busy,
-  revealing,
   error,
   projectionWarning,
   exactImplementPrompt,
@@ -304,7 +249,6 @@ export function RunDetail({
   onStop,
   onResume,
   onNewRun,
-  onReveal,
   onLoadOlderRuns,
   onLoadNewestRuns,
   onScrollTop,
@@ -569,24 +513,19 @@ export function RunDetail({
                 const display = agentDisplayStatus(agent)
                 const filterKey = agentFilterKey(agent.id)
                 const selected = filterKey != null && logFilter.agent === filterKey
-                const rawInput = agentRawStreamInput(liveRun.id, agent.id)
-                const rawKey = rawInput ? `${rawInput.runId}:${rawInput.stream}:${rawInput.agentId}` : null
                 const chip = <><span className={`size-1.5 rounded-full ${display === 'failed' ? 'bg-red-400' : display === 'done' ? 'bg-[#68615f]' : display === 'active' ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'}`} aria-hidden="true" />{agent.label}<span className="font-mono text-[10px] text-[#9fb2c8]">{fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}</span><span>{display === 'failed' ? '✗ failed' : display === 'done' ? '✓ done' : display}</span></>
-                const chipClass = `flex items-center gap-1.5 px-2.5 py-1 text-[11px] ${selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : display === 'failed' ? 'border-red-500/40 text-red-300' : display === 'done' ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'}`
-                return (
-                  <span key={agent.id} title={agent.note} className={`flex items-stretch overflow-hidden rounded-full border ${selected ? 'border-[#8b7f78]' : display === 'failed' ? 'border-red-500/40' : display === 'done' ? 'border-[#332e2e]' : 'border-[#494343]'}`}>
-                    {filterKey != null ? <button type="button" title="Filter the log to this agent" onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))} className={chipClass}>{chip}</button> : <span className={chipClass}>{chip}</span>}
-                    {rawInput && rawKey && <button type="button" aria-label={`Reveal ${agent.label} raw stream in Finder`} title="Reveal raw stream in Finder" disabled={revealing.has(rawKey)} onClick={() => onReveal(rawInput)} className="grid w-7 place-items-center border-l border-inherit text-[#8f8885] hover:bg-white/[0.05] hover:text-white disabled:opacity-40">{revealing.has(rawKey) ? <LoaderCircle className="size-3 animate-spin" /> : <FileText className="size-3" />}</button>}
-                  </span>
-                )
+                const chipClass = `flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : display === 'failed' ? 'border-red-500/40 text-red-300' : display === 'done' ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'}`
+                return filterKey != null
+                  ? <button type="button" key={agent.id} title={agent.note ?? 'Filter the log to this agent'} onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))} className={chipClass}>{chip}</button>
+                  : <span key={agent.id} title={agent.note} className={chipClass}>{chip}</span>
               })}
             </div>
           )}
 
           <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e] [&_[data-slot=table-container]]:overflow-x-hidden [&_td]:overflow-hidden [&_th]:overflow-hidden">
             <Table className="table-fixed">
-              <colgroup><col className="w-[92px]" /><col className="w-[58px]" /><col className="w-[76px]" /><col className="w-[160px]" /><col className="w-[88px]" /><col className="w-[58px]" /><col className="w-[70px]" /><col className="w-[120px]" /><col className="w-[85px]" /></colgroup>
-              <TableHeader><TableRow className="border-[#3b3636] hover:bg-transparent"><TableHead className="px-1 text-[10px] text-[#68615f]">Raw</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Round</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Role</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Model</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Status</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="Equivalent API cost estimate">API cost</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">Runtime</TableHead></TableRow></TableHeader>
+              <colgroup><col className="w-8" /><col className="w-[58px]" /><col className="w-[76px]" /><col className="w-[160px]" /><col className="w-[88px]" /><col className="w-[58px]" /><col className="w-[70px]" /><col className="w-[120px]" /><col className="w-[85px]" /></colgroup>
+              <TableHeader><TableRow className="border-[#3b3636] hover:bg-transparent"><TableHead className="w-8 px-1" /><TableHead className="px-2 text-[11px] text-[#68615f]">Round</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Role</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Model</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Status</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="Equivalent API cost estimate">API cost</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">Runtime</TableHead></TableRow></TableHeader>
               <TableBody className="text-xs">
                 {visibleRuns.map((run) => (
                   <RunRow
@@ -596,12 +535,6 @@ export function RunDetail({
                     loopId={loop.id}
                     critique={run.role === 'critique' ? critiqueRounds.find((round) => round.runId === run.id) : undefined}
                     expanded={expanded.has(run.id)}
-                    revealing={revealing.has(`${run.id}:stdout:`)}
-                    onReveal={() => onReveal({ runId: run.id, stream: 'stdout' })}
-                    revealingErr={revealing.has(`${run.id}:stderr:`)}
-                    onRevealErr={() => onReveal({ runId: run.id, stream: 'stderr' })}
-                    revealingStreams={revealing}
-                    onRevealStream={onReveal}
                     onToggle={() => setExpanded((current) => { const next = new Set(current); if (next.has(run.id)) next.delete(run.id); else next.add(run.id); return next })}
                   />
                 ))}
