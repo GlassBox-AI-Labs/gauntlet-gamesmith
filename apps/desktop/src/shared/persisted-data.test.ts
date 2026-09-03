@@ -61,6 +61,38 @@ describe('normalizeRunMetrics', () => {
     expect(metrics?.perModel['claude-opus-5'].tokens).toEqual({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0 })
   })
 
+  it('preserves bounded historical model labels without hiding the run', () => {
+    const metrics = normalizeRunMetrics({
+      agents: [
+        {
+          id: 'synthetic',
+          label: 'synthetic',
+          model: '<synthetic>',
+          messages: 0,
+          tokens: { input: 0, output: 0 },
+          firstTs: null,
+          lastTs: null,
+        },
+        {
+          id: 'worker',
+          label: 'worker',
+          model: 'claude-opus-5[1m]',
+          messages: 1,
+          tokens: { input: 10, output: 2 },
+          firstTs: null,
+          lastTs: null,
+        },
+      ],
+      perModel: { 'claude-opus-5[1m]': { costUsd: 0.01, tokens: { input: 10, output: 2 } } },
+    })
+
+    expect(metrics?.agents.map((agent) => agent.model)).toEqual(['<synthetic>', 'claude-opus-5[1m]'])
+    expect(metrics?.perModel['claude-opus-5[1m]']).toEqual({
+      costUsd: 0.01,
+      tokens: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 },
+    })
+  })
+
   it('normalizes a bounded durable transcript projection cursor', () => {
     const metrics = normalizeRunMetrics({
       agents: [],

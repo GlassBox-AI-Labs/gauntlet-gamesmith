@@ -7,7 +7,11 @@ const MAX_FINDINGS = 100
 const MAX_FINDING_LENGTH = 2_000
 const MAX_AGENTS = 512
 const MAX_MODELS = 128
-const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$/
+// Historical CLI streams can carry a bounded terminal-style suffix such as
+// `[1m]`. It is part of the persisted label now, so retain it rather than
+// making the entire run unreadable (DATA-002).
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/+\[\]-]{0,255}$/
+const LEGACY_MODEL_NAMES = new Set(['<synthetic>'])
 const REDACTED_MODEL = '[REDACTED]'
 const CHILD_OFFSET_KEY = /^[a-z0-9-]{1,64}\.(?:claude|codex)\.jsonl$/
 const WORKFLOW_OFFSET_KEY = /^wf_[A-Za-z0-9_-]{1,128}\/(?:journal|agent-[A-Za-z0-9_-]{1,128})\.jsonl$/
@@ -40,7 +44,7 @@ function optionalString(value: unknown, maxLength: number): string | null | unde
 export function normalizePersistedModel(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) return null
   if (value === REDACTED_MODEL || /^\[REDACTED\]#\d+$/.test(value)) return value
-  if (!MODEL_NAME.test(value)) return null
+  if (!MODEL_NAME.test(value) && !LEGACY_MODEL_NAMES.has(value)) return null
   return redactLogText(value) === value ? value : REDACTED_MODEL
 }
 
