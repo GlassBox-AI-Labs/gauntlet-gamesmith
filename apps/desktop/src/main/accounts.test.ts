@@ -204,6 +204,13 @@ describe('harness accounts', () => {
     expect(at3pm! - now).toBe(30 * 60 * 1000)
   })
 
+  it('reads the reset time out of the message Claude Code actually prints', () => {
+    const now = Date.parse('2026-09-03T01:00:00')
+    const real = "You've hit your session limit · resets 3:20am (America/Chicago)"
+
+    expect(parseResetAt(real, now)).toBe(Date.parse('2026-09-03T03:20:00'))
+  })
+
   it('reads the clock formats the CLIs use', () => {
     const now = Date.parse('2026-09-02T10:00:00')
 

@@ -14,7 +14,7 @@ import { LoopRunner } from './loop-runner'
  */
 
 const models = resolveModels({ orchestratorModel: 'claude-fable-5' }, DEFAULT_CRITIC)
-const LIMIT = 'Claude usage limit reached. Your limit will reset at 3pm.'
+const LIMIT = "You've hit your session limit · resets 3:20am (America/Chicago)"
 
 let dir: string
 
@@ -76,7 +76,16 @@ describe('usage-limit account rotation', () => {
   })
 
   it('recognises the wordings both CLIs use', async () => {
-    for (const error of ['rate limit exceeded', 'rate-limited', 'Usage limit reached', 'out of extra usage']) {
+    for (const error of [
+      // The wording Claude Code actually prints, observed ending a real build
+      // because the first version of the pattern did not match it.
+      "You've hit your session limit · resets 3:20am (America/Chicago)",
+      'rate limit exceeded',
+      'rate-limited',
+      'Usage limit reached',
+      'weekly limit reached',
+      'out of extra usage',
+    ]) {
       const h = setup({ ok: true, from: 'a', to: 'b' })
 
       expect((await rotate(h, error)).rotated).toBe(true)

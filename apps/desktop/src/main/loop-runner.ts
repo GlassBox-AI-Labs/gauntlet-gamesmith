@@ -87,10 +87,14 @@ const MAX_REFERENCE_ATTEMPTS = 2
 /**
  * A subscription's usage ceiling, reported as prose by both CLIs.
  *
- * Matched loosely on purpose — the wording varies — which is why rotation is
- * capped rather than trusted to stop on its own.
+ * The wordings are not interchangeable and guessing them does not work: the
+ * first version of this matched "usage limit" and "rate limit" and missed the
+ * one Claude Code actually prints — "You've hit your session limit · resets
+ * 3:20am" — so a real build ended instead of changing accounts. Matched
+ * loosely on purpose, which is why rotation is capped rather than trusted to
+ * stop on its own.
  */
-const USAGE_LIMIT = /rate.?limit|usage limit|out of extra usage/i
+const USAGE_LIMIT = /rate.?limit|(?:usage|session|weekly) limit|limit reached|out of extra usage/i
 /** Account changes one loop may spend on usage limits before it gives up. */
 const MAX_ACCOUNT_ROTATIONS = 3
 /** The longest a loop will sit waiting for a usage window to reopen. */
