@@ -601,22 +601,31 @@ function readImportedRows(db: DatabaseSync): ImportedRows {
  * Validate the complete inert schema first, then compare immutable registry
  * keys before binding that directory's current filesystem identity.
  */
-function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: string, imported: ImportedRows): void {
+function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: string, portableDb: DatabaseSync): void {
+  validateImportSchema(portableDb)
+  countRows(portableDb, 'loops', MAX_IMPORT_LOOPS)
+  countRows(portableDb, 'runs', MAX_IMPORT_RUNS)
+  countRows(portableDb, 'events', MAX_IMPORT_EVENTS)
+  const reportTable = portableDb.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'reports'").get()
+  if (reportTable) countRows(portableDb, 'reports', 10_000)
+
   const registryLoops = db.prepare(
     'SELECT id, prompt, created_at FROM loops WHERE workspace_dir = ? ORDER BY id',
   ).all(workspaceDir) as unknown as Array<{ id: string; prompt: string; created_at: string }>
-  const importedLoops = [...imported.loops].sort((left, right) => compareText(left.id, right.id))
-  if (registryLoops.length === 0 || registryLoops.length !== importedLoops.length) {
+  const portableLoops = portableDb.prepare(
+    'SELECT id, prompt, created_at, workspace_dir FROM loops ORDER BY id',
+  ).all() as unknown as Array<{ id: string; prompt: string; created_at: string; workspace_dir: string }>
+  if (registryLoops.length === 0 || registryLoops.length !== portableLoops.length) {
     throw new Error('The legacy folder ledger does not match the registered run histories.')
   }
   for (let index = 0; index < registryLoops.length; index += 1) {
     const registry = registryLoops[index]
-    const portable = importedLoops[index]
+    const portable = portableLoops[index]
     if (
       registry.id !== portable.id
       || portable.workspace_dir !== workspaceDir
       || registry.created_at !== portable.created_at
-      || redactLogText(registry.prompt) !== portable.prompt
+      || registry.prompt !== portable.prompt
     ) throw new Error('The legacy folder ledger does not match the registered run histories.')
   }
 
@@ -626,15 +635,15 @@ function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: st
      WHERE loops.workspace_dir = ?
      ORDER BY runs.id`,
   ).all(workspaceDir) as unknown as Array<{ id: string; loop_id: string; created_at: string }>
-  const importedRuns = importedLoops
-    .flatMap((loop) => imported.runsByLoop.get(loop.id) ?? [])
-    .sort((left, right) => compareText(left.id, right.id))
-  if (registryRuns.length !== importedRuns.length) {
+  const portableRuns = portableDb.prepare(
+    'SELECT id, loop_id, created_at FROM runs ORDER BY id',
+  ).all() as unknown as Array<{ id: string; loop_id: string; created_at: string }>
+  if (registryRuns.length !== portableRuns.length) {
     throw new Error('The legacy folder ledger does not match the registered attempt histories.')
   }
   for (let index = 0; index < registryRuns.length; index += 1) {
     const registry = registryRuns[index]
-    const portable = importedRuns[index]
+    const portable = portableRuns[index]
     if (
       registry.id !== portable.id
       || registry.loop_id !== portable.loop_id
@@ -1018,13 +1027,11 @@ export class Ledger {
 
           snapshot = snapshotRunLedger(workspaceDir)
           const readOnly = new DatabaseSync(snapshot.ledgerPath, { readOnly: true })
-          let imported: ImportedRows
           try {
-            imported = readImportedRows(readOnly)
+            assertLegacyWorkspaceMatchesRegistry(this.db, workspaceDir, readOnly)
           } finally {
             readOnly.close()
           }
-          assertLegacyWorkspaceMatchesRegistry(this.db, workspaceDir, imported)
 
           this.db.exec('BEGIN IMMEDIATE')
           let committed = false

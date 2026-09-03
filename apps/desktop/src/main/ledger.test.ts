@@ -372,7 +372,7 @@ describe('Ledger', () => {
       `INSERT INTO runs
        (id, loop_id, round, role, harness, status, prompt, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(runId, loopId, 1, 'implement', 'claude', 'succeeded', 'old run', '2026-01-01T00:00:00.000Z')
+    ).run(runId, loopId, 1, 'assets', 'claude', 'succeeded', 'old run', '2026-01-01 00:00:00')
     legacy.close()
     const metadataDir = path.join(workspaceDir, '.gauntlet-gamesmith')
     fs.mkdirSync(metadataDir)
