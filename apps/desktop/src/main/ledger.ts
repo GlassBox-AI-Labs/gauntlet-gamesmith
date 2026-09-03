@@ -969,6 +969,7 @@ export class Ledger {
     this.db = new DatabaseSync(dbPath)
     initializeSchema(this.db, 'WAL')
     this.adoptLegacyWorkspaceIdentities()
+    this.migrateRegisteredMetadataDirectories()
     this.repairExistingMirrors()
   }
 
@@ -1059,6 +1060,20 @@ export class Ledger {
         }
       }
       cursor = candidates.at(-1)!.workspace_dir
+    }
+  }
+
+  /** Rename legacy metadata only after this registry has proved the workspace identity. */
+  private migrateRegisteredMetadataDirectories(): void {
+    const workspaces = this.db.prepare('SELECT MIN(id) AS id, workspace_dir FROM loops GROUP BY workspace_dir')
+    for (const { id, workspace_dir: workspaceDir } of workspaces.iterate() as unknown as Iterable<{ id: string; workspace_dir: string }>) {
+      try {
+        this.assertLoopWorkspaceIdentity(id)
+        migrateRunMetadataDir(workspaceDir)
+      } catch {
+        // Identity adoption and mirror repair record actionable failures. An
+        // unproved path must never be renamed merely because it is registered.
+      }
     }
   }
 

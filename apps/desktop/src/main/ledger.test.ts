@@ -372,9 +372,10 @@ describe('Ledger', () => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(runId, loopId, 1, 'assets', 'claude', 'succeeded', 'old run', '2026-01-01 00:00:00')
     legacy.close()
+    const legacyMetadataDir = path.join(workspaceDir, '.gauntlet-loop')
     const metadataDir = path.join(workspaceDir, '.gauntlet-gamesmith')
-    fs.mkdirSync(metadataDir)
-    fs.copyFileSync(dbPath, path.join(metadataDir, 'ledger.db'))
+    fs.mkdirSync(legacyMetadataDir)
+    fs.copyFileSync(dbPath, path.join(legacyMetadataDir, 'ledger.db'))
 
     const ledger = new Ledger(dbPath)
     // The matching portable history proves which existing canonical folder
@@ -386,6 +387,8 @@ describe('Ledger', () => {
       workspaceIdentity: { dev: expect.any(Number), ino: expect.any(Number) },
     })
     expect(ledger.assertLoopWorkspaceIdentity(loopId)).toBe(fs.realpathSync(workspaceDir))
+    expect(fs.existsSync(legacyMetadataDir)).toBe(false)
+    expect(fs.existsSync(path.join(metadataDir, 'ledger.db'))).toBe(true)
     expect(ledger.getRun(runId)).toMatchObject({
       revision: null,
       effort: null,

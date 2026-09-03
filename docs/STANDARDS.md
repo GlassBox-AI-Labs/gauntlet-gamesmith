@@ -1,8 +1,9 @@
-# Gauntlet Loop coding and review standards
+# Gauntlet Gamesmith coding and review standards
 
-> **Status:** Draft for calibration. These rules become review policy only after the team approves
-> them and the reviewer has completed the shadow-mode rollout in
-> [`LOCAL_PR_REVIEWER.md`](LOCAL_PR_REVIEWER.md).
+> **Status:** Active for the desktop app as of 2026-09-03. The local PR reviewer implementation and
+> reviewer-specific enforcement remain deferred until the shadow-mode rollout in
+> [`LOCAL_PR_REVIEWER.md`](LOCAL_PR_REVIEWER.md); that deferral does not suspend these rules for
+> human or agent-authored desktop changes.
 >
 > **Purpose:** This is the shared standard for code authors and reviewers. Rule IDs are stable so
 > automated findings can cite the same language humans use.
@@ -313,9 +314,11 @@ Channel conventions:
   it silently lands in `system`.
 - The exact execution prompt is logged once per run, round-labelled, before the process spawns. The
   log alone must tell the full story of what each agent was asked to do.
-- Raw CLI output is the evidence and lives on disk: `.gauntlet-loop/runs/<runId>.out.ndjson` and
-  `.err.log` for primary agents, `.gauntlet-loop/agents/<slug>.<harness>.jsonl` for delegated
-  children. Log lines are the parsed, truncated projection of those files. Truncate before logging;
+- Raw CLI output is the evidence and lives on disk: `.gauntlet-gamesmith/runs/<runId>.out.ndjson`
+  and `.err.log` for primary agents, and `.gauntlet-gamesmith/agents/<slug>.<harness>.jsonl` for
+  delegated children. A validated legacy `.gauntlet-loop/` directory is migrated to the current
+  name without overwriting an existing current directory; unsafe or ambiguous histories fail
+  closed. Log lines are the parsed, truncated projection of those files. Truncate before logging;
   never store an unbounded tool result or stream line in the ledger.
 - Denormalize `round` and `role` at write time so the renderer filter strip stays a pure predicate
   over lines with no join.
@@ -352,7 +355,8 @@ Channel conventions:
   inspect it from a timestamped event-log link. Do not lower a truncation limit to make the log
   tidier or dump byte-complete, potentially sensitive raw output into the projected event log.
 - The exact execution prompt for every run, including delegated briefs written to
-  `.gauntlet-loop/`, is visible in the log (LOG-001).
+  `.gauntlet-gamesmith/` (or validated legacy `.gauntlet-loop/` metadata), is visible in the log
+  (LOG-001).
 - All channels are visible by default. Hiding is an operator choice made in the filter strip, and
   filter state survives incremental updates (UI-001).
 - Failures are shown where they happened: a tool error, a non-zero exit, a timeout, a rate-limit
@@ -528,6 +532,9 @@ incomplete.
 ### SCOPE-001 — One PR has one coherent purpose
 
 **Default severity:** Major.
+
+**One-time exception:** ADR-012 permits PR #24 to land as a single audit-remediation batch. This
+does not change the rule for later pull requests.
 
 - Every changed file must support the stated purpose or a necessary refactor/test for it. Split an
   independently releasable feature into its own PR.

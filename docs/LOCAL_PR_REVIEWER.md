@@ -1,6 +1,7 @@
 # Local PR reviewer scope
 
-> **Status:** Proposed MVP, 2026-09-02.
+> **Status:** Proposed MVP; implementation deferred, 2026-09-03. Desktop standards remain active
+> independently of this rollout.
 >
 > **Outcome:** A long-running process on one trusted developer Mac polls an explicit GitHub
 > repository, claims opted-in pull requests, reviews an immutable diff against the linked acceptance
@@ -402,7 +403,8 @@ least 90% precision on blocker/major findings, and median review time/cost accep
 
 ## Decisions needed before implementation
 
-1. Approve or edit the draft standards and their severities.
+1. Revisit reviewer-specific policy and severity calibration before implementation; desktop rules
+   are already active for human and agent-authored changes.
 2. Confirm `review:ready` opt-in rather than reviewing every non-draft PR.
 3. Choose the dedicated GitHub identity allowed to comment and manage review labels.
 4. Choose and pin the reviewer model/effort after running the evaluation corpus.

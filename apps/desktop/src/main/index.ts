@@ -59,7 +59,6 @@ import {
   copyRunFolder,
   deleteRunFolder,
   exportActivityError,
-  migrateRunMetadataDir,
   nextAvailableExportPath,
   RAW_EXPORT_WARNING,
   RUN_LEDGER_FILE,
@@ -788,13 +787,6 @@ if (hasSingleInstanceLock) {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
-    for (const workspaceDir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) {
-      try {
-        migrateRunMetadataDir(workspaceDir)
-      } catch (error) {
-        console.error('Could not migrate run metadata directory:', redactedErrorMessage(error, 'migration failed safely'))
-      }
-    }
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
       protectedRoots: protectedWorkspaceRoots,
       rotateAccount,

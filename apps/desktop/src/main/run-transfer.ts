@@ -172,13 +172,28 @@ export async function copyRunFolder(
 
 export function assertRunFolder(workspaceDir: string): string {
   const workspace = canonicalizePath(workspaceDir)
-  const metadataDir = safeWorkspaceMetadataDir(workspace, [], false)
-  const ledgerPath = path.join(metadataDir, RUN_LEDGER_FILE)
+  const ledgerPath = runLedgerPath(workspace)
+  const metadataDir = path.dirname(ledgerPath)
+  let metadataStat: fs.Stats
+  try {
+    metadataStat = fs.lstatSync(metadataDir)
+  } catch {
+    throw new Error(`No ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE} or legacy ${LEGACY_RUN_METADATA_DIR}/${RUN_LEDGER_FILE} was found in that folder.`)
+  }
+  if (
+    !metadataStat.isDirectory()
+    || metadataStat.isSymbolicLink()
+    || fs.realpathSync(metadataDir) !== metadataDir
+    || path.dirname(metadataDir) !== workspace
+    || ![RUN_METADATA_DIR, LEGACY_RUN_METADATA_DIR].includes(path.basename(metadataDir))
+  ) {
+    throw new Error('The run metadata directory must be a real app-owned directory inside the selected project.')
+  }
   let stat: fs.Stats
   try {
     stat = fs.lstatSync(ledgerPath)
   } catch {
-    throw new Error(`No ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE} was found in that folder.`)
+    throw new Error(`No ${path.basename(metadataDir)}/${RUN_LEDGER_FILE} was found in that folder.`)
   }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
     throw new Error('The folder ledger must be a regular file, not a symlink or hard link.')

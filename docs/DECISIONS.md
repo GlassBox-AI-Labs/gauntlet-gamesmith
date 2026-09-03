@@ -125,8 +125,9 @@ through ADR-003; their product and credential policies remain in force.
 - `maxRounds` counts implementation rounds. Completing the last allowed implementation exhausts the
   loop without launching one additional critic, so the round ceiling cannot silently create more
   billable work. Each completed implementation still has its immutable revision for inspection.
-- Complete raw CLI streams remain portable under `.gauntlet-loop/` for exact replay and are revealed
-  only by ownership-checked IPC. SQLite, reports, and renderer projections apply credential-shaped
+- Complete raw CLI streams remain portable under `.gauntlet-gamesmith/` for exact replay and are
+  revealed only by ownership-checked IPC. Validated `.gauntlet-loop/` histories remain compatible
+  through a fail-closed migration to the current name. SQLite, reports, and renderer projections apply credential-shaped
   redaction; app code never opens credential files. The raw files themselves are deliberately not
   secret-scrubbed: a broad same-user CLI can read accessible data and may echo it, and discovering
   every such value would itself require reading forbidden credential stores. Export warns the
@@ -278,3 +279,34 @@ opens only the associated stream in the side drawer through bounded, ownership-c
 while the surrounding UI stays compact. Focused readers remain discoverable at the time and source
 where the event occurred. New permanent visibility controls require an explicit product rationale,
 and raw transcript bytes retain their existing trust and credential-handling boundaries.
+
+## ADR-011 — Activate desktop standards independently of automated review (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** The standards were originally marked as draft until a local automated reviewer
+completed shadow calibration. The desktop app and coding agents already rely on those rules, and
+delaying reviewer implementation must not leave VIS-001 or the other desktop safeguards advisory.
+
+**Decision.** `docs/STANDARDS.md` is active policy for human and agent-authored desktop changes now.
+The proposed local PR reviewer remains deferred and its reviewer-specific enforcement details may
+still be calibrated before implementation.
+
+**Consequences.** Reviews cite and enforce stable rule IDs without waiting for reviewer automation.
+Deferring `apps/reviewer` does not weaken desktop requirements or imply that a working reviewer
+exists.
+
+## ADR-012 — One-time scope exception for PR #24 (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** PR #24 accumulated the initial standards audit remediation, compatibility work, and the
+integration fixes required to keep current mainline behavior usable. Splitting the already-verified
+batch now would add migration and regression risk while delaying the remediation.
+
+**Decision.** PR #24 may bypass SCOPE-001 and land as one audit-remediation batch after its required
+checks and review pass. This exception applies only to PR #24; it does not redefine coherent scope
+or authorize similarly broad follow-up changes.
+
+**Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
+than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
