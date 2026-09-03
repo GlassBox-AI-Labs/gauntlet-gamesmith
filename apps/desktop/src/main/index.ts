@@ -67,6 +67,7 @@ import {
   safeExportFolderName,
 } from './run-transfer'
 import { developmentRendererUrl } from './dev-renderer-url'
+import { developmentAppIconPath } from './development-app-icon'
 import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
 import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
 import { withPromptLogs, type PromptLogRun } from './prompt-logs'
@@ -624,6 +625,7 @@ function registerIpc(): void {
 }
 
 function createWindow(): BrowserWindow {
+  const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
   const window = new BrowserWindow({
     width: 1040,
     height: 820,
@@ -631,6 +633,7 @@ function createWindow(): BrowserWindow {
     minHeight: 560,
     title: APP_NAME,
     backgroundColor: '#100d0e',
+    ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -786,6 +789,8 @@ if (!hasSingleInstanceLock) {
 
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
+    const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
+    if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
     for (const workspaceDir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) {
       try {

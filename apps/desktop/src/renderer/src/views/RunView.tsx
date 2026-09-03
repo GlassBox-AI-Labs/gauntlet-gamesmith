@@ -235,7 +235,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   }
 
   const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
-    setBusy(true)
     setError(null)
     try {
       const detail = await window.loops.get(next.loop.id)
@@ -255,8 +254,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     } catch (cause) {
       setLines([])
       setError(`Could not load run history: ${errorMessage(cause, 'IPC request failed.')}`)
-    } finally {
-      setBusy(false)
     }
   }
 

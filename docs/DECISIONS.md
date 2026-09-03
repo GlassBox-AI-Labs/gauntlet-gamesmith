@@ -187,3 +187,26 @@ folders are not moved or split; their stored paths remain part of the preserved 
 **Consequences.** New runs do not share mutable project files or workspace identity. Repeating a
 prompt produces distinct titles and sibling directories. Existing portable folders may still contain
 multiple historical loops, so the ledger continues to read and mirror that older layout.
+
+## ADR-007 — Safely adopt legacy workspace identities (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** The workspace-identity migration added nullable device and inode columns so existing
+registries could open, but left every prior local run unable to read its own critique/reference
+artifacts. Blindly trusting whatever directory now occupies an old pathname would defeat the
+identity boundary.
+
+**Decision.** On startup, only untrusted rows with both identity fields absent are compatibility
+candidates. The saved path must still be an exact canonical real directory outside protected roots.
+Its portable ledger is copied through the verified import snapshot path, validated as inert bounded
+SQLite, and required to match the canonical registry's loop IDs, paths, prompts, creation times, and
+attempt IDs/owners/creation times. Only then does one transaction record the directory's current
+device and inode, with the directory identity checked immediately before and after the update.
+Missing, aliased, protected, malformed, or mismatched folders remain unbound and the failure is
+recorded in each affected run log. The migration is idempotent and never changes `play_trusted`.
+
+**Consequences.** Compatible local histories regain artifact viewing and mirror repair. Their Play,
+raw-stream, rename, and Resume restrictions remain in force because legacy history stays untrusted.
+A folder without matching portable provenance continues to fail closed and must be imported or
+otherwise recovered explicitly.

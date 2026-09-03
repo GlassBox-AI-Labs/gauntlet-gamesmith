@@ -595,6 +595,54 @@ function readImportedRows(db: DatabaseSync): ImportedRows {
   return { loops, runsByLoop, eventsByLoop }
 }
 
+/**
+ * A legacy row has no inode to compare, so its portable mirror is the proof
+ * that the directory currently at the saved path is the project we recorded.
+ * Validate the complete inert schema first, then compare immutable registry
+ * keys before binding that directory's current filesystem identity.
+ */
+function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: string, imported: ImportedRows): void {
+  const registryLoops = db.prepare(
+    'SELECT id, prompt, created_at FROM loops WHERE workspace_dir = ? ORDER BY id',
+  ).all(workspaceDir) as unknown as Array<{ id: string; prompt: string; created_at: string }>
+  const importedLoops = [...imported.loops].sort((left, right) => compareText(left.id, right.id))
+  if (registryLoops.length === 0 || registryLoops.length !== importedLoops.length) {
+    throw new Error('The legacy folder ledger does not match the registered run histories.')
+  }
+  for (let index = 0; index < registryLoops.length; index += 1) {
+    const registry = registryLoops[index]
+    const portable = importedLoops[index]
+    if (
+      registry.id !== portable.id
+      || portable.workspace_dir !== workspaceDir
+      || registry.created_at !== portable.created_at
+      || redactLogText(registry.prompt) !== portable.prompt
+    ) throw new Error('The legacy folder ledger does not match the registered run histories.')
+  }
+
+  const registryRuns = db.prepare(
+    `SELECT runs.id, runs.loop_id, runs.created_at
+     FROM runs JOIN loops ON loops.id = runs.loop_id
+     WHERE loops.workspace_dir = ?
+     ORDER BY runs.id`,
+  ).all(workspaceDir) as unknown as Array<{ id: string; loop_id: string; created_at: string }>
+  const importedRuns = importedLoops
+    .flatMap((loop) => imported.runsByLoop.get(loop.id) ?? [])
+    .sort((left, right) => compareText(left.id, right.id))
+  if (registryRuns.length !== importedRuns.length) {
+    throw new Error('The legacy folder ledger does not match the registered attempt histories.')
+  }
+  for (let index = 0; index < registryRuns.length; index += 1) {
+    const registry = registryRuns[index]
+    const portable = importedRuns[index]
+    if (
+      registry.id !== portable.id
+      || registry.loop_id !== portable.loop_id
+      || registry.created_at !== portable.created_at
+    ) throw new Error('The legacy folder ledger does not match the registered attempt histories.')
+  }
+}
+
 function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
   db.prepare(
     `INSERT OR REPLACE INTO loops
@@ -911,7 +959,100 @@ export class Ledger {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     this.db = new DatabaseSync(dbPath)
     initializeSchema(this.db, 'WAL')
+    this.adoptLegacyWorkspaceIdentities()
     this.repairExistingMirrors()
+  }
+
+  /**
+   * Bind pre-identity, untrusted histories to their existing project folder.
+   * Invalid, missing, aliased, protected, or mismatched folders remain null
+   * and therefore continue to fail closed at every filesystem/execute seam.
+   */
+  private adoptLegacyWorkspaceIdentities(): void {
+    const page = this.db.prepare(
+      `SELECT workspace_dir
+       FROM loops
+       WHERE play_trusted = 0 AND workspace_dev IS NULL AND workspace_ino IS NULL
+         AND (? IS NULL OR workspace_dir > ?)
+       GROUP BY workspace_dir
+       ORDER BY workspace_dir
+       LIMIT 100`,
+    )
+    const conflictingIdentity = this.db.prepare(
+      `SELECT 1
+       FROM loops
+       WHERE workspace_dir = ? AND (
+         (workspace_dev IS NULL AND workspace_ino IS NOT NULL)
+         OR (workspace_dev IS NOT NULL AND workspace_ino IS NULL)
+         OR (workspace_dev IS NOT NULL AND workspace_ino IS NOT NULL AND (workspace_dev != ? OR workspace_ino != ?))
+       )
+       LIMIT 1`,
+    )
+    const adopt = this.db.prepare(
+      `UPDATE loops SET workspace_dev = ?, workspace_ino = ?
+       WHERE workspace_dir = ? AND play_trusted = 0 AND workspace_dev IS NULL AND workspace_ino IS NULL`,
+    )
+    const loopsInWorkspace = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id')
+    const identityFailureExists = this.db.prepare(
+      "SELECT 1 FROM events WHERE loop_id = ? AND kind = 'workspace-identity' AND text = ? LIMIT 1",
+    )
+    const insertIdentityFailure = this.db.prepare(
+      "INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'workspace-identity', ?, 'error')",
+    )
+    let cursor: string | null = null
+    while (true) {
+      const candidates = page.all(cursor, cursor) as unknown as Array<{ workspace_dir: string }>
+      if (candidates.length === 0) return
+      for (const { workspace_dir: workspaceDir } of candidates) {
+        let snapshot: ReturnType<typeof snapshotRunLedger> | null = null
+        try {
+          const captured = captureWorkspaceIdentity(workspaceDir, this.protectedRoots())
+          if (captured.workspaceDir !== workspaceDir || path.resolve(workspaceDir) !== workspaceDir) {
+            throw new Error('The legacy workspace path is no longer canonical.')
+          }
+          if (conflictingIdentity.get(
+            workspaceDir,
+            captured.workspaceIdentity.dev,
+            captured.workspaceIdentity.ino,
+          )) throw new Error('Registered histories disagree about the workspace identity.')
+
+          snapshot = snapshotRunLedger(workspaceDir)
+          const readOnly = new DatabaseSync(snapshot.ledgerPath, { readOnly: true })
+          let imported: ImportedRows
+          try {
+            imported = readImportedRows(readOnly)
+          } finally {
+            readOnly.close()
+          }
+          assertLegacyWorkspaceMatchesRegistry(this.db, workspaceDir, imported)
+
+          this.db.exec('BEGIN IMMEDIATE')
+          let committed = false
+          try {
+            // Catch a directory swap between validation and durable adoption.
+            assertLoopWorkspaceIdentity(captured, this.protectedRoots())
+            adopt.run(captured.workspaceIdentity.dev, captured.workspaceIdentity.ino, workspaceDir)
+            assertLoopWorkspaceIdentity(captured, this.protectedRoots())
+            this.db.exec('COMMIT')
+            committed = true
+          } finally {
+            if (!committed) this.db.exec('ROLLBACK')
+          }
+        } catch (error) {
+          // Compatibility adoption is best-effort and fail-closed. Persist
+          // the reason once so an operator can distinguish missing history,
+          // an unsafe path, and a folder-ledger mismatch.
+          const message = `Legacy workspace identity was not adopted: ${redactLogText(error instanceof Error ? error.message : String(error)).slice(0, 4_000)}`
+          const timestamp = now()
+          for (const { id } of loopsInWorkspace.iterate(workspaceDir) as unknown as Iterable<{ id: string }>) {
+            if (!identityFailureExists.get(id, message)) insertIdentityFailure.run(id, timestamp, message)
+          }
+        } finally {
+          snapshot?.cleanup()
+        }
+      }
+      cursor = candidates.at(-1)!.workspace_dir
+    }
   }
 
   /** Canonical registry wins after a crash between separate SQLite commits. */

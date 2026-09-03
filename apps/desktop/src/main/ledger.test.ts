@@ -339,7 +339,9 @@ describe('Ledger', () => {
   it('migrates every missing column independently from the previous schema', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-ledger-legacy-'))
     const dbPath = path.join(dir, 'ledger.db')
-    const workspaceDir = workspace()
+    const workspaceDir = fs.realpathSync(workspace())
+    const loopId = '11111111-1111-4111-8111-111111111111'
+    const runId = '22222222-2222-4222-8222-222222222222'
     const legacy = new DatabaseSync(dbPath)
     legacy.exec(`
       CREATE TABLE loops (
@@ -365,19 +367,28 @@ describe('Ledger', () => {
       `INSERT INTO loops
        (id, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run('legacy-loop', 'old prompt', workspaceDir, 2, null, JSON.stringify(models), 'stopped', 1, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    ).run(loopId, 'old prompt', workspaceDir, 2, null, JSON.stringify(models), 'stopped', 1, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
     legacy.prepare(
       `INSERT INTO runs
        (id, loop_id, round, role, harness, status, prompt, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run('legacy-run', 'legacy-loop', 1, 'implement', 'claude', 'succeeded', 'old run', '2026-01-01T00:00:00.000Z')
+    ).run(runId, loopId, 1, 'implement', 'claude', 'succeeded', 'old run', '2026-01-01T00:00:00.000Z')
     legacy.close()
+    const metadataDir = path.join(workspaceDir, '.gauntlet-gamesmith')
+    fs.mkdirSync(metadataDir)
+    fs.copyFileSync(dbPath, path.join(metadataDir, 'ledger.db'))
 
     const ledger = new Ledger(dbPath)
-    // Rows with no durable local-origin proof fail closed. A new local run
-    // explicitly writes trust=1; migrated history remains read-only.
-    expect(ledger.getLoop('legacy-loop')).toMatchObject({ title: 'Old prompt', playTrusted: false })
-    expect(ledger.getRun('legacy-run')).toMatchObject({
+    // The matching portable history proves which existing canonical folder
+    // receives the compatibility identity. Play remains explicitly untrusted.
+    expect(ledger.eventsForLoop(loopId).filter((event) => event.kind === 'workspace-identity')).toEqual([])
+    expect(ledger.getLoop(loopId)).toMatchObject({
+      title: 'Old prompt',
+      playTrusted: false,
+      workspaceIdentity: { dev: expect.any(Number), ino: expect.any(Number) },
+    })
+    expect(ledger.assertLoopWorkspaceIdentity(loopId)).toBe(fs.realpathSync(workspaceDir))
+    expect(ledger.getRun(runId)).toMatchObject({
       revision: null,
       effort: null,
       cliVersion: null,
@@ -408,7 +419,41 @@ describe('Ledger', () => {
       ]),
     )
     expect(columns('events')).toEqual(expect.arrayContaining(['agent_id', 'round', 'role', 'channel']))
+    const adopted = migrated.prepare('SELECT workspace_dev, workspace_ino FROM loops WHERE id = ?').get(loopId)
     migrated.close()
+
+    const portable = new DatabaseSync(path.join(metadataDir, 'ledger.db'), { readOnly: true })
+    expect(portable.prepare('SELECT workspace_dev, workspace_ino FROM loops WHERE id = ?').get(loopId)).toEqual(adopted)
+    portable.close()
+
+    const reopened = new Ledger(dbPath)
+    expect(reopened.getLoop(loopId)?.workspaceIdentity).toEqual({
+      dev: (adopted as { workspace_dev: number }).workspace_dev,
+      ino: (adopted as { workspace_ino: number }).workspace_ino,
+    })
+    reopened.close()
+  })
+
+  it('leaves legacy workspace identity unavailable when the portable history does not match', () => {
+    const ledger = makeLedger()
+    const workspaceDir = workspace()
+    const loop = ledger.createLoop({ prompt: 'canonical prompt', workspaceDir, maxRounds: 1, budgetUsd: null, models })
+    ledger.close()
+
+    const registry = new DatabaseSync(path.join(dir!, 'ledger.db'))
+    registry.prepare('UPDATE loops SET workspace_dev = NULL, workspace_ino = NULL, play_trusted = 0 WHERE id = ?').run(loop.id)
+    registry.close()
+    const portable = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'))
+    portable.prepare('UPDATE loops SET prompt = ? WHERE id = ?').run('different project history', loop.id)
+    portable.close()
+
+    const reopened = new Ledger(path.join(dir!, 'ledger.db'))
+    expect(reopened.getLoop(loop.id)?.workspaceIdentity).toBeNull()
+    expect(() => reopened.assertLoopWorkspaceIdentity(loop.id)).toThrow(/identity is unavailable/)
+    expect(reopened.eventsForLoop(loop.id).some((event) =>
+      event.kind === 'mirror-repair' && event.text.includes('identity is unavailable'),
+    )).toBe(true)
+    reopened.close()
   })
 
   it('rolls a multi-row transition back without changing the folder mirror', () => {
