@@ -37,7 +37,8 @@ import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
-import type { Ledger, RunProcessOwnership } from './ledger'
+import { defaultLoopTitle, type Ledger, type RunProcessOwnership } from './ledger'
+import { createNewRunWorkspace } from './new-run-workspace'
 import { publishOwnedWorkspaceFile, publishOwnedWorkspaceSnapshot, writeWorkspaceFileSafely } from './owned-workspace-write'
 import { phaseTreeFingerprint, referencePackFingerprint } from './phase-contracts'
 import { PRICE_TABLE_VERSION } from './pricing'
@@ -786,7 +787,7 @@ export class LoopRunner {
     }
   }
 
-  start(input: StartLoopInput): StartLoopResult {
+  start(input: StartLoopInput, workspaceMode: 'exact' | 'new-child' = 'exact'): StartLoopResult {
     if (this.current) return { ok: false, error: 'A loop is already running. Stop it first.' }
     try {
       const owner = this.retainedProcessOwnership()
@@ -808,9 +809,13 @@ export class LoopRunner {
     let workspaceDir: string
     let scaffold: ReturnType<typeof scaffoldEngine>
     try {
-      workspaceDir = assertWorkspaceBoundary(requestedWorkspace, this.deps.protectedRoots())
-      fs.mkdirSync(workspaceDir, { recursive: true })
-      const captured = captureWorkspaceIdentity(workspaceDir, this.deps.protectedRoots())
+      const captured = workspaceMode === 'new-child'
+        ? createNewRunWorkspace(requestedWorkspace, defaultLoopTitle(prompt), this.deps.protectedRoots())
+        : (() => {
+            const exact = assertWorkspaceBoundary(requestedWorkspace, this.deps.protectedRoots())
+            fs.mkdirSync(exact, { recursive: true })
+            return captureWorkspaceIdentity(exact, this.deps.protectedRoots())
+          })()
       workspaceDir = captured.workspaceDir
       scaffold = scaffoldEngine(workspaceDir, captured.workspaceIdentity)
     } catch (error) {

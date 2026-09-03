@@ -248,6 +248,17 @@ describe('Ledger', () => {
     ledger.close()
   })
 
+  it('gives repeated prompts distinct prompt-derived run names', () => {
+    const ledger = makeLedger()
+    const first = ledger.createLoop({ prompt: 'Build a neon Pac-Man game', workspaceDir: workspace(), maxRounds: 1, budgetUsd: null, models })
+    ledger.patchLoop(first.id, { status: 'stopped' })
+    const second = ledger.createLoop({ prompt: 'Build a neon Pac-Man game', workspaceDir: workspace('second'), maxRounds: 1, budgetUsd: null, models })
+
+    expect(first.title).toBe('A neon Pac-man game')
+    expect(second.title).toBe('A neon Pac-man game (2)')
+    ledger.close()
+  })
+
   it('appends and reads back events in order', () => {
     const ledger = makeLedger()
     const loop = ledger.createLoop({ prompt: 'p', workspaceDir: workspace(), maxRounds: 1, budgetUsd: null, models })
@@ -901,4 +912,3 @@ describe('Ledger deletion and report storage', () => {
     expect(ledger.reports()).toEqual([])
   })
 })
-

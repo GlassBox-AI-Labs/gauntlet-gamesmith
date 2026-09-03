@@ -136,7 +136,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         if (!initial && page.snapshots[0]) initial = await window.loops.get(page.snapshots[0].loop.id)
         if (disposed) return
         setSnapshots(initial ? selectInList(page.snapshots, initial) : page.snapshots)
-        setWorkspaceDir((current) => current || initial?.loop.workspaceDir || defaultDir)
+        setWorkspaceDir((current) => current || defaultDir)
         if (initial) {
           loopIdRef.current = initial.loop.id
           setSnapshot(initial)
@@ -314,7 +314,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setHistoryOffset(page.offset)
       setHistoryPageCount(page.snapshots.length)
       setHistoryWarning(page.hasMore ? `Showing the newest ${page.snapshots.length} of ${page.total} histories.` : null)
-      setWorkspaceDir(imported.loop.workspaceDir)
       setLines(await window.loops.log(imported.loop.id, LOG_LIMIT))
       setExpandedRuns((current) => new Set(current).add(imported.loop.id))
       setSelectedRound(null)
@@ -527,7 +526,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     }
   }
 
-  const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
+  const projects = workspaceDir ? [workspaceDir] : []
   const selectedReport = reports.find((item) => item.id === selectedReportId) ?? null
 
   if (!loaded) return <main className="grid h-screen place-items-center bg-[#100d0e]"><LoaderCircle className="size-5 animate-spin text-[#68615f]" /></main>

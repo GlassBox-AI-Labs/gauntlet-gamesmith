@@ -168,3 +168,22 @@ through ADR-003; their product and credential policies remain in force.
 - Fully recovering or terminating a CLI after a crash between direct spawn and durable PID capture
   requires a future launch wrapper/handshake; quarantine prevents duplicate execution but cannot
   discover ownership that was never committed.
+
+## ADR-006 — One project folder and distinct name per local run (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** The Run form previously treated its selected path as the project itself and used that
+folder's basename as the sidebar label. Starting another run could therefore reuse both the visible
+name and physical workspace. Besides making histories indistinguishable, pre-provenance rows without
+a registered workspace identity could block creation in that shared folder.
+
+**Decision.** The Run form selects a parent runs folder. Each locally created run exclusively creates
+a prompt-derived child directory beneath it, adding a numeric suffix when that name already exists.
+The history title is independently derived from the prompt and similarly disambiguated. The sidebar
+shows that stored title rather than deriving a label from the workspace path. Imported and historical
+folders are not moved or split; their stored paths remain part of the preserved history.
+
+**Consequences.** New runs do not share mutable project files or workspace identity. Repeating a
+prompt produces distinct titles and sibling directories. Existing portable folders may still contain
+multiple historical loops, so the ledger continues to read and mirror that older layout.

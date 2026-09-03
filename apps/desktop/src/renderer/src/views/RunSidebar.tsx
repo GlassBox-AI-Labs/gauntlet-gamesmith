@@ -4,10 +4,6 @@ import type { ReportRecord } from '../../../shared/reports'
 
 export const RUN_ROUNDS_PAGE_SIZE = 3
 
-function projectName(workspaceDir: string): string {
-  return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
-}
-
 function roundNumbers(snapshot: LoopSnapshot): number[] {
   return [...new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round))]
     .sort((a, b) => b - a)
@@ -120,7 +116,7 @@ export function RunSidebar({
             const limit = visibleRounds[loopId] ?? RUN_ROUNDS_PAGE_SIZE
             const open = expandedRuns.has(loopId)
             const selected = selectedLoopId === loopId
-            const label = projectName(item.loop.workspaceDir)
+            const label = item.loop.title
             return (
               <div key={loopId}>
                 <div className={`group flex items-center rounded-lg pr-1 transition-colors ${selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'}`}>
@@ -128,7 +124,7 @@ export function RunSidebar({
                   <button type="button" onClick={() => onToggleRun(loopId)} className="grid size-8 shrink-0 place-items-center rounded-md text-[#716b68] hover:text-[#c9c3c0]" aria-expanded={open} aria-controls={`sidebar-rounds-${loopId}`} aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}>
                     {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                   </button>
-                  <button type="button" onClick={() => onSelectRun(item)} title={item.loop.workspaceDir} className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]">{label}</button>
+                  <button type="button" onClick={() => onSelectRun(item)} title={`${label}\n${item.loop.workspaceDir}`} className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]">{label}</button>
                   {item.loop.status === 'running' && <span className="mr-2 flex shrink-0 items-center gap-1 text-[10px] text-amber-300"><span className="size-1.5 animate-pulse rounded-full bg-amber-400" aria-hidden="true" /> running</span>}
                 </div>
                 {open && (

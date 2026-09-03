@@ -694,6 +694,17 @@ export function defaultLoopTitle(prompt: string): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
+function availableLoopTitle(db: DatabaseSync, prompt: string): string {
+  const base = defaultLoopTitle(prompt)
+  const exists = db.prepare('SELECT 1 FROM loops WHERE title = ? LIMIT 1')
+  if (!exists.get(base)) return base
+  for (let suffix = 2; suffix <= MAX_MATERIALIZED_LOOP_HISTORY + 1; suffix += 1) {
+    const candidate = `${base} (${suffix})`
+    if (!exists.get(candidate)) return candidate
+  }
+  return `${base} (${crypto.randomUUID().slice(0, 8)})`
+}
+
 function toLoop(row: LoopRow): LoopRecord {
   const rawModels = parseStoredJson(row.models_json, `Loop ${row.id} models`)
   if (!rawModels || typeof rawModels !== 'object' || Array.isArray(rawModels)) throw new Error(`Loop ${row.id} models must be an object.`)
@@ -1375,7 +1386,7 @@ export class Ledger {
       )
       .run(
         id,
-        defaultLoopTitle(redactLogText(input.prompt)),
+        availableLoopTitle(this.db, redactLogText(input.prompt)),
         redactLogText(input.prompt),
         workspaceDir,
         capturedWorkspace.workspaceIdentity.dev,

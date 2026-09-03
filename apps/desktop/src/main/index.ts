@@ -218,7 +218,7 @@ function registerLoopIpc(): void {
       if (claudeError) return { ok: false, error: claudeError }
       const codexError = needsCodex ? subscriptionAuthError('Codex', codexStatus) : null
       if (codexError) return { ok: false, error: codexError }
-      return loopRunner.start({ ...input, ...models })
+      return loopRunner.start({ ...input, ...models }, 'new-child')
     } catch (error) {
       return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
     }
@@ -569,10 +569,14 @@ function registerLoopIpc(): void {
   ipcMain.handle(IPC.play.state, (_event, value: unknown) => playState(assertLoopId(value)))
   ipcMain.handle(IPC.loop.pickWorkspace, async () => {
     if (!mainWindow) return null
-    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose where new run folders are created',
+      buttonLabel: 'Use for new runs',
+      properties: ['openDirectory', 'createDirectory'],
+    })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
-  ipcMain.handle(IPC.loop.defaultWorkspace, () => path.join(app.getPath('home'), 'GauntletGames', 'aaa-shooter'))
+  ipcMain.handle(IPC.loop.defaultWorkspace, () => path.join(app.getPath('home'), 'GauntletGames'))
 }
 
 function registerIpc(): void {

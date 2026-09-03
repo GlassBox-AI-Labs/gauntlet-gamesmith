@@ -161,6 +161,21 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(ledger.runsForLoop(result.loopId!)[0].prompt).toContain(`<goal>\n${prompt}\n</goal>`)
   })
 
+  it('creates a dedicated prompt-named project folder for a new UI run', () => {
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: () => { throw new Error('stop after workspace inspection') },
+    })
+    const runsRoot = path.join(path.dirname(workspaceDir), 'runs')
+
+    const result = runner.start({ ...input(runsRoot), prompt: 'Build Tower aggro' }, 'new-child')
+    const loop = ledger.getLoop(result.loopId!)!
+
+    expect(result.ok).toBe(true)
+    expect(loop.title).toBe('Tower aggro')
+    expect(loop.workspaceDir).toBe(path.join(fs.realpathSync(runsRoot), 'tower-aggro'))
+    expect(fs.statSync(loop.workspaceDir).isDirectory()).toBe(true)
+  })
+
   it('rejects a workspace overlapping protected app data before creating history', () => {
     const { ledger, runner, workspaceDir } = setup({ protectedRoots: () => [path.dirname(workspaceDir)] })
     const result = runner.start(input(workspaceDir))

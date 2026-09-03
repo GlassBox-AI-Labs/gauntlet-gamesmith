@@ -73,7 +73,7 @@ function ProjectChooser({
               onClick={onAddProject}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#aaa4a1] hover:bg-white/[0.055] hover:text-white"
             >
-              <FolderPlus className="size-4" /> Add project
+              <FolderPlus className="size-4" /> Choose runs folder
             </button>
           </div>
         </div>
@@ -145,6 +145,7 @@ export function RunForm({
           onChange={onWorkspaceChange}
           onAddProject={onAddProject}
         />
+        <p className="px-2 pb-1 text-[11px] text-[#77706d]">A new prompt-named project folder is created here for every run.</p>
       </div>
       <textarea
         value={prompt}
