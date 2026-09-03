@@ -25,4 +25,23 @@ describe('estimateCostUsd', () => {
     expect(estimateCostUsd('unknown-model', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
     expect(estimateCostUsd(null, { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 })).toBeNull()
   })
+
+  it('gives Fable 5.1 its own cache-read rate, not the Fable 5 one', () => {
+    // 5.1 reads cache at 2.5% of input, not the 10% every other model uses.
+    // 10M cache read is $2.50 on 5.1 and $10 on 5 — the prefix match has to
+    // find the longer key first or this silently bills 4x.
+    const tokens = { input: 0, output: 0, cacheRead: 10_000_000, cacheWrite: 0 }
+    expect(estimateCostUsd('claude-fable-5-1', tokens)).toBeCloseTo(2.5, 5)
+    expect(estimateCostUsd('claude-fable-5', tokens)).toBeCloseTo(10, 5)
+  })
+
+  it('prices Fable 5.1 input and output at the Fable rate', () => {
+    // 1M in ($10) + 100k out ($5) + 500k cache write at the 1h TTL ($10)
+    const cost = estimateCostUsd('claude-fable-5-1', { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 500_000 })
+    expect(cost).toBeCloseTo(10 + 5 + 10, 5)
+  })
+
+  it('prices Sonnet 5 at the standard rate the introductory price became', () => {
+    expect(estimateCostUsd('claude-sonnet-5', { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(12, 5)
+  })
 })

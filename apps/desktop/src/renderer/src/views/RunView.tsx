@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  BarChart3,
   Check,
   ChevronDown,
   ChevronRight,
@@ -8,15 +9,19 @@ import {
   FolderGit2,
   FolderPlus,
   LoaderCircle,
+  Minus,
   Pencil,
   Play,
   Plus,
   Sparkles,
   Square,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
+import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
+import { fmtDuration, fmtTokens } from '@/lib/format'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
@@ -25,14 +30,16 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord, RunRole } from '../../../shared/loop'
 import { buildCriticPrompt } from '../../../shared/prompts'
+import { engineGateRules } from '../../../shared/engine-stack'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
 import {
   AGENT_EFFORTS,
   AGENT_MODEL_CHOICES,
   DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
+  DEFAULT_ASSET,
   DEFAULT_RESEARCH,
   describeCritic,
   modelLabel,
@@ -40,8 +47,10 @@ import {
   SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
+  type AssetFields,
   type ResearchFields,
 } from '../../../shared/models'
+import type { ReportRecord } from '../../../shared/reports'
 
 const LOG_LIMIT = 1500
 const ROUNDS_PAGE_SIZE = 3
@@ -58,13 +67,6 @@ const STATUS_STYLES: Record<string, string> = {
   interrupted: 'bg-[#2c2828] text-[#96908d] border-transparent',
 }
 
-function fmtTokens(n: number | null | undefined): string {
-  if (n == null) return '—'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
-}
-
 /**
  * Working right now: not finished, and it wrote something in the last 90s.
  * A run that ended long ago fails the time test on its own, so a finished
@@ -74,15 +76,6 @@ function agentActive(agent: AgentMetric): boolean {
   return !agent.done && agent.lastTs != null && Date.now() - new Date(agent.lastTs).getTime() < 90_000
 }
 
-function fmtDuration(ms: number | null | undefined): string {
-  if (ms == null) return '—'
-  const totalSec = Math.round(ms / 1000)
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  const h = Math.floor(totalSec / 3600)
-  const mmss = `${pad(Math.floor(totalSec / 60) % 60)}:${pad(totalSec % 60)}`
-  return h > 0 ? `${pad(h)}:${mmss}` : mmss
-}
-
 function fmtTs(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? '' : d.toTimeString().slice(0, 8)
@@ -90,6 +83,13 @@ function fmtTs(iso: string): string {
 
 function projectName(workspaceDir: string): string {
   return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
+}
+
+const ROLE_COLOR: Partial<Record<RunRole, string>> = {
+  reference: 'text-amber-300',
+  assets: 'text-[#c9bce9]',
+  implement: 'text-[#e9c9bc]',
+  critique: 'text-[#9ad1c6]',
 }
 
 function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element {
@@ -106,6 +106,7 @@ function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element 
       <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
       <span className="text-[#393433]" aria-hidden="true">/</span>
       <span><span className="text-[#857d79]">Research</span> {models.researchModel ? `${modelLabel(models.researchModel)} · ${models.researchEffort}` : 'no fan-out'}</span>
+      <span><span className="text-[#857d79]">Assets</span> {models.assetModel ? `${modelLabel(models.assetModel)} · ${models.assetEffort}` : 'no asset phase'}</span>
     </div>
   )
 }
@@ -114,12 +115,54 @@ function roundNumbers(snapshot: LoopSnapshot): number[] {
   return [...new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round))].sort((a, b) => b - a)
 }
 
+/**
+ * A checkbox that reads as one, without pulling in a form library.
+ *
+ * The border colour is set inline rather than with a `border-[…]` class:
+ * globals.css carries an unlayered `* { border-color: var(--border) }`, and
+ * unlayered CSS outranks every utility, so the class would be ignored. The
+ * empty box needs #8a827f to clear 3:1 against a highlighted row (#302b2b);
+ * the theme default only reaches 1.2:1 and disappears.
+ */
+function RunCheckbox({
+  checked,
+  mixed,
+  label,
+  onToggle,
+}: {
+  checked: boolean
+  mixed?: boolean
+  label: string
+  onToggle: () => void
+}): React.JSX.Element {
+  const filled = checked || mixed
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={mixed ? 'mixed' : checked}
+      aria-label={label}
+      onClick={onToggle}
+      style={{ borderColor: filled ? '#c2bbb7' : '#8a827f' }}
+      className={`grid size-4 shrink-0 place-items-center rounded border transition-colors ${
+        filled ? 'bg-[#c2bbb7] text-[#1c1716]' : 'text-transparent'
+      }`}
+    >
+      {mixed ? <Minus className="size-3" strokeWidth={3} /> : <Check className="size-3" strokeWidth={3} />}
+    </button>
+  )
+}
+
 function RunSidebar({
   snapshots,
+  reports,
   selectedLoopId,
+  selectedReportId,
   selectedRound,
   expandedRuns,
   visibleRounds,
+  editing,
+  checkedRuns,
   onNewRun,
   onImportRun,
   onSelectRun,
@@ -127,12 +170,23 @@ function RunSidebar({
   onToggleRun,
   onLoadMore,
   onOpenAgents,
+  onToggleEditing,
+  onToggleChecked,
+  onToggleAllChecked,
+  onDeleteChecked,
+  onCreateReport,
+  onSelectReport,
+  onImportReport,
 }: {
   snapshots: LoopSnapshot[]
+  reports: ReportRecord[]
   selectedLoopId: string | null
+  selectedReportId: string | null
   selectedRound: number | null
   expandedRuns: Set<string>
   visibleRounds: Record<string, number>
+  editing: boolean
+  checkedRuns: Set<string>
   onNewRun: () => void
   onImportRun: () => void
   onSelectRun: (snapshot: LoopSnapshot) => void
@@ -140,7 +194,16 @@ function RunSidebar({
   onToggleRun: (loopId: string) => void
   onLoadMore: (loopId: string) => void
   onOpenAgents: () => void
+  onToggleEditing: () => void
+  onToggleChecked: (loopId: string) => void
+  onToggleAllChecked: () => void
+  onDeleteChecked: () => void
+  onCreateReport: () => void
+  onSelectReport: (report: ReportRecord) => void
+  onImportReport: () => void
 }): React.JSX.Element {
+  const checkedCount = checkedRuns.size
+  const allChecked = snapshots.length > 0 && checkedCount === snapshots.length
   return (
     <aside className="flex h-screen w-[252px] shrink-0 flex-col border-r border-[#2a2626] bg-[#141112]">
       <div className="px-3 pb-3 pt-5">
@@ -161,7 +224,57 @@ function RunSidebar({
       </div>
       <div className="border-t border-[#2f2a2b]" />
       <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-4">
-        <div className="mb-2 px-2 text-[13px] font-medium text-[#8d8784]">Runs</div>
+        {editing ? (
+          <div className="mb-2 flex items-center gap-1">
+            <span className="pl-2 pr-1">
+              <RunCheckbox
+                checked={allChecked}
+                mixed={checkedCount > 0 && !allChecked}
+                label={allChecked ? 'Select none' : 'Select all runs'}
+                onToggle={onToggleAllChecked}
+              />
+            </span>
+            <button
+              type="button"
+              onClick={onDeleteChecked}
+              disabled={checkedCount === 0}
+              title="Delete the checked runs"
+              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#f0b8aa] transition-colors hover:bg-[#3a2622] disabled:cursor-not-allowed disabled:text-[#5e5654] disabled:hover:bg-transparent"
+            >
+              <Trash2 className="size-3.5" /> Delete
+            </button>
+            <button
+              type="button"
+              onClick={onCreateReport}
+              disabled={checkedCount === 0}
+              title="Build a report from the checked runs"
+              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#a8c8e0] transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:text-[#5e5654] disabled:hover:bg-transparent"
+            >
+              <BarChart3 className="size-3.5" /> Report
+            </button>
+            <button
+              type="button"
+              onClick={onToggleEditing}
+              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#c2bbb7] transition-colors hover:bg-white/[0.05] hover:text-white"
+            >
+              <Check className="size-3.5" /> Done
+            </button>
+          </div>
+        ) : (
+          <div className="mb-2 flex items-center justify-between pl-2">
+            <span className="text-[13px] font-medium text-[#8d8784]">Runs</span>
+            <button
+              type="button"
+              onClick={onToggleEditing}
+              disabled={snapshots.length === 0}
+              aria-label="Edit runs"
+              title="Select runs to delete or turn into a report"
+              className="grid size-6 place-items-center rounded-md text-[#68615f] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6] disabled:cursor-not-allowed disabled:text-[#463f3e] disabled:hover:bg-transparent"
+            >
+              <Pencil className="size-3.5" />
+            </button>
+          </div>
+        )}
         <div className="grid gap-1">
           {snapshots.map((item) => {
             const loopId = item.loop.id
@@ -177,6 +290,11 @@ function RunSidebar({
                     selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'
                   }`}
                 >
+                  {editing && (
+                    <span className="pl-2 pr-1">
+                      <RunCheckbox checked={checkedRuns.has(loopId)} label={`Select ${label}`} onToggle={() => onToggleChecked(loopId)} />
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => onToggleRun(loopId)}
@@ -232,6 +350,40 @@ function RunSidebar({
             )
           })}
           {snapshots.length === 0 && <p className="px-2 py-3 text-xs leading-relaxed text-[#68615f]">Your runs will appear here.</p>}
+        </div>
+
+        <div className="mb-2 mt-6 flex items-center justify-between pl-2">
+          <span className="text-[13px] font-medium text-[#8d8784]">Reports</span>
+          <button
+            type="button"
+            onClick={onImportReport}
+            aria-label="Import a report"
+            title="Open a report a teammate sent you"
+            className="grid size-6 place-items-center rounded-md text-[#68615f] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6]"
+          >
+            <Download className="size-3.5" />
+          </button>
+        </div>
+        <div className="grid gap-1">
+          {reports.map((report) => (
+            <button
+              key={report.id}
+              type="button"
+              onClick={() => onSelectReport(report)}
+              className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${
+                selectedReportId === report.id ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'
+              }`}
+            >
+              <BarChart3 className="size-3.5 shrink-0 text-[#716b68]" />
+              <span className="min-w-0 flex-1 truncate">{report.name}</span>
+              <span className="shrink-0 font-mono text-[10px] text-[#68615f]">{report.rows.length}</span>
+            </button>
+          ))}
+          {reports.length === 0 && (
+            <p className="px-2 py-3 text-xs leading-relaxed text-[#68615f]">
+              Compare runs side by side: tap the pencil above, check a few runs, then Report.
+            </p>
+          )}
         </div>
       </div>
       <div className="border-t border-[#2f2a2b] p-3">
@@ -405,7 +557,7 @@ function RunRow({
         </TableCell>
         <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.role === 'reference' ? '—' : run.round}</TableCell>
         <TableCell className="px-2 py-2.5">
-          <span className={run.role === 'reference' ? 'text-amber-300' : run.role === 'implement' ? 'text-[#e9c9bc]' : 'text-[#9ad1c6]'}>{run.role}</span>
+          <span className={ROLE_COLOR[run.role] ?? 'text-[#9ad1c6]'}>{run.role}</span>
         </TableCell>
         <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{run.model ?? '—'}</TableCell>
         <TableCell className="px-2 py-2.5">
@@ -490,6 +642,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
   const [research, setResearch] = useState<ResearchFields>(DEFAULT_RESEARCH)
+  const [asset, setAsset] = useState<AssetFields>(DEFAULT_ASSET)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -501,6 +654,13 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
+  const [reports, setReports] = useState<ReportRecord[]>([])
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
+  const [editingRuns, setEditingRuns] = useState(false)
+  const [checkedRuns, setCheckedRuns] = useState<Set<string>>(new Set())
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteFiles, setDeleteFiles] = useState(false)
+  const [namingReport, setNamingReport] = useState(false)
   const [referenceStudies, setReferenceStudies] = useState<Map<string, ReferenceStudy>>(new Map())
   const [detailTab, setDetailTab] = useState<'activity' | 'references'>('activity')
   const loopIdRef = useRef<string | null>(null)
@@ -536,8 +696,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       }
     })
     void (async () => {
-      const [all, snap, defaultDir] = await Promise.all([window.loops.list(), window.loops.active(), window.loops.defaultWorkspace()])
+      const [all, snap, defaultDir, savedReports] = await Promise.all([
+        window.loops.list(),
+        window.loops.active(),
+        window.loops.defaultWorkspace(),
+        window.reports.list(),
+      ])
       setSnapshots(all)
+      setReports(savedReports)
       const initial = snap ?? all[0] ?? null
       setWorkspaceDir((current) => current || initial?.loop.workspaceDir || defaultDir)
       if (initial) {
@@ -551,6 +717,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         })
         setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
         setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
+        setAsset({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
         setExpandedRuns(new Set([initial.loop.id]))
         setLines(await window.loops.log(initial.loop.id))
       } else {
@@ -614,7 +781,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   // The rubric is deterministic loop configuration, so show it from the
   // moment a loop is created instead of waiting for the first critique job.
   const critiqueRubric = snapshot?.runs.find((run) => run.role === 'critique')?.prompt
-    ?? (loop ? buildCriticPrompt(loop.prompt, 1, snapshot?.runs.some((run) => run.role === 'reference') ? `reference/${loop.id}` : 'reference') : '')
+    ?? (loop ? buildCriticPrompt(loop.prompt, 1, snapshot?.runs.some((run) => run.role === 'reference') ? `reference/${loop.id}` : 'reference', engineGateRules()) : '')
   const detailStatus = selectedRound == null
     ? loop?.status
     : visibleRuns.some((run) => run.status === 'running')
@@ -659,12 +826,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         ...impl,
         ...critic,
         ...research,
+        ...asset,
       })
       if (!result.ok) {
         setError(result.error ?? 'Failed to start.')
         return
       }
       loopIdRef.current = result.loopId ?? null
+      setSelectedReportId(null)
       setLines([])
       setExpanded(new Set())
       setSelectedRound(null)
@@ -686,6 +855,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
 
   const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
     loopIdRef.current = next.loop.id
+    setSelectedReportId(null)
     setSnapshot(next)
     setImpl({
       orchestratorModel: next.loop.models.orchestratorModel,
@@ -695,6 +865,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     })
     setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
     setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
+    setAsset({ assetModel: next.loop.models.assetModel, assetEffort: next.loop.models.assetEffort })
     setSelectedRound(round)
     setLogFilter(ALL_LOG_FILTER)
     setDetailTab('activity')
@@ -708,6 +879,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
 
   const beginNewRun = (): void => {
     setComposing(true)
+    setSelectedReportId(null)
     setSelectedRound(null)
     setDetailTab('activity')
     setPrompt('')
@@ -747,6 +919,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       const importedSnapshots = result.snapshots ?? [imported]
       const importedIds = new Set(importedSnapshots.map((item) => item.loop.id))
       loopIdRef.current = imported.loop.id
+      setSelectedReportId(null)
       setSnapshot(imported)
       setSnapshots((current) => [...importedSnapshots, ...current.filter((item) => !importedIds.has(item.loop.id))])
       setWorkspaceDir(imported.loop.workspaceDir)
@@ -783,6 +956,84 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     }
   }
 
+  const deleteCheckedRuns = async (): Promise<void> => {
+    const loopIds = [...checkedRuns]
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.loops.deleteRuns(loopIds, deleteFiles)
+      const removed = new Set(result.deletedIds)
+      if (removed.size > 0) {
+        const remaining = snapshots.filter((item) => !removed.has(item.loop.id))
+        setSnapshots(remaining)
+        setCheckedRuns((current) => new Set([...current].filter((id) => !removed.has(id))))
+        if (loopIdRef.current && removed.has(loopIdRef.current)) {
+          // The open run just went away, so land somewhere that still exists.
+          const next = remaining[0] ?? null
+          loopIdRef.current = next?.loop.id ?? null
+          setSnapshot(next)
+          setSelectedRound(null)
+          setLines(next ? await window.loops.log(next.loop.id) : [])
+          if (!next) setComposing(true)
+        }
+        setNotice(
+          `Deleted ${removed.size} ${removed.size === 1 ? 'run' : 'runs'}${deleteFiles ? ' and removed the project folders from disk' : '. The project folders are still on disk, so Import run can bring them back'}.`,
+        )
+      }
+      if (result.errors.length > 0) setError(result.errors.join(' '))
+      setDeleteOpen(false)
+      setDeleteFiles(false)
+      if (removed.size > 0 && checkedRuns.size === removed.size) setEditingRuns(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const createReport = async (name: string): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const created = await window.reports.create(name, [...checkedRuns])
+      if (!created) {
+        setError('Could not create that report.')
+        return
+      }
+      setReports((current) => [created, ...current])
+      setSelectedReportId(created.id)
+      setNamingReport(false)
+      setEditingRuns(false)
+      setCheckedRuns(new Set())
+      setComposing(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importReport = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await window.reports.importReport()
+      if (result.canceled) return
+      if (!result.ok || !result.report) {
+        setError(result.error ?? 'Could not import that report.')
+        return
+      }
+      const imported = result.report
+      setReports((current) => [imported, ...current])
+      setSelectedReportId(imported.id)
+      setComposing(false)
+      setNotice(`Opened "${imported.name}" with ${imported.rows.length} ${imported.rows.length === 1 ? 'run' : 'runs'} in it.`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const selectedReport = reports.find((item) => item.id === selectedReportId) ?? null
+  const composeVisible = !selectedReport && (composing || !loop)
   const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
 
   const selectDetailTab = (tab: 'activity' | 'references'): void => {
@@ -802,10 +1053,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     <div className="flex h-screen overflow-hidden bg-[#100d0e]">
       <RunSidebar
         snapshots={snapshots}
-        selectedLoopId={composing ? null : (snapshot?.loop.id ?? null)}
+        reports={reports}
+        selectedLoopId={composing || selectedReport ? null : (snapshot?.loop.id ?? null)}
+        selectedReportId={selectedReport?.id ?? null}
         selectedRound={selectedRound}
         expandedRuns={expandedRuns}
         visibleRounds={visibleRounds}
+        editing={editingRuns}
+        checkedRuns={checkedRuns}
         onNewRun={beginNewRun}
         onImportRun={() => void importRun()}
         onSelectRun={(next) => void selectRun(next)}
@@ -822,13 +1077,65 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           setVisibleRounds((current) => ({ ...current, [loopId]: (current[loopId] ?? ROUNDS_PAGE_SIZE) + ROUNDS_PAGE_SIZE }))
         }
         onOpenAgents={onOpenAgents}
+        onToggleEditing={() => {
+          setEditingRuns((current) => !current)
+          setCheckedRuns(new Set())
+        }}
+        onToggleChecked={(loopId) =>
+          setCheckedRuns((current) => {
+            const next = new Set(current)
+            if (next.has(loopId)) next.delete(loopId)
+            else next.add(loopId)
+            return next
+          })
+        }
+        onToggleAllChecked={() =>
+          setCheckedRuns((current) =>
+            current.size === snapshots.length ? new Set() : new Set(snapshots.map((item) => item.loop.id)),
+          )
+        }
+        onDeleteChecked={() => {
+          setDeleteFiles(false)
+          setDeleteOpen(true)
+        }}
+        onCreateReport={() => setNamingReport(true)}
+        onSelectReport={(report) => {
+          setSelectedReportId(report.id)
+          setComposing(false)
+          setRenaming(false)
+          setNotice(null)
+          setError(null)
+        }}
+        onImportReport={() => void importReport()}
       />
       <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
 
       {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
+      {error && !composeVisible && (
+        <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs leading-relaxed text-[#f0aaaa]">{error}</p>
+      )}
 
-      {composing || !loop ? (
+      {selectedReport ? (
+        <ReportPanel
+          report={selectedReport}
+          snapshots={snapshots}
+          onReplace={(next) => setReports((current) => current.map((item) => (item.id === next.id ? next : item)))}
+          onDeleted={(reportId) => {
+            setReports((current) => current.filter((item) => item.id !== reportId))
+            setSelectedReportId(null)
+            setNotice('Deleted that report. The runs it listed are untouched.')
+          }}
+          onNotice={(text) => {
+            setNotice(text)
+            setError(null)
+          }}
+          onError={(text) => {
+            setError(text)
+            setNotice(null)
+          }}
+        />
+      ) : composing || !loop ? (
         <Card className="gap-0 overflow-visible border-[#393433] bg-[#1d1919] p-0 shadow-2xl shadow-black/20">
           <div className="border-b border-[#393433] p-3">
             <ProjectChooser
@@ -934,6 +1241,29 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               </Select>
             </div>
             <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
+              <span className="text-xs text-[#7d7772]">Assets</span>
+              <Select
+                value={asset.assetModel ?? SOLO_SUBAGENT}
+                onValueChange={(value) => setAsset((current) => ({ ...current, assetModel: value === SOLO_SUBAGENT ? null : value }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
+                  <SelectItem value={SOLO_SUBAGENT}>none (no asset phase)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={asset.assetEffort}
+                onValueChange={(value) => setAsset((current) => ({ ...current, assetEffort: value }))}
+                disabled={asset.assetModel === null}
+              >
+                <SelectTrigger className={asset.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
               <span className="text-xs text-[#7d7772]">Critic</span>
               <Select
                 value={critic.criticModel}
@@ -968,7 +1298,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
               {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
               {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
-              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}
+              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}{' '}
+              {asset.assetModel ? `Each cast entry gets its own sculptor on ${modelLabel(asset.assetModel)} at ${asset.assetEffort} effort.` : 'No asset phase — implement rounds sculpt their own models.'}
             </p>
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
@@ -1438,6 +1769,28 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       )}
         </div>
       </main>
+      {deleteOpen && (
+        <DeleteRunsDialog
+          count={checkedRuns.size}
+          deleteFiles={deleteFiles}
+          busy={busy}
+          onToggleFiles={() => setDeleteFiles((current) => !current)}
+          onCancel={() => {
+            setDeleteOpen(false)
+            setDeleteFiles(false)
+          }}
+          onConfirm={() => void deleteCheckedRuns()}
+        />
+      )}
+      {namingReport && (
+        <NameReportDialog
+          count={checkedRuns.size}
+          busy={busy}
+          defaultName={`Comparison — ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`}
+          onCancel={() => setNamingReport(false)}
+          onConfirm={(name) => void createReport(name)}
+        />
+      )}
     </div>
   )
 }

@@ -17,15 +17,17 @@ import type {
 } from '../shared/loop'
 import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
-import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
+import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
-import { delegationRules, implementerAgentMd, researchRules } from './delegation'
-import { critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
+import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
+import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
+import { assetsPlan, critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
 import { cliHome, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { referencePackDir, scanReferencePack } from './reference-pack'
+import { assetTargets, type CastEntry, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { captureRoundRevision } from './round-revision'
 import { translateClaudeLine } from './streams/claude-stream'
@@ -43,7 +45,40 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
-const REFERENCE_TIMEOUT_MS = 60 * 60_000
+/**
+ * The Reference Study gets implement's shape — quiet-based, not wall-clock.
+ *
+ * It used to run one flat hour used as both idle and cap, which killed a
+ * working agent exactly like a stalled one. That bit on the first Pac-Man run:
+ * the study gathered 53 stills, 49 journey shots and 46 object shots, then died
+ * at the hour with every document still unwritten, because step 7 makes it VIEW
+ * every still and motion frame before it may write the README. Acquiring more
+ * material buys more viewing, so a fixed hour is a budget the phase can
+ * outgrow — and it did once the cast list and `objects/` were added to it.
+ */
+const REFERENCE_IDLE_MS = 40 * 60_000
+const REFERENCE_HARD_CAP_MS = 3 * 60 * 60_000
+// The Asset Build fans out like implement, and a sculptor's correction loop is
+// slow, so it gets implement's shape rather than the critique's flat hour. The
+// cap is lower: a cast is a bounded list, unlike a whole game.
+const ASSETS_IDLE_MS = 40 * 60_000
+const ASSETS_HARD_CAP_MS = 6 * 60 * 60_000
+
+/** How a fan-out run is closed out. Implement commits a revision; assets does not. */
+type FinishFanOut = (loop: LoopRecord, run: RunRecord, exit: ExitInfo, collect: () => ImplementOutcome) => Promise<void>
+
+const IDLE_MS_FOR: Partial<Record<RunRole, number>> = {
+  reference: REFERENCE_IDLE_MS,
+  assets: ASSETS_IDLE_MS,
+  implement: IMPLEMENT_IDLE_MS,
+  critique: CRITIQUE_TIMEOUT_MS,
+}
+const CAP_MS_FOR: Partial<Record<RunRole, number>> = {
+  reference: REFERENCE_HARD_CAP_MS,
+  assets: ASSETS_HARD_CAP_MS,
+  implement: IMPLEMENT_HARD_CAP_MS,
+  critique: CRITIQUE_TIMEOUT_MS,
+}
 /** No write to a delegated worker's stream for this long counts as finished. */
 const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
@@ -184,6 +219,13 @@ function normalizeVerdict(value: unknown): Verdict | null {
   return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
 }
 
+/**
+ * The user's prompt says what game to build; the engine contract says what to
+ * build it out of. It is passed on every round rather than only the first,
+ * because by round seven the critic is pushing hard on lighting and game feel
+ * and the architecture is exactly what gets quietly traded away to fix
+ * findings.
+ */
 function buildImplementPrompt(
   models: LoopModels,
   userPrompt: string,
@@ -191,7 +233,7 @@ function buildImplementPrompt(
   verdict: Verdict | null,
   referenceDir: string,
 ): string {
-  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir)
+  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir, engineContract())
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -287,15 +329,27 @@ export class LoopRunner {
     if (!workspaceDir || !path.isAbsolute(workspaceDir)) return { ok: false, error: 'Workspace must be an absolute path.' }
     const maxRounds = Math.max(1, Math.min(100, Math.floor(input.maxRounds) || 10))
     const budgetUsd = input.budgetUsd && input.budgetUsd > 0 ? input.budgetUsd : null
+    let scaffold: ScaffoldResult
     try {
       fs.mkdirSync(workspaceDir, { recursive: true })
+      // Round one starts on the engine rather than spending its budget
+      // deciding on one — and deciding differently in every workspace.
+      scaffold = scaffoldEngine(workspaceDir)
     } catch (error) {
       return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
     }
 
-    const models = resolveModels(input, input, input)
+    const models = resolveModels(input, input, input, input)
     const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
     this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
+    this.log(
+      loop.id,
+      null,
+      'system',
+      scaffold.created.length
+        ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
+        : 'Engine contract refreshed; workspace already scaffolded.',
+    )
     this.log(
       loop.id,
       null,
@@ -342,11 +396,13 @@ export class LoopRunner {
           const parser =
             active.role === 'reference'
               ? this.makeReferenceParser(loop, active, gate)
-              : active.role === 'implement'
+              : active.role === 'assets'
+                ? this.assetsParser(loop, active, gate)
+                : active.role === 'implement'
                 ? this.makeImplementParser(loop, active, gate)
                 : this.makeCritiqueParser(loop, active, gate)
-          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
-          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const idle = IDLE_MS_FOR[active.role] ?? CRITIQUE_TIMEOUT_MS
+          const cap = CAP_MS_FOR[active.role] ?? CRITIQUE_TIMEOUT_MS
           void this.driveRun(loop, active, meta, idle, cap, parser, gate, null)
           continue
         }
@@ -406,14 +462,19 @@ export class LoopRunner {
     } else if (last?.role === 'reference') {
       const referenceDir = this.referenceDir(loopId)
       this.ledger.patchLoop(loopId, { round: 1 })
-      this.ledger.createRun({
-        loopId,
-        round: 1,
-        role: 'implement',
-        harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, referenceDir),
-      })
+      if (!this.queueAssets(loop, 1)) {
+        this.ledger.createRun({
+          loopId,
+          round: 1,
+          role: 'implement',
+          harness: harnessFor(loop.models.orchestratorModel),
+          prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, referenceDir),
+        })
+      }
       this.log(loopId, null, 'system', 'Loop resumed by user — Reference Pack ready; starting round 1.')
+    } else if (last?.role === 'assets') {
+      this.queueImplement(loop, last.round, this.verdictForRound(loopId, last.round - 1))
+      this.log(loopId, null, 'system', `Loop resumed by user — Asset Build done; starting round ${last.round}.`)
     } else if (last?.role === 'implement' && last.round >= loop.maxRounds) {
       this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${last.round} — no critique, since no round is left for it to gate.`)
       return { ok: true }
@@ -423,7 +484,7 @@ export class LoopRunner {
         round: last.round,
         role: 'critique',
         harness: loop.models.criticHarness,
-        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId)),
+        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId), engineGateRules()),
       })
       this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
     } else if (last?.role === 'critique') {
@@ -433,13 +494,15 @@ export class LoopRunner {
         return { ok: false, error: 'Max rounds already reached.' }
       }
       this.ledger.patchLoop(loopId, { round: nextRound })
-      this.ledger.createRun({
-        loopId,
-        round: nextRound,
-        role: 'implement',
-        harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict, this.referenceDir(loopId)),
-      })
+      if (!this.queueAssets(loop, nextRound, assetTargets(last.verdict?.findings ?? []))) {
+        this.ledger.createRun({
+          loopId,
+          round: nextRound,
+          role: 'implement',
+          harness: harnessFor(loop.models.orchestratorModel),
+          prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict, this.referenceDir(loopId)),
+        })
+      }
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
       const referenceDir = referencePackDir(loopId)
@@ -582,6 +645,7 @@ export class LoopRunner {
     if (!run) return
     try {
       if (run.role === 'reference') await this.executeReference(loop, run)
+      else if (run.role === 'assets') await this.executeAssets(loop, run)
       else if (run.role === 'implement') await this.executeImplement(loop, run)
       else await this.executeCritique(loop, run)
     } catch (error) {
@@ -801,7 +865,7 @@ export class LoopRunner {
     this.ledger.patchRun(run.id, { model: models.orchestratorModel })
     const gate: LogGate = { suppress: false }
     const parser = this.makeReferenceParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own)
+    await this.driveRun(loop, run, spawned.meta, REFERENCE_IDLE_MS, REFERENCE_HARD_CAP_MS, parser, gate, spawned.own)
   }
 
   private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
@@ -936,13 +1000,15 @@ export class LoopRunner {
       this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
       if (this.overBudget(loop.id)) return
       this.ledger.patchLoop(loop.id, { round: 1 })
-      this.ledger.createRun({
-        loopId: loop.id,
-        round: 1,
-        role: 'implement',
-        harness: harnessFor(model),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, this.referenceDir(loop.id)),
-      })
+      if (!this.queueAssets(loop, 1)) {
+        this.ledger.createRun({
+          loopId: loop.id,
+          round: 1,
+          role: 'implement',
+          harness: harnessFor(model),
+          prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, this.referenceDir(loop.id)),
+        })
+      }
       this.log(loop.id, null, 'system', 'Reference Pack frozen — round 1 queued.')
       this.broadcast(loop.id)
       void this.executeNext(loop.id)
@@ -952,6 +1018,150 @@ export class LoopRunner {
       onStderr: (text) => plog('stderr', trunc(text, 400)),
       finalize,
     }
+  }
+
+  // ------------------------------------------------------------------- assets
+
+  /** The cast the Reference Study named, best-priority first. */
+  private castFor(loop: LoopRecord): CastEntry[] {
+    return parseCast(scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id)).manifest)
+  }
+
+  /**
+   * Queue an Asset Build, or say why there is nothing to queue.
+   *
+   * Three ways to have no work: the operator turned the phase off, the game has
+   * no sculptable objects (a maze of neon walls and bloom is rendering, not
+   * models), or every named entry already has a factory. All three are normal,
+   * and the caller moves straight on to implement.
+   */
+  private queueAssets(loop: LoopRecord, round: number, only: string[] = []): boolean {
+    if (!loop.models.assetModel) return false
+    const cast = this.castFor(loop)
+    if (cast.length === 0) return false
+    const wanted = only.length > 0 ? cast.filter((entry) => only.includes(entry.name)) : unbuiltCast(loop.workspaceDir, cast)
+    if (wanted.length === 0) return false
+    const referenceDir = this.referenceDir(loop.id)
+    this.ledger.createRun({
+      loopId: loop.id,
+      round,
+      role: 'assets',
+      harness: harnessFor(loop.models.orchestratorModel),
+      prompt: buildAssetsPrompt(loop.prompt, referenceDir, cast, sculptorRules(loop.models, referenceDir), wanted.map((entry) => entry.name)),
+    })
+    this.log(
+      loop.id,
+      null,
+      'system',
+      only.length > 0
+        ? `Asset Build queued — rebuilding ${wanted.length} model${wanted.length === 1 ? '' : 's'} the critic faulted: ${wanted.map((e) => e.name).join(', ')}.`
+        : `Asset Build queued — ${wanted.length} model${wanted.length === 1 ? '' : 's'} to sculpt: ${wanted.map((e) => e.name).join(', ')}.`,
+    )
+    return true
+  }
+
+  /** The verdict a round was judged on, for feeding the next implement run. */
+  private verdictForRound(loopId: string, round: number): Verdict | null {
+    return this.ledger.runsForLoop(loopId).find((r) => r.role === 'critique' && r.round === round && r.verdict)?.verdict ?? null
+  }
+
+  private queueImplement(loop: LoopRecord, round: number, verdict: Verdict | null): void {
+    this.ledger.patchLoop(loop.id, { round })
+    this.ledger.createRun({
+      loopId: loop.id,
+      round,
+      role: 'implement',
+      harness: harnessFor(loop.models.orchestratorModel),
+      prompt: buildImplementPrompt(loop.models, loop.prompt, round, verdict, this.referenceDir(loop.id)),
+    })
+  }
+
+  private async executeAssets(loop: LoopRecord, run: RunRecord): Promise<void> {
+    const models = loop.models
+    const harness = harnessFor(models.orchestratorModel)
+    const referenceDir = this.referenceDir(loop.id)
+
+    // The crop tool is rewritten every round for the reason the engine gate is:
+    // it is the one thing in the workspace a worker has an incentive to weaken,
+    // and a guard that can be edited away is not a guard.
+    scaffoldAssetTools(loop.workspaceDir)
+    const agentMd = sculptorAgentMd(models, referenceDir)
+    if (agentMd) {
+      const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
+      fs.mkdirSync(agentDir, { recursive: true })
+      fs.writeFileSync(path.join(agentDir, 'sculptor.md'), agentMd)
+    }
+    fs.rmSync(agentsDir(loop.workspaceDir), { recursive: true, force: true })
+    fs.mkdirSync(agentsDir(loop.workspaceDir), { recursive: true })
+
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `● Asset Build — sculptors on ${models.assetModel} at ${models.assetEffort} effort (orchestrated by ${harness} ${models.orchestratorModel}).`,
+    )
+    const plan = assetsPlan({ models, prompt: run.prompt, claudeHome: cliHome('claude'), codexHome: cliHome('codex') })
+    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
+    if (!spawned) return
+    const gate: LogGate = { suppress: false }
+    const parser = this.assetsParser(loop, run, gate)
+    await this.driveRun(loop, run, spawned.meta, ASSETS_IDLE_MS, ASSETS_HARD_CAP_MS, parser, gate, spawned.own)
+  }
+
+  /** The implement stream parser, closed out the asset way. */
+  private assetsParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+    const finish: FinishFanOut = (l, r, e, collect) => this.finishAssets(l, r, e, collect)
+    return harnessFor(loop.models.orchestratorModel) === 'claude'
+      ? this.makeImplementParser(loop, run, gate, finish)
+      : this.makeCodexImplementParser(loop, run, gate, finish)
+  }
+
+  /**
+   * Close out an Asset Build and hand on to implement.
+   *
+   * No revision is committed here: a round's revision marks a playable build,
+   * and a library of models is not one. A failed Asset Build does not stop the
+   * loop either — the implement prompt already tells the orchestrator to model
+   * anything missing itself, so a bad sculpting round costs quality rather than
+   * the whole run.
+   */
+  private async finishAssets(loop: LoopRecord, run: RunRecord, exit: ExitInfo, collect: () => ImplementOutcome): Promise<void> {
+    await this.awaitChildren(loop, run)
+    const out = collect()
+    this.ledger.patchRun(run.id, {
+      metrics: out.metrics,
+      costUsd: out.costUsd,
+      inputTokens: out.tokens?.input,
+      outputTokens: out.tokens?.output,
+      numTurns: out.numTurns,
+      sessionId: out.sessionId,
+      summary: out.summary,
+    })
+    const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
+    if (stopReason) {
+      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
+      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Asset Build timed out.')
+      return
+    }
+    const built = unbuiltCast(loop.workspaceDir, this.castFor(loop))
+    if (out.error) {
+      this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
+      this.log(loop.id, run.id, 'system', `Asset Build failed (${out.error}) — continuing; the implementer models what is missing.`)
+    } else {
+      this.ledger.patchRun(run.id, { status: 'succeeded' })
+      this.log(
+        loop.id,
+        run.id,
+        'system',
+        built.length === 0
+          ? '▦ Asset Build complete — every cast entry has a factory.'
+          : `▦ Asset Build complete — ${built.length} entry(s) still unbuilt: ${built.map((e) => e.name).join(', ')}. The implementer models those itself.`,
+      )
+    }
+    if (this.overBudget(loop.id)) return
+    this.queueImplement(loop, run.round, this.verdictForRound(loop.id, run.round - 1))
+    this.broadcast(loop.id)
+    void this.executeNext(loop.id)
   }
 
   // ---------------------------------------------------------------- implement
@@ -964,6 +1174,13 @@ export class LoopRunner {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
       fs.mkdirSync(agentDir, { recursive: true })
       fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
+    }
+    // Rewrite the contract and the gate every round. The gate is the one file
+    // in the workspace a worker has an incentive to weaken, and a gate that
+    // can be edited to pass is not a gate.
+    const scaffold = scaffoldEngine(loop.workspaceDir)
+    if (scaffold.refreshed.length) {
+      this.log(loop.id, run.id, 'system', `Restored app-owned files: ${scaffold.refreshed.join(', ')}.`)
     }
     // Delegated workers write their streams here. Clearing the directory keeps
     // last round's children out of this round's metrics and liveness check.
@@ -1023,7 +1240,12 @@ export class LoopRunner {
     if (announced) this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
   }
 
-  private makeImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+  private makeImplementParser(
+    loop: LoopRecord,
+    run: RunRecord,
+    gate: LogGate,
+    finish: FinishFanOut = (l, r, e, collect) => this.finishImplement(l, r, e, collect),
+  ): StreamParser {
     const plog = (kind: string, text: string): void => {
       if (!gate.suppress) this.log(loop.id, run.id, kind, text)
     }
@@ -1269,7 +1491,7 @@ export class LoopRunner {
     }
 
     const finalize = async (exit: ExitInfo): Promise<void> => {
-      await this.finishImplement(loop, run, exit, () => {
+      await finish(loop, run, exit, () => {
         pollWorkflows()
         pollChildren()
         const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents, childParents)
@@ -1340,7 +1562,12 @@ export class LoopRunner {
    * workers, when the run delegates across harnesses, report through their own
    * stream files instead.
    */
-  private makeCodexImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
+  private makeCodexImplementParser(
+    loop: LoopRecord,
+    run: RunRecord,
+    gate: LogGate,
+    finish: FinishFanOut = (l, r, e, collect) => this.finishImplement(l, r, e, collect),
+  ): StreamParser {
     const plog = (kind: string, text: string): void => {
       if (!gate.suppress) this.log(loop.id, run.id, kind, text)
     }
@@ -1431,7 +1658,7 @@ export class LoopRunner {
     }
 
     const finalize = async (exit: ExitInfo): Promise<void> => {
-      await this.finishImplement(loop, run, exit, () => {
+      await finish(loop, run, exit, () => {
         pollWorkers()
         const metrics = metricsNow()
         const failed = failure ?? exit.spawnError ?? (exit.code !== 0 && exit.code !== null ? `codex exited ${exit.code}` : null)
@@ -1533,7 +1760,7 @@ export class LoopRunner {
       round: run.round,
       role: 'critique',
       harness: loop.models.criticHarness,
-      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
     })
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
@@ -1867,7 +2094,7 @@ export class LoopRunner {
             round: run.round,
             role: 'critique',
             harness: loop.models.criticHarness,
-            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id)),
+            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
           })
           this.broadcast(loop.id)
           void this.executeNext(loop.id)
@@ -1904,13 +2131,20 @@ export class LoopRunner {
 
       const nextRound = run.round + 1
       this.ledger.patchLoop(loop.id, { round: nextRound })
-      this.ledger.createRun({
-        loopId: loop.id,
-        round: nextRound,
-        role: 'implement',
-        harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict, this.referenceDir(loop.id)),
-      })
+      // A finding against the model itself has a pipeline to go back to; a
+      // finding about how the model is used does not. Splitting them is what
+      // stops the implementer hand-editing a generated factory, which is the
+      // one thing that would rot the library back to where it started.
+      const faulted = assetTargets(verdict.findings)
+      if (!this.queueAssets(loop, nextRound, faulted)) {
+        this.ledger.createRun({
+          loopId: loop.id,
+          round: nextRound,
+          role: 'implement',
+          harness: harnessFor(loop.models.orchestratorModel),
+          prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict, this.referenceDir(loop.id)),
+        })
+      }
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
       this.broadcast(loop.id)
       void this.executeNext(loop.id)

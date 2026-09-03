@@ -15,6 +15,7 @@ import type {
   RunStatus,
   Verdict,
 } from '../shared/loop'
+import type { ReportRecord } from '../shared/reports'
 import { normalizeModels } from '../shared/models'
 import { channelForKind, RESUME_PREFIX } from '../shared/loop'
 import { assertRunFolder, runLedgerPath } from './run-transfer'
@@ -70,6 +71,13 @@ CREATE TABLE IF NOT EXISTS events (
   round INTEGER,
   role TEXT,
   channel TEXT
+);
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  data_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_loop ON runs(loop_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_loop ON events(loop_id, seq);
@@ -403,6 +411,59 @@ export class Ledger {
   loops(): LoopRecord[] {
     const rows = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC').all() as unknown as LoopRow[]
     return rows.map(toLoop)
+  }
+
+  loopsInWorkspace(workspaceDir: string): LoopRecord[] {
+    const rows = this.db.prepare('SELECT * FROM loops WHERE workspace_dir = ? ORDER BY created_at DESC').all(workspaceDir) as unknown as LoopRow[]
+    return rows.map(toLoop)
+  }
+
+  /**
+   * Forget a run. Only the app registry is touched: the project folder keeps
+   * its own `.gauntlet-loop/ledger.db`, so `Import run` can bring it straight
+   * back. Removing the files is a separate, explicit step.
+   */
+  deleteLoop(loopId: string): boolean {
+    const workspaceDir = this.workspaceForLoop(loopId)
+    if (!workspaceDir) return false
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM events WHERE loop_id = ?').run(loopId)
+      this.db.prepare('DELETE FROM runs WHERE loop_id = ?').run(loopId)
+      this.db.prepare('DELETE FROM loops WHERE id = ?').run(loopId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    // Drop the cached handle so a later import re-reads the folder from disk.
+    this.folderDbs.get(workspaceDir)?.close()
+    this.folderDbs.delete(workspaceDir)
+    return true
+  }
+
+  reports(): ReportRecord[] {
+    const rows = this.db.prepare('SELECT data_json FROM reports ORDER BY created_at DESC, rowid DESC').all() as { data_json: string }[]
+    return rows.map((row) => JSON.parse(row.data_json) as ReportRecord)
+  }
+
+  getReport(reportId: string): ReportRecord | null {
+    const row = this.db.prepare('SELECT data_json FROM reports WHERE id = ?').get(reportId) as { data_json: string } | undefined
+    return row ? (JSON.parse(row.data_json) as ReportRecord) : null
+  }
+
+  saveReport(report: ReportRecord): ReportRecord {
+    this.db
+      .prepare('INSERT OR REPLACE INTO reports (id, name, data_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(report.id, report.name, JSON.stringify(report), report.createdAt, report.updatedAt)
+    return report
+  }
+
+  deleteReport(reportId: string): boolean {
+    const before = this.db.prepare('SELECT id FROM reports WHERE id = ?').get(reportId)
+    if (!before) return false
+    this.db.prepare('DELETE FROM reports WHERE id = ?').run(reportId)
+    return true
   }
 
   runningLoop(): LoopRecord | null {

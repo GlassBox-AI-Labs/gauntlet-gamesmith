@@ -38,10 +38,19 @@ describe('Reference Pack', () => {
     fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
     fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
     fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
-    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources: [{ url: 'https://example.com' }] }))
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed — the player dog')
+    fs.writeFileSync(
+      path.join(dir, root, 'manifest.json'),
+      JSON.stringify({
+        sources: [{ url: 'https://example.com' }],
+        cast: [{ name: 'samoyed', kind: 'character', stills: ['images/still-0.jpg'], locator: 'front left', role: 'the player', priority: 1 }],
+      }),
+    )
 
     const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toEqual([])
     expect(pack.ready).toBe(true)
+    expect(pack.castCount).toBe(1)
     expect(pack.images).toHaveLength(8)
     expect(pack.motion).toHaveLength(8)
     expect(pack.videos).toHaveLength(1)
@@ -102,4 +111,67 @@ describe('Reference Pack', () => {
     expect(pack.issues).toContain('needs README.md with the target brief')
     expect(pack.issues).toContain('manifest.json is not valid JSON')
   })
+
+  it('accepts a game with nothing worth sculpting', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-none')
+    completePack(dir, root)
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), 'none — the look is neon walls, bloom and glow trails, not models.')
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toEqual([])
+    expect(pack.castCount).toBe(0)
+  })
+
+  it('faults a cast written in prose but never put in the manifest', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-prose')
+    completePack(dir, root)
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed — the player dog')
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toContain('cast.md lists objects but manifest.json has no matching "cast" array')
+  })
+
+  it('faults a cast entry that names no frame to crop from', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-noframe')
+    completePack(dir, root)
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed')
+    fs.writeFileSync(
+      path.join(dir, root, 'manifest.json'),
+      JSON.stringify({ sources: [{ url: 'https://example.com' }], cast: [{ name: 'samoyed', stills: [] }] }),
+    )
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toContain('cast entries name no reference frame: samoyed')
+  })
+
+  it('reads isolated object shots as their own source', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-objects')
+    completePack(dir, root)
+    fs.mkdirSync(path.join(dir, root, 'objects'), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'objects', 'samoyed-01.jpg'), 'shot')
+
+    expect(scanReferencePack(dir, root).objects).toEqual([`${root}/objects/samoyed-01.jpg`])
+  })
 })
+
+/** Everything a pack needs except a cast, so a test can vary just that. */
+function completePack(dir: string, root: string): void {
+  for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
+  for (let i = 0; i < 8; i += 1) {
+    fs.writeFileSync(path.join(dir, root, 'images', `still-${i}.jpg`), 'image')
+    fs.writeFileSync(path.join(dir, root, 'motion', `frame-${i}.png`), 'frame')
+  }
+  for (const shot of ['01-title', '02-main-menu', '03-intro', '04-level-1-start']) {
+    fs.writeFileSync(path.join(dir, root, 'journey', `${shot}.png`), 'shot')
+  }
+  fs.writeFileSync(path.join(dir, root, 'video', 'gameplay.webm'), 'video')
+  fs.writeFileSync(path.join(dir, root, 'README.md'), '# Target\n\nProgression model: level-based')
+  fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
+  fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
+  fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
+  fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources: [{ url: 'https://example.com' }] }))
+}
