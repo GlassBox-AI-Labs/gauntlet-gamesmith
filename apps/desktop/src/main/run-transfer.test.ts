@@ -14,6 +14,7 @@ import {
   deleteRunFolder,
   exportActivityError,
   LEGACY_RUN_METADATA_DIR,
+  LEGACY_METADATA_ARCHIVE_DIR,
   MAX_IMPORTED_LEDGER_BYTES,
   migrateRunMetadataDir,
   nextAvailableExportPath,
@@ -896,7 +897,7 @@ describe('run folders that predate the rename', () => {
     expect(fs.existsSync(path.join(workspace, LEGACY_RUN_METADATA_DIR))).toBe(false)
   })
 
-  it('leaves an already-migrated folder alone rather than merging the two', () => {
+  it('removes the old top-level name while retaining its evidence when the current folder exists', () => {
     const root = tempDir()
     const workspace = legacyFolder(root)
     fs.mkdirSync(path.join(workspace, RUN_METADATA_DIR), { recursive: true })
@@ -905,7 +906,8 @@ describe('run folders that predate the rename', () => {
     migrateRunMetadataDir(workspace)
 
     expect(fs.readFileSync(path.join(workspace, RUN_METADATA_DIR, 'ledger.db'), 'utf8')).toBe('current')
-    expect(fs.existsSync(path.join(workspace, LEGACY_RUN_METADATA_DIR))).toBe(true)
+    expect(fs.existsSync(path.join(workspace, LEGACY_RUN_METADATA_DIR))).toBe(false)
+    expect(fs.readFileSync(path.join(workspace, RUN_METADATA_DIR, LEGACY_METADATA_ARCHIVE_DIR, 'ledger.db'), 'utf8')).toBe('db')
   })
 
   it('still recognises a folder nothing has migrated, so it stays deletable', () => {

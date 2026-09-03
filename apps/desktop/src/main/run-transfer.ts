@@ -6,6 +6,7 @@ import { safeWorkspaceMetadataDir } from './workspace-metadata'
 export const RUN_METADATA_DIR = '.gauntlet-gamesmith'
 /** What this folder was called while the app was named Gauntlet Loop. */
 export const LEGACY_RUN_METADATA_DIR = '.gauntlet-loop'
+export const LEGACY_METADATA_ARCHIVE_DIR = 'legacy-gauntlet-loop'
 export const RUN_LEDGER_FILE = 'ledger.db'
 export const MAX_IMPORTED_LEDGER_BYTES = 64 * 1024 * 1024
 export const RAW_EXPORT_WARNING = 'This export includes complete, unsanitized raw CLI streams. If an agent echoed a secret, the raw files contain it; review them before sharing.'
@@ -26,16 +27,31 @@ export interface RunLedgerSourceIdentity {
  * Rename a pre-rename run folder's metadata directory to the current name.
  *
  * Doing it once, on sight, is what lets the rest of the app use a single
- * constant instead of checking two names at every call site. It is a rename
- * within one folder, so it costs nothing however large the folder is, and a
- * failure leaves the old directory untouched for `runLedgerPath` to find.
+ * constant instead of checking two names at every call site. When a current
+ * directory already exists, retain the legacy tree beneath it before removing
+ * the old top-level name so raw evidence is not silently discarded.
  */
 export function migrateRunMetadataDir(workspaceDir: string): void {
-  const current = path.join(workspaceDir, RUN_METADATA_DIR)
-  const legacy = path.join(workspaceDir, LEGACY_RUN_METADATA_DIR)
-  if (fs.existsSync(current) || !fs.existsSync(legacy)) return
+  const workspace = fs.realpathSync(workspaceDir)
+  const current = path.join(workspace, RUN_METADATA_DIR)
+  const legacy = path.join(workspace, LEGACY_RUN_METADATA_DIR)
+  if (!fs.existsSync(legacy)) return
   try {
-    fs.renameSync(legacy, current)
+    const legacyStat = fs.lstatSync(legacy)
+    if (!legacyStat.isDirectory() || legacyStat.isSymbolicLink() || fs.realpathSync(legacy) !== legacy) return
+    if (!fs.existsSync(current)) {
+      fs.renameSync(legacy, current)
+      return
+    }
+    const currentStat = fs.lstatSync(current)
+    if (!currentStat.isDirectory() || currentStat.isSymbolicLink() || fs.realpathSync(current) !== current) return
+    for (let suffix = 1; suffix <= 100; suffix += 1) {
+      const name = suffix === 1 ? LEGACY_METADATA_ARCHIVE_DIR : `${LEGACY_METADATA_ARCHIVE_DIR}-${suffix}`
+      const archive = path.join(current, name)
+      if (fs.existsSync(archive)) continue
+      fs.renameSync(legacy, archive)
+      return
+    }
   } catch {
     // Losing the rename is survivable; losing the folder is not.
   }

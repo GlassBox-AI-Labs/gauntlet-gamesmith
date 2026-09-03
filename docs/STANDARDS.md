@@ -317,8 +317,9 @@ Channel conventions:
 - Raw CLI output is the evidence and lives on disk: `.gauntlet-gamesmith/runs/<runId>.out.ndjson`
   and `.err.log` for primary agents, and `.gauntlet-gamesmith/agents/<slug>.<harness>.jsonl` for
   delegated children. A validated legacy `.gauntlet-loop/` directory is migrated to the current
-  name without overwriting an existing current directory; unsafe or ambiguous histories fail
-  closed. Log lines are the parsed, truncated projection of those files. Truncate before logging;
+  name. If the current directory already exists, the legacy tree is retained beneath it before the
+  old top-level name is removed, so migration neither overwrites current state nor discards raw
+  evidence; unsafe histories fail closed. Log lines are the parsed, truncated projection of those files. Truncate before logging;
   never store an unbounded tool result or stream line in the ledger.
 - Denormalize `round` and `role` at write time so the renderer filter strip stays a pure predicate
   over lines with no join.

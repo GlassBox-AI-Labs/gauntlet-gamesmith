@@ -127,7 +127,8 @@ through ADR-003; their product and credential policies remain in force.
   billable work. Each completed implementation still has its immutable revision for inspection.
 - Complete raw CLI streams remain portable under `.gauntlet-gamesmith/` for exact replay and are
   revealed only by ownership-checked IPC. Validated `.gauntlet-loop/` histories remain compatible
-  through a fail-closed migration to the current name. SQLite, reports, and renderer projections apply credential-shaped
+  through a fail-closed migration to the current name. When both names exist, the legacy tree is
+  retained below the current directory before its old top-level name is removed. SQLite, reports, and renderer projections apply credential-shaped
   redaction; app code never opens credential files. The raw files themselves are deliberately not
   secret-scrubbed: a broad same-user CLI can read accessible data and may echo it, and discovering
   every such value would itself require reading forbidden credential stores. Export warns the
