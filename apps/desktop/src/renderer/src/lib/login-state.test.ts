@@ -30,4 +30,36 @@ describe('harness login state', () => {
     expect(state.phase).toBe('logged_out')
     expect(state.url).toBeNull()
   })
+
+  it('clears the account details once a sign-out finishes', () => {
+    let state = initialHarnessState('claude', 'Claude Code')
+    state = reduceHarness(state, { type: 'detected', found: true, version: '2.1.251' })
+    state = reduceHarness(state, {
+      type: 'probe_finished',
+      loggedIn: true,
+      authMethod: 'claude.ai',
+      details: [['Email', 'first@example.com']],
+    })
+    state = reduceHarness(state, { type: 'logout_started' })
+
+    expect(state.phase).toBe('signing_out')
+
+    state = reduceHarness(state, { type: 'probe_finished', loggedIn: false, authMethod: null, details: [] })
+
+    expect(state.phase).toBe('logged_out')
+    expect(state.details).toEqual([])
+    expect(state.authMethod).toBeNull()
+  })
+
+  it('stays connected when the sign-out fails', () => {
+    let state = initialHarnessState('claude', 'Claude Code')
+    state = reduceHarness(state, { type: 'detected', found: true, version: '2.1.251' })
+    state = reduceHarness(state, { type: 'probe_finished', loggedIn: true, details: [['Email', 'first@example.com']] })
+    state = reduceHarness(state, { type: 'logout_started' })
+    state = reduceHarness(state, { type: 'logout_failed', error: 'Stop the running loop before signing out.' })
+
+    expect(state.phase).toBe('logged_in')
+    expect(state.error).toBe('Stop the running loop before signing out.')
+    expect(state.details).toEqual([['Email', 'first@example.com']])
+  })
 })

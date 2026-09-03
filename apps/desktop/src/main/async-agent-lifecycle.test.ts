@@ -35,7 +35,7 @@ function setup(): { runner: LoopRunner; ledger: Ledger; loopId: string; runId: s
   const ledger = new Ledger(path.join(dir, 'ledger.db'))
   const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
   const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
-  return { runner: new LoopRunner(ledger, () => {}), ledger, loopId: loop.id, runId: run.id }
+  return { runner: new LoopRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' })), ledger, loopId: loop.id, runId: run.id }
 }
 
 function replay(lines: unknown[], runner: LoopRunner, ledger: Ledger, loopId: string, runId: string): void {
