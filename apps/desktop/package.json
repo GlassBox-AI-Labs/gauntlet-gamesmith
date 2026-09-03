@@ -67,6 +67,7 @@
       "node_modules/node-pty/**/*"
     ],
     "mac": {
+      "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "notarize": true,
@@ -76,9 +77,11 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": "portable"
     },
     "linux": {
+      "icon": "build/icon.png",
       "category": "Development",
       "target": "AppImage"
     }
