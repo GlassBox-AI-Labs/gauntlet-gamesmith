@@ -109,7 +109,7 @@ export function RunSidebar({
           </div>
         )}
         {historyWarning && <p className="mb-2 px-2 text-[11px] leading-relaxed text-amber-300/80">{historyWarning}</p>}
-        <div className="grid gap-1">
+        <div className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-1">
           {snapshots.map((item) => {
             const loopId = item.loop.id
             const rounds = roundNumbers(item)
@@ -119,13 +119,13 @@ export function RunSidebar({
             const label = item.loop.title
             return (
               <div key={loopId}>
-                <div className={`group flex items-center rounded-lg pr-1 transition-colors ${selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'}`}>
+                <div className={`group flex w-full min-w-0 max-w-full items-center overflow-hidden rounded-lg pr-2 transition-colors ${selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'}`}>
                   {editing && <span className="pl-2 pr-1"><RunCheckbox checked={checkedRuns.has(loopId)} label={`Select ${label}`} onToggle={() => onToggleChecked(loopId)} /></span>}
                   <button type="button" onClick={() => onToggleRun(loopId)} className="grid size-8 shrink-0 place-items-center rounded-md text-[#716b68] hover:text-[#c9c3c0]" aria-expanded={open} aria-controls={`sidebar-rounds-${loopId}`} aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}>
                     {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                   </button>
                   <button type="button" onClick={() => onSelectRun(item)} title={`${label}\n${item.loop.workspaceDir}`} className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]">{label}</button>
-                  {item.loop.status === 'running' && <span className="mr-2 flex shrink-0 items-center gap-1 text-[10px] text-amber-300"><span className="size-1.5 animate-pulse rounded-full bg-amber-400" aria-hidden="true" /> running</span>}
+                  {item.loop.status === 'running' && <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-amber-300"><span className="size-1.5 animate-pulse rounded-full bg-amber-400" aria-hidden="true" /> running</span>}
                 </div>
                 {open && (
                   <div id={`sidebar-rounds-${loopId}`} className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
@@ -134,8 +134,8 @@ export function RunSidebar({
                       const score = records.find((run) => run.verdict)?.verdict?.score
                       const active = records.some((run) => run.status === 'running' || run.status === 'queued')
                       return (
-                        <button type="button" key={round} onClick={() => onSelectRound(item, round)} className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${selectedLoopId === loopId && selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'}`}>
-                          <span>Round {round}</span><span className={active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}>{active ? 'active' : score != null ? score.toFixed(2) : ''}</span>
+                        <button type="button" key={round} onClick={() => onSelectRound(item, round)} className={`flex w-full min-w-0 max-w-full items-center overflow-hidden rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${selectedLoopId === loopId && selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'}`}>
+                          <span className="min-w-0 flex-1 truncate">Round {round}</span><span className={`ml-2 shrink-0 whitespace-nowrap ${active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}`}>{active ? 'active' : score != null ? score.toFixed(2) : ''}</span>
                         </button>
                       )
                     })}
@@ -155,7 +155,7 @@ export function RunSidebar({
           <span className="text-[13px] font-medium text-[#8d8784]">Reports</span>
           <button type="button" onClick={onImportReport} aria-label="Import a report" title="Open a report a teammate sent you" className="grid size-6 place-items-center rounded-md text-[#68615f] hover:bg-white/[0.05] hover:text-[#ded9d6]"><Download className="size-3.5" /></button>
         </div>
-        <div className="grid gap-1">
+        <div className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-1">
           {reports.map((report) => (
             <button key={report.id} type="button" onClick={() => onSelectReport(report)} className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-[13px] ${selectedReportId === report.id ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'}`}>
               <BarChart3 className="size-3.5 shrink-0 text-[#716b68]" /><span className="min-w-0 flex-1 truncate">{report.name}</span><span className="shrink-0 font-mono text-[10px] text-[#68615f]">{report.rows.length}</span>
