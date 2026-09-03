@@ -5,7 +5,7 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { detectLaunch, hasActivePlay, playEnvironment, playState, playTrustError, processGroupIdentitiesOverlap, startPlay, stopAllPlayAndWait, stopPlay } from './play'
+import { detectLaunch, hasActivePlay, playAccessError, playEnvironment, playState, processGroupIdentitiesOverlap, startPlay, stopAllPlayAndWait, stopPlay } from './play'
 import { captureWorkspaceIdentity } from './workspace-boundary'
 
 vi.mock('electron', () => ({ shell: { openExternal: vi.fn(async () => undefined) } }))
@@ -44,9 +44,9 @@ describe('play safety', () => {
     expect(spawn).not.toHaveBeenCalled()
   })
 
-  it('fails closed when a transferred loop has not been trusted', () => {
-    expect(playTrustError(false)).toMatch(/imported or created before trust provenance shipped/)
-    expect(playTrustError(true)).toBeNull()
+  it('allows Play during active agent work but fails closed for untrusted history', () => {
+    expect(playAccessError({ playTrusted: true, status: 'running' })).toBeNull()
+    expect(playAccessError({ playTrusted: false, status: 'stopped' })).toMatch(/imported or created before trust provenance shipped/)
   })
 
   it('uses a bounded package file and a fixed npm argv', () => {

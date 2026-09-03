@@ -237,3 +237,23 @@ altering their raw evidence. Non-empty historical streams lacking both a termina
 record continue to fail closed under the existing bounded deadline because their ownership cannot be
 inferred safely. The app-owned exit line is retained in the raw child stream but excluded from CLI
 translation and token accounting.
+
+## ADR-009 — Allow Play while a loop is active (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** Play previously rejected a trusted local workspace whenever any agent activity was
+running there. That prevented the operator from inspecting and interacting with the game during the
+long implementation and critique cycle, even though Play already owns and supervises only its own
+process group.
+
+**Decision.** A trusted local loop may start Play regardless of its loop status. Playing the current
+workspace uses the live files and can therefore reflect partial edits or temporary build failures
+while agents work. Playing a completed round continues to use its isolated immutable Git revision.
+Workspace identity, protected-root, launch-command, environment, process-ownership, and imported
+history trust checks remain unchanged.
+
+**Consequences.** Operators can test the evolving game without stopping the agent loop. A live Play
+server may reload during edits or fail until the current write becomes valid; this is expected and
+is reported through the existing Play state. Play does not pause, stop, or otherwise take ownership
+of agent processes.

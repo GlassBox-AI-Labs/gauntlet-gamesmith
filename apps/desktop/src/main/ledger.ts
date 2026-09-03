@@ -1687,17 +1687,6 @@ export class Ledger {
     ).get() !== undefined
   }
 
-  hasRunningActivityForWorkspace(workspaceDir: string): boolean {
-    return this.db.prepare(
-      `SELECT 1 FROM loops WHERE workspace_dir = ? AND status = 'running'
-       UNION ALL
-       SELECT 1 FROM runs
-       JOIN loops ON loops.id = runs.loop_id
-       WHERE loops.workspace_dir = ? AND (runs.status = 'running' OR runs.process_ownership_json IS NOT NULL)
-       LIMIT 1`,
-    ).get(workspaceDir, workspaceDir) !== undefined
-  }
-
   createRun(input: {
     loopId: string
     round: number

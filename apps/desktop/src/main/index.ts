@@ -49,7 +49,7 @@ import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
 import { stopExistingLoop } from './loop-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
-import { hasActivePlay, playState, playTrustError, startPlay, stopAllPlayAndWait, stopPlay } from './play'
+import { hasActivePlay, playAccessError, playState, startPlay, stopAllPlayAndWait, stopPlay } from './play'
 import { parseRevealStreamInput, rawRevealTrustError, resolveProtectedRawStreamPath } from './raw-streams'
 import { scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
@@ -515,12 +515,12 @@ function registerLoopIpc(): void {
   ipcMain.handle(IPC.play.start, (_event, value: unknown, roundValue: unknown) => {
     const loop = ledger?.getLoop(assertLoopId(value))
     if (!loop) return { running: false, url: null, error: 'Loop not found.', round: null }
-    const trustError = playTrustError(loop.playTrusted)
-    if (trustError) {
+    const accessError = playAccessError(loop)
+    if (accessError) {
       return {
         running: false,
         url: null,
-        error: trustError,
+        error: accessError,
         round: null,
       }
     }
@@ -528,9 +528,6 @@ function registerLoopIpc(): void {
       ledger!.assertLoopWorkspaceIdentity(loop.id)
     } catch (error) {
       return { running: false, url: null, error: redactedErrorMessage(error, 'The workspace path is unsafe.'), round: null }
-    }
-    if (ledger!.hasRunningActivityForWorkspace(loop.workspaceDir)) {
-      return { running: false, url: null, error: 'Stop the active agent loop in this workspace before starting Play.', round: null }
     }
     const round = parseOptionalRound(roundValue)
     const revision = round == null

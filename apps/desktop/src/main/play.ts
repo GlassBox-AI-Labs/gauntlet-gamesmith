@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { shell } from 'electron'
-import type { PlayState, PlayStateEvent } from '../shared/loop'
+import type { LoopRecord, PlayState, PlayStateEvent } from '../shared/loop'
 import { redactedErrorMessage } from '../shared/redact-log'
 import { sanitizedExecutablePath } from './harness-env'
 import { cleanupRoundCheckout } from './round-revision'
@@ -113,8 +113,13 @@ export function playState(loopId: string): PlayState {
   return sessions.get(loopId)?.state ?? { running: false, url: null, error: null, round: null }
 }
 
-export function playTrustError(playTrusted: boolean): string | null {
-  return playTrusted
+/**
+ * Decide whether a loop may execute Play. Agent-loop activity is deliberately
+ * not a denial condition: trusted local runs may preview their live workspace
+ * while agents continue editing it.
+ */
+export function playAccessError(loop: Pick<LoopRecord, 'playTrusted' | 'status'>): string | null {
+  return loop.playTrusted
     ? null
     : 'Untrusted history (imported or created before trust provenance shipped) cannot use Play because it executes project scripts. Start a new trusted run in a workspace you explicitly choose.'
 }
