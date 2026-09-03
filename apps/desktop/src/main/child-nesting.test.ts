@@ -39,7 +39,7 @@ describe('delegated workers', () => {
     const ledger = new Ledger(path.join(dir, 'ledger.db'))
     const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
     const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
-    const runner = new LoopRunner(ledger, () => {})
+    const runner = new LoopRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' }))
     const parser = (
       runner as unknown as {
         makeImplementParser: (l: typeof loop, r: typeof run, g: { suppress: boolean }) => { onLine(line: string): void }

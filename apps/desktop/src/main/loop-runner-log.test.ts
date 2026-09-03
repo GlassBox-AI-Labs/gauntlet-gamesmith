@@ -17,9 +17,13 @@ function makeHarness(): { ledger: Ledger; runner: LoopRunner; sent: LoopLogLine[
   fs.mkdirSync(workspaceDir, { recursive: true })
   const ledger = new Ledger(path.join(dir, 'ledger.db'))
   const sent: LoopLogLine[] = []
-  const runner = new LoopRunner(ledger, (channel, payload) => {
-    if (channel === 'loop:log') sent.push(payload as LoopLogLine)
-  })
+  const runner = new LoopRunner(
+    ledger,
+    (channel, payload) => {
+      if (channel === 'loop:log') sent.push(payload as LoopLogLine)
+    },
+    async () => ({ ok: false, from: 'test' }),
+  )
   return { ledger, runner, sent, workspaceDir }
 }
 

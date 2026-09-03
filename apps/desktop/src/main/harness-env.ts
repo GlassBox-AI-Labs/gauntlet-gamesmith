@@ -2,27 +2,50 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
+import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
 import { RUN_METADATA_DIR } from './run-transfer'
 import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 
+export function harnessesRoot(): string {
+  return path.join(app.getPath('userData'), 'harnesses')
+}
+
+/** The config dir holding the login of the harness's active account. */
 export function cliHome(kind: HarnessKind): string {
-  const home = path.join(app.getPath('userData'), 'harnesses', kind)
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 })
-  fs.chmodSync(home, 0o700)
-  return home
+  const root = harnessesRoot()
+  return prepareAccountDir(root, kind, readAccounts(root, kind).activeId)
+}
+
+/**
+ * Session transcripts and installed skills, which every account reads and
+ * writes through.
+ *
+ * Keeping these out of the per-account credential dir is what lets a run
+ * switch accounts between rounds and still `--continue` the same session.
+ */
+export function sharedHome(kind: HarnessKind): string {
+  const shared = sharedDir(harnessesRoot(), kind)
+  fs.mkdirSync(shared, { recursive: true, mode: 0o700 })
+  fs.chmodSync(shared, 0o700)
+  return shared
 }
 
 /**
  * Put the vendored `img2threejs` skill where the Claude CLI will find it.
  *
- * The CLI discovers skills under whatever `CLAUDE_CONFIG_DIR` points at, and
- * every run is spawned with that set to `cliHome('claude')` — so this copies the
- * bundled skill into that home's `skills/`. Packaged, the source is the
- * `extraResources` copy under `resourcesPath`; in dev it is `vendor/` in the
- * repo.
+ * Installed into the *shared* home, not the active account's. Every account
+ * reaches `skills/` through the same store — the primary account's dir is that
+ * store, and the others symlink into it — so installing once here is what makes
+ * a mid-loop account switch keep finding the skill. Installing into
+ * `cliHome()` would land in whichever account happened to be active and only
+ * reach the shared store by symlink, which `prepareAccountDir` declines to
+ * create when a real directory is already sitting there.
+ *
+ * Packaged, the source is the `extraResources` copy under `resourcesPath`; in
+ * dev it is `vendor/` in the repo.
  */
 export function ensureSkill(): SkillInstall {
-  return installSkill(cliHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
+  return installSkill(sharedHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
 }
 
 /** Run transcripts live with the project so a folder transfer is complete. */
