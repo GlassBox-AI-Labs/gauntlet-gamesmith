@@ -18,7 +18,7 @@ import type {
 import type { ReportRecord } from '../shared/reports'
 import { normalizeModels } from '../shared/models'
 import { channelForKind, RESUME_PREFIX } from '../shared/loop'
-import { assertRunFolder, runLedgerPath } from './run-transfer'
+import { assertRunFolder, migrateRunMetadataDir, runLedgerPath } from './run-transfer'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS loops (
@@ -420,7 +420,7 @@ export class Ledger {
 
   /**
    * Forget a run. Only the app registry is touched: the project folder keeps
-   * its own `.gauntlet-loop/ledger.db`, so `Import run` can bring it straight
+   * its own `<run metadata dir>/ledger.db`, so `Import run` can bring it straight
    * back. Removing the files is a separate, explicit step.
    */
   deleteLoop(loopId: string): boolean {
@@ -623,6 +623,7 @@ export class Ledger {
 
   /** Register every run from a transferred folder without changing its IDs or history. */
   importRunFolder(workspaceDir: string): LoopSnapshot[] {
+    migrateRunMetadataDir(workspaceDir)
     const folderPath = assertRunFolder(workspaceDir)
     const source = new DatabaseSync(folderPath)
     initializeSchema(source, 'DELETE')

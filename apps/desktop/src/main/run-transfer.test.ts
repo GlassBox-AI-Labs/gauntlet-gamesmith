@@ -10,7 +10,10 @@ import {
   assertExportDestination,
   copyRunFolder,
   deleteRunFolder,
+  LEGACY_RUN_METADATA_DIR,
+  migrateRunMetadataDir,
   nextAvailableExportPath,
+  RUN_METADATA_DIR,
   runLedgerPath,
   safeExportFolderName,
 } from './run-transfer'
@@ -125,7 +128,7 @@ describe('run folder transfer', () => {
 describe('deleting a run folder', () => {
   function runFolder(root: string, name = 'project'): string {
     const workspace = path.join(root, name)
-    fs.mkdirSync(path.join(workspace, '.gauntlet-loop'), { recursive: true })
+    fs.mkdirSync(path.join(workspace, '.gauntlet-gamesmith'), { recursive: true })
     fs.writeFileSync(runLedgerPath(workspace), 'db')
     fs.writeFileSync(path.join(workspace, 'index.html'), '<html></html>')
     return workspace
@@ -148,15 +151,62 @@ describe('deleting a run folder', () => {
   it('refuses the home folder and anything above it', () => {
     const root = tempDir()
     const home = path.join(root, 'home')
-    fs.mkdirSync(path.join(home, '.gauntlet-loop'), { recursive: true })
+    fs.mkdirSync(path.join(home, '.gauntlet-gamesmith'), { recursive: true })
     fs.writeFileSync(runLedgerPath(home), 'db')
     expect(() => assertDeletableRunFolder(home, home)).toThrow(/your home folder/)
-    fs.mkdirSync(path.join(root, '.gauntlet-loop'), { recursive: true })
+    fs.mkdirSync(path.join(root, '.gauntlet-gamesmith'), { recursive: true })
     fs.writeFileSync(runLedgerPath(root), 'db')
     expect(() => assertDeletableRunFolder(root, home)).toThrow(/contains your home folder/)
   })
 
   it('refuses a filesystem root', () => {
     expect(() => assertDeletableRunFolder(path.parse(process.cwd()).root, os.homedir())).toThrow(/filesystem root/)
+  })
+})
+
+describe('run folders that predate the rename', () => {
+  /** A run folder as it looked when the app was still called Gauntlet Loop. */
+  function legacyFolder(root: string): string {
+    const workspace = path.join(root, 'old-project')
+    fs.mkdirSync(path.join(workspace, LEGACY_RUN_METADATA_DIR), { recursive: true })
+    fs.writeFileSync(path.join(workspace, LEGACY_RUN_METADATA_DIR, 'ledger.db'), 'db')
+    return workspace
+  }
+
+  it('moves the metadata folder onto the current name', () => {
+    const root = tempDir()
+    const workspace = legacyFolder(root)
+
+    migrateRunMetadataDir(workspace)
+
+    expect(fs.existsSync(path.join(workspace, RUN_METADATA_DIR, 'ledger.db'))).toBe(true)
+    expect(fs.existsSync(path.join(workspace, LEGACY_RUN_METADATA_DIR))).toBe(false)
+  })
+
+  it('leaves an already-migrated folder alone rather than merging the two', () => {
+    const root = tempDir()
+    const workspace = legacyFolder(root)
+    fs.mkdirSync(path.join(workspace, RUN_METADATA_DIR), { recursive: true })
+    fs.writeFileSync(path.join(workspace, RUN_METADATA_DIR, 'ledger.db'), 'current')
+
+    migrateRunMetadataDir(workspace)
+
+    expect(fs.readFileSync(path.join(workspace, RUN_METADATA_DIR, 'ledger.db'), 'utf8')).toBe('current')
+    expect(fs.existsSync(path.join(workspace, LEGACY_RUN_METADATA_DIR))).toBe(true)
+  })
+
+  it('still recognises a folder nothing has migrated, so it stays deletable', () => {
+    // This is the case that stranded four runs before the rename: a folder the
+    // app plainly owns, refused because the proof was under the older name.
+    const root = tempDir()
+    const workspace = legacyFolder(root)
+
+    expect(runLedgerPath(workspace)).toBe(path.join(workspace, LEGACY_RUN_METADATA_DIR, 'ledger.db'))
+    expect(() => assertDeletableRunFolder(workspace, path.join(root, 'home'))).not.toThrow()
+  })
+
+  it('points a brand-new folder at the current name', () => {
+    const root = tempDir()
+    expect(runLedgerPath(path.join(root, 'fresh'))).toBe(path.join(root, 'fresh', RUN_METADATA_DIR, 'ledger.db'))
   })
 })

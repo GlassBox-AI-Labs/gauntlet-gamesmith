@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Safely ship the current Gauntlet Loop workspace as a feature branch and pull request into the base branch. Use when the user invokes /ship or $ship, asks to ship or land local changes, or wants the guided test-sync-conflict-resolution-branch-PR workflow for this repository.
+description: Safely ship the current Gauntlet Gamesmith workspace as a feature branch and pull request into the base branch. Use when the user invokes /ship or $ship, asks to ship or land local changes, or wants the guided test-sync-conflict-resolution-branch-PR workflow for this repository.
 ---
 
 # Ship

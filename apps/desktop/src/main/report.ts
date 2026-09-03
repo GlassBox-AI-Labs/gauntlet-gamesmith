@@ -111,7 +111,7 @@ export function buildReport(loop: LoopRecord, runs: RunRecord[], artifacts: Crit
   const wallClockMs = lastFinished ? new Date(lastFinished).getTime() - new Date(loop.createdAt).getTime() : null
 
   const lines: string[] = []
-  lines.push(`# Gauntlet Loop report — ${loop.status.toUpperCase()}`)
+  lines.push(`# Gauntlet Gamesmith report — ${loop.status.toUpperCase()}`)
   lines.push('')
   lines.push(`- **Goal:** ${loop.prompt.replace(/\s+/g, ' ').slice(0, 180)}${loop.prompt.length > 180 ? '…' : ''}`)
   lines.push(`- **Workspace:** ${loop.workspaceDir}`)

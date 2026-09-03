@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
@@ -26,7 +27,15 @@ import { referencePackDir, scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { checkoutRoundRevision } from './round-revision'
 import { buildReportRow, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
-import { copyRunFolder, deleteRunFolder, nextAvailableExportPath, safeExportFolderName } from './run-transfer'
+import {
+  copyRunFolder,
+  deleteRunFolder,
+  migrateRunMetadataDir,
+  nextAvailableExportPath,
+  RUN_LEDGER_FILE,
+  RUN_METADATA_DIR,
+  safeExportFolderName,
+} from './run-transfer'
 
 interface HarnessSpec {
   command: string
@@ -87,12 +96,37 @@ function withPromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[]
   return lines
 }
 
-app.setName('Gauntlet Loop')
+const APP_NAME = 'Gauntlet Gamesmith'
+/** What the app was called before the rename, and so what its folder is named. */
+const LEGACY_APP_NAME = 'Gauntlet Loop'
+
+/**
+ * Where the registry ledger, the two harness logins and the installed skills
+ * live.
+ *
+ * Electron derives this folder from the app's name, so the rename on its own
+ * would point it at an empty directory — no runs, and both CLIs logged out.
+ * Move the old folder across instead. It is a rename inside one directory, so
+ * it is instant however many gigabytes are in there, and if it fails we go on
+ * using the old folder rather than start the user from nothing.
+ */
+function resolveUserData(): string {
+  const appData = app.getPath('appData')
+  const current = path.join(appData, APP_NAME)
+  const legacy = path.join(appData, LEGACY_APP_NAME)
+  if (fsSync.existsSync(current) || !fsSync.existsSync(legacy)) return current
+  try {
+    fsSync.renameSync(legacy, current)
+    return current
+  } catch {
+    return legacy
+  }
+}
+
+app.setName(APP_NAME)
 app.setPath(
   'userData',
-  smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
-    ? process.env.GAUNTLET_SMOKE_USER_DATA
-    : path.join(app.getPath('appData'), 'Gauntlet Loop'),
+  smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA ? process.env.GAUNTLET_SMOKE_USER_DATA : resolveUserData(),
 )
 fixPath()
 
@@ -404,7 +438,7 @@ function registerLoopIpc(): void {
       if (loop.status === 'running') return { ok: false, error: 'Stop the run before exporting so the folder and SQLite history are an exact snapshot.' }
       const result = await dialog.showOpenDialog(mainWindow, {
         title: 'Export complete run folder',
-        message: 'Choose where Gauntlet Loop should copy the complete project and its exact SQLite history.',
+        message: 'Choose where Gauntlet Gamesmith should copy the complete project and its exact SQLite history.',
         buttonLabel: 'Export here',
         defaultPath: app.getPath('downloads'),
         properties: ['openDirectory', 'createDirectory'],
@@ -424,7 +458,7 @@ function registerLoopIpc(): void {
       if (!mainWindow || !ledger) return { ok: false, error: 'Run import is not ready.' }
       const pickedExport = await dialog.showOpenDialog(mainWindow, {
         title: 'Open exported run folder',
-        message: 'Choose the transferred project folder containing .gauntlet-loop/ledger.db.',
+        message: `Choose the transferred project folder containing ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE}.`,
         buttonLabel: 'Open run folder',
         properties: ['openDirectory'],
       })
@@ -534,7 +568,7 @@ function createWindow(): BrowserWindow {
     height: 820,
     minWidth: 760,
     minHeight: 560,
-    title: 'Gauntlet Loop',
+    title: APP_NAME,
     backgroundColor: '#100d0e',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -563,7 +597,7 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   // Silent quit here reads as a build failure in `electron-vite dev`: the app
   // window that appears is the instance already running, not this one.
-  console.error('Gauntlet Loop is already running — quitting this instance. Quit the existing app first.')
+  console.error('Gauntlet Gamesmith is already running — quitting this instance. Quit the existing app first.')
   app.quit()
 }
 
@@ -670,7 +704,7 @@ function registerReportIpc(): void {
       const picked = await dialog.showOpenDialog(mainWindow, {
         title: 'Open a report a teammate sent you',
         buttonLabel: 'Open report',
-        filters: [{ name: 'Gauntlet Loop report', extensions: ['json'] }],
+        filters: [{ name: 'Gauntlet Gamesmith report', extensions: ['json'] }],
         properties: ['openFile'],
       })
       const filePath = picked.filePaths[0]
@@ -690,6 +724,9 @@ function registerReportIpc(): void {
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
+    // Bring pre-rename run folders onto the current metadata directory name
+    // before anything reads one.
+    for (const dir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) migrateRunMetadataDir(dir)
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
     void startMediaServer((loopId) => ledger?.getLoop(loopId)?.workspaceDir ?? null).then((base) => {
       mediaBase = base

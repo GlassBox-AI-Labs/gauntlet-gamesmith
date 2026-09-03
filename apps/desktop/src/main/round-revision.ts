@@ -2,14 +2,17 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RUN_METADATA_DIR } from './run-transfer'
+import { LEGACY_RUN_METADATA_DIR, RUN_METADATA_DIR } from './run-transfer'
 
 const REPOSITORY_DIR = 'revisions.git'
 const PLAY_DIR = 'play'
 const REVISION_PATTERN = /^[0-9a-f]{40,64}$/
 const EXCLUDED_PATHS = [
-  ':(exclude).gauntlet-loop',
-  ':(exclude).gauntlet-loop/**',
+  `:(exclude)${RUN_METADATA_DIR}`,
+  `:(exclude)${RUN_METADATA_DIR}/**`,
+  // A folder that predates the rename, in case its migration did not run.
+  `:(exclude)${LEGACY_RUN_METADATA_DIR}`,
+  `:(exclude)${LEGACY_RUN_METADATA_DIR}/**`,
   ':(exclude,glob)**/node_modules/**',
   ':(exclude)node_modules',
   ':(exclude)critique',
@@ -59,9 +62,9 @@ function git(workspaceDir: string, args: string[], indexFile?: string, tolerate?
     [`--git-dir=${repositoryDir(workspaceDir)}`, `--work-tree=${workspaceDir}`, ...args],
     {
       ...(indexFile ? { GIT_INDEX_FILE: indexFile } : {}),
-      GIT_AUTHOR_NAME: 'Gauntlet Loop',
+      GIT_AUTHOR_NAME: 'Gauntlet Gamesmith',
       GIT_AUTHOR_EMAIL: 'rounds@gauntlet.local',
-      GIT_COMMITTER_NAME: 'Gauntlet Loop',
+      GIT_COMMITTER_NAME: 'Gauntlet Gamesmith',
       GIT_COMMITTER_EMAIL: 'rounds@gauntlet.local',
     },
     tolerate,
@@ -101,7 +104,7 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
     git(input.workspaceDir, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
     git(input.workspaceDir, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
     const tree = git(input.workspaceDir, ['write-tree'], indexFile)
-    const args = ['commit-tree', tree, '-m', `Gauntlet Loop ${input.loopId} round ${input.round}`]
+    const args = ['commit-tree', tree, '-m', `Gauntlet Gamesmith ${input.loopId} round ${input.round}`]
     if (input.parentRevision) args.push('-p', input.parentRevision)
     return git(input.workspaceDir, args, indexFile)
   })

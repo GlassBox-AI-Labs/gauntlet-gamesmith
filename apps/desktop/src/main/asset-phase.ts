@@ -107,7 +107,7 @@ export function unbuiltCast(workspaceDir: string, cast: CastEntry[]): CastEntry[
  * judgement is the worker's, and the script only holds it to rules that a model
  * reliably breaks on its own.
  */
-export const CROP_SCRIPT = `#!/usr/bin/env python3
+export const cropScript = (skillDir: string): string => `#!/usr/bin/env python3
 """Cut one object out of a gameplay still so img2threejs will accept it.
 
 The Reference Pack holds whole scenes; img2threejs takes one object per image
@@ -379,7 +379,7 @@ def main() -> int:
 
     p = sub.add_parser('probe', help="run the skill's own probe_image.py")
     p.add_argument('image', type=Path)
-    p.add_argument('--skill', default='/Users/john/Library/Application Support/Gauntlet Loop/harnesses/claude/skills/img2threejs')
+    p.add_argument('--skill', default=${JSON.stringify(skillDir)})
     p.set_defaults(func=probe)
 
     args = parser.parse_args()
@@ -394,11 +394,12 @@ if __name__ == '__main__':
  * Put the crop tool in the workspace. Rewritten every round for the same reason
  * the gate is: a tool a worker can weaken is not a tool.
  */
-export function scaffoldAssetTools(workspaceDir: string): boolean {
+export function scaffoldAssetTools(workspaceDir: string, skillDir: string): boolean {
   const full = path.join(workspaceDir, 'tools/crop.py')
+  const script = cropScript(skillDir)
   fs.mkdirSync(path.dirname(full), { recursive: true })
   const before = fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null
-  if (before === CROP_SCRIPT) return false
-  fs.writeFileSync(full, CROP_SCRIPT, { mode: 0o755 })
+  if (before === script) return false
+  fs.writeFileSync(full, script, { mode: 0o755 })
   return true
 }

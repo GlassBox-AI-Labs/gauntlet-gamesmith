@@ -4,6 +4,7 @@ import { elapsedThroughRunMs, runtimeMs } from '../shared/run-timing'
 import { modelLabel } from '../shared/models'
 import {
   hasMixedPrompts,
+  LEGACY_REPORT_FILE_KIND,
   normalizePrompt,
   REPORT_FILE_KIND,
   REPORT_FILE_VERSION,
@@ -244,9 +245,11 @@ export function parseReportFile(text: string): ReportRecord {
     throw new Error('That file is not valid JSON.')
   }
   const file = parsed as Partial<ReportFile>
-  if (file?.kind !== REPORT_FILE_KIND) throw new Error('That file is not a Gauntlet Loop report.')
+  if (file?.kind !== REPORT_FILE_KIND && file?.kind !== LEGACY_REPORT_FILE_KIND) {
+    throw new Error('That file is not a Gauntlet Gamesmith report.')
+  }
   if (typeof file.version !== 'number' || file.version > REPORT_FILE_VERSION) {
-    throw new Error(`That report was written by a newer version of Gauntlet Loop (format ${String(file.version)}).`)
+    throw new Error(`That report was written by a newer version of Gauntlet Gamesmith (format ${String(file.version)}).`)
   }
   const report = file.report as Partial<ReportRecord> | undefined
   if (!report || typeof report.name !== 'string' || !Array.isArray(report.rows)) {

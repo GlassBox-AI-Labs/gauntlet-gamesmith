@@ -1084,7 +1084,7 @@ export class LoopRunner {
     // The crop tool is rewritten every round for the reason the engine gate is:
     // it is the one thing in the workspace a worker has an incentive to weaken,
     // and a guard that can be edited away is not a guard.
-    scaffoldAssetTools(loop.workspaceDir)
+    scaffoldAssetTools(loop.workspaceDir, path.join(cliHome('claude'), 'skills', 'img2threejs'))
     const agentMd = sculptorAgentMd(models, referenceDir)
     if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
@@ -1263,7 +1263,7 @@ export class LoopRunner {
      *
      * A cross-harness worker is a process the app never started, so nothing
      * links it to its owner except the command that started it: the redirect
-     * into `.gauntlet-loop/agents/<slice>.<harness>.jsonl` names the slice, and
+     * into `<run metadata dir>/agents/<slice>.<harness>.jsonl` names the slice, and
      * the tool call carrying it names the agent. Without this every delegated
      * worker hung off the bottom of the list instead of under its dispatcher.
      */

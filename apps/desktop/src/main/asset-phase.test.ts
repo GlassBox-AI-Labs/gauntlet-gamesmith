@@ -2,7 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assetTargets, CROP_SCRIPT, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
+import { assetTargets, cropScript, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
+
+/** Stands in for the installed img2threejs skill, wherever it happens to live. */
+const SKILL = '/skills/img2threejs'
 
 const dirs: string[] = []
 
@@ -105,25 +108,34 @@ describe('routing critic findings', () => {
 describe('crop tool scaffolding', () => {
   it('writes the tool and rewrites it when a worker has changed it', () => {
     const dir = workspace()
-    expect(scaffoldAssetTools(dir)).toBe(true)
+    expect(scaffoldAssetTools(dir, SKILL)).toBe(true)
     const target = path.join(dir, 'tools/crop.py')
-    expect(fs.readFileSync(target, 'utf8')).toBe(CROP_SCRIPT)
+    expect(fs.readFileSync(target, 'utf8')).toBe(cropScript(SKILL))
 
     // Unchanged: nothing to do.
-    expect(scaffoldAssetTools(dir)).toBe(false)
+    expect(scaffoldAssetTools(dir, SKILL)).toBe(false)
 
     // A guard a worker can weaken is not a guard.
     fs.writeFileSync(target, 'print("always fine")')
-    expect(scaffoldAssetTools(dir)).toBe(true)
-    expect(fs.readFileSync(target, 'utf8')).toBe(CROP_SCRIPT)
+    expect(scaffoldAssetTools(dir, SKILL)).toBe(true)
+    expect(fs.readFileSync(target, 'utf8')).toBe(cropScript(SKILL))
   })
 
   it('ships a tool that refuses a crop the object barely fills', () => {
     // The rule probe_image.py cannot make: widening a small box until it clears
     // the 512 px floor passes every technical check and hands the pipeline a
     // scene. Keep the threshold and its reason in the shipped script.
-    expect(CROP_SCRIPT).toContain('MIN_FILL = 0.25')
-    expect(CROP_SCRIPT).toContain('object too small in this still')
-    expect(CROP_SCRIPT).toContain('--allow-upscale')
+    expect(cropScript(SKILL)).toContain('MIN_FILL = 0.25')
+    expect(cropScript(SKILL)).toContain('object too small in this still')
+    expect(cropScript(SKILL)).toContain('--allow-upscale')
+  })
+
+  it('points the probe at the skill it was given, not at whoever built the app', () => {
+    // The path used to be one developer's home folder, so the probe fell over
+    // on every other machine and again the moment the app was renamed.
+    const script = cropScript('/Users/someone/Application Support/App/skills/img2threejs')
+
+    expect(script).toContain('"/Users/someone/Application Support/App/skills/img2threejs"')
+    expect(script).not.toContain('/Users/john/')
   })
 })

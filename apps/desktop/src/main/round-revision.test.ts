@@ -19,7 +19,7 @@ afterEach(() => {
 describe('round revisions', () => {
   it('captures the round when the workspace .gitignore already ignores excluded folders', () => {
     const dir = workspace()
-    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\ndist\nscreenshots\n.gauntlet-loop\n')
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\ndist\nscreenshots\n.gauntlet-gamesmith\n')
     for (const excluded of ['node_modules', 'screenshots', 'dist']) {
       fs.mkdirSync(path.join(dir, excluded), { recursive: true })
       fs.writeFileSync(path.join(dir, excluded, 'ignored.txt'), excluded)
@@ -55,7 +55,7 @@ describe('round revisions', () => {
     expect(fs.existsSync(path.join(checkout, 'reference'))).toBe(false)
     expect(fs.existsSync(path.join(checkout, 'shots-r1'))).toBe(false)
     expect(fs.existsSync(path.join(checkout, 'dist-r1'))).toBe(false)
-    expect(fs.existsSync(path.join(dir, '.gauntlet-loop', 'revisions.git', 'objects'))).toBe(true)
+    expect(fs.existsSync(path.join(dir, '.gauntlet-gamesmith', 'revisions.git', 'objects'))).toBe(true)
 
     cleanupRoundCheckout(checkout)
     expect(fs.existsSync(checkout)).toBe(false)

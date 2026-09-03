@@ -224,7 +224,7 @@ describe('report files', () => {
 
   it('refuses files that are not reports, and reports from a newer app', () => {
     expect(() => parseReportFile('not json')).toThrow(/not valid JSON/)
-    expect(() => parseReportFile('{"kind":"something-else"}')).toThrow(/not a Gauntlet Loop report/)
+    expect(() => parseReportFile('{"kind":"something-else"}')).toThrow(/not a Gauntlet Gamesmith report/)
     expect(() => parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 99, report }))).toThrow(/newer version/)
     expect(() => parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 1, report: { name: 'x' } }))).toThrow(/no name or no runs/)
     expect(() =>

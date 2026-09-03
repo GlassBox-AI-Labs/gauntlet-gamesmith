@@ -1,6 +1,7 @@
 import type { LoopModels } from '../shared/loop'
 import { harnessFor, isUltracode } from '../shared/models'
 import { claudeArgs, codexArgs, DISPATCHER_MODEL } from './harness-plans'
+import { RUN_METADATA_DIR } from './run-transfer'
 
 /**
  * How an orchestrator hands work to its workers.
@@ -14,10 +15,10 @@ import { claudeArgs, codexArgs, DISPATCHER_MODEL } from './harness-plans'
  *
  * A delegated worker is a process the app never started, so every delegation
  * command redirects the child's structured stream into
- * `.gauntlet-loop/agents/<slug>.<harness>.jsonl`, which the app parses for
+ * `<run metadata dir>/agents/<slug>.<harness>.jsonl`, which the app parses for
  * tokens and cost exactly as it parses a run it started itself.
  */
-const STREAM_DIR = '.gauntlet-loop/agents'
+const STREAM_DIR = `${RUN_METADATA_DIR}/agents`
 
 /** Shell-quote for the single command line an agent is told to run. */
 function quote(value: string): string {
@@ -26,12 +27,12 @@ function quote(value: string): string {
 
 /** The command a claude dispatcher runs to hand its slice to codex. */
 export function codexChildCommand(model: string, effort: string, slug: string): string {
-  return `codex ${codexArgs(model, effort, null).map(quote).join(' ')} - < .gauntlet-loop/codex-${slug}.md > ${STREAM_DIR}/${slug}.codex.jsonl`
+  return `codex ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${slug}.md > ${STREAM_DIR}/${slug}.codex.jsonl`
 }
 
 /** The command a codex orchestrator runs to hand a slice to claude. */
 export function claudeChildCommand(model: string, effort: string, slug: string): string {
-  const args = claudeArgs(model, effort, '$(cat .gauntlet-loop/claude-' + slug + '.md)')
+  const args = claudeArgs(model, effort, `$(cat ${RUN_METADATA_DIR}/claude-${slug}.md)`)
     .map((arg) => (arg.startsWith('$(cat ') ? `"${arg}"` : quote(arg)))
     .join(' ')
   return `claude ${args} > ${STREAM_DIR}/${slug}.claude.jsonl`
@@ -60,7 +61,7 @@ effort: ${effort}
   return `${header(DISPATCHER_MODEL, 'low')}You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
-2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`.gauntlet-loop/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
+2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`${RUN_METADATA_DIR}/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
 3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
 
    ${codexChildCommand(models.subagentModel, models.subagentEffort, '<slug>')}
@@ -82,7 +83,7 @@ export function researchRules(models: LoopModels, referenceDir: string): string 
     return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
   }
   const harness = harnessFor(models.researchModel)
-  const briefFile = `.gauntlet-loop/${harness}-<slug>.md`
+  const briefFile = `${RUN_METADATA_DIR}/${harness}-<slug>.md`
   const command =
     harness === 'codex'
       ? codexChildCommand(models.researchModel, models.researchEffort, '<slug>')
@@ -128,7 +129,7 @@ export function delegationRules(models: LoopModels, referenceDir: string): strin
   }
 
   if (orchestrator === 'codex' && worker === 'claude') {
-    return `Orchestration rules: you are the orchestrator; ${models.subagentModel} does the building through the claude CLI. For each slice, choose a short slug and write a self-contained brief to \`.gauntlet-loop/claude-<slug>.md\` naming the files that slice owns and how to verify it. Then launch every slice from the workspace root in one command, in parallel, and wait for them all:
+    return `Orchestration rules: you are the orchestrator; ${models.subagentModel} does the building through the claude CLI. For each slice, choose a short slug and write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` naming the files that slice owns and how to verify it. Then launch every slice from the workspace root in one command, in parallel, and wait for them all:
 
   ${claudeChildCommand(models.subagentModel, models.subagentEffort, '<slug>')} &
 
@@ -190,7 +191,7 @@ effort: ${effort}
   return `${header}You are a dispatcher, not a modeller. ${models.assetModel} does the sculpting through the codex CLI; you hand it one object and report back. Never model anything yourself.
 
 1. Your slug is the cast entry's name.
-2. Write the full brief for your object to \`.gauntlet-loop/codex-<slug>.md\` — it must stand alone, because codex starts with no memory of this run. Include the entry's line from ${referenceDir}/cast.md and these rules verbatim:
+2. Write the full brief for your object to \`${RUN_METADATA_DIR}/codex-<slug>.md\` — it must stand alone, because codex starts with no memory of this run. Include the entry's line from ${referenceDir}/cast.md and these rules verbatim:
 
 ${sculptorBrief(referenceDir)}
 
@@ -222,7 +223,7 @@ export function sculptorRules(models: LoopModels, referenceDir: string): string 
   }
 
   if (orchestrator === 'codex' && worker === 'claude') {
-    return `${shared} For each entry, write a self-contained brief to \`.gauntlet-loop/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch every sculptor from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
+    return `${shared} For each entry, write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch every sculptor from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
   }
 
   if (orchestrator === 'claude' && worker === 'codex') {

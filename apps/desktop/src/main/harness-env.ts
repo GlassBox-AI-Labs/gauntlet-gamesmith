@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
+import { RUN_METADATA_DIR } from './run-transfer'
 
 export function cliHome(kind: HarnessKind): string {
   const home = path.join(app.getPath('userData'), 'harnesses', kind)
@@ -12,7 +13,7 @@ export function cliHome(kind: HarnessKind): string {
 
 /** Run transcripts live with the project so a folder transfer is complete. */
 export function runsDir(workspaceDir: string): string {
-  const dir = path.join(workspaceDir, '.gauntlet-loop', 'runs')
+  const dir = path.join(workspaceDir, RUN_METADATA_DIR, 'runs')
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }

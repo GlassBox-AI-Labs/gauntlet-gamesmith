@@ -20,7 +20,7 @@ describe('implementerAgentMd', () => {
     expect(md).toContain('model: claude-sonnet-5')
     expect(md).toContain('Do NOT use `run_in_background`')
     // The child's stream has to land where the app reads tokens from.
-    expect(md).toContain('> .gauntlet-loop/agents/<slug>.codex.jsonl')
+    expect(md).toContain('> .gauntlet-gamesmith/agents/<slug>.codex.jsonl')
     expect(md).toContain(`'-m' 'gpt-5.6-sol'`)
   })
 
@@ -42,7 +42,7 @@ describe('delegationRules', () => {
     const rules = delegationRules(models('gpt-5.6-sol', 'claude-opus-5'), 'reference/loop-123')
     expect(rules).toContain('claude ')
     expect(rules).toContain(`'--model' 'claude-opus-5'`)
-    expect(rules).toContain('> .gauntlet-loop/agents/<slug>.claude.jsonl')
+    expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.claude.jsonl')
   })
 
   it('keeps the orchestrator off game source once slices are out, in every delegated pairing', () => {
@@ -75,7 +75,7 @@ describe('researchRules', () => {
     const rules = researchRules(models('claude-opus-5', null), 'reference/loop-123')
     expect(rules).toContain('gpt-5.6-luna at medium effort')
     expect(rules).toContain(`'-m' 'gpt-5.6-luna'`)
-    expect(rules).toContain('> .gauntlet-loop/agents/<slug>.codex.jsonl')
+    expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.codex.jsonl')
     expect(rules).toContain('reference/loop-123/research/<slug>.md')
     expect(rules).toContain('reference/loop-123/research.md')
     expect(rules).toContain('never touch project source')
@@ -85,7 +85,7 @@ describe('researchRules', () => {
     const base = models('gpt-5.6-sol', null)
     const rules = researchRules({ ...base, researchModel: 'claude-sonnet-5', researchEffort: 'low' }, 'reference/loop-123')
     expect(rules).toContain(`'--model' 'claude-sonnet-5'`)
-    expect(rules).toContain('> .gauntlet-loop/agents/<slug>.claude.jsonl')
+    expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.claude.jsonl')
   })
 
   it('keeps the sweep in-agent when fan-out is off', () => {
@@ -144,7 +144,7 @@ describe('sculptorRules', () => {
 
   it('gives a cross-harness pairing a brief that stands alone', () => {
     const rules = sculptorRules(sculptors('gpt-5.6-sol', 'claude-opus-5'), 'reference/loop-1')
-    expect(rules).toContain('.gauntlet-loop/claude-<slug>.md')
+    expect(rules).toContain('.gauntlet-gamesmith/claude-<slug>.md')
     expect(rules).toContain('tools/crop.py')
     expect(rules).toContain('reference/loop-1/objects/')
   })
