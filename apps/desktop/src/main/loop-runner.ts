@@ -17,13 +17,13 @@ import type {
 } from '../shared/loop'
 import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
-import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
+import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
 import { agentsDir, childrenActive, readChildAgents } from './child-agents'
 import { codexTokens, readCodexUsage } from './codex-usage'
 import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
 import { assetsPlan, critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, runsDir, subscriptionEnv } from './harness-env'
+import { cliHome, ensureSkill, runsDir, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { referencePackDir, scanReferencePack } from './reference-pack'
@@ -232,8 +232,12 @@ function buildImplementPrompt(
   round: number,
   verdict: Verdict | null,
   referenceDir: string,
+  wanted: CastEntry[],
 ): string {
-  return composeImplementPrompt(userPrompt, round, verdict, delegationRules(models, referenceDir), referenceDir, engineContract())
+  const rules = [delegationRules(models, referenceDir), wanted.length > 0 ? sculptorRules(models, referenceDir) : '']
+    .filter(Boolean)
+    .join(' ')
+  return composeImplementPrompt(userPrompt, round, verdict, rules, referenceDir, engineContract(), wanted)
 }
 
 /** On-disk record of a detached run process; lets the app die and re-attach. */
@@ -460,17 +464,7 @@ export class LoopRunner {
       })
       this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
     } else if (last?.role === 'reference') {
-      const referenceDir = this.referenceDir(loopId)
-      this.ledger.patchLoop(loopId, { round: 1 })
-      if (!this.queueAssets(loop, 1)) {
-        this.ledger.createRun({
-          loopId,
-          round: 1,
-          role: 'implement',
-          harness: harnessFor(loop.models.orchestratorModel),
-          prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, referenceDir),
-        })
-      }
+      this.queueImplement(loop, 1, null)
       this.log(loopId, null, 'system', 'Loop resumed by user — Reference Pack ready; starting round 1.')
     } else if (last?.role === 'assets') {
       this.queueImplement(loop, last.round, this.verdictForRound(loopId, last.round - 1))
@@ -493,16 +487,7 @@ export class LoopRunner {
         this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached.`)
         return { ok: false, error: 'Max rounds already reached.' }
       }
-      this.ledger.patchLoop(loopId, { round: nextRound })
-      if (!this.queueAssets(loop, nextRound, assetTargets(last.verdict?.findings ?? []))) {
-        this.ledger.createRun({
-          loopId,
-          round: nextRound,
-          role: 'implement',
-          harness: harnessFor(loop.models.orchestratorModel),
-          prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, last.verdict, this.referenceDir(loopId)),
-        })
-      }
+      this.queueImplement(loop, nextRound, last.verdict)
       this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
     } else {
       const referenceDir = referencePackDir(loopId)
@@ -999,16 +984,7 @@ export class LoopRunner {
       this.ledger.patchRun(run.id, { status: 'succeeded' })
       this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
       if (this.overBudget(loop.id)) return
-      this.ledger.patchLoop(loop.id, { round: 1 })
-      if (!this.queueAssets(loop, 1)) {
-        this.ledger.createRun({
-          loopId: loop.id,
-          round: 1,
-          role: 'implement',
-          harness: harnessFor(model),
-          prompt: buildImplementPrompt(loop.models, loop.prompt, 1, null, this.referenceDir(loop.id)),
-        })
-      }
+      this.queueImplement(loop, 1, null)
       this.log(loop.id, null, 'system', 'Reference Pack frozen — round 1 queued.')
       this.broadcast(loop.id)
       void this.executeNext(loop.id)
@@ -1028,36 +1004,24 @@ export class LoopRunner {
   }
 
   /**
-   * Queue an Asset Build, or say why there is nothing to queue.
+   * The cast entries this round still owes, or `[]` when there is nothing to
+   * sculpt.
    *
-   * Three ways to have no work: the operator turned the phase off, the game has
+   * Three ways to owe nothing: the operator turned the phase off, the game has
    * no sculptable objects (a maze of neon walls and bloom is rendering, not
-   * models), or every named entry already has a factory. All three are normal,
-   * and the caller moves straight on to implement.
+   * models), or every named entry already has a factory. A finding against the
+   * model itself has a pipeline to go back to; a finding about how the model is
+   * used does not — `assetTargets` is what splits them, and it is what stops
+   * the implementer hand-editing a generated factory instead of asking for a
+   * resculpt, which is the one thing that would rot the library back to where
+   * it started.
    */
-  private queueAssets(loop: LoopRecord, round: number, only: string[] = []): boolean {
-    if (!loop.models.assetModel) return false
+  private wantedCast(loop: LoopRecord, verdict: Verdict | null): CastEntry[] {
+    if (!loop.models.assetModel) return []
     const cast = this.castFor(loop)
-    if (cast.length === 0) return false
-    const wanted = only.length > 0 ? cast.filter((entry) => only.includes(entry.name)) : unbuiltCast(loop.workspaceDir, cast)
-    if (wanted.length === 0) return false
-    const referenceDir = this.referenceDir(loop.id)
-    this.ledger.createRun({
-      loopId: loop.id,
-      round,
-      role: 'assets',
-      harness: harnessFor(loop.models.orchestratorModel),
-      prompt: buildAssetsPrompt(loop.prompt, referenceDir, cast, sculptorRules(loop.models, referenceDir), wanted.map((entry) => entry.name)),
-    })
-    this.log(
-      loop.id,
-      null,
-      'system',
-      only.length > 0
-        ? `Asset Build queued — rebuilding ${wanted.length} model${wanted.length === 1 ? '' : 's'} the critic faulted: ${wanted.map((e) => e.name).join(', ')}.`
-        : `Asset Build queued — ${wanted.length} model${wanted.length === 1 ? '' : 's'} to sculpt: ${wanted.map((e) => e.name).join(', ')}.`,
-    )
-    return true
+    if (cast.length === 0) return []
+    const faulted = assetTargets(verdict?.findings ?? [])
+    return faulted.length > 0 ? cast.filter((entry) => faulted.includes(entry.name)) : unbuiltCast(loop.workspaceDir, cast)
   }
 
   /** The verdict a round was judged on, for feeding the next implement run. */
@@ -1067,13 +1031,24 @@ export class LoopRunner {
 
   private queueImplement(loop: LoopRecord, round: number, verdict: Verdict | null): void {
     this.ledger.patchLoop(loop.id, { round })
+    const wanted = this.wantedCast(loop, verdict)
     this.ledger.createRun({
       loopId: loop.id,
       round,
       role: 'implement',
       harness: harnessFor(loop.models.orchestratorModel),
-      prompt: buildImplementPrompt(loop.models, loop.prompt, round, verdict, this.referenceDir(loop.id)),
+      prompt: buildImplementPrompt(loop.models, loop.prompt, round, verdict, this.referenceDir(loop.id), wanted),
     })
+    if (wanted.length > 0) {
+      this.log(
+        loop.id,
+        null,
+        'system',
+        assetTargets(verdict?.findings ?? []).length > 0
+          ? `Round ${round} also rebuilds ${wanted.length} model${wanted.length === 1 ? '' : 's'} the critic faulted: ${wanted.map((e) => e.name).join(', ')}.`
+          : `Round ${round} also sculpts ${wanted.length} model${wanted.length === 1 ? '' : 's'}: ${wanted.map((e) => e.name).join(', ')}.`,
+      )
+    }
   }
 
   private async executeAssets(loop: LoopRecord, run: RunRecord): Promise<void> {
@@ -1081,10 +1056,25 @@ export class LoopRunner {
     const harness = harnessFor(models.orchestratorModel)
     const referenceDir = this.referenceDir(loop.id)
 
+    // The skill is what this whole phase runs on, and a missing one does not
+    // announce itself: the sculptor cannot call forge/, so it hand-writes a
+    // model shaped like the skill's output and the round reads as fine. Stop
+    // here instead. Nothing has been spawned yet, so this costs nothing, and a
+    // broken install is worth more than a run of models nobody can trust.
+    const skill = ensureSkill()
+    if (!skill.dir) {
+      const error = 'The img2threejs skill is missing from this install, so the Asset Build cannot run.'
+      this.ledger.patchRun(run.id, { status: 'failed', error })
+      this.log(loop.id, run.id, 'system', `✗ ${error} Reinstall the app — a sculptor without the skill hand-writes models instead of sculpting them.`)
+      this.finishLoop(loop.id, 'failed', error)
+      return
+    }
+    if (skill.status !== 'current') this.log(loop.id, run.id, 'system', `▦ img2threejs skill ${skill.status} → ${skill.dir}`)
+
     // The crop tool is rewritten every round for the reason the engine gate is:
     // it is the one thing in the workspace a worker has an incentive to weaken,
     // and a guard that can be edited away is not a guard.
-    scaffoldAssetTools(loop.workspaceDir, path.join(cliHome('claude'), 'skills', 'img2threejs'))
+    scaffoldAssetTools(loop.workspaceDir, skill.dir)
     const agentMd = sculptorAgentMd(models, referenceDir)
     if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
@@ -1169,12 +1159,40 @@ export class LoopRunner {
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
     const harness = harnessFor(models.orchestratorModel)
-    const agentMd = implementerAgentMd(models, this.referenceDir(loop.id))
-    if (agentMd) {
-      const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
-      fs.mkdirSync(agentDir, { recursive: true })
-      fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
+    const referenceDir = this.referenceDir(loop.id)
+    const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
+    fs.mkdirSync(agentDir, { recursive: true })
+    const agentMd = implementerAgentMd(models, referenceDir)
+    if (agentMd) fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
+
+    // Recomputed fresh rather than carried from queue time: a resumed round's
+    // prompt already tells the orchestrator to audit disk first, so a list that
+    // shrank since queueing (or grew, on a fresh critique target) just works.
+    const wanted = this.wantedCast(loop, this.verdictForRound(loop.id, run.round - 1))
+    if (wanted.length > 0) {
+      // Same halt-before-spawning-anything guard the standalone Asset Build
+      // used to run: a sculptor with no skill hand-writes a model shaped like
+      // the skill's output, and nothing downstream can tell.
+      const skill = ensureSkill()
+      if (!skill.dir) {
+        const error = 'The img2threejs skill is missing from this install, so the round cannot sculpt its cast.'
+        this.ledger.patchRun(run.id, { status: 'failed', error })
+        this.log(loop.id, run.id, 'system', `✗ ${error} Reinstall the app — a sculptor without the skill hand-writes models instead of sculpting them.`)
+        this.finishLoop(loop.id, 'failed', error)
+        return
+      }
+      if (skill.status !== 'current') this.log(loop.id, run.id, 'system', `▦ img2threejs skill ${skill.status} → ${skill.dir}`)
+      // Rewritten every round for the same reason the engine gate is: the one
+      // thing in the workspace a worker has an incentive to weaken.
+      scaffoldAssetTools(loop.workspaceDir, skill.dir)
+      const sculptorMd = sculptorAgentMd(models, referenceDir)
+      if (sculptorMd) fs.writeFileSync(path.join(agentDir, 'sculptor.md'), sculptorMd)
+    } else {
+      // Drop a stale sculptor.md from a round that did have sculpting to do —
+      // an orchestrator should never see a dispatch target for work already done.
+      fs.rmSync(path.join(agentDir, 'sculptor.md'), { force: true })
     }
+
     // Rewrite the contract and the gate every round. The gate is the one file
     // in the workspace a worker has an incentive to weaken, and a gate that
     // can be edited to pass is not a gate.
@@ -2130,21 +2148,7 @@ export class LoopRunner {
       if (this.overBudget(loop.id)) return
 
       const nextRound = run.round + 1
-      this.ledger.patchLoop(loop.id, { round: nextRound })
-      // A finding against the model itself has a pipeline to go back to; a
-      // finding about how the model is used does not. Splitting them is what
-      // stops the implementer hand-editing a generated factory, which is the
-      // one thing that would rot the library back to where it started.
-      const faulted = assetTargets(verdict.findings)
-      if (!this.queueAssets(loop, nextRound, faulted)) {
-        this.ledger.createRun({
-          loopId: loop.id,
-          round: nextRound,
-          role: 'implement',
-          harness: harnessFor(loop.models.orchestratorModel),
-          prompt: buildImplementPrompt(loop.models, loop.prompt, nextRound, verdict, this.referenceDir(loop.id)),
-        })
-      }
+      this.queueImplement(loop, nextRound, verdict)
       this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
       this.broadcast(loop.id)
       void this.executeNext(loop.id)

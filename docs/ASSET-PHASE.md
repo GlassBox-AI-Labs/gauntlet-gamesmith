@@ -1,9 +1,13 @@
 # Asset Phase — build plan
 
-A new run role between the Reference Study and the first implement round. It
-turns reference images into a library of procedural Three.js asset factories
-using the `img2threejs` skill, so implement rounds wire assets up instead of
-sculpting them by hand.
+Reference images become a library of procedural Three.js asset factories using
+the `img2threejs` skill, so an implement round wires assets up instead of
+sculpting them by hand. This shipped in two cuts: §§1–6 describe the original
+design, where sculpting ran as its own `assets` run role before implement.
+**§2b The merge** describes the current architecture — sculpting still runs
+the same pipeline, but as part of the implement round's own orchestrator
+conversation rather than a separate one. Read §§1–6 for why the pipeline
+exists and what it enforces; read §2b for how it is actually invoked today.
 
 ---
 
@@ -25,21 +29,88 @@ is exactly the job that correction loop exists to do.
 Nothing catches it. The engine gate's eight checks are all architecture and
 dependencies; asset provenance is invisible to it.
 
+Part of the reason was plainer than prompting: the skill was never installed.
+It had to already exist at `<userData>/harnesses/claude/skills/img2threejs`, the
+config dir every run is spawned against, and nothing in the app ever put it
+there. A sculptor told to run `forge/state.py` with no skill loaded cannot fail
+usefully, so it improvises — which is precisely the hand-written code above.
+
+The skill now ships with the app: vendored in `vendor/img2threejs`, packaged as
+an `extraResources` entry, and copied into that harness home (`skills.ts`)
+before any round that needs to sculpt. If it is ever missing, the run halts
+before spawning a single sculptor rather than paying for models nobody can
+trust — originally that guard lived in `executeAssets`; after the merge (§2b)
+it lives in `executeImplement`.
+
+Once the skill was actually installed, the phase worked as designed — but a
+new problem showed up at the architecture level, not the pipeline level: a
+round that needed sculpting billed **two** full top-level orchestrator
+conversations (`assets`, then `implement`) against the same Claude
+subscription usage window instead of one. That is what §2b fixes.
+
 ---
 
 ## 2. What changes
 
 ```
-today:     reference → implement 1 → critique 1 → implement 2 → …
+before:    reference → implement 1 → critique 1 → implement 2 → …
 
-proposed:  reference → assets → implement 1 → critique 1
-                          ↑                        │
+original:  reference → assets → implement 1 → critique 1
+cut                       ↑                        │
                           └──── asset findings ────┘
                                   (round 2, 3, …)
 ```
 
 The phase is **re-entrant, not one-shot**. Round 1 builds the cast list. Later
-rounds build only what is missing or what the critic flagged.
+rounds build only what is missing or what the critic flagged. That part is
+unchanged by the merge in §2b — only which run does the building changed.
+
+---
+
+## 2b. The merge — sculpting moves inside implement
+
+**As shipped, there is no `assets` run role anymore.** `queueAssets` (the
+function that created one) is deleted. What each round still owes gets
+computed by `wantedCast(loop, verdict)` (`loop-runner.ts`) — the same
+three-way logic §2's diagram shows (nothing to sculpt / round-1 unbuilt list /
+critic-faulted list) — and threaded into the implement prompt instead of
+spawning a second run:
+
+```
+now:  reference → implement 1 (sculpts what wantedCast names, then wires up) → critique 1 → implement 2 (same) → …
+```
+
+`composeImplementPrompt` (`shared/prompts.ts`) takes a `wanted` cast-entry
+list. When it's empty, the prompt is byte-identical to the original
+wire-up-only text (§3.5). When it's non-empty, a new section is prepended
+telling the orchestrator to hand each entry to its own `sculptor` subagent
+*before* wiring anything up — same crop tool, same source-order rule, same
+"abandon a bad crop rather than force it" instruction as the original
+`buildAssetsPrompt` (now deleted) — followed by the unchanged wire-up text,
+since the orchestrator still wires up the whole cast, freshly sculpted and
+previously-built entries alike.
+
+`executeImplement` gained the setup `executeAssets` used to do: install the
+skill (halting the run if it's missing), scaffold `tools/crop.py`, and write
+`.claude/agents/sculptor.md` — all gated on `wantedCast` being non-empty for
+this round, computed fresh at execute time. `sculptorAgentMd`, `sculptorRules`,
+`assetTargets`, `unbuiltCast`, and the `img2threejs` pipeline itself are
+untouched; only the call site moved.
+
+**`executeAssets`/`assetsParser`/`finishAssets`/`assetsPlan` were kept, not
+deleted.** They're unreachable from any *new* round, but `resumeLoop`'s
+generic "retry the exact last run" branch and `recoverAll`'s boot-time
+reattach both replay whatever role a run already had — so a loop with an
+in-flight or interrupted `role: 'assets'` run from before this merge still
+resumes correctly through the old path, which already ends by calling
+`queueImplement`. `RunRole` keeps `'assets'` in its union for the same reason:
+old ledger rows still have it.
+
+**Nothing about §3 changed except what's noted inline** — the cast-list
+format (§3.1), the crop tool (§3.3, now scaffolded conditionally), the model
+setting (§3.4), the ownership seam (§4), the risks (§5), and the gate's soft
+provenance check (§3.8) all work exactly as designed, just invoked from one
+run instead of two.
 
 ---
 
@@ -75,9 +146,17 @@ entry names at least one still, and `objects/` is filled where isolated
 material could be found. Missing `objects/` material makes a weaker pack, not a
 failed one.
 
-### 3.2 The `assets` run role
+### 3.2 The `assets` run role (superseded — see §2b)
 
-`RunRole` becomes `'reference' | 'assets' | 'implement' | 'critique'`.
+This section describes the original design: a separate run role. **§2b The
+merge** describes the current architecture, where the same dispatch mechanics
+below (fan-out, `delegationRules`/`sculptorRules`, the agent-file sibling, the
+stream/cost accounting, `awaitChildren`) run inside the implement round
+instead of their own run. Left here because the mechanics themselves didn't
+change — only which run invokes them.
+
+`RunRole` gained `'assets'` (kept in the type today for old ledger rows, per
+§2b, even though no new run uses it).
 
 **One run that fans out to one subagent per cast entry.** `LoopRunner` holds a
 single `private current: Attachment` (`loop-runner.ts:259`) and drives one child
@@ -114,7 +193,11 @@ Each worker:
    assessment, and the render it was judged against.
 
 **Timeout:** its own constant. Reference and critique get 60 minutes, implement
-40 idle with a 12-hour cap; assets sits closer to implement.
+40 idle with a 12-hour cap; assets sits closer to implement. (After §2b's merge,
+a round that sculpts shares implement's single 12-hour cap rather than getting
+this budget on top — a deliberate choice to keep one constant rather than add
+a conditional one, at the cost of the ~18-hour combined ceiling the two
+separate runs used to have.)
 
 ### 3.3 `tools/crop.py`
 
@@ -183,13 +266,20 @@ Harness is never stored — `harnessFor(assetModel)` derives it.
 
 ### 3.5 The implement prompt shrinks
 
-`assetSeam()` in `shared/engine-stack.ts` currently says "build models with the
-`/img2threejs` skill." It becomes: the library exists in `src/assets/<name>.ts`;
-call each factory once, extract it into an `AssetRecord`, spawn from that.
+Lives as `composeImplementPrompt`'s `assetRule` in `shared/prompts.ts`, not a
+function called `assetSeam()` (that name never existed in code — this section
+was already stale before §2b). It says: the library exists in
+`src/assets/<name>.ts`; call each factory once, extract it into a plain
+record, spawn from that; never hand-edit a generated factory.
 
-Everything else in that section stays — colliders map straight across to Rapier
-shapes, sockets are component data rather than `Object3D.add()`, check
-`rig.bound` at load and fail loudly.
+After §2b, `assetRule` is conditional on `wanted` (what `wantedCast` says this
+round still owes): empty, it's exactly the wire-up-only text above; non-empty,
+a sculpt-first section is prepended naming those entries and how to build them,
+before the same wire-up text runs.
+
+Everything else in the implement prompt stays — colliders map straight across
+to Rapier shapes, sockets are component data rather than `Object3D.add()`,
+check `rig.bound` at load and fail loudly.
 
 ### 3.6 Routing the critic's findings
 
@@ -203,14 +293,21 @@ export interface VerdictFinding {
 }
 ```
 
-The runner splits the verdict: asset-targeted findings queue an `assets` run for
-those assets only, everything else goes to implement. Assets runs first, because
-implement depends on the library.
+The runner splits the verdict: asset-targeted findings name what to rebuild,
+everything else goes to the implementer. Originally this meant queuing a
+separate `assets` run before implement, because implement depended on the
+library existing first. After §2b, `wantedCast(loop, verdict)` computes the
+same split — `assetTargets(verdict.findings)` if the critic named specific
+assets, else whatever `unbuiltCast` still owes — and `queueImplement` threads
+the result straight into the same round's prompt, so the ordering guarantee
+("implement depends on the library") now holds *within* one conversation
+(sculpt first, per §2b/§3.5) instead of across two runs.
 
-Code touched — the four places a run is created for the next role:
-`loop-runner.ts:955-964` (reference → implement), `:1558` (implement →
-critique), `:1934` (critique → implement), and `:426-470` (the same switch on
-the resume path).
+Code touched — `queueImplement`'s callers, in `loop-runner.ts`: reference →
+implement, implement → critique → implement, and the equivalent branches in
+`resumeLoop`. All four now make one call each; the conditional "queue assets,
+else queue implement directly" branching this section originally described is
+gone.
 
 The critic already writes `critique/round-N/pairs.json` as
 `{shot, ref, winner, why}` per pair (`prompts.ts:67`); a pair whose `why` is
@@ -288,7 +385,7 @@ gap stays with the implementer and the engine contract.
 
 ---
 
-## 6. Sequence
+## 6. Sequence (historical — this was the original ship order)
 
 1. `cast.md` plus the `scanReferencePack` checks.
 2. The `assets` run role, one agent per entry, no routing yet — it runs once
@@ -300,10 +397,7 @@ gap stays with the implementer and the engine contract.
 5. Add `target` to findings, and the routing.
 6. Gate checks for asset provenance.
 
-Steps 1–4 ship on their own and fix the main problem: assets stop being sculpted
-by hand inside implement rounds. Steps 5–6 keep it from sliding back.
-
-Beyond the model table in §3.4, the role also touches the four run-creation
-sites, the resume switch, `recoverAll`, the timeout constants, `report.ts:142`
-(which treats `reference` as the only round-less role) and `RunView.tsx:408` (a
-three-way ternary that colours runs by role).
+Steps 1–4 shipped and fixed the main problem: assets stopped being sculpted by
+hand inside implement rounds. Steps 5–6 kept it from sliding back. §2b is a
+later, separate change on top of all six steps — it did not redo any of them,
+it only changed which run performs step 2's dispatch.

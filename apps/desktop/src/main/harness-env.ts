@@ -3,12 +3,26 @@ import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
 import { RUN_METADATA_DIR } from './run-transfer'
+import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 
 export function cliHome(kind: HarnessKind): string {
   const home = path.join(app.getPath('userData'), 'harnesses', kind)
   fs.mkdirSync(home, { recursive: true, mode: 0o700 })
   fs.chmodSync(home, 0o700)
   return home
+}
+
+/**
+ * Put the vendored `img2threejs` skill where the Claude CLI will find it.
+ *
+ * The CLI discovers skills under whatever `CLAUDE_CONFIG_DIR` points at, and
+ * every run is spawned with that set to `cliHome('claude')` — so this copies the
+ * bundled skill into that home's `skills/`. Packaged, the source is the
+ * `extraResources` copy under `resourcesPath`; in dev it is `vendor/` in the
+ * repo.
+ */
+export function ensureSkill(): SkillInstall {
+  return installSkill(cliHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
 }
 
 /** Run transcripts live with the project so a folder transfer is complete. */
