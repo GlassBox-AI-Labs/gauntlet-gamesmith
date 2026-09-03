@@ -45,7 +45,19 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
-const REFERENCE_TIMEOUT_MS = 60 * 60_000
+/**
+ * The Reference Study gets implement's shape — quiet-based, not wall-clock.
+ *
+ * It used to run one flat hour used as both idle and cap, which killed a
+ * working agent exactly like a stalled one. That bit on the first Pac-Man run:
+ * the study gathered 53 stills, 49 journey shots and 46 object shots, then died
+ * at the hour with every document still unwritten, because step 7 makes it VIEW
+ * every still and motion frame before it may write the README. Acquiring more
+ * material buys more viewing, so a fixed hour is a budget the phase can
+ * outgrow — and it did once the cast list and `objects/` were added to it.
+ */
+const REFERENCE_IDLE_MS = 40 * 60_000
+const REFERENCE_HARD_CAP_MS = 3 * 60 * 60_000
 // The Asset Build fans out like implement, and a sculptor's correction loop is
 // slow, so it gets implement's shape rather than the critique's flat hour. The
 // cap is lower: a cast is a bounded list, unlike a whole game.
@@ -56,13 +68,13 @@ const ASSETS_HARD_CAP_MS = 6 * 60 * 60_000
 type FinishFanOut = (loop: LoopRecord, run: RunRecord, exit: ExitInfo, collect: () => ImplementOutcome) => Promise<void>
 
 const IDLE_MS_FOR: Partial<Record<RunRole, number>> = {
-  reference: REFERENCE_TIMEOUT_MS,
+  reference: REFERENCE_IDLE_MS,
   assets: ASSETS_IDLE_MS,
   implement: IMPLEMENT_IDLE_MS,
   critique: CRITIQUE_TIMEOUT_MS,
 }
 const CAP_MS_FOR: Partial<Record<RunRole, number>> = {
-  reference: REFERENCE_TIMEOUT_MS,
+  reference: REFERENCE_HARD_CAP_MS,
   assets: ASSETS_HARD_CAP_MS,
   implement: IMPLEMENT_HARD_CAP_MS,
   critique: CRITIQUE_TIMEOUT_MS,
@@ -853,7 +865,7 @@ export class LoopRunner {
     this.ledger.patchRun(run.id, { model: models.orchestratorModel })
     const gate: LogGate = { suppress: false }
     const parser = this.makeReferenceParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own)
+    await this.driveRun(loop, run, spawned.meta, REFERENCE_IDLE_MS, REFERENCE_HARD_CAP_MS, parser, gate, spawned.own)
   }
 
   private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
