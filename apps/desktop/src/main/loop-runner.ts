@@ -15,6 +15,7 @@ import type {
   TokenTotals,
   Verdict,
 } from '../shared/loop'
+import type { AccountRotation, HarnessKind } from '../shared/harness'
 import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
 import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
 import { buildAssetsPrompt, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
@@ -23,7 +24,7 @@ import { codexTokens, readCodexUsage } from './codex-usage'
 import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
 import { assetsPlan, critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, runsDir, subscriptionEnv } from './harness-env'
+import { cliHome, runsDir, sharedHome, subscriptionEnv } from './harness-env'
 import type { Ledger } from './ledger'
 import { estimateCostUsd } from './pricing'
 import { referencePackDir, scanReferencePack } from './reference-pack'
@@ -83,6 +84,23 @@ const CAP_MS_FOR: Partial<Record<RunRole, number>> = {
 const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
+/**
+ * A subscription's usage ceiling, reported as prose by both CLIs.
+ *
+ * Matched loosely on purpose — the wording varies — which is why rotation is
+ * capped rather than trusted to stop on its own.
+ */
+const USAGE_LIMIT = /rate.?limit|usage limit|out of extra usage/i
+/** Account changes one loop may spend on usage limits before it gives up. */
+const MAX_ACCOUNT_ROTATIONS = 3
+/** The longest a loop will sit waiting for a usage window to reopen. */
+const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1000
+
+/**
+ * `rotated` retries now on another account; `waitMs` retries later, when the
+ * first exhausted window reopens; a message alone means the loop is over.
+ */
+type UsageLimitOutcome = { rotated: true; waitMs?: number } | { rotated: false; message: string | null }
 
 /**
  * Which cost figure to trust for an implement run.
@@ -300,6 +318,10 @@ interface LogGate {
 export class LoopRunner {
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
+  /** Account changes spent on usage limits, per loop, so a bad error cannot walk every account. */
+  private rotations = new Map<string, number>()
+  /** Loops parked until a usage window reopens, so a stop can cancel the wait. */
+  private waits = new Map<string, NodeJS.Timeout>()
   /** Round/role of a run never change, so stamping log lines needs one lookup per run. */
   private runStamps = new Map<string, { round: number; role: RunRole }>()
   /** Child streams of the run being driven; also pumped while awaiting stragglers. */
@@ -308,6 +330,7 @@ export class LoopRunner {
   constructor(
     private ledger: Ledger,
     private send: (channel: string, payload: unknown) => void,
+    private rotateAccount: (kind: HarnessKind, error: string) => Promise<AccountRotation>,
   ) {}
 
   snapshot(): LoopSnapshot | null {
@@ -628,9 +651,84 @@ export class LoopRunner {
   private finishLoop(loopId: string, status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void {
     this.ledger.patchLoop(loopId, { status, stopReason: reason })
     this.stopRequested.delete(loopId)
+    this.rotations.delete(loopId)
+    clearTimeout(this.waits.get(loopId))
+    this.waits.delete(loopId)
     const icon = status === 'passed' ? '🏆' : status === 'failed' ? '✗' : '■'
     this.log(loopId, null, 'done', `${icon} Loop ${status}: ${reason}`)
     this.broadcast(loopId)
+  }
+
+  /**
+   * Answer a usage limit by changing accounts rather than ending the run.
+   *
+   * The limit belongs to the account, not the work, so the run is retried on
+   * the next account that is signed in and not inside its own window. Callers
+   * requeue the work themselves — each role rebuilds its prompt differently —
+   * and fall back to their normal failure when this returns `rotated: false`.
+   */
+  private async rotateForUsageLimit(loop: LoopRecord, run: RunRecord, error: string): Promise<UsageLimitOutcome> {
+    if (!USAGE_LIMIT.test(error)) return { rotated: false, message: null }
+
+    const used = this.rotations.get(loop.id) ?? 0
+    if (used >= MAX_ACCOUNT_ROTATIONS) {
+      return {
+        rotated: false,
+        message: `Rate limited after changing accounts ${used} time(s) — stopping rather than working through every account. (${error})`,
+      }
+    }
+
+    const rotation = await this.rotateAccount(run.harness, error)
+    if (!rotation.ok) {
+      // Every account spent is a pause, not a failure: the build waits for the
+      // first window to reopen rather than throwing away its progress.
+      const waitMs = rotation.resetAt == null ? 0 : rotation.resetAt - Date.now()
+      if (waitMs > 0 && waitMs <= MAX_LIMIT_WAIT_MS) {
+        this.rotations.set(loop.id, used + 1)
+        const clock = new Date(rotation.resetAt!).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        this.log(
+          loop.id,
+          run.id,
+          'system',
+          `⏸ Every account is inside its limit window — waiting until ${clock} to retry round ${run.round} ${run.role}.`,
+        )
+        return { rotated: true, waitMs }
+      }
+      return {
+        rotated: false,
+        message: `Rate limited on ${rotation.from} and ${rotation.reason} — wait for the window to reset, or sign another account in on the Agents tab. (${error})`,
+      }
+    }
+
+    this.rotations.set(loop.id, used + 1)
+    this.log(
+      loop.id,
+      run.id,
+      'system',
+      `⇄ Rate limited on ${rotation.from} — switched to ${rotation.to} and retrying round ${run.round} ${run.role}.`,
+    )
+    return { rotated: true }
+  }
+
+  /**
+   * Pick the queued work up again — now, or when a usage window reopens.
+   *
+   * A wait keeps the loop `running` so it still reads as alive; stopping it
+   * cancels the timer through `finishLoop`.
+   */
+  private resumeAfter(loopId: string, waitMs?: number): void {
+    if (!waitMs) {
+      void this.executeNext(loopId)
+      return
+    }
+    clearTimeout(this.waits.get(loopId))
+    this.waits.set(
+      loopId,
+      setTimeout(() => {
+        this.waits.delete(loopId)
+        void this.executeNext(loopId)
+      }, waitMs),
+    )
   }
 
   private async executeNext(loopId: string): Promise<void> {
@@ -836,7 +934,7 @@ export class LoopRunner {
 
   /** True if the workspace has a prior claude session transcript to `--continue` from. */
   private hasClaudeSession(workspaceDir: string): boolean {
-    const projectDir = path.join(cliHome('claude'), 'projects', workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'))
+    const projectDir = path.join(sharedHome('claude'), 'projects', workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'))
     try {
       return fs.readdirSync(projectDir).some((file) => file.endsWith('.jsonl'))
     } catch {
@@ -953,7 +1051,7 @@ export class LoopRunner {
         plog('error', failure)
       }
     }
-    const finalize = (exit: ExitInfo): void => {
+    const finalize = async (exit: ExitInfo): Promise<void> => {
       const durationMs = Date.now() - startedAtMs
       const costUsd = sawUsage ? estimateCostUsd(model, tokens) : null
       const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))
@@ -978,10 +1076,17 @@ export class LoopRunner {
       }
       if (processError || artifactError) {
         const error = processError ?? artifactError!
+        const limit = await this.rotateForUsageLimit(loop, run, error)
         this.ledger.patchRun(run.id, { status: 'failed', error })
-        const attempts = this.ledger.runsForLoop(loop.id).filter((item) => item.role === 'reference').length
-        if (attempts < MAX_REFERENCE_ATTEMPTS) {
-          this.log(loop.id, run.id, 'system', `Reference Study incomplete (${error}) — retrying and preserving downloaded files.`)
+        // A usage limit is not the study failing, so it does not spend one of
+        // the study's own two attempts.
+        const attempts = this.ledger
+          .runsForLoop(loop.id)
+          .filter((item) => item.role === 'reference' && !USAGE_LIMIT.test(item.error ?? '')).length
+        if (limit.rotated || attempts < MAX_REFERENCE_ATTEMPTS) {
+          if (!limit.rotated) {
+            this.log(loop.id, run.id, 'system', `Reference Study incomplete (${error}) — retrying and preserving downloaded files.`)
+          }
           this.ledger.createRun({
             loopId: loop.id,
             round: 0,
@@ -990,10 +1095,10 @@ export class LoopRunner {
             prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id), researchRules(loop.models, this.referenceDir(loop.id))),
           })
           this.broadcast(loop.id)
-          void this.executeNext(loop.id)
+          this.resumeAfter(loop.id, limit.rotated ? limit.waitMs : undefined)
           return
         }
-        this.finishLoop(loop.id, 'failed', `Reference Study failed twice: ${error}`)
+        this.finishLoop(loop.id, 'failed', limit.message ?? `Reference Study failed twice: ${error}`)
         return
       }
       this.ledger.patchRun(run.id, { status: 'succeeded' })
@@ -1084,7 +1189,7 @@ export class LoopRunner {
     // The crop tool is rewritten every round for the reason the engine gate is:
     // it is the one thing in the workspace a worker has an incentive to weaken,
     // and a guard that can be edited away is not a guard.
-    scaffoldAssetTools(loop.workspaceDir, path.join(cliHome('claude'), 'skills', 'img2threejs'))
+    scaffoldAssetTools(loop.workspaceDir, path.join(sharedHome('claude'), 'skills', 'img2threejs'))
     const agentMd = sculptorAgentMd(models, referenceDir)
     if (agentMd) {
       const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
@@ -1145,7 +1250,22 @@ export class LoopRunner {
     }
     const built = unbuiltCast(loop.workspaceDir, this.castFor(loop))
     if (out.error) {
+      // A usage limit would sink the implement run that follows just as surely,
+      // so rotate here rather than carry a half-built cast into it.
+      const limit = await this.rotateForUsageLimit(loop, run, out.error)
       this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
+      if (limit.rotated) {
+        this.ledger.createRun({
+          loopId: loop.id,
+          round: run.round,
+          role: 'assets',
+          harness: run.harness,
+          prompt: run.prompt,
+        })
+        this.broadcast(loop.id)
+        this.resumeAfter(loop.id, limit.waitMs)
+        return
+      }
       this.log(loop.id, run.id, 'system', `Asset Build failed (${out.error}) — continuing; the implementer models what is missing.`)
     } else {
       this.ledger.patchRun(run.id, { status: 'succeeded' })
@@ -1318,9 +1438,9 @@ export class LoopRunner {
       // Live agent state comes from the transcripts the runtime appends as it
       // works; the wf_*.json summary only lands when a workflow ends, and is
       // read for the run status and phase names it carries.
-      tail ??= new WorkflowTail(workflowTailDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      tail ??= new WorkflowTail(workflowTailDir(sharedHome('claude'), loop.workspaceDir, sessionId))
       const live = tail.poll()
-      const progress = readWorkflowProgress(workflowDir(cliHome('claude'), loop.workspaceDir, sessionId))
+      const progress = readWorkflowProgress(workflowDir(sharedHome('claude'), loop.workspaceDir, sessionId))
       const phaseById = new Map(progress.agents.map((a) => [a.id.split(':').at(-1), a.phase]))
       workflowAgents = live.map((a) => ({ ...a, phase: a.phase ?? phaseById.get(a.id.split(':').at(-1)) }))
       workflowRuns = progress.runs
@@ -1718,15 +1838,22 @@ export class LoopRunner {
       return
     }
     if (out.error) {
-      const rateLimited = /rate.?limit|usage limit|out of extra usage/i.test(out.error)
+      const limit = await this.rotateForUsageLimit(loop, run, out.error)
       this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
-      this.finishLoop(
-        loop.id,
-        'stopped',
-        rateLimited
-          ? `Rate limited — wait for the window to reset, then start a new run in the same workspace. (${out.error})`
-          : `Implement run failed: ${out.error}`,
-      )
+      if (limit.rotated) {
+        const base = run.prompt.startsWith(RESUME_PREFIX) ? run.prompt.slice(RESUME_PREFIX.length) : run.prompt
+        this.ledger.createRun({
+          loopId: loop.id,
+          round: run.round,
+          role: 'implement',
+          harness: run.harness,
+          prompt: RESUME_PREFIX + base,
+        })
+        this.broadcast(loop.id)
+        this.resumeAfter(loop.id, limit.waitMs)
+        return
+      }
+      this.finishLoop(loop.id, 'stopped', limit.message ?? `Implement run failed: ${out.error}`)
       return
     }
     try {
@@ -2084,11 +2211,18 @@ export class LoopRunner {
         return
       }
       if (failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
-        const attempts = this.ledger.runsForLoop(loop.id).filter((r) => r.role === 'critique' && r.round === run.round).length
+        // A usage limit is not the critic failing, so it does not spend one of
+        // the critic's own two attempts.
+        const attempts = this.ledger
+          .runsForLoop(loop.id)
+          .filter((r) => r.role === 'critique' && r.round === run.round && !USAGE_LIMIT.test(r.error ?? '')).length
         const errText = exit.spawnError ?? failure ?? (verdict ? `${run.harness} exited ${exit.code}` : `no parseable verdict (exit ${exit.code})`)
+        const limit = await this.rotateForUsageLimit(loop, run, errText)
         this.ledger.patchRun(run.id, { status: 'failed', error: errText })
-        if (attempts < MAX_CRITIQUE_ATTEMPTS) {
-          this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
+        if (limit.rotated || attempts < MAX_CRITIQUE_ATTEMPTS) {
+          if (!limit.rotated) {
+            this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
+          }
           this.ledger.createRun({
             loopId: loop.id,
             round: run.round,
@@ -2097,10 +2231,10 @@ export class LoopRunner {
             prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
           })
           this.broadcast(loop.id)
-          void this.executeNext(loop.id)
+          this.resumeAfter(loop.id, limit.rotated ? limit.waitMs : undefined)
           return
         }
-        this.finishLoop(loop.id, 'failed', `Critique failed twice: ${errText}`)
+        this.finishLoop(loop.id, 'failed', limit.message ?? `Critique failed twice: ${errText}`)
         return
       }
 

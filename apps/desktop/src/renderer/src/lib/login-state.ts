@@ -42,5 +42,11 @@ export function reduceHarness(state: HarnessState, action: HarnessAction): Harne
       return { ...state, phase: 'logged_out', url: null }
     case 'login_failed':
       return { ...state, phase: 'error', error: action.error, url: null }
+    case 'logout_started':
+      return { ...state, phase: 'signing_out', url: null, error: null }
+    // A failed sign-out leaves the account connected, so say what went wrong
+    // without pretending the CLI is signed out.
+    case 'logout_failed':
+      return { ...state, phase: 'logged_in', error: action.error }
   }
 }

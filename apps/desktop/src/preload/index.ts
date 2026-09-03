@@ -8,9 +8,19 @@ const harnesses: HarnessApi = {
   probe: (kind) => ipcRenderer.invoke('harness:probe', kind),
   startLogin: (kind) => ipcRenderer.invoke('harness:start-login', kind),
   cancelLogin: (kind) => ipcRenderer.invoke('harness:cancel-login', kind),
+  logout: (kind) => ipcRenderer.invoke('harness:logout', kind),
+  accounts: (kind) => ipcRenderer.invoke('harness:accounts', kind),
+  addAccount: (kind) => ipcRenderer.invoke('harness:add-account', kind),
+  switchAccount: (kind, accountId) => ipcRenderer.invoke('harness:switch-account', kind, accountId),
+  removeAccount: (kind, accountId) => ipcRenderer.invoke('harness:remove-account', kind, accountId),
   writeTerminal: (kind: HarnessKind, data: string) => ipcRenderer.send('harness:terminal-input', { kind, data }),
   resizeTerminal: (kind: HarnessKind, cols: number, rows: number) =>
     ipcRenderer.send('harness:terminal-resize', { kind, cols, rows }),
+  onAccountsChanged: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, kind: HarnessKind): void => listener(kind)
+    ipcRenderer.on('harness:accounts-changed', wrapped)
+    return () => ipcRenderer.removeListener('harness:accounts-changed', wrapped)
+  },
   onLoginEvent: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: LoginEvent): void => listener(payload)
     ipcRenderer.on('harness:login-event', wrapped)
