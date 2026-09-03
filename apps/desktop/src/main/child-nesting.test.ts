@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // Reading a codex child's live usage needs CODEX_HOME, which comes off the app.
 vi.mock('electron', () => ({ app: { getPath: () => os.tmpdir() } }))
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
+import { recoverChildStreams } from './child-agents'
 import { Ledger } from './ledger'
-import { LoopRunner } from './loop-runner'
+import { createClaudeImplementProtocol } from './roles/implement-claude'
 
 /**
  * A delegated codex worker is a process the app never started, so only the
@@ -39,12 +40,19 @@ describe('delegated workers', () => {
     const ledger = new Ledger(path.join(dir, 'ledger.db'))
     const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
     const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
-    const runner = new LoopRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' }))
-    const parser = (
-      runner as unknown as {
-        makeImplementParser: (l: typeof loop, r: typeof run, g: { suppress: boolean }) => { onLine(line: string): void }
-      }
-    ).makeImplementParser(loop, run, { suppress: false })
+    const parser = createClaudeImplementProtocol({
+      ledger,
+      loop,
+      run,
+      gate: { suppress: false },
+      childBoundary: recoverChildStreams(workspaceDir),
+      now: Date.now,
+      nowIso: () => new Date().toISOString(),
+      harnessHome: () => path.join(dir!, 'harness'),
+      log: () => {},
+      broadcast: () => {},
+      finalize: async () => {},
+    })
 
     const lines = [
       { type: 'assistant', message: { id: 'm1', model: 'claude-fable-5', content: [{ type: 'tool_use', id: TOOL_ID, name: 'Agent', input: { description: 'Fix core' } }] } },

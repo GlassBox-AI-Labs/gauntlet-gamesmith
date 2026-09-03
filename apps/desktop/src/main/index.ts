@@ -1,27 +1,17 @@
-import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import fixPath from 'fix-path'
-import pty, { type IPty } from 'node-pty'
-import type {
-  DetectionResult,
-  HarnessAction,
-  HarnessKind,
-  AccountRotation,
-  AccountsResult,
-  AccountsState,
-  LoginEvent,
-  LogoutResult,
-  ProbeResult,
-  TerminalDataEvent,
-} from '../shared/harness'
-import { harnessKinds } from '../shared/harness'
-import { runPromptLabel, type CritiqueRound, type LoopLogLine, type LoopRecord, type ReferenceStudy, type RunRecord, type StartLoopInput } from '../shared/loop'
+import type { AccountRotation, AccountsResult, AccountsState, HarnessAction, HarnessKind } from '../shared/harness'
+import { IPC } from '../shared/ipc'
+import { type CritiqueRound, type LoopLogLine, type LoopRecord, type ReferenceStudy } from '../shared/loop'
 import { isCodexModel, resolveModels } from '../shared/models'
 import { REPORT_FILE_SUFFIX, type DeleteRunsResult, type ReportRecord, type ReportRunRow } from '../shared/reports'
+import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
+import { failure, success, type OperationResult } from '../shared/result'
+import { redactedErrorMessage } from '../shared/redact-log'
 import {
   accountDir,
   addAccount,
@@ -37,99 +27,87 @@ import {
   removeAccount,
   switchAccount,
 } from './accounts'
-import { cliHome, harnessesRoot, subscriptionEnv } from './harness-env'
+import { cliHome, harnessesRoot } from './harness-env'
+import { HarnessLoginManager } from './harness-login'
+import { subscriptionAuthError } from './harness-status'
+import {
+  assertHarnessKind,
+  assertLoopId,
+  parseLogLimit,
+  parseDeleteRunsInput,
+  parseLoopListOffset,
+  parseOptionalRound,
+  parseRunPageOffset,
+  parseRunPromptRequest,
+  parseRenameInput,
+  parseStartLoopInput,
+  parseTerminalInput,
+  parseTerminalResize,
+  renameTrustError,
+} from './ipc-input'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
-import { startMediaServer } from './media-server'
-import { playState, startPlay, stopAllPlay, stopPlay } from './play'
-import { referencePackDir, scanReferencePack } from './reference-pack'
+import { stopExistingLoop } from './loop-stop'
+import { MediaBaseGate, startMediaServer } from './media-server'
+import { hasActivePlay, playState, playTrustError, startPlay, stopAllPlayAndWait, stopPlay } from './play'
+import { parseRevealStreamInput, rawRevealTrustError, resolveProtectedRawStreamPath } from './raw-streams'
+import { scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
-import { checkoutRoundRevision } from './round-revision'
 import { buildReportRow, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
+import { checkoutRoundRevision, configureRoundRevisionStorage } from './round-revision'
 import {
   copyRunFolder,
   deleteRunFolder,
+  exportActivityError,
   migrateRunMetadataDir,
   nextAvailableExportPath,
+  RAW_EXPORT_WARNING,
   RUN_LEDGER_FILE,
   RUN_METADATA_DIR,
   safeExportFolderName,
 } from './run-transfer'
+import { developmentRendererUrl } from './dev-renderer-url'
+import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
+import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
+import { withPromptLogs, type PromptLogRun } from './prompt-logs'
+import { settleQuitSupervisors } from './quit-settlement'
+import { readExactFileDescriptor } from './bounded-fd'
 
-interface HarnessSpec {
-  command: string
-  versionArgs: string[]
-  statusArgs: string[]
-  loginArgs: string[]
-  logoutArgs: string[]
-  env: Record<string, string>
-}
-
-interface CommandResult {
-  ok: boolean
-  code?: number | null
-  stdout: string
-  stderr: string
-  error?: string
-}
-
-interface ClaudeStatus {
-  loggedIn?: boolean
-  authMethod?: string
-  apiProvider?: string
-  subscriptionType?: string
-  orgName?: string
-  email?: string
-}
-
-const runningLogins = new Map<HarnessKind, IPty>()
-const validHarnessKinds = new Set<string>(harnessKinds)
-const smokeTestMode = process.argv.includes('--gauntlet-smoke-test')
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
 let loopRunner: LoopRunner | null = null
-let mediaBase: string | null = null
-
-/** Backfill prompt entries when reading logs from runs created before prompt logging shipped. */
-function withPromptLogs(runs: RunRecord[], source: LoopLogLine[]): LoopLogLine[] {
-  const lines = [...source]
-  const recorded = new Set(lines.filter((line) => line.kind === 'prompt' && line.runId).map((line) => line.runId!))
-  for (const run of runs) {
-    if (recorded.has(run.id)) continue
-    const chunkSize = 3_600
-    const chunks = Array.from({ length: Math.ceil(run.prompt.length / chunkSize) }, (_, index) =>
-      run.prompt.slice(index * chunkSize, (index + 1) * chunkSize),
-    )
-    const promptLines = chunks.map((chunk, index): LoopLogLine => ({
-      loopId: run.loopId,
-      runId: run.id,
-      ts: run.startedAt ?? run.createdAt,
-      kind: 'prompt',
-      channel: 'prompt',
-      round: run.round,
-      role: run.role,
-      text: `${runPromptLabel(run)}${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}:\n${chunk}`,
-    }))
-    const firstRunLine = lines.findIndex((line) => line.runId === run.id)
-    lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, ...promptLines)
-  }
-  return lines
-}
+let mediaGate: MediaBaseGate | null = null
 
 const APP_NAME = 'Gauntlet Gamesmith'
-/** What the app was called before the rename, and so what its folder is named. */
 const LEGACY_APP_NAME = 'Gauntlet Loop'
+const smokeTestMode = process.argv.includes('--gauntlet-smoke-test')
+const MAX_REPORT_IMPORT_BYTES = 8 * 1024 * 1024
 
-/**
- * Where the registry ledger, the two harness logins and the installed skills
- * live.
- *
- * Electron derives this folder from the app's name, so the rename on its own
- * would point it at an empty directory — no runs, and both CLIs logged out.
- * Move the old folder across instead. It is a rename inside one directory, so
- * it is instant however many gigabytes are in there, and if it fails we go on
- * using the old folder rather than start the user from nothing.
- */
+function readBoundedReportFile(filePath: string): string {
+  const descriptor = fsSync.openSync(filePath, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = fsSync.fstatSync(descriptor)
+    const linked = fsSync.lstatSync(filePath)
+    if (
+      !opened.isFile()
+      || opened.nlink !== 1
+      || !linked.isFile()
+      || linked.isSymbolicLink()
+      || linked.nlink !== 1
+      || linked.dev !== opened.dev
+      || linked.ino !== opened.ino
+    ) throw new Error('The selected report is not a unique regular file.')
+    const bytes = readExactFileDescriptor(descriptor, opened.size, MAX_REPORT_IMPORT_BYTES, 'Report import')
+    const after = fsSync.fstatSync(descriptor)
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.nlink !== 1 || after.size !== opened.size) {
+      throw new Error('The selected report changed while it was being read.')
+    }
+    return bytes.toString('utf8')
+  } finally {
+    fsSync.closeSync(descriptor)
+  }
+}
+
 function resolveUserData(): string {
   const appData = app.getPath('appData')
   const current = path.join(appData, APP_NAME)
@@ -143,282 +121,69 @@ function resolveUserData(): string {
   }
 }
 
+function protectedWorkspaceRoots(): string[] {
+  return [app.getPath('userData'), cliHome('claude'), cliHome('codex')]
+}
+
 app.setName(APP_NAME)
-app.setPath(
-  'userData',
-  smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA ? process.env.GAUNTLET_SMOKE_USER_DATA : resolveUserData(),
-)
+app.setPath('userData', smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
+  ? process.env.GAUNTLET_SMOKE_USER_DATA
+  : resolveUserData())
 fixPath()
+configureRoundRevisionStorage(path.join(app.getPath('userData'), 'round-revisions'))
 
-function assertHarnessKind(value: unknown): HarnessKind {
-  if (typeof value !== 'string' || !validHarnessKinds.has(value)) {
-    throw new Error('Unsupported harness.')
-  }
-  return value as HarnessKind
+const harnessLogins = new HarnessLoginManager(app.getPath('home'), {
+  action: (kind, action) => {
+    recordSuccessfulLogin(kind, action)
+    mainWindow?.webContents.send(IPC.harness.loginEvent, { kind, action })
+  },
+  terminal: (kind, data) => mainWindow?.webContents.send(IPC.harness.terminalData, { kind, data }),
+})
+
+function recordSuccessfulLogin(kind: HarnessKind, action: HarnessAction): void {
+  if (action.type !== 'probe_finished' || !action.loggedIn) return
+  const root = harnessesRoot()
+  const state = readAccounts(root, kind)
+  clearCooldown(root, kind, state.activeId)
+  const email = action.details?.find(([label]) => label === 'Email')?.[1]
+  if (email) labelAccount(root, kind, state.activeId, email)
 }
 
-function harnessSpec(kind: HarnessKind, home = cliHome(kind)): HarnessSpec {
-  if (kind === 'claude') {
-    return {
-      command: 'claude',
-      versionArgs: ['--version'],
-      statusArgs: ['auth', 'status', '--json'],
-      loginArgs: ['auth', 'login', '--claudeai'],
-      logoutArgs: ['auth', 'logout'],
-      env: { CLAUDE_CONFIG_DIR: home },
-    }
-  }
-
-  return {
-    command: 'codex',
-    versionArgs: ['--version'],
-    statusArgs: ['login', 'status'],
-    loginArgs: ['login'],
-    logoutArgs: ['logout'],
-    env: { CODEX_HOME: home },
-  }
-}
-
-function run(command: string, args: string[], env: Record<string, string>, timeoutMs = 8_000): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      env: subscriptionEnv(env),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    let timer: NodeJS.Timeout
-
-    const finish = (result: CommandResult): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(result)
-    }
-
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
-    child.on('error', (error) => finish({ ok: false, stdout, stderr, error: error.message }))
-    child.on('close', (code) => finish({ ok: code === 0, code, stdout, stderr }))
-
-    timer = setTimeout(() => {
-      child.kill('SIGTERM')
-      finish({ ok: false, stdout, stderr, error: 'Command timed out.' })
-    }, timeoutMs)
-  })
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '')
-}
-
-function parseUrls(value: string): string[] {
-  return stripAnsi(value).match(/https?:\/\/[^\s<>"']+/g) ?? []
-}
-
-async function detect(kind: HarnessKind): Promise<DetectionResult> {
-  const spec = harnessSpec(kind)
-  const result = await run(spec.command, spec.versionArgs, spec.env)
-  const version = stripAnsi(result.stdout || result.stderr).trim().split('\n')[0] || null
-  return {
-    found: result.ok,
-    version,
-    error: result.ok ? null : ((result.error ?? result.stderr.trim()) || null),
-  }
-}
-
-async function probe(kind: HarnessKind): Promise<ProbeResult> {
-  return probeHome(kind, cliHome(kind))
-}
-
-async function probeHome(kind: HarnessKind, home: string): Promise<ProbeResult> {
-  const spec = harnessSpec(kind, home)
-  const result = await run(spec.command, spec.statusArgs, spec.env)
-
-  if (kind === 'claude') {
-    try {
-      const status = JSON.parse(result.stdout) as ClaudeStatus
-      const loggedIn = Boolean(status.loggedIn)
-      if (loggedIn && status.email) rememberAccountLabel(kind, home, status.email)
-      return {
-        loggedIn,
-        authMethod: loggedIn ? (status.authMethod ?? 'Claude account') : null,
-        details: loggedIn
-          ? [
-              ['Version', (await detect(kind)).version],
-              ['Provider', status.apiProvider === 'firstParty' ? 'Anthropic API' : status.apiProvider],
-              [
-                'Login method',
-                status.subscriptionType ? `Claude ${status.subscriptionType} account` : status.authMethod,
-              ],
-              ['Organization', status.orgName],
-              ['Email', status.email],
-            ].filter((detail): detail is [string, string] => Boolean(detail[1]))
-          : [],
-      }
-    } catch {
-      const message = stripAnsi(result.stderr || result.stdout).trim()
-      return { loggedIn: false, error: /not logged in|not authenticated/i.test(message) ? null : message || null }
-    }
-  }
-
-  const text = stripAnsi(`${result.stdout}\n${result.stderr}`).trim()
-  const loggedIn = result.ok && /^logged in using\b/i.test(text)
-  return {
-    loggedIn,
-    authMethod: loggedIn ? text.replace(/^logged in using\s*/i, '') || 'Codex account' : null,
-    details: loggedIn
-      ? [
-          ['Version', (await detect(kind)).version ?? 'Unknown'],
-          ['Provider', 'OpenAI'],
-          ['Auth', text.replace(/^logged in using\s*/i, '') || 'CLI account'],
-          ['Credentials', 'Managed privately by Codex CLI'],
-        ]
-      : [],
-    error: loggedIn || /not logged in|not authenticated/i.test(text) ? null : text || null,
-  }
-}
-
-async function verifyLogin(kind: HarnessKind): Promise<ProbeResult> {
-  let status: ProbeResult = { loggedIn: false }
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    status = await probe(kind)
-    if (status.loggedIn) return status
-    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250))
-  }
-  return status
-}
-
-function sendLoginAction(kind: HarnessKind, action: HarnessAction): void {
-  const event: LoginEvent = { kind, action }
-  mainWindow?.webContents.send('harness:login-event', event)
-}
-
-function sendTerminalData(kind: HarnessKind, data: string): void {
-  const event: TerminalDataEvent = { kind, data }
-  mainWindow?.webContents.send('harness:terminal-data', event)
-}
-
-function startLogin(kind: HarnessKind): void {
-  if (runningLogins.has(kind)) return
-  const spec = harnessSpec(kind)
-  let child: IPty
-
-  try {
-    child = pty.spawn(spec.command, spec.loginArgs, {
-      name: 'xterm-256color',
-      cols: 100,
-      rows: 22,
-      cwd: app.getPath('home'),
-      env: subscriptionEnv(spec.env),
-    })
-  } catch (error) {
-    sendLoginAction(kind, {
-      type: 'login_failed',
-      error: error instanceof Error ? error.message : 'Unable to start the login process.',
-    })
-    return
-  }
-
-  runningLogins.set(kind, child)
-  sendLoginAction(kind, { type: 'login_started' })
-
-  let transcript = ''
-  let emittedUrl: string | null = null
-  child.onData((chunk) => {
-    transcript = `${transcript}${chunk}`.slice(-16_000)
-    sendTerminalData(kind, chunk)
-    const url = parseUrls(transcript).at(-1)?.replace(/[),.;]+$/, '')
-    if (url && url !== emittedUrl) {
-      emittedUrl = url
-      sendLoginAction(kind, { type: 'login_url', url })
-    }
-  })
-
-  child.onExit(async ({ exitCode, signal }) => {
-    runningLogins.delete(kind)
-    if (signal || exitCode === 130 || exitCode === 143) {
-      sendLoginAction(kind, { type: 'login_cancelled' })
-      return
-    }
-
-    const status = await verifyLogin(kind)
-    if (status.loggedIn) {
-      const root = harnessesRoot()
-      clearCooldown(root, kind, readAccounts(root, kind).activeId)
-      sendLoginAction(kind, { type: 'probe_finished', ...status })
-      return
-    }
-
-    sendLoginAction(kind, {
-      type: 'login_failed',
-      error: `Login command exited ${exitCode}, but the CLI is not signed in.`,
-    })
-  })
-}
-
-/**
- * Move off an account that has hit its usage limit onto the next one that can
- * work.
- *
- * The limited account is parked for the rest of its window first, so a loop
- * that rotates twice cannot land back on it. Candidates are probed rather than
- * trusted: an account registered but never signed in is no use mid-run.
- */
 async function rotateAccount(kind: HarnessKind, error = ''): Promise<AccountRotation> {
   const root = harnessesRoot()
   const before = readAccounts(root, kind)
   const from = before.accounts.find((account) => account.id === before.activeId)?.label ?? before.activeId
   markLimited(root, kind, before.activeId, parseResetAt(error) ?? undefined)
-
   const state = readAccounts(root, kind)
   for (const candidate of state.accounts) {
     if (candidate.id === state.activeId || isCooling(candidate)) continue
-    const status = await probeHome(kind, accountDir(root, kind, candidate.id))
+    const status = await harnessLogins.probe(kind, accountDir(root, kind, candidate.id))
     if (!status.loggedIn) continue
     switchAccount(root, kind, candidate.id)
-    mainWindow?.webContents.send('harness:accounts-changed', kind)
+    mainWindow?.webContents.send(IPC.harness.accountsChanged, kind)
     return { ok: true, from, to: candidate.label }
   }
-
-  mainWindow?.webContents.send('harness:accounts-changed', kind)
+  mainWindow?.webContents.send(IPC.harness.accountsChanged, kind)
   const others = state.accounts.filter((account) => account.id !== state.activeId)
   return {
     ok: false,
     from,
-    // Every account spent is not the same as nowhere to go: the caller can wait
-    // for the first window to reopen instead of ending the build.
     resetAt: others.length > 0 ? (earliestReset(state) ?? undefined) : undefined,
-    reason:
-      others.length === 0
-        ? 'no other account is set up'
-        : 'every other account is signed out or inside its own limit window',
+    reason: others.length === 0
+      ? 'no other account is set up'
+      : 'every other account is signed out or inside its own limit window',
   }
 }
 
-/** Name whichever account owns this config dir after the email it reports. */
-function rememberAccountLabel(kind: HarnessKind, home: string, email: string): void {
-  const root = harnessesRoot()
-  const owner = readAccounts(root, kind).accounts.find((account) => accountDir(root, kind, account.id) === home)
-  if (owner) labelAccount(root, kind, owner.id, email)
-}
-
-/**
- * Account changes swap the credentials the next run spawns with, and
- * `spawnDetached` bakes that in at spawn time, so a loop in flight has to stop
- * first rather than have its rounds split across two accounts.
- */
 function accountChange(kind: HarnessKind, change: () => AccountsState): AccountsResult {
   const root = harnessesRoot()
   if (ledger?.runningLoop()) {
     return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before switching accounts.' }
   }
-  runningLogins.get(kind)?.kill()
+  harnessLogins.cancel(kind)
   return { ok: true, state: change() }
 }
 
-/** Forget an extra account, signing its CLI out before its folder goes. */
 async function forgetAccount(kind: HarnessKind, accountId: string): Promise<AccountsResult> {
   const root = harnessesRoot()
   if (accountId === PRIMARY_ACCOUNT_ID) {
@@ -431,160 +196,231 @@ async function forgetAccount(kind: HarnessKind, accountId: string): Promise<Acco
   if (ledger?.runningLoop()) {
     return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before removing an account.' }
   }
-  runningLogins.get(kind)?.kill()
-  await logout(kind, accountDir(root, kind, accountId))
+  harnessLogins.cancel(kind)
+  await harnessLogins.logout(kind, accountDir(root, kind, accountId))
   return { ok: true, state: removeAccount(root, kind, accountId) }
 }
 
-/**
- * Sign the CLI out of its account so a different one can be signed in.
- *
- * Each harness keeps its credentials in the app's own home
- * (`<userData>/harnesses/<kind>`), so this only touches the login the app
- * drives — never the user's own CLI login in their terminal. A running loop is
- * spending that login, so it has to be stopped first.
- */
-async function logout(kind: HarnessKind, home = cliHome(kind)): Promise<LogoutResult> {
-  if (ledger?.runningLoop()) return { ok: false, error: 'Stop the running loop before signing out.' }
-
-  runningLogins.get(kind)?.kill()
-  const spec = harnessSpec(kind, home)
-  const result = await run(spec.command, spec.logoutArgs, spec.env)
-  // Some CLIs exit non-zero when they were already signed out, so trust the
-  // status probe over the exit code.
-  const status = await probeHome(kind, home)
-  if (status.loggedIn) {
-    const message = stripAnsi(result.stderr || result.stdout).trim()
-    return { ok: false, error: message || 'The CLI is still signed in after the logout command.' }
-  }
-  return { ok: true }
-}
-
-function stopAllLogins(): void {
-  for (const child of runningLogins.values()) child.kill()
-  runningLogins.clear()
-}
-
 function registerLoopIpc(): void {
-  ipcMain.handle('loop:start', async (_event, value: unknown) => {
+  ipcMain.handle(IPC.loop.start, async (_event, value: unknown) => {
     if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
-    const input = value as Partial<StartLoopInput> | undefined
-    const models = resolveModels(input, input, input, input)
-    // Any role can run on either CLI now, so a run needs whichever logins its
-    // picks actually reach for.
-    const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel, models.assetModel]
-    const needsCodex = picks.some(isCodexModel)
-    const needsClaude = picks.some((m) => m != null && !isCodexModel(m))
-    const [claudeStatus, codexStatus] = await Promise.all([probe('claude'), needsCodex ? probe('codex') : Promise.resolve(null)])
-    if (needsClaude && !claudeStatus.loggedIn) return { ok: false, error: 'Claude Code is not connected. Sign in on the Agents tab.' }
-    if (needsCodex && !codexStatus?.loggedIn) return { ok: false, error: 'Codex is not connected. Sign in on the Agents tab.' }
-    return loopRunner.start({
-      prompt: String(input?.prompt ?? ''),
-      workspaceDir: String(input?.workspaceDir ?? ''),
-      maxRounds: Number(input?.maxRounds ?? 10),
-      budgetUsd: input?.budgetUsd == null ? null : Number(input.budgetUsd) || null,
-      orchestratorModel: models.orchestratorModel,
-      orchestratorEffort: models.orchestratorEffort,
-      subagentModel: models.subagentModel,
-      subagentEffort: models.subagentEffort,
-      criticModel: models.criticModel,
-      criticEffort: models.criticEffort,
-      researchModel: models.researchModel,
-      researchEffort: models.researchEffort,
-      assetModel: models.assetModel,
-      assetEffort: models.assetEffort,
-    })
-  })
-  ipcMain.handle('loop:resume', (_event, value: unknown) => loopRunner?.resumeLoop(String(value)) ?? { ok: false, error: 'Loop runner not ready.' })
-  ipcMain.handle('loop:stop', (_event, value: unknown) => loopRunner?.stop(String(value)))
-  ipcMain.handle('loop:list', () =>
-    ledger?.loops().map((loop) => ({ loop, runs: ledger!.runsForLoop(loop.id) })) ?? [],
-  )
-  ipcMain.handle('loop:get', (_event, value: unknown) => {
-    const loop = ledger?.getLoop(String(value))
-    return loop && ledger ? { loop, runs: ledger.runsForLoop(loop.id) } : null
-  })
-  ipcMain.handle('loop:rename', (_event, loopId: unknown, value: unknown) => {
-    if (!ledger) return null
-    const title = String(value ?? '').trim().slice(0, 80)
-    if (!title || !ledger.getLoop(String(loopId))) return null
-    ledger.patchLoop(String(loopId), { title })
-    return ledger.getLoop(String(loopId))
-  })
-  ipcMain.handle('loop:delete', async (_event, value: unknown, deleteFilesValue: unknown): Promise<DeleteRunsResult> => {
-    if (!ledger) return { ok: false, deletedIds: [], errors: ['Run storage is not ready.'] }
-    const loopIds = Array.isArray(value) ? value.map((id) => String(id)) : []
-    const deleteFiles = deleteFilesValue === true
-    const home = app.getPath('home')
-    const deletedIds: string[] = []
-    const errors: string[] = []
-    for (const loopId of loopIds) {
-      const loop = ledger.getLoop(loopId)
-      if (!loop) {
-        errors.push('One of the runs was already gone.')
-        continue
-      }
-      if (loop.status === 'running') {
-        errors.push(`"${loop.title}" is still running. Stop it first.`)
-        continue
-      }
-      // Wiping the folder would take the other runs recorded in it with it.
-      const sharing = deleteFiles ? ledger.loopsInWorkspace(loop.workspaceDir).filter((other) => other.id !== loopId) : []
-      if (sharing.length > 0) {
-        errors.push(
-          `"${loop.title}" shares its project folder with ${sharing.length} other ${sharing.length === 1 ? 'run' : 'runs'}, so the files were kept.`,
-        )
-      }
-      try {
-        if (deleteFiles && sharing.length === 0) await deleteRunFolder(loop.workspaceDir, home)
-        ledger.deleteLoop(loopId)
-        deletedIds.push(loopId)
-      } catch (error) {
-        errors.push(`Could not delete "${loop.title}": ${error instanceof Error ? error.message : String(error)}`)
-      }
+    try {
+      const input = parseStartLoopInput(value)
+      const models = resolveModels(input, input, input, input)
+      const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel, models.assetModel]
+      const needsCodex = picks.some(isCodexModel)
+      const needsClaude = picks.some((model) => model != null && !isCodexModel(model))
+      const [claudeStatus, codexStatus] = await Promise.all([
+        needsClaude ? harnessLogins.probe('claude') : Promise.resolve(null),
+        needsCodex ? harnessLogins.probe('codex') : Promise.resolve(null),
+      ])
+      const claudeError = needsClaude ? subscriptionAuthError('Claude Code', claudeStatus) : null
+      if (claudeError) return { ok: false, error: claudeError }
+      const codexError = needsCodex ? subscriptionAuthError('Codex', codexStatus) : null
+      if (codexError) return { ok: false, error: codexError }
+      return loopRunner.start({ ...input, ...models })
+    } catch (error) {
+      return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
     }
-    return { ok: errors.length === 0, deletedIds, errors }
   })
-  ipcMain.handle('loop:active', () => loopRunner?.snapshot() ?? null)
-  ipcMain.handle('loop:log', (_event, loopId: unknown, limit: unknown) => {
+  ipcMain.handle(IPC.loop.resume, (_event, value: unknown) => {
+    try {
+      return loopRunner?.resumeLoop(assertLoopId(value)) ?? { ok: false, error: 'Loop runner not ready.' }
+    } catch (error) {
+      return { ok: false, error: redactedErrorMessage(error, 'Invalid loop id.') }
+    }
+  })
+  ipcMain.handle(IPC.loop.stop, (_event, value: unknown) => {
+    try {
+      if (!loopRunner || !ledger) return failure('Loop runner is not ready.')
+      return stopExistingLoop(ledger, loopRunner, assertLoopId(value))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Invalid loop id.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.list, (_event, offsetValue: unknown) => {
+    const offset = parseLoopListOffset(offsetValue)
+    return ledger
+      ? loopListPage(ledger.recentLoops(100, offset), ledger.loopCount(), offset, (loopId) => ledger!.runCount(loopId))
+      : { snapshots: [], total: 0, offset, hasMore: false }
+  })
+  ipcMain.handle(IPC.loop.get, (_event, value: unknown, offsetValue: unknown) => {
+    const loop = ledger?.getLoop(assertLoopId(value))
+    if (!loop || !ledger) return null
+    const runOffset = parseRunPageOffset(offsetValue)
+    const projection = ledger.recentRunProjectionForLoop(loop.id, 200, runOffset)
+    return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), runOffset, detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
+  })
+  ipcMain.handle(IPC.loop.rename, (_event, loopId: unknown, value: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const input = parseRenameInput(loopId, value)
+      const loop = ledger.getLoop(input.loopId)
+      if (!loop) return failure('Run not found.')
+      const trustError = renameTrustError(loop.playTrusted)
+      if (trustError) return failure(trustError)
+      ledger.patchLoop(input.loopId, { title: input.title })
+      const updated = ledger.getLoop(input.loopId)
+      return updated ? success(updated) : failure('Run disappeared while renaming.')
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not rename run.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.deleteRuns, async (_event, value: unknown, deleteFilesValue: unknown): Promise<DeleteRunsResult> => {
+    if (!ledger) return { ok: false, deletedIds: [], errors: ['Run storage is not ready.'] }
+    try {
+      const input = parseDeleteRunsInput(value, deleteFilesValue)
+      const deletedIds: string[] = []
+      const errors: string[] = []
+      for (const loopId of input.loopIds) {
+        const loop = ledger.getLoop(loopId)
+        if (!loop) {
+          errors.push('One of the runs was already gone.')
+          continue
+        }
+        if (loop.status === 'running') {
+          errors.push(`"${loop.title}" is still running. Stop it first.`)
+          continue
+        }
+        const sharing = input.deleteFiles
+          ? ledger.loopsInWorkspace(loop.workspaceDir).filter((other) => other.id !== loopId)
+          : []
+        if (sharing.length > 0) {
+          errors.push(`"${loop.title}" shares its project folder with ${sharing.length} other ${sharing.length === 1 ? 'run' : 'runs'}, so the files were kept.`)
+        }
+        try {
+          if (input.deleteFiles && sharing.length === 0) {
+            ledger.assertLoopWorkspaceIdentity(loopId)
+            await deleteRunFolder(loop.workspaceDir, app.getPath('home'))
+          }
+          ledger.deleteLoop(loopId)
+          deletedIds.push(loopId)
+        } catch (error) {
+          errors.push(`Could not delete "${loop.title}": ${redactedErrorMessage(error, 'Deletion failed safely.')}`)
+        }
+      }
+      return { ok: errors.length === 0, deletedIds, errors }
+    } catch (error) {
+      return { ok: false, deletedIds: [], errors: [redactedErrorMessage(error, 'Invalid run deletion request.')] }
+    }
+  })
+  ipcMain.handle(IPC.loop.active, () => {
+    if (!ledger) return null
+    const loop = ledger.runningLoop() ?? ledger.latestLoop()
+    if (!loop) return null
+    const projection = ledger.recentRunProjectionForLoop(loop.id, 200)
+    return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
+  })
+  ipcMain.handle(IPC.loop.log, (_event, loopId: unknown, limit: unknown) => {
     if (!ledger) return []
-    const id = String(loopId)
-    return withPromptLogs(
-      ledger.runsForLoop(id),
-      ledger.eventsForLoop(id, Math.min(2000, Math.max(1, Number(limit) || 800))),
-    )
+    const id = assertLoopId(loopId)
+    const events = ledger.eventsForLoop(id, parseLogLimit(limit))
+    const represented = [...new Set(events.slice().reverse().flatMap((event) => event.runId ? [event.runId] : []))].slice(0, 64).reverse()
+    const runs = represented
+      .map((runId) => ledger!.promptRunForLog(runId))
+      .filter((run): run is PromptLogRun => run != null && run.loopId === id)
+    const latest = runs.length === 0 ? ledger.latestPromptRunForLog(id) : null
+    return withPromptLogs(latest ? [latest] : runs, events)
   })
-  ipcMain.handle('loop:report', (_event, value: unknown) => {
-    const loop = ledger?.getLoop(String(value))
-    if (!loop || !ledger) return ''
-    const runs = ledger.runsForLoop(loop.id)
-    const referenceDir = runs.some((run) => run.role === 'reference') ? referencePackDir(loop.id) : 'reference'
-    return buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir), scanReferencePack(loop.workspaceDir, referenceDir))
+  ipcMain.handle(IPC.loop.prompt, (_event, loopId: unknown, role: unknown, round: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const input = parseRunPromptRequest(loopId, role, round)
+      if (!ledger.getLoop(input.loopId)) return failure('Run not found.')
+      const prompt = ledger.runPrompt(input.loopId, input.role, input.round)
+      return prompt ? success(prompt) : failure(`No ${input.role} prompt was recorded for round ${input.round}.`)
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not load the exact prompt.'))
+    }
   })
-  ipcMain.handle('loop:export', async (_event, value: unknown) => {
+  ipcMain.handle(IPC.loop.revealStream, (_event, value: unknown) => {
+    try {
+      if (!ledger) return { ok: false, error: 'Raw streams are not ready.' }
+      const input = parseRevealStreamInput(value)
+      const run = ledger.getRun(input.runId)
+      if (!run) return { ok: false, error: 'Run not found.' }
+      if (input.stream === 'agent' && !run.metrics?.agents.some((agent) => agent.id === input.agentId)) {
+        return { ok: false, error: 'Agent stream does not belong to this run.' }
+      }
+      const loop = ledger.getLoop(run.loopId)
+      if (!loop) return { ok: false, error: 'Run owner not found.' }
+      const trustError = rawRevealTrustError(loop.playTrusted)
+      if (trustError) return { ok: false, error: trustError }
+      const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
+      const latestImplementRunId = ledger.latestRunIdForRole(loop.id, 'implement')
+      const streamPath = resolveProtectedRawStreamPath(
+        {
+          workspaceDir,
+          runId: run.id,
+          sessionId: run.sessionId,
+          claudeHome: cliHome('claude'),
+          codexHome: cliHome('codex'),
+          allowLiveChildStream: latestImplementRunId === run.id,
+        },
+        input,
+        protectedWorkspaceRoots(),
+      )
+      shell.showItemInFolder(streamPath)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: redactedErrorMessage(error, 'Could not reveal raw stream.') }
+    }
+  })
+  ipcMain.handle(IPC.loop.report, (_event, value: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const loop = ledger.getLoop(assertLoopId(value))
+      if (!loop) return failure('Run not found.')
+      ledger!.assertLoopWorkspaceIdentity(loop.id)
+      const totalRuns = ledger.runCount(loop.id)
+      const runs = ledger.recentRunProjectionForLoop(loop.id, 500).runs
+      const referenceDir = referenceRootForLoop(loop.id, ledger.hasRunRole(loop.id, 'reference'))
+      return success(buildReport(
+        loop,
+        runs,
+        scanCritiqueArtifacts(loop.workspaceDir, loop),
+        scanReferencePack(loop.workspaceDir, referenceDir, loop),
+        { totalRuns, aggregate: ledger.runAggregate(loop.id) },
+      ))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not build report.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.exportRun, async (_event, value: unknown) => {
     try {
       if (!mainWindow || !ledger) return { ok: false, error: 'Run export is not ready.' }
-      const loop = ledger.getLoop(String(value))
+      const loop = ledger.getLoop(assertLoopId(value))
       if (!loop) return { ok: false, error: 'Run not found.' }
-      if (loop.status === 'running') return { ok: false, error: 'Stop the run before exporting so the folder and SQLite history are an exact snapshot.' }
+      ledger.assertLoopWorkspaceIdentity(loop.id)
+      const activityError = exportActivityError(ledger.hasRunningActivity(), hasActivePlay())
+      if (activityError) return { ok: false, error: activityError }
+      if (ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
+        return { ok: false, error: 'This workspace is quarantined after unknown process ownership and cannot be exported while an untracked writer may survive.' }
+      }
       const result = await dialog.showOpenDialog(mainWindow, {
         title: 'Export complete run folder',
-        message: 'Choose where Gauntlet Gamesmith should copy the complete project and its exact SQLite history.',
+        message: `${RAW_EXPORT_WARNING} Choose where ${APP_NAME} should copy the complete project and its exact SQLite history.`,
         buttonLabel: 'Export here',
         defaultPath: app.getPath('downloads'),
         properties: ['openDirectory', 'createDirectory'],
       })
       const parentDir = result.filePaths[0]
       if (result.canceled || !parentDir) return { ok: false, canceled: true }
+      const changedActivityError = exportActivityError(ledger.hasRunningActivity(), hasActivePlay())
+      if (changedActivityError) return { ok: false, error: changedActivityError }
+      if (ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
+        return { ok: false, error: 'This workspace is quarantined after unknown process ownership and cannot be exported while an untracked writer may survive.' }
+      }
+      assertWorkspaceBoundary(parentDir, protectedWorkspaceRoots())
       const sourceDir = ledger.prepareRunFolder(loop.id)
       const destinationDir = nextAvailableExportPath(parentDir, safeExportFolderName(path.basename(sourceDir)))
-      await copyRunFolder(sourceDir, destinationDir)
-      return { ok: true, filePath: destinationDir }
+      await copyRunFolder(sourceDir, destinationDir, loop.workspaceIdentity)
+      return { ok: true, filePath: destinationDir, warning: RAW_EXPORT_WARNING }
     } catch (error) {
-      return { ok: false, error: `Could not export run: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Could not export run: ${redactedErrorMessage(error, 'Unknown export failure.')}` }
     }
   })
-  ipcMain.handle('loop:import', async () => {
+  ipcMain.handle(IPC.loop.importRun, async () => {
     try {
       if (!mainWindow || !ledger) return { ok: false, error: 'Run import is not ready.' }
       const pickedExport = await dialog.showOpenDialog(mainWindow, {
@@ -595,58 +431,110 @@ function registerLoopIpc(): void {
       })
       const workspaceDir = pickedExport.filePaths[0]
       if (pickedExport.canceled || !workspaceDir) return { ok: false, canceled: true }
+      assertWorkspaceBoundary(workspaceDir, protectedWorkspaceRoots())
       const snapshots = ledger.importRunFolder(workspaceDir)
-      return { ok: true, snapshot: snapshots[0], snapshots }
+      const primary = snapshots[0]
+        ? boundedLoopSnapshot({ ...snapshots[0], aggregate: ledger.runAggregate(snapshots[0].loop.id) })
+        : undefined
+      return {
+        ok: true,
+        snapshot: primary,
+        snapshots: primary ? [primary] : [],
+      }
     } catch (error) {
-      return { ok: false, error: `Could not import run: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Could not import run: ${redactedErrorMessage(error, 'Unknown import failure.')}` }
     }
   })
-  ipcMain.handle('media:base', () => mediaBase)
-  ipcMain.handle('loop:critique', (_event, value: unknown): CritiqueRound[] => {
-    const loop = ledger?.getLoop(String(value))
-    if (!loop || !ledger) return []
-    const artifacts = new Map(scanCritiqueArtifacts(loop.workspaceDir).map((a) => [a.round, a]))
-    const byRound = new Map<number, CritiqueRound>()
-    for (const run of ledger.runsForLoop(loop.id)) {
-      if (run.role !== 'critique') continue
-      const art = artifacts.get(run.round)
-      byRound.set(run.round, {
-        round: run.round,
-        runId: run.id,
-        status: run.status,
-        verdict: run.verdict,
-        thoughts: ledger.eventsForRun(run.id, 'thought').map((l) => l.text.replace(/^\[critic\]\s*𝜓?\s*/, '')),
-        shots: art?.shots ?? [],
-        refs: art?.refs ?? [],
-        videos: art?.videos ?? [],
-        pairs: art?.pairs ?? null,
-        pairsMd: art?.pairsMd ?? null,
-      })
+  ipcMain.handle(IPC.media.base, async (): Promise<OperationResult<string>> =>
+    mediaGate ? await mediaGate.get() : failure('Media server has not started yet.'))
+  ipcMain.handle(IPC.loop.critique, (_event, value: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const loop = ledger.getLoop(assertLoopId(value))
+      if (!loop) return failure('Run not found.')
+      ledger.assertLoopWorkspaceIdentity(loop.id)
+      const artifacts = new Map(scanCritiqueArtifacts(loop.workspaceDir, loop).map((artifact) => [artifact.round, artifact]))
+      const byRound = new Map<number, CritiqueRound>()
+      const totalCritiques = ledger.runCountByRole(loop.id, 'critique')
+      const critiqueProjection = ledger.latestRunProjectionPerRound(loop.id, 'critique', 100)
+      const critiqueRuns = critiqueProjection.runs
+      let remainingThoughtBytes = 512 * 1024
+      for (const run of boundedLoopSnapshot({ loop, runs: critiqueRuns, totalRuns: totalCritiques }).runs) {
+        const artifact = artifacts.get(run.round)
+        const thoughtRows = ledger.eventsForRun(run.id, 'thought', 50)
+        const thoughts: string[] = []
+        let thoughtTruncated = thoughtRows.length === 50
+        for (const line of thoughtRows) {
+          const text = line.text.replace(/^𝜓\s*/, '').slice(0, 16 * 1024)
+          const size = Buffer.byteLength(text, 'utf8')
+          if (size > remainingThoughtBytes) {
+            thoughtTruncated = true
+            break
+          }
+          remainingThoughtBytes -= size
+          thoughts.push(text)
+        }
+        byRound.set(run.round, {
+          round: run.round,
+          runId: run.id,
+          status: run.status,
+          verdict: run.verdict,
+          thoughts,
+          shots: artifact?.shots ?? [],
+          refs: artifact?.refs ?? [],
+          videos: artifact?.videos ?? [],
+          pairs: artifact?.pairs ?? null,
+          pairsMd: artifact?.pairsMd ?? null,
+          truncated: (artifact?.truncated ?? false) || thoughtTruncated || totalCritiques > critiqueRuns.length || critiqueProjection.truncatedFields,
+        })
+      }
+      return success([...byRound.values()].sort((a, b) => a.round - b.round))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not load critique details.'))
     }
-    return [...byRound.values()].sort((a, b) => a.round - b.round)
   })
-  ipcMain.handle('loop:reference', (_event, loopValue: unknown, runValue: unknown): ReferenceStudy | null => {
+  ipcMain.handle(IPC.loop.reference, (_event, loopValue: unknown, runValue: unknown): ReferenceStudy | null => {
     if (!ledger) return null
-    const loop = ledger.getLoop(String(loopValue))
-    const run = ledger.getRun(String(runValue))
+    const loop = ledger.getLoop(assertLoopId(loopValue))
+    const run = runValue == null ? ledger.latestRunForLoopByRole(loop?.id ?? '', 'reference') : ledger.getRun(assertLoopId(runValue))
     if (!loop || !run || run.loopId !== loop.id || run.role !== 'reference') return null
+    try {
+      ledger.assertLoopWorkspaceIdentity(loop.id)
+    } catch {
+      return null
+    }
     return {
       runId: run.id,
       status: run.status,
+      prompt: run.prompt,
       logs: withPromptLogs([run], ledger.eventsForRun(run.id, undefined, 500)),
-      pack: scanReferencePack(loop.workspaceDir, referencePackDir(loop.id)),
+      pack: scanReferencePack(loop.workspaceDir, referencePackDir(loop.id), loop),
     }
   })
-  ipcMain.handle('play:start', (_event, value: unknown, roundValue: unknown) => {
-    const loop = ledger?.getLoop(String(value))
+  ipcMain.handle(IPC.play.start, (_event, value: unknown, roundValue: unknown) => {
+    const loop = ledger?.getLoop(assertLoopId(value))
     if (!loop) return { running: false, url: null, error: 'Loop not found.', round: null }
-    const round = roundValue == null ? null : Number(roundValue)
-    if (round != null && (!Number.isInteger(round) || round < 1)) {
-      return { running: false, url: null, error: 'Invalid round.', round: null }
+    const trustError = playTrustError(loop.playTrusted)
+    if (trustError) {
+      return {
+        running: false,
+        url: null,
+        error: trustError,
+        round: null,
+      }
     }
+    try {
+      ledger!.assertLoopWorkspaceIdentity(loop.id)
+    } catch (error) {
+      return { running: false, url: null, error: redactedErrorMessage(error, 'The workspace path is unsafe.'), round: null }
+    }
+    if (ledger!.hasRunningActivityForWorkspace(loop.workspaceDir)) {
+      return { running: false, url: null, error: 'Stop the active agent loop in this workspace before starting Play.', round: null }
+    }
+    const round = parseOptionalRound(roundValue)
     const revision = round == null
       ? null
-      : ledger?.runsForLoop(loop.id).find((run) => run.role === 'implement' && run.round === round && run.status === 'succeeded')?.revision
+      : ledger?.succeededImplementRevision(loop.id, round)
     if (round != null && !revision) {
       return {
         ...playState(loop.id),
@@ -654,60 +542,80 @@ function registerLoopIpc(): void {
       }
     }
     try {
-      const playDir = revision ? checkoutRoundRevision(loop.workspaceDir, round!, revision) : loop.workspaceDir
-      return startPlay(loop.id, playDir, round, revision ? playDir : null, (state) => mainWindow?.webContents.send('play:state', state))
+      const playDir = revision ? checkoutRoundRevision(loop.workspaceDir, loop.id, round!, revision) : loop.workspaceDir
+      const expectedWorkspace = revision
+        ? captureWorkspaceIdentity(playDir, protectedWorkspaceRoots())
+        : loop
+      return startPlay(
+        loop.id,
+        playDir,
+        round,
+        revision ? playDir : null,
+        (state) => mainWindow?.webContents.send(IPC.play.state, state),
+        {},
+        { expectedWorkspace, protectedRoots: protectedWorkspaceRoots() },
+      )
     } catch (error) {
       return {
         ...playState(loop.id),
-        error: `Could not check out round ${round}: ${error instanceof Error ? error.message : String(error)}`,
+        error: `Could not check out round ${round}: ${redactedErrorMessage(error, 'Unknown checkout failure.')}`,
       }
     }
   })
-  ipcMain.handle('play:stop', (_event, value: unknown) => {
-    stopPlay(String(value))
-    mainWindow?.webContents.send('play:state', { loopId: String(value), running: false, url: null, error: null, round: null })
+  ipcMain.handle(IPC.play.stop, (_event, value: unknown) => {
+    const loopId = assertLoopId(value)
+    stopPlay(loopId)
   })
-  ipcMain.handle('play:state', (_event, value: unknown) => playState(String(value)))
-  ipcMain.handle('loop:pick-workspace', async () => {
+  ipcMain.handle(IPC.play.state, (_event, value: unknown) => playState(assertLoopId(value)))
+  ipcMain.handle(IPC.loop.pickWorkspace, async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
-  ipcMain.handle('loop:default-workspace', () => path.join(app.getPath('home'), 'GauntletRuns', 'aaa-shooter'))
+  ipcMain.handle(IPC.loop.defaultWorkspace, () => path.join(app.getPath('home'), 'GauntletGames', 'aaa-shooter'))
 }
 
 function registerIpc(): void {
-  ipcMain.handle('harness:detect', (_event, value: unknown) => detect(assertHarnessKind(value)))
-  ipcMain.handle('harness:probe', (_event, value: unknown) => probe(assertHarnessKind(value)))
-  ipcMain.handle('harness:start-login', (_event, value: unknown) => startLogin(assertHarnessKind(value)))
-  ipcMain.handle('harness:cancel-login', (_event, value: unknown) => runningLogins.get(assertHarnessKind(value))?.kill())
-  ipcMain.handle('harness:logout', (_event, value: unknown) => logout(assertHarnessKind(value)))
-  ipcMain.handle('harness:accounts', (_event, value: unknown) =>
-    readAccounts(harnessesRoot(), assertHarnessKind(value)),
-  )
-  ipcMain.handle('harness:add-account', (_event, value: unknown) => {
+  ipcMain.handle(IPC.harness.detect, (_event, value: unknown) => harnessLogins.detect(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.probe, (_event, value: unknown) => harnessLogins.probe(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.startLogin, (_event, value: unknown) => harnessLogins.start(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.cancelLogin, (_event, value: unknown) => harnessLogins.cancel(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.logout, async (_event, value: unknown) => {
+    const kind = assertHarnessKind(value)
+    if (ledger?.runningLoop()) return { ok: false, error: 'Stop the running loop before signing out.' }
+    return await harnessLogins.logout(kind)
+  })
+  ipcMain.handle(IPC.harness.accounts, (_event, value: unknown) =>
+    readAccounts(harnessesRoot(), assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.addAccount, (_event, value: unknown) => {
     const kind = assertHarnessKind(value)
     return accountChange(kind, () => addAccount(harnessesRoot(), kind))
   })
-  ipcMain.handle('harness:switch-account', (_event, value: unknown, id: unknown) => {
+  ipcMain.handle(IPC.harness.switchAccount, (_event, value: unknown, accountValue: unknown) => {
     const kind = assertHarnessKind(value)
-    if (!isAccountId(id)) throw new Error('Unknown account.')
-    return accountChange(kind, () => switchAccount(harnessesRoot(), kind, id))
+    if (!isAccountId(accountValue)) throw new Error('Unknown account.')
+    return accountChange(kind, () => switchAccount(harnessesRoot(), kind, accountValue))
   })
-  ipcMain.handle('harness:remove-account', (_event, value: unknown, id: unknown) => {
+  ipcMain.handle(IPC.harness.removeAccount, (_event, value: unknown, accountValue: unknown) => {
     const kind = assertHarnessKind(value)
-    if (!isAccountId(id)) throw new Error('Unknown account.')
-    return forgetAccount(kind, id)
+    if (!isAccountId(accountValue)) throw new Error('Unknown account.')
+    return forgetAccount(kind, accountValue)
   })
-  ipcMain.on('harness:terminal-input', (_event, payload: { kind?: unknown; data?: unknown }) => {
-    if (typeof payload?.data !== 'string' || payload.data.length > 16_384) return
-    runningLogins.get(assertHarnessKind(payload.kind))?.write(payload.data)
+  ipcMain.on(IPC.harness.terminalInput, (_event, value: unknown) => {
+    try {
+      const input = parseTerminalInput(value)
+      harnessLogins.write(input.kind, input.data)
+    } catch {
+      // Fire-and-forget terminal data is rejected at the trust seam.
+    }
   })
-  ipcMain.on('harness:terminal-resize', (_event, payload: { kind?: unknown; cols?: unknown; rows?: unknown }) => {
-    const cols = Math.max(20, Math.min(300, Math.floor(Number(payload?.cols))))
-    const rows = Math.max(5, Math.min(100, Math.floor(Number(payload?.rows))))
-    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
-    runningLogins.get(assertHarnessKind(payload.kind))?.resize(cols, rows)
+  ipcMain.on(IPC.harness.terminalResize, (_event, value: unknown) => {
+    try {
+      const input = parseTerminalResize(value)
+      harnessLogins.resize(input.kind, input.cols, input.rows)
+    } catch {
+      // Fire-and-forget terminal data is rejected at the trust seam.
+    }
   })
 }
 
@@ -730,24 +638,29 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.on('closed', () => {
-    stopAllLogins()
+    harnessLogins.stopAll()
     mainWindow = null
   })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL)
+  const developmentUrl = developmentRendererUrl(process.env.ELECTRON_RENDERER_URL, app.isPackaged)
+  if (developmentUrl) {
+    void window.loadURL(developmentUrl)
   } else {
     void window.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
   return window
 }
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
-if (!hasSingleInstanceLock) {
-  // Silent quit here reads as a build failure in `electron-vite dev`: the app
-  // window that appears is the instance already running, not this one.
-  console.error('Gauntlet Gamesmith is already running — quitting this instance. Quit the existing app first.')
-  app.quit()
+function reportIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 1_000) throw new Error('Report run ids must be an array of at most 1000 ids.')
+  return [...new Set(value.map(assertLoopId))]
+}
+
+function reportName(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('Report name must be a string.')
+  const name = value.trim()
+  if (!name || name.length > 80) throw new Error('Report name must be between 1 and 80 characters.')
+  return name
 }
 
 function reportRowsFor(loopIds: readonly string[]): ReportRunRow[] {
@@ -759,7 +672,6 @@ function reportRowsFor(loopIds: readonly string[]): ReportRunRow[] {
     .map((loop) => buildReportRow({ loop, runs: store.runsForLoop(loop.id) }))
 }
 
-/** Save an edited report, stamping the change time. */
 function touchReport(report: ReportRecord, patch: Partial<ReportRecord>): ReportRecord {
   return ledger!.saveReport({ ...report, ...patch, updatedAt: new Date().toISOString() })
 }
@@ -777,113 +689,121 @@ async function saveReportFile(report: ReportRecord, extension: string, body: str
 }
 
 function registerReportIpc(): void {
-  ipcMain.handle('report:list', () => ledger?.reports() ?? [])
-  ipcMain.handle('report:get', (_event, value: unknown) => ledger?.getReport(String(value)) ?? null)
-  ipcMain.handle('report:create', (_event, nameValue: unknown, value: unknown) => {
+  ipcMain.handle(IPC.report.list, () => ledger?.reports() ?? [])
+  ipcMain.handle(IPC.report.get, (_event, value: unknown) => ledger?.getReport(assertLoopId(value)) ?? null)
+  ipcMain.handle(IPC.report.create, (_event, nameValue: unknown, value: unknown) => {
     if (!ledger) return null
-    const loopIds = Array.isArray(value) ? value.map((id) => String(id)) : []
     const stamp = new Date().toISOString()
     return ledger.saveReport({
       id: crypto.randomUUID(),
-      name: String(nameValue ?? '').trim().slice(0, 80) || 'Untitled report',
+      name: reportName(nameValue),
       createdAt: stamp,
       updatedAt: stamp,
       capturedAt: stamp,
-      rows: reportRowsFor(loopIds),
+      rows: reportRowsFor(reportIds(value)),
     })
   })
-  ipcMain.handle('report:rename', (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(String(reportId))
-    const name = String(value ?? '').trim().slice(0, 80)
-    if (!report || !name) return null
-    return touchReport(report, { name })
+  ipcMain.handle(IPC.report.rename, (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(assertLoopId(reportId))
+    return report ? touchReport(report, { name: reportName(value) }) : null
   })
-  ipcMain.handle('report:add-runs', (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(String(reportId))
+  ipcMain.handle(IPC.report.addRuns, (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(assertLoopId(reportId))
     if (!report) return null
     const present = new Set(report.rows.map((row) => row.loopId))
-    const loopIds = (Array.isArray(value) ? value.map((id) => String(id)) : []).filter((id) => !present.has(id))
-    if (loopIds.length === 0) return report
-    return touchReport(report, { rows: [...report.rows, ...reportRowsFor(loopIds)] })
+    const ids = reportIds(value).filter((id) => !present.has(id))
+    return ids.length > 0 ? touchReport(report, { rows: [...report.rows, ...reportRowsFor(ids)] }) : report
   })
-  ipcMain.handle('report:remove-runs', (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(String(reportId))
+  ipcMain.handle(IPC.report.removeRuns, (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(assertLoopId(reportId))
     if (!report) return null
-    const dropped = new Set(Array.isArray(value) ? value.map((id) => String(id)) : [])
+    const dropped = new Set(reportIds(value))
     return touchReport(report, { rows: report.rows.filter((row) => !dropped.has(row.loopId)) })
   })
-  ipcMain.handle('report:refresh', (_event, value: unknown) => {
-    const report = ledger?.getReport(String(value))
+  ipcMain.handle(IPC.report.refresh, (_event, value: unknown) => {
+    const report = ledger?.getReport(assertLoopId(value))
     if (!report) return null
-    // Rows whose run has since been deleted keep the numbers they were frozen
-    // with, so refreshing never empties a report.
     const fresh = new Map(reportRowsFor(report.rows.map((row) => row.loopId)).map((row) => [row.loopId, row]))
     return touchReport(report, {
       capturedAt: new Date().toISOString(),
       rows: report.rows.map((row) => fresh.get(row.loopId) ?? row),
     })
   })
-  ipcMain.handle('report:delete', (_event, value: unknown) => ledger?.deleteReport(String(value)) ?? false)
-  ipcMain.handle('report:markdown', (_event, value: unknown) => {
-    const report = ledger?.getReport(String(value))
+  ipcMain.handle(IPC.report.remove, (_event, value: unknown) => ledger?.deleteReport(assertLoopId(value)) ?? false)
+  ipcMain.handle(IPC.report.markdown, (_event, value: unknown) => {
+    const report = ledger?.getReport(assertLoopId(value))
     return report ? renderReportMarkdown(report) : ''
   })
-  ipcMain.handle('report:export-json', async (_event, value: unknown) => {
+  ipcMain.handle(IPC.report.exportJson, async (_event, value: unknown) => {
     try {
-      const report = ledger?.getReport(String(value))
+      const report = ledger?.getReport(assertLoopId(value))
       if (!report) return { ok: false, error: 'Report not found.' }
-      const body = JSON.stringify(toReportFile(report, new Date().toISOString()), null, 2)
-      return await saveReportFile(report, REPORT_FILE_SUFFIX, body, 'Export report for a teammate')
+      return await saveReportFile(report, REPORT_FILE_SUFFIX, JSON.stringify(toReportFile(report, new Date().toISOString()), null, 2), 'Export report for a teammate')
     } catch (error) {
-      return { ok: false, error: `Could not export report: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Could not export report: ${redactedErrorMessage(error, 'Export failed.')}` }
     }
   })
-  ipcMain.handle('report:export-markdown', async (_event, value: unknown) => {
+  ipcMain.handle(IPC.report.exportMarkdown, async (_event, value: unknown) => {
     try {
-      const report = ledger?.getReport(String(value))
+      const report = ledger?.getReport(assertLoopId(value))
       if (!report) return { ok: false, error: 'Report not found.' }
       return await saveReportFile(report, '.md', renderReportMarkdown(report), 'Save report as Markdown')
     } catch (error) {
-      return { ok: false, error: `Could not save report: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Could not save report: ${redactedErrorMessage(error, 'Export failed.')}` }
     }
   })
-  ipcMain.handle('report:import', async () => {
+  ipcMain.handle(IPC.report.importReport, async () => {
     try {
       if (!mainWindow || !ledger) return { ok: false, error: 'Report import is not ready.' }
       const picked = await dialog.showOpenDialog(mainWindow, {
         title: 'Open a report a teammate sent you',
         buttonLabel: 'Open report',
-        filters: [{ name: 'Gauntlet Gamesmith report', extensions: ['json'] }],
+        filters: [{ name: `${APP_NAME} report`, extensions: ['json'] }],
         properties: ['openFile'],
       })
       const filePath = picked.filePaths[0]
       if (picked.canceled || !filePath) return { ok: false, canceled: true }
-      const parsed = parseReportFile(await fs.readFile(filePath, 'utf8'))
-      const stamp = new Date().toISOString()
-      // A fresh id every time, so an imported copy never overwrites a report
-      // already on this machine.
-      const report = ledger.saveReport({ ...parsed, id: crypto.randomUUID(), updatedAt: stamp })
+      const parsed = parseReportFile(readBoundedReportFile(filePath))
+      const report = ledger.saveReport({ ...parsed, id: crypto.randomUUID(), updatedAt: new Date().toISOString() })
       return { ok: true, report, filePath }
     } catch (error) {
-      return { ok: false, error: `Could not import report: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Could not import report: ${redactedErrorMessage(error, 'Import failed.')}` }
     }
   })
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  // Silent quit here reads as a build failure in `electron-vite dev`: the app
+  // window that appears is the instance already running, not this one.
+  console.error(`${APP_NAME} is already running — quitting this instance. Quit the existing app first.`)
+  app.quit()
+}
+
 if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
-    ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'))
-    // Bring pre-rename run folders onto the current metadata directory name
-    // before anything reads one.
-    for (const dir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) migrateRunMetadataDir(dir)
-    loopRunner = new LoopRunner(
-      ledger,
-      (channel, payload) => mainWindow?.webContents.send(channel, payload),
+    ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
+    for (const workspaceDir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) {
+      try {
+        migrateRunMetadataDir(workspaceDir)
+      } catch (error) {
+        console.error('Could not migrate run metadata directory:', redactedErrorMessage(error, 'migration failed safely'))
+      }
+    }
+    loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
+      protectedRoots: protectedWorkspaceRoots,
       rotateAccount,
-    )
-    void startMediaServer((loopId) => ledger?.getLoop(loopId)?.workspaceDir ?? null).then((base) => {
-      mediaBase = base
     })
+    mediaGate = new MediaBaseGate(() => startMediaServer((loopId) => {
+      const loop = ledger?.getLoop(loopId)
+      if (!loop) return null
+      try {
+        ledger?.assertLoopWorkspaceIdentity(loopId)
+        return loop
+      } catch {
+        return null
+      }
+    }))
     registerIpc()
     registerLoopIpc()
     registerReportIpc()
@@ -911,25 +831,63 @@ if (hasSingleInstanceLock) {
 // Loop agents are detached processes and by default survive app quit — the
 // next launch re-attaches to them (LoopRunner.recoverAll). When a run is
 // live, quitting asks whether to keep them working or stop them gracefully.
+let playQuitPending = false
+let playQuitSettled = false
 app.on('before-quit', (event) => {
-  stopAllLogins()
-  stopAllPlay()
+  if (playQuitSettled) return
   const active = loopRunner?.activeRun()
-  if (!active) return
-  const choice = dialog.showMessageBoxSync({
-    type: 'question',
-    buttons: ['Keep agents running', 'Stop agents, then quit', 'Cancel'],
-    defaultId: 0,
-    cancelId: 2,
-    message: `A loop is running (${active.role}, pid ${active.pid}).`,
-    detail:
-      'Agents are detached: quitting keeps them working headless and the app re-attaches on the next launch (the loop advances to its next run only while the app is open). Or stop them gracefully (SIGINT) and end the loop now.',
-  })
-  if (choice === 2) {
+  const forcedAgentSettlement = loopRunner?.quitSettlementPending() ?? false
+  if (playQuitPending) {
     event.preventDefault()
     return
   }
-  if (choice === 1) loopRunner?.stopForQuit()
+  let choice = 0
+  if (active) {
+    choice = dialog.showMessageBoxSync({
+      type: 'question',
+      buttons: ['Keep agents running', 'Stop agents, then quit', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      message: `A loop is running (${active.role}, pid ${active.pid}).`,
+      detail:
+        'Agents are detached: quitting keeps them working headless and the app re-attaches on the next launch (the loop advances to its next run only while the app is open). Or stop them gracefully (SIGINT) and end the loop now.',
+    })
+    if (choice === 2) {
+      // Cancel means cancel: do not stop a Play server or login terminal before
+      // the operator has committed to quitting.
+      event.preventDefault()
+      return
+    }
+  }
+  harnessLogins.stopAll()
+  const stopAgents = choice === 1
+  const settleAgents = stopAgents || forcedAgentSettlement
+  const settlePlay = hasActivePlay()
+  if (!settleAgents && !settlePlay) return
+  // Play ownership is intentionally in-memory, and a requested agent stop
+  // relies on timers that must finish before Electron exits. Hold the app
+  // open until both identity-bound supervisors prove absence.
+  event.preventDefault()
+  playQuitPending = true
+  void (async () => {
+    try {
+      const settlement = await settleQuitSupervisors(
+        async () => !settleAgents || !loopRunner || await loopRunner.stopForQuitAndWait(),
+        async () => { if (settlePlay) await stopAllPlayAndWait() },
+      )
+      if (!settlement.ok) {
+        dialog.showErrorBox(`${APP_NAME} could not finish quitting safely`, settlement.error)
+        return
+      }
+      playQuitSettled = true
+      app.quit()
+    } finally {
+      // A rejected supervisor promise or an unsettled process must never leave
+      // the before-quit guard latched forever. The app remains open and a later
+      // operator retry re-enters the full confirmation/settlement flow.
+      playQuitPending = false
+    }
+  })()
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
-import type { LoopSnapshot, RunRecord, RunStatus } from '../shared/loop'
+import type { LoopModels, LoopSnapshot, LoopStatus, RunRecord, RunStatus } from '../shared/loop'
 import { elapsedThroughRunMs, runtimeMs } from '../shared/run-timing'
-import { modelLabel } from '../shared/models'
+import { modelLabel, normalizeModels } from '../shared/models'
+import { isIsoTimestamp } from '../shared/persisted-data'
 import {
   hasMixedPrompts,
   LEGACY_REPORT_FILE_KIND,
@@ -224,13 +225,133 @@ export function toReportFile(report: ReportRecord, exportedAt: string): ReportFi
   return { kind: REPORT_FILE_KIND, version: REPORT_FILE_VERSION, exportedAt, report }
 }
 
-function asRow(value: unknown): ReportRunRow {
-  const row = value as Partial<ReportRunRow>
-  if (typeof row?.loopId !== 'string' || typeof row.title !== 'string' || typeof row.promptHash !== 'string') {
+const MAX_REPORT_FILE_BYTES = 8 * 1024 * 1024
+const MAX_REPORT_ROWS = 1_000
+const MAX_REPORT_ROUNDS = 1_000
+const LOOP_STATUSES = new Set<LoopStatus>(['running', 'passed', 'exhausted', 'stopped', 'failed'])
+const RUN_STATUSES = new Set<RunStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function boundedString(value: unknown, label: string, maximum: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && value.length === 0) || value.length > maximum) {
+    throw new Error(`${label} is missing or exceeds its length limit.`)
+  }
+  return value
+}
+
+function timestamp(value: unknown, label: string): string {
+  if (!isIsoTimestamp(value)) throw new Error(`${label} is not a canonical timestamp.`)
+  return value
+}
+
+function counter(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is not a non-negative counter.`)
+  return value
+}
+
+function finite(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`${label} is not a non-negative finite number.`)
+  return value
+}
+
+function nullableCounter(value: unknown, label: string): number | null {
+  return value === null ? null : counter(value, label)
+}
+
+function nullableFinite(value: unknown, label: string, maximum = Number.POSITIVE_INFINITY): number | null {
+  if (value === null) return null
+  const result = finite(value, label)
+  if (result > maximum) throw new Error(`${label} exceeds its allowed range.`)
+  return result
+}
+
+function nullableString(value: unknown, label: string, maximum: number): string | null {
+  return value === null ? null : boundedString(value, label, maximum, true)
+}
+
+function normalizeReportRound(value: unknown, title: string): ReportRoundRow {
+  const round = record(value)
+  if (!round) throw new Error(`Run "${title}" has a malformed round.`)
+  if (typeof round.status !== 'string' || !RUN_STATUSES.has(round.status as RunStatus)) {
+    throw new Error(`Run "${title}" has a round with an invalid status.`)
+  }
+  if (typeof round.pass !== 'boolean') throw new Error(`Run "${title}" has a round with an invalid pass flag.`)
+  return {
+    round: counter(round.round, 'Report round number'),
+    attempts: counter(round.attempts, 'Report round attempts'),
+    status: round.status as RunStatus,
+    score: nullableFinite(round.score, 'Report round score', 1),
+    pass: round.pass,
+    costUsd: finite(round.costUsd, 'Report round cost'),
+    inputTokens: counter(round.inputTokens, 'Report round input tokens'),
+    outputTokens: counter(round.outputTokens, 'Report round output tokens'),
+    cacheReadTokens: nullableCounter(round.cacheReadTokens, 'Report round cache-read tokens'),
+    cacheWriteTokens: nullableCounter(round.cacheWriteTokens, 'Report round cache-write tokens'),
+    activeMs: counter(round.activeMs, 'Report round active time'),
+    elapsedMs: nullableCounter(round.elapsedMs, 'Report round elapsed time'),
+    revision: nullableString(round.revision, 'Report round revision', 256),
+  }
+}
+
+function normalizeReportRow(value: unknown): ReportRunRow {
+  const row = record(value)
+  if (!row || typeof row.loopId !== 'string' || typeof row.title !== 'string' || typeof row.promptHash !== 'string') {
     throw new Error('A run row in that file is missing its id, title, or prompt hash.')
   }
   if (!Array.isArray(row.rounds)) throw new Error(`Run "${row.title}" in that file has no rounds list.`)
-  return row as ReportRunRow
+  if (row.rounds.length > MAX_REPORT_ROUNDS) throw new Error(`Run "${row.title}" contains too many rounds.`)
+  if (!/^[a-f0-9]{64}$/.test(row.promptHash)) throw new Error(`Run "${row.title}" has an invalid prompt hash.`)
+  if (typeof row.status !== 'string' || !LOOP_STATUSES.has(row.status as LoopStatus)) throw new Error(`Run "${row.title}" has an invalid status.`)
+  if (!record(row.models)) throw new Error(`Run "${row.title}" has no valid model selection.`)
+  if (row.finishedAt !== null && !isIsoTimestamp(row.finishedAt)) throw new Error(`Run "${row.title}" has an invalid finish timestamp.`)
+  const stopReason = nullableString(row.stopReason, 'Report stop reason', 8_000)
+  const title = boundedString(row.title, 'Report run title', 1_000)
+  return {
+    loopId: boundedString(row.loopId, 'Report run id', 256),
+    title,
+    prompt: boundedString(row.prompt, 'Report prompt', 100_000, true),
+    promptHash: row.promptHash,
+    workspaceDir: boundedString(row.workspaceDir, 'Report workspace path', 32_768),
+    models: normalizeModels(row.models as Partial<LoopModels>),
+    status: row.status as LoopStatus,
+    stopReason,
+    roundsUsed: counter(row.roundsUsed, 'Report rounds used'),
+    maxRounds: counter(row.maxRounds, 'Report maximum rounds'),
+    budgetUsd: nullableFinite(row.budgetUsd, 'Report budget'),
+    bestScore: nullableFinite(row.bestScore, 'Report best score', 1),
+    finalScore: nullableFinite(row.finalScore, 'Report final score', 1),
+    passedAtRound: nullableCounter(row.passedAtRound, 'Report passing round'),
+    costUsd: finite(row.costUsd, 'Report cost'),
+    inputTokens: counter(row.inputTokens, 'Report input tokens'),
+    outputTokens: counter(row.outputTokens, 'Report output tokens'),
+    cacheReadTokens: nullableCounter(row.cacheReadTokens, 'Report cache-read tokens'),
+    cacheWriteTokens: nullableCounter(row.cacheWriteTokens, 'Report cache-write tokens'),
+    wallClockMs: nullableCounter(row.wallClockMs, 'Report wall-clock time'),
+    activeMs: counter(row.activeMs, 'Report active time'),
+    createdAt: timestamp(row.createdAt, 'Report run creation time'),
+    finishedAt: row.finishedAt as string | null,
+    rounds: row.rounds.map((item) => normalizeReportRound(item, title)),
+  }
+}
+
+/** Canonical decoder for imported and SQLite-persisted report JSON. */
+export function normalizeReportRecord(value: unknown): ReportRecord {
+  const report = record(value)
+  if (!report || typeof report.name !== 'string' || !Array.isArray(report.rows)) {
+    throw new Error('That report file has no name or no runs in it.')
+  }
+  if (report.rows.length > MAX_REPORT_ROWS) throw new Error('That report contains too many runs.')
+  return {
+    id: boundedString(report.id, 'Report id', 256),
+    name: boundedString(report.name.trim(), 'Report name', 80),
+    createdAt: timestamp(report.createdAt, 'Report creation time'),
+    updatedAt: timestamp(report.updatedAt, 'Report update time'),
+    capturedAt: timestamp(report.capturedAt, 'Report capture time'),
+    rows: report.rows.map(normalizeReportRow),
+  }
 }
 
 /**
@@ -238,6 +359,7 @@ function asRow(value: unknown): ReportRunRow {
  * here is looked up against the local ledger.
  */
 export function parseReportFile(text: string): ReportRecord {
+  if (Buffer.byteLength(text, 'utf8') > MAX_REPORT_FILE_BYTES) throw new Error('That report exceeds the import size limit.')
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -248,21 +370,12 @@ export function parseReportFile(text: string): ReportRecord {
   if (file?.kind !== REPORT_FILE_KIND && file?.kind !== LEGACY_REPORT_FILE_KIND) {
     throw new Error('That file is not a Gauntlet Gamesmith report.')
   }
-  if (typeof file.version !== 'number' || file.version > REPORT_FILE_VERSION) {
+  if (!Number.isSafeInteger(file.version) || Number(file.version) < 1 || Number(file.version) > REPORT_FILE_VERSION) {
     throw new Error(`That report was written by a newer version of Gauntlet Gamesmith (format ${String(file.version)}).`)
   }
-  const report = file.report as Partial<ReportRecord> | undefined
-  if (!report || typeof report.name !== 'string' || !Array.isArray(report.rows)) {
-    throw new Error('That report file has no name or no runs in it.')
-  }
-  return {
-    id: typeof report.id === 'string' ? report.id : '',
-    name: report.name,
-    createdAt: typeof report.createdAt === 'string' ? report.createdAt : new Date().toISOString(),
-    updatedAt: typeof report.updatedAt === 'string' ? report.updatedAt : new Date().toISOString(),
-    capturedAt: typeof report.capturedAt === 'string' ? report.capturedAt : new Date().toISOString(),
-    rows: report.rows.map(asRow),
-  }
+  const report = normalizeReportRecord(file.report)
+  if (!isIsoTimestamp(file.exportedAt)) throw new Error('That report has an invalid export timestamp.')
+  return report
 }
 
 /** A file name that survives every filesystem, derived from the report's own name. */

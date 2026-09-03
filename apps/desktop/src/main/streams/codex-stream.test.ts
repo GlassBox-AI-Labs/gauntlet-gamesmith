@@ -1,16 +1,39 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { translateCodexLine } from './codex-stream'
 
 describe('translateCodexLine', () => {
-  it('ignores blank and non-JSON lines', () => {
+  it('keeps every event in the captured Codex 0.147.0 visibility fixture visible', () => {
+    const fixture = fs.readFileSync(path.join(__dirname, 'fixtures', 'codex-0.147.0-visibility.jsonl'), 'utf8').trim().split('\n')
+    const translated = fixture.map((line) => translateCodexLine(line)!)
+    expect(translated.every((result) => result.events.length > 0)).toBe(true)
+    expect(translated.flatMap((result) => result.events).map((event) => event.kind)).toEqual([
+      'system', 'system', 'system', 'system', 'cmd', 'error', 'tool', 'tool', 'error',
+    ])
+  })
+
+  it('ignores blank lines and surfaces malformed stream data', () => {
     expect(translateCodexLine('')).toBeNull()
-    expect(translateCodexLine('warning: not json')).toBeNull()
+    expect(translateCodexLine('warning: not json')?.events).toEqual([
+      { channel: 'system', kind: 'system', text: 'unhandled codex non-JSON line: "warning: not json"' },
+    ])
+    expect(translateCodexLine('null')?.events[0]).toMatchObject({
+      channel: 'system',
+      kind: 'system',
+      text: expect.stringContaining('malformed event'),
+    })
   })
 
   it('extracts the thread id without emitting log events', () => {
     const t = translateCodexLine(JSON.stringify({ type: 'thread.started', thread_id: '01995d1e-0a2b-7e01-b3c4-8b1f2a3d4e5f' }))!
     expect(t.threadStarted).toBe('01995d1e-0a2b-7e01-b3c4-8b1f2a3d4e5f')
     expect(t.events).toEqual([])
+  })
+
+  it('rejects a thread id that could traverse a persisted path', () => {
+    const t = translateCodexLine(JSON.stringify({ type: 'thread.started', thread_id: '../escape' }))!
+    expect(t.threadStarted).toBeNull()
   })
 
   it('maps completed items to channels', () => {
@@ -50,6 +73,57 @@ describe('translateCodexLine', () => {
 
     const failed = translateCodexLine(JSON.stringify({ type: 'turn.failed', error: { message: 'usage limit reached' } }))!
     expect(failed.error).toBe('usage limit reached')
+    expect(failed.events).toEqual([{ channel: 'error', kind: 'error', text: 'usage limit reached' }])
     expect(translateCodexLine(JSON.stringify({ type: 'turn.failed' }))!.error).toBe('codex turn failed')
+  })
+
+  it('keeps only finite nonnegative numbers from hostile usage fixtures', () => {
+    const line = fs.readFileSync(path.join(__dirname, 'fixtures', 'codex-hostile-usage.jsonl'), 'utf8').trim()
+    expect(translateCodexLine(line)?.turn?.usage).toEqual({ output_tokens: 9 })
+  })
+
+  it('surfaces failed commands while retaining the command itself', () => {
+    const t = translateCodexLine(
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'pnpm test', exit_code: 1, status: 'failed', aggregated_output: 'two tests failed' },
+      }),
+    )!
+    expect(t.events).toEqual([
+      { channel: 'tool', kind: 'cmd', text: '$ pnpm test' },
+      { channel: 'error', kind: 'error', text: 'command failed: two tests failed' },
+    ])
+  })
+
+  it('attributes native subagent start and terminal status events to their full thread id', () => {
+    const line = (item: Record<string, unknown>): string => JSON.stringify({ type: 'item.completed', item })
+    const id = '01995d1e-0a2b-7e01-b3c4-8b1f2a3d4e5f'
+    expect(translateCodexLine(line({ type: 'collab_tool_call', agent_id: id, status: 'in_progress' }))?.events).toEqual([
+      { agentId: `codex:${id}`, channel: 'tool', kind: 'spawn', text: `⇉ worker "${id}"` },
+    ])
+    expect(translateCodexLine(line({ type: 'SubAgentActivity', agent_id: id, status: 'completed' }))?.events).toEqual([
+      { agentId: `codex:${id}`, channel: 'tool', kind: 'spawn', text: `⇊ worker "${id}" completed` },
+    ])
+  })
+
+  it('surfaces top-level errors and unfamiliar top-level and item events', () => {
+    const error = translateCodexLine(JSON.stringify({ type: 'error', message: 'stream disconnected' }))!
+    expect(error.error).toBe('stream disconnected')
+    expect(error.events).toEqual([{ channel: 'error', kind: 'error', text: 'stream disconnected' }])
+
+    expect(translateCodexLine(JSON.stringify({ type: 'item.updated', item: { type: 'todo_list' } }))?.events).toEqual([
+      {
+        channel: 'system',
+        kind: 'system',
+        text: 'unhandled codex event "item.updated": {"type":"item.updated","item":{"type":"todo_list"}}',
+      },
+    ])
+    expect(translateCodexLine(JSON.stringify({ type: 'item.completed', item: { type: 'future_item', id: 'x' } }))?.events).toEqual([
+      {
+        channel: 'system',
+        kind: 'system',
+        text: 'unhandled codex item "future_item": {"type":"future_item","id":"x"}',
+      },
+    ])
   })
 })

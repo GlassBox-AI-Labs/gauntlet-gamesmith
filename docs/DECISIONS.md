@@ -47,3 +47,124 @@ ADR-style log. Append, don't rewrite. Newest at the bottom.
 - Policy posture improves: everything is ordinary, individual usage on the user's own machine; no coordinator moves payloads between users' subscription-backed workers.
 - A single subscription's 5-hour/weekly rate windows bound throughput; long experiments pause more. Mitigations already in the design: multiple local accounts per harness (one config dir each) and API-key failover per arm.
 - Multi-machine throughput and pooled rate windows are unavailable until M4 is picked up.
+
+## ADR-004 — Record drift between ADR-001/ADR-003 and the shipped code (2026-09-02)
+
+**Status:** proposed. Documents what exists so `docs/STANDARDS.md` can treat the code as canonical
+for these details without contradicting an accepted ADR.
+
+**Context.** ADR-001 says everything crossing IPC is a Zod schema in `packages/contracts`, and
+ADR-003 says SQLite migrations are versioned via `PRAGMA user_version`. Neither shipped. There is no
+`packages/` directory and no Zod dependency; shared types live in `apps/desktop/src/shared` as plain
+TypeScript, and IPC handlers in `apps/desktop/src/main/index.ts` validate ad hoc (see the baseline
+note under ARCH-002 in `docs/STANDARDS.md`). The ledger in `apps/desktop/src/main/ledger.ts`
+migrates by checking for missing columns and issuing `ALTER TABLE`.
+
+**Decision.**
+- The contract location is `apps/desktop/src/shared`. `packages/contracts` is not a requirement.
+- Runtime validation of renderer input is still required (STANDARDS ARCH-002), but the mechanism is
+  not prescribed. Adopting Zod or another schema library is a separate decision.
+- Column-existence migrations are the current mechanism. Moving to `PRAGMA user_version` is
+  acceptable but must migrate every existing app and folder ledger idempotently (STANDARDS DATA-002).
+- The policy content of ADR-001 through ADR-003 (credential posture, kill semantics, cost labelling,
+  hash compatibility, solo mode) is unchanged.
+
+**Consequences.**
+- Reviewers stop citing ADR-001/ADR-003 implementation details as findings.
+- The IPC validation and migration mechanisms remain open items to be decided by their own ADRs when
+  someone changes them.
+
+## ADR-005 — Accept shipped local-run mechanics and reproducibility controls (2026-09-02)
+
+**Status:** accepted. Accepts ADR-004 and supersedes conflicting implementation details in ADR-001
+through ADR-003; their product and credential policies remain in force.
+
+**Decision.**
+
+- Shared TypeScript contracts and channel names live in `apps/desktop/src/shared`; bounded runtime
+  validators in main enforce the IPC trust boundary without requiring Zod or a `packages/` workspace.
+- The registry and portable mirror use built-in `node:sqlite`. The registry uses WAL; the independently
+  copied folder mirror uses DELETE journaling. Idempotent, per-column migrations replace
+  `PRAGMA user_version` and are tested from the prior schema. Import rejects hidden/generated
+  columns before any integrity check or row query can evaluate them.
+- A frozen pack lives at `reference/<loop-id>/` in the selected workspace. A manifest and pack
+  fingerprint bind later phases to those inputs; this replaces the unshipped `userData/loops/...`
+  storage and config-hash design.
+- The app runs the installed stock CLI and records its exact reported version instead of modifying
+  that binary. It resolves an absolute executable outside project/private roots, pins its device and
+  inode for the app lifetime, revalidates that identity before use, and gives delegated workers only
+  that exact path through app-constructed environment fields. Each attempt also records the exact
+  execution-prompt SHA-256, model, effort,
+  account label, machine label, authentication mode, price-table version, revision, and exact cost
+  source. The current app-managed harness profiles use subscription mode; the schema reserves
+  `api_key` for a future explicit account configuration.
+- Provider rate limits interrupt the attempt, persist the reset/backoff time, and enqueue a bounded
+  retry of the same role and round. They do not fail the loop.
+- Primary CLIs run in validated detached process groups. On app quit the operator chooses whether
+  they remain alive for recovery or receive SIGINT and the loop becomes stopped. Bounded escalation
+  is allowed only while the recorded process identity still matches. The canonical registry owns
+  the validated PID/start identity, overlap-advanced identities of captured process-group members,
+  and original stdout/stderr file identities; workspace process
+  metadata is a replay mirror and never sufficient authority to requeue or signal. A durable starting
+  marker is written before direct spawn and canonical ownership immediately afterward. A crash in
+  that narrow interval can leave an unowned CLI; recovery quarantines the attempt and forbids
+  automatic requeue or Resume. Removing this accepted direct-spawn limitation requires a launch
+  wrapper/handshake.
+- Implement attempts create immutable bare Git revisions under the app-private user-data root, not
+  inside the agent-writable workspace. The workspace contains no authoritative Git object/ref store;
+  transferred histories remain read-only rather than promoting portable data into revision authority.
+  A critic is bound to that revision and its verdict artifact; advancement fails closed if the
+  workspace or artifact fingerprint is stale.
+  Every path present at capture remains protected even inside an ignored build/dist directory, while
+  a critic may create new output only where the captured project ignore policy already allows it.
+- Claude-to-Codex orchestration uses the shared Sonnet dispatcher model only for delegated task
+  routing. The selected worker model and effort are bound through the child argv, agent frontmatter,
+  or reviewed harness environment as applicable; prompt text describes the same shared selection.
+  Loop roles intentionally retain the stock CLIs' broad workspace permissions; browser automation
+  must keep the shared sandbox rule and may inspect the frozen Reference Pack without mutating it.
+- `maxRounds` counts implementation rounds. Completing the last allowed implementation exhausts the
+  loop without launching one additional critic, so the round ceiling cannot silently create more
+  billable work. Each completed implementation still has its immutable revision for inspection.
+- Complete raw CLI streams remain portable under `.gauntlet-loop/` for exact replay and are revealed
+  only by ownership-checked IPC. SQLite, reports, and renderer projections apply credential-shaped
+  redaction; app code never opens credential files. The raw files themselves are deliberately not
+  secret-scrubbed: a broad same-user CLI can read accessible data and may echo it, and discovering
+  every such value would itself require reading forbidden credential stores. Export warns the
+  operator to review unsanitized raw output before sharing. The critic is told that telemetry is not
+  evidence, but same-user filesystem permissions are not claimed as a technical read barrier.
+- The app-private registry is canonical and commits before a workspace mirror. A crash can therefore
+  leave only a registered mirror-repair obligation; it cannot create an authoritative-looking orphan
+  portable history before the registry knows that workspace. Startup and export rebuild mirrors by
+  streaming canonical rows, and post-canonical mirror failures are durably visible.
+- A locally created loop may launch its own project through Play with a stripped allowlist environment
+  and a hard timeout. A fixed app-controlled wrapper holds the workspace command behind a private
+  launch gate until main captures the wrapper's exact process-group identity. Verified membership is
+  extended only across exact-member overlap, so late background descendants remain supervised if
+  their launcher exits. Failure to capture ownership leaves the gate closed and bounded-kills only
+  the directly returned wrapper handle, never an unverified numeric process group. A committed app
+  quit waits for Play group settlement, while cancelling quit does not stop Play. Every imported folder is forced to untrusted
+  and Play is denied. This release intentionally has no IPC or UI that can re-enable imported project
+  scripts or resume imported loop execution; imported history is read-only. The schema that first
+  records this provenance also treats
+  every pre-provenance history as untrusted: older registry rows cannot prove whether they were local
+  or imported, so the upgrade fails closed rather than guessing. Those histories remain inspectable,
+  but Play, Resume, rename, and private-profile raw reveal require starting a new local loop.
+
+**Consequences.**
+
+- Portable history remains readable across additive schema changes and does not silently claim that
+  old attempts used current provenance settings.
+- The recorded version and immutable inputs make results reproducible without taking ownership of CLI
+  installation or credentials.
+- Re-enabling Play for an imported folder requires a separate, explicit trust-policy decision and UI.
+- Restoring execution privileges to a pre-provenance history likewise requires a future explicit
+  trust/re-attestation design; this release deliberately provides no automatic grandfathering.
+- A stronger critic telemetry barrier would require an OS sandbox or separate account; moving files
+  elsewhere under the same user does not create one.
+- App-private revision storage removes the direct workspace-symlink path into Git refs and objects,
+  but same-user permissions are not claimed as an OS isolation boundary.
+- A credential-safe raw-export guarantee likewise requires a brokered process or OS/account boundary;
+  projection redaction is defense in depth, not a claim that arbitrary CLI output contains no secret.
+- Fully recovering or terminating a CLI after a crash between direct spawn and durable PID capture
+  requires a future launch wrapper/handshake; quarantine prevents duplicate execution but cannot
+  discover ownership that was never committed.

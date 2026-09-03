@@ -1,14 +1,82 @@
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
 import { ASSET_WAVE_SIZE } from '../shared/prompts'
-import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
+import {
+  claudeChildCommand,
+  codexChildCommand,
+  delegationRules,
+  implementerAgentDefinition,
+  implementerAgentMd,
+  quote,
+  researchRules,
+  sculptorAgentMd,
+  sculptorRules,
+} from './delegation'
 
 const models = (orchestratorModel: string, subagentModel: string | null) =>
   resolveModels({ orchestratorModel, subagentModel, subagentEffort: 'high' }, null)
 
+describe('quote', () => {
+  it.each([
+    ['plain', "'plain'"],
+    ['two words', "'two words'"],
+    ["it's quoted", "'it'\\''s quoted'"],
+    ['--leading-dash', "'--leading-dash'"],
+    ['value > /tmp/result', "'value > /tmp/result'"],
+    ['$(touch /tmp/substitution)', "'$(touch /tmp/substitution)'"],
+    ['`touch /tmp/backtick`', "'`touch /tmp/backtick`'"],
+    ['../../traversal', "'../../traversal'"],
+    ['', "''"],
+  ])('quotes %j as one inert shell argument', (value, expected) => {
+    expect(quote(value)).toBe(expected)
+  })
+
+  it.skipIf(process.platform === 'win32')('round-trips shell metacharacters without evaluating them', () => {
+    const value = "a b ' c > $(printf injected) `printf injected` ../../x"
+    const result = spawnSync('sh', ['-c', `printf %s ${quote(value)}`], { encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(value)
+  })
+
+  it('rejects unsafe concrete child slugs before building a command', () => {
+    expect(() => codexChildCommand('gpt-5.6-sol', 'high', '../escape')).toThrow(/slug/)
+    expect(() => claudeChildCommand('claude-opus-5', 'high', 'space here')).toThrow(/slug/)
+  })
+
+  it('uses quoted private executable variables and refuses to clobber a planted stream', () => {
+    const command = codexChildCommand('gpt-5.6-sol', 'high', 'renderer')
+    expect(command).toContain('set -C; "${GAUNTLET_CODEX_BIN:?}"')
+    expect(claudeChildCommand('claude-opus-5', 'high', 'renderer')).toContain('set -C; "${GAUNTLET_CLAUDE_BIN:?}"')
+
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-delegation-noclobber-'))
+    try {
+      fs.mkdirSync(path.join(workspace, '.gauntlet-gamesmith', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(workspace, '.gauntlet-gamesmith', 'codex-renderer.md'), 'brief')
+      const stream = path.join(workspace, '.gauntlet-gamesmith', 'agents', 'renderer.codex.jsonl')
+      fs.writeFileSync(stream, 'operator evidence')
+      const result = spawnSync('/bin/sh', ['-c', command], {
+        cwd: workspace,
+        env: { PATH: '/usr/bin:/bin', GAUNTLET_CODEX_BIN: '/usr/bin/true' },
+      })
+      expect(result.status).not.toBe(0)
+      expect(fs.readFileSync(stream, 'utf8')).toBe('operator evidence')
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('implementerAgentMd', () => {
   it('names the worker model directly when both sides are claude', () => {
-    const md = implementerAgentMd(models('claude-fable-5', 'claude-opus-5'), 'reference/loop-123')!
+    const definition = implementerAgentDefinition(models('claude-fable-5', 'claude-opus-5'), 'reference/loop-123')!
+    const md = definition.markdown
+    expect(definition.filename).toBe(`${definition.agentName}.md`)
+    expect(definition.agentName).toMatch(/^gauntlet-implementer-v2-[0-9a-f]{24}$/)
+    expect(md).toContain(`name: ${definition.agentName}`)
     expect(md).toContain('model: claude-opus-5')
     expect(md).toContain('effort: high')
     expect(md).toContain('read reference/loop-123/README.md')
@@ -60,6 +128,15 @@ describe('delegationRules', () => {
       expect(rules).toContain('reference/loop-123/research.md')
       expect(rules).toContain('story, difficulty, level/progression, and gameplay workers')
     }
+  })
+
+  it('uses only the versioned app-owned Claude agent identity', () => {
+    const configured = models('claude-fable-5', 'claude-opus-5')
+    const definition = implementerAgentDefinition(configured, 'reference/loop-123')!
+    const rules = delegationRules(configured, 'reference/loop-123')
+    expect(rules).toContain(`.claude/agents/${definition.filename}`)
+    expect(rules).toContain(`agentType: '${definition.agentName}'`)
+    expect(rules).not.toContain('.claude/agents/implementer.md')
   })
 
   it('leaves a solo run free to edit — there is nobody to delegate to', () => {

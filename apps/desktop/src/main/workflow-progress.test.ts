@@ -101,9 +101,73 @@ describe('readWorkflowProgress', () => {
     expect(progress.agents).toHaveLength(2)
   })
 
+  it('rejects unsafe files and normalizes hostile fields before arithmetic', () => {
+    const d = withRun({
+      workflowName: 42,
+      status: { unsafe: true },
+      agentCount: -1,
+      totalTokens: '900',
+      totalToolCalls: Number.MAX_SAFE_INTEGER + 1,
+      defaultModel: ['not-a-model'],
+      workflowProgress: [
+        {
+          type: 'workflow_agent',
+          agentId: '../escape',
+          label: 7,
+          model: false,
+          state: 'progress',
+          startedAt: Number.POSITIVE_INFINITY,
+          durationMs: -10,
+          tokens: '500',
+          toolCalls: Number.NaN,
+          lastToolSummary: { secret: true },
+        },
+      ],
+    })
+    const outside = path.join(d, 'outside-workflow.json')
+    fs.writeFileSync(outside, JSON.stringify(runFile))
+    fs.linkSync(outside, path.join(d, 'wf_hardlink.json'))
+    fs.symlinkSync(outside, path.join(d, 'wf_symlink.json'))
+    fs.writeFileSync(path.join(d, 'wf_oversized.json'), ' '.repeat(1024 * 1024 + 1))
+
+    const progress = readWorkflowProgress(d)
+    expect(progress.runs).toEqual([
+      { runId: 'wf_abc123-def', name: 'wf_abc123-def', status: 'unknown', agentCount: 0, totalTokens: 0, totalToolCalls: 0 },
+    ])
+    expect(progress.totalTokens).toBe(0)
+    expect(progress.agents).toEqual([
+      expect.objectContaining({
+        id: 'wf:wf_abc123-def:0',
+        label: 'agent 1',
+        model: null,
+        firstTs: null,
+        totalTokens: 0,
+        toolCalls: 0,
+        durationMs: 0,
+      }),
+    ])
+  })
+
+  it('caps workflow agents across the whole poll and reports omitted progress', () => {
+    const workflowProgress = Array.from({ length: 600 }, (_, index) => ({
+      type: 'workflow_agent',
+      agentId: `agent-${index}`,
+      label: `slice ${index}`,
+      state: 'progress',
+    }))
+    const progress = readWorkflowProgress(withRun({ ...runFile, workflowProgress }))
+
+    expect(progress.agents).toHaveLength(512)
+    expect(progress.warning).toContain('512-agent aggregate limit')
+  })
+
   it('keys the directory by session id next to that session transcript', () => {
     expect(workflowDir('/home/.claude', '/Users/john/GauntletRuns/aaa-shooter', 'sess-1')).toBe(
       '/home/.claude/projects/-Users-john-GauntletRuns-aaa-shooter/sess-1/workflows',
     )
+  })
+
+  it('rejects unsafe session ids before joining a private-home path', () => {
+    expect(() => workflowDir('/home/.claude', '/workspace', '../../outside')).toThrow(/session id/)
   })
 })

@@ -1,631 +1,45 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  ArrowLeft,
-  BarChart3,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Download,
-  FolderGit2,
-  FolderPlus,
-  LoaderCircle,
-  Minus,
-  Pencil,
-  Play,
-  Plus,
-  Sparkles,
-  Square,
-  Trash2,
-  Upload,
-  X,
-} from 'lucide-react'
-import { CritiqueRoundView } from '@/views/CritiquePanel'
+import { LoaderCircle } from 'lucide-react'
+import { RunDetail } from '@/views/RunDetail'
+import { RunForm } from '@/views/RunForm'
+import { RunSidebar, RUN_ROUNDS_PAGE_SIZE } from '@/views/RunSidebar'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
-import { fmtDuration, fmtTokens } from '@/lib/format'
-import { PromptBrowser } from '@/views/PromptBrowser'
-import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
-import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopModels, LoopSnapshot, PlayState, ReferenceStudy, RunRecord, RunRole } from '../../../shared/loop'
-import { buildCriticPrompt } from '../../../shared/prompts'
-import { engineGateRules } from '../../../shared/engine-stack'
-import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
+import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts } from '@/lib/run-pages'
+import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RevealStreamInput } from '../../../shared/loop'
 import {
-  AGENT_EFFORTS,
-  AGENT_MODEL_CHOICES,
   DEFAULT_CRITIC,
-  DEFAULT_IMPLEMENTER,
   DEFAULT_ASSET,
+  DEFAULT_IMPLEMENTER,
   DEFAULT_RESEARCH,
-  describeCritic,
-  modelLabel,
-  orchestratorEfforts,
-  SOLO_SUBAGENT,
   type CriticFields,
-  type ImplementerFields,
   type AssetFields,
+  type ImplementerFields,
   type ResearchFields,
 } from '../../../shared/models'
+import type { OperationResult } from '../../../shared/result'
 import type { ReportRecord } from '../../../shared/reports'
 
 const LOG_LIMIT = 1500
-const ROUNDS_PAGE_SIZE = 3
 
-const STATUS_STYLES: Record<string, string> = {
-  running: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
-  passed: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
-  exhausted: 'bg-[#3a3535] text-[#c9c3c0] border-[#4a4444]',
-  stopped: 'bg-[#3a3535] text-[#c9c3c0] border-[#4a4444]',
-  failed: 'bg-red-500/15 text-red-300 border-red-500/40',
-  succeeded: 'bg-emerald-500/10 text-emerald-300/90 border-transparent',
-  queued: 'bg-[#2c2828] text-[#96908d] border-transparent',
-  cancelled: 'bg-[#2c2828] text-[#96908d] border-transparent',
-  interrupted: 'bg-[#2c2828] text-[#96908d] border-transparent',
+function errorMessage(cause: unknown, fallback: string): string {
+  return cause instanceof Error && cause.message ? cause.message : fallback
 }
 
-/**
- * Working right now: not finished, and it wrote something in the last 90s.
- * A run that ended long ago fails the time test on its own, so a finished
- * run's breakdown shows no live dots without tracking that separately.
- */
-function agentActive(agent: AgentMetric): boolean {
-  return !agent.done && agent.lastTs != null && Date.now() - new Date(agent.lastTs).getTime() < 90_000
-}
-
-function fmtTs(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toTimeString().slice(0, 8)
-}
-
-function projectName(workspaceDir: string): string {
-  return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
-}
-
-const ROLE_COLOR: Partial<Record<RunRole, string>> = {
-  reference: 'text-amber-300',
-  assets: 'text-[#c9bce9]',
-  implement: 'text-[#e9c9bc]',
-  critique: 'text-[#9ad1c6]',
-}
-
-function RunModelSummary({ models }: { models: LoopModels }): React.JSX.Element {
-  const implementer = models.subagentModel
-    ? `${modelLabel(models.subagentModel)} · ${models.subagentEffort}`
-    : 'orchestrator · solo'
-  const criticHarness = models.criticHarness === 'codex' ? 'Codex' : 'Claude'
-  return (
-    <div className="mb-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#68615f]">
-      <span><span className="text-[#857d79]">Orchestrator</span> {modelLabel(models.orchestratorModel)} · {models.orchestratorEffort}</span>
-      <span className="text-[#393433]" aria-hidden="true">/</span>
-      <span><span className="text-[#857d79]">Implementer</span> {implementer}</span>
-      <span className="text-[#393433]" aria-hidden="true">/</span>
-      <span><span className="text-[#857d79]">Critique</span> {criticHarness} · {modelLabel(models.criticModel)} · {models.criticEffort}</span>
-      <span className="text-[#393433]" aria-hidden="true">/</span>
-      <span><span className="text-[#857d79]">Research</span> {models.researchModel ? `${modelLabel(models.researchModel)} · ${models.researchEffort}` : 'no fan-out'}</span>
-      <span><span className="text-[#857d79]">Assets</span> {models.assetModel ? `${modelLabel(models.assetModel)} · ${models.assetEffort}` : 'no asset phase'}</span>
-    </div>
-  )
-}
-
-function roundNumbers(snapshot: LoopSnapshot): number[] {
-  return [...new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round))].sort((a, b) => b - a)
-}
-
-/**
- * A checkbox that reads as one, without pulling in a form library.
- *
- * The border colour is set inline rather than with a `border-[…]` class:
- * globals.css carries an unlayered `* { border-color: var(--border) }`, and
- * unlayered CSS outranks every utility, so the class would be ignored. The
- * empty box needs #8a827f to clear 3:1 against a highlighted row (#302b2b);
- * the theme default only reaches 1.2:1 and disappears.
- */
-function RunCheckbox({
-  checked,
-  mixed,
-  label,
-  onToggle,
-}: {
-  checked: boolean
-  mixed?: boolean
-  label: string
-  onToggle: () => void
-}): React.JSX.Element {
-  const filled = checked || mixed
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={mixed ? 'mixed' : checked}
-      aria-label={label}
-      onClick={onToggle}
-      style={{ borderColor: filled ? '#c2bbb7' : '#8a827f' }}
-      className={`grid size-4 shrink-0 place-items-center rounded border transition-colors ${
-        filled ? 'bg-[#c2bbb7] text-[#1c1716]' : 'text-transparent'
-      }`}
-    >
-      {mixed ? <Minus className="size-3" strokeWidth={3} /> : <Check className="size-3" strokeWidth={3} />}
-    </button>
-  )
-}
-
-function RunSidebar({
-  snapshots,
-  reports,
-  selectedLoopId,
-  selectedReportId,
-  selectedRound,
-  expandedRuns,
-  visibleRounds,
-  editing,
-  checkedRuns,
-  onNewRun,
-  onImportRun,
-  onSelectRun,
-  onSelectRound,
-  onToggleRun,
-  onLoadMore,
-  onOpenAgents,
-  onToggleEditing,
-  onToggleChecked,
-  onToggleAllChecked,
-  onDeleteChecked,
-  onCreateReport,
-  onSelectReport,
-  onImportReport,
-}: {
-  snapshots: LoopSnapshot[]
-  reports: ReportRecord[]
-  selectedLoopId: string | null
-  selectedReportId: string | null
-  selectedRound: number | null
-  expandedRuns: Set<string>
-  visibleRounds: Record<string, number>
-  editing: boolean
-  checkedRuns: Set<string>
-  onNewRun: () => void
-  onImportRun: () => void
-  onSelectRun: (snapshot: LoopSnapshot) => void
-  onSelectRound: (snapshot: LoopSnapshot, round: number) => void
-  onToggleRun: (loopId: string) => void
-  onLoadMore: (loopId: string) => void
-  onOpenAgents: () => void
-  onToggleEditing: () => void
-  onToggleChecked: (loopId: string) => void
-  onToggleAllChecked: () => void
-  onDeleteChecked: () => void
-  onCreateReport: () => void
-  onSelectReport: (report: ReportRecord) => void
-  onImportReport: () => void
-}): React.JSX.Element {
-  const checkedCount = checkedRuns.size
-  const allChecked = snapshots.length > 0 && checkedCount === snapshots.length
-  return (
-    <aside className="flex h-screen w-[252px] shrink-0 flex-col border-r border-[#2a2626] bg-[#141112]">
-      <div className="px-3 pb-3 pt-5">
-        <button
-          type="button"
-          onClick={onNewRun}
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-[#ded9d6] transition-colors hover:bg-white/[0.05] hover:text-white"
-        >
-          <Plus className="size-4" /> Run
-        </button>
-        <button
-          type="button"
-          onClick={onImportRun}
-          className="mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[13px] text-[#918a87] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6]"
-        >
-          <Download className="size-4" /> Import run
-        </button>
-      </div>
-      <div className="border-t border-[#2f2a2b]" />
-      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-4">
-        {editing ? (
-          <div className="mb-2 flex items-center gap-1">
-            <span className="pl-2 pr-1">
-              <RunCheckbox
-                checked={allChecked}
-                mixed={checkedCount > 0 && !allChecked}
-                label={allChecked ? 'Select none' : 'Select all runs'}
-                onToggle={onToggleAllChecked}
-              />
-            </span>
-            <button
-              type="button"
-              onClick={onDeleteChecked}
-              disabled={checkedCount === 0}
-              title="Delete the checked runs"
-              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#f0b8aa] transition-colors hover:bg-[#3a2622] disabled:cursor-not-allowed disabled:text-[#5e5654] disabled:hover:bg-transparent"
-            >
-              <Trash2 className="size-3.5" /> Delete
-            </button>
-            <button
-              type="button"
-              onClick={onCreateReport}
-              disabled={checkedCount === 0}
-              title="Build a report from the checked runs"
-              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#a8c8e0] transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:text-[#5e5654] disabled:hover:bg-transparent"
-            >
-              <BarChart3 className="size-3.5" /> Report
-            </button>
-            <button
-              type="button"
-              onClick={onToggleEditing}
-              className="flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-[11px] text-[#c2bbb7] transition-colors hover:bg-white/[0.05] hover:text-white"
-            >
-              <Check className="size-3.5" /> Done
-            </button>
-          </div>
-        ) : (
-          <div className="mb-2 flex items-center justify-between pl-2">
-            <span className="text-[13px] font-medium text-[#8d8784]">Runs</span>
-            <button
-              type="button"
-              onClick={onToggleEditing}
-              disabled={snapshots.length === 0}
-              aria-label="Edit runs"
-              title="Select runs to delete or turn into a report"
-              className="grid size-6 place-items-center rounded-md text-[#68615f] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6] disabled:cursor-not-allowed disabled:text-[#463f3e] disabled:hover:bg-transparent"
-            >
-              <Pencil className="size-3.5" />
-            </button>
-          </div>
-        )}
-        <div className="grid gap-1">
-          {snapshots.map((item) => {
-            const loopId = item.loop.id
-            const rounds = roundNumbers(item)
-            const limit = visibleRounds[loopId] ?? ROUNDS_PAGE_SIZE
-            const open = expandedRuns.has(loopId)
-            const selected = selectedLoopId === loopId
-            const label = projectName(item.loop.workspaceDir)
-            return (
-              <div key={loopId}>
-                <div
-                  className={`group flex items-center rounded-lg pr-1 transition-colors ${
-                    selected ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'
-                  }`}
-                >
-                  {editing && (
-                    <span className="pl-2 pr-1">
-                      <RunCheckbox checked={checkedRuns.has(loopId)} label={`Select ${label}`} onToggle={() => onToggleChecked(loopId)} />
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => onToggleRun(loopId)}
-                    className="grid size-8 shrink-0 place-items-center rounded-md text-[#716b68] hover:text-[#c9c3c0]"
-                    aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`}
-                  >
-                    {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSelectRun(item)}
-                    title={item.loop.workspaceDir}
-                    className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]"
-                  >
-                    {label}
-                  </button>
-                  {item.loop.status === 'running' && <span className="mr-2 size-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" />}
-                </div>
-                {open && (
-                  <div className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
-                    {rounds.slice(0, limit).map((round) => {
-                      const records = item.runs.filter((run) => run.round === round)
-                      const score = records.find((run) => run.verdict)?.verdict?.score
-                      const active = records.some((run) => run.status === 'running' || run.status === 'queued')
-                      return (
-                        <button
-                          type="button"
-                          key={round}
-                          onClick={() => onSelectRound(item, round)}
-                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${
-                            selectedLoopId === loopId && selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'
-                          }`}
-                        >
-                          <span>Round {round}</span>
-                          <span className={active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}>
-                            {active ? 'active' : score != null ? score.toFixed(2) : ''}
-                          </span>
-                        </button>
-                      )
-                    })}
-                    {rounds.length > limit && (
-                      <button
-                        type="button"
-                        onClick={() => onLoadMore(loopId)}
-                        className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] text-[#77706d] hover:bg-white/[0.035] hover:text-[#c9c3c0]"
-                      >
-                        Load more
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-          {snapshots.length === 0 && <p className="px-2 py-3 text-xs leading-relaxed text-[#68615f]">Your runs will appear here.</p>}
-        </div>
-
-        <div className="mb-2 mt-6 flex items-center justify-between pl-2">
-          <span className="text-[13px] font-medium text-[#8d8784]">Reports</span>
-          <button
-            type="button"
-            onClick={onImportReport}
-            aria-label="Import a report"
-            title="Open a report a teammate sent you"
-            className="grid size-6 place-items-center rounded-md text-[#68615f] transition-colors hover:bg-white/[0.05] hover:text-[#ded9d6]"
-          >
-            <Download className="size-3.5" />
-          </button>
-        </div>
-        <div className="grid gap-1">
-          {reports.map((report) => (
-            <button
-              key={report.id}
-              type="button"
-              onClick={() => onSelectReport(report)}
-              className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${
-                selectedReportId === report.id ? 'bg-[#302b2b] text-[#eeeae7]' : 'text-[#aaa4a1] hover:bg-white/[0.035] hover:text-[#ded9d6]'
-              }`}
-            >
-              <BarChart3 className="size-3.5 shrink-0 text-[#716b68]" />
-              <span className="min-w-0 flex-1 truncate">{report.name}</span>
-              <span className="shrink-0 font-mono text-[10px] text-[#68615f]">{report.rows.length}</span>
-            </button>
-          ))}
-          {reports.length === 0 && (
-            <p className="px-2 py-3 text-xs leading-relaxed text-[#68615f]">
-              Compare runs side by side: tap the pencil above, check a few runs, then Report.
-            </p>
-          )}
-        </div>
-      </div>
-      <div className="border-t border-[#2f2a2b] p-3">
-        <button
-          type="button"
-          onClick={onOpenAgents}
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-[#88817e] hover:bg-white/[0.04] hover:text-[#ded9d6]"
-        >
-          <Sparkles className="size-3.5" /> Agents
-        </button>
-      </div>
-    </aside>
-  )
-}
-
-function ProjectChooser({
-  value,
-  projects,
-  open,
-  onOpenChange,
-  onChange,
-  onAddProject,
-}: {
-  value: string
-  projects: string[]
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onChange: (project: string) => void
-  onAddProject: () => void
-}): React.JSX.Element {
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className="flex max-w-[360px] items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[#ded9d6] hover:bg-white/[0.05]"
-      >
-        <FolderGit2 className="size-4 text-[#bda99f]" />
-        <span className="truncate">{projectName(value)}</span>
-        <ChevronDown className={`size-3.5 text-[#77706d] transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="absolute left-0 top-[calc(100%+8px)] z-30 w-[300px] overflow-hidden rounded-xl border border-[#443e3d] bg-[#282424] py-1.5 shadow-2xl">
-          <div className="max-h-[280px] overflow-y-auto px-1.5">
-            {projects.map((project) => (
-              <button
-                type="button"
-                key={project}
-                onClick={() => {
-                  onChange(project)
-                  onOpenChange(false)
-                }}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#c9c3c0] hover:bg-white/[0.055] hover:text-white"
-                title={project}
-              >
-                <FolderGit2 className="size-4 shrink-0 text-[#a9968d]" />
-                <span className="min-w-0 flex-1 truncate">{projectName(project)}</span>
-                {project === value && <Check className="size-4 shrink-0" />}
-              </button>
-            ))}
-          </div>
-          <div className="mt-1 border-t border-[#403a39] px-1.5 pt-1.5">
-            <button
-              type="button"
-              onClick={onAddProject}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#aaa4a1] hover:bg-white/[0.055] hover:text-white"
-            >
-              <FolderPlus className="size-4" /> Add project
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/**
- * Agents the ultracode orchestrator ran through the Workflow tool. They never
- * reach the message stream, so their numbers come off disk and read differently
- * from stream agents: one scalar token count, plus a phase and a live state.
- */
-function WorkflowAgents({ agents }: { agents: AgentMetric[] }): React.JSX.Element | null {
-  const workflow = agents.filter((agent) => agent.source === 'workflow')
-  if (workflow.length === 0) return null
-  const phases: { phase: string; agents: AgentMetric[] }[] = []
-  for (const agent of workflow) {
-    const phase = agent.phase ?? 'workflow'
-    const last = phases.at(-1)
-    if (last && last.phase === phase) last.agents.push(agent)
-    else phases.push({ phase, agents: [agent] })
+/** Keep at most one heavy detail snapshot resident in renderer state. */
+function compactForList(snapshot: LoopSnapshot): LoopSnapshot {
+  if (snapshot.runs.length === 0) return snapshot
+  const totalRuns = snapshot.totalRuns ?? snapshot.runs.length
+  return {
+    loop: { ...snapshot.loop, prompt: snapshot.loop.prompt.slice(0, 1_024) },
+    runs: [],
+    totalRuns,
+    hasMoreRuns: totalRuns > 0,
+    projectionWarning: totalRuns > 0 ? 'Select this run to load its bounded attempt history.' : null,
   }
-  const totalTokens = workflow.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0)
-  const totalCost = workflow.reduce((sum, a) => sum + (a.costUsd ?? 0), 0)
-  const running = workflow.filter((a) => a.state !== 'done').length
-  return (
-    <>
-      <div className="mt-1 text-[#c0aee6]">
-        ⇉ workflow fan-out · {workflow.length} agents{running > 0 ? ` (${running} running)` : ''} · {fmtTokens(totalTokens)} tokens · $
-        {totalCost.toFixed(2)}
-      </div>
-      {phases.map((group, index) => (
-        <div key={`${group.phase}-${index}`} className="pl-5">
-          <div className="text-[#8f8a87]">{group.phase}</div>
-          {group.agents.map((agent) => (
-            <div key={agent.id} className="pl-4 text-[#a89f9a]">
-              <span className={agent.state === 'done' ? 'text-[#a9e5b8]' : 'text-[#f2d98c]'}>{agent.state === 'done' ? '✓' : '⋯'}</span>{' '}
-              {agent.label}
-              <span className="text-[#68615f]">
-                {' '}
-                ({agent.model ?? '?'}
-                {agent.agentType ? `, ${agent.agentType}` : ''})
-              </span>{' '}
-              · {agent.costUsd != null ? `$${agent.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(agent.tokens.input + agent.tokens.cacheRead)} · out{' '}
-              {fmtTokens(agent.tokens.output)} · {agent.toolCalls ?? 0} tools · {fmtDuration(agent.durationMs)}
-              {agent.prompt && (
-                <details className="pl-4">
-                  <summary className="cursor-pointer text-[#68615f] hover:text-[#96908d]">task given to this agent</summary>
-                  <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#332e2e] bg-[#141010] p-2 text-[10px] leading-relaxed text-[#8f8a87]">
-                    {agent.prompt}
-                  </pre>
-                </details>
-              )}
-              {agent.note && <div className="pl-4 text-[#68615f]">{agent.note}</div>}
-            </div>
-          ))}
-        </div>
-      ))}
-    </>
-  )
 }
 
-/** Re-renders once a second so live runtimes count up. */
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!active) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [active])
-  return active ? now : Date.now()
-}
-
-function RunRow({
-  run,
-  loopCreatedAt,
-  loopId,
-  critique,
-  expanded,
-  onToggle,
-}: {
-  run: RunRecord
-  loopCreatedAt: string
-  loopId: string
-  critique?: CritiqueRound
-  expanded: boolean
-  onToggle: () => void
-}): React.JSX.Element {
-  const hasDetail = Boolean(critique) || Boolean(run.metrics && run.metrics.agents.length > 0)
-  const score = run.verdict ? run.verdict.score.toFixed(2) : run.role === 'implement' ? '' : '—'
-  const now = useNow(run.status === 'running')
-  const startedMs = elapsedToRunStartMs(loopCreatedAt, run)
-  const runtimeTitle = startedMs == null ? undefined : `Started ${fmtDuration(startedMs)} into the loop`
-  return (
-    <>
-      <TableRow
-        className={`border-[#3b3636] ${hasDetail ? 'cursor-pointer hover:bg-white/[0.03]' : 'hover:bg-transparent'}`}
-        onClick={hasDetail ? onToggle : undefined}
-      >
-        <TableCell className="w-8 px-2 py-2.5 text-[#68615f]">
-          {hasDetail ? (expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />) : null}
-        </TableCell>
-        <TableCell className="px-2 py-2.5 text-[#ded9d6]">{run.role === 'reference' ? '—' : run.round}</TableCell>
-        <TableCell className="px-2 py-2.5">
-          <span className={ROLE_COLOR[run.role] ?? 'text-[#9ad1c6]'}>{run.role}</span>
-        </TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">{run.model ?? '—'}</TableCell>
-        <TableCell className="px-2 py-2.5">
-          {run.status === 'running' ? (
-            <span className="flex items-center gap-1.5 text-amber-300">
-              <LoaderCircle className="size-3 animate-spin" /> running
-            </span>
-          ) : (
-            <span className={STATUS_STYLES[run.status]?.split(' ')[1] ?? 'text-[#96908d]'}>{run.status}</span>
-          )}
-        </TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[#f2d98c]">
-          {score}
-          {run.verdict?.pass ? ' ✓' : ''}
-        </TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[#9fb2c8]">{run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'}</TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]">
-          {fmtTokens(run.inputTokens)} / {fmtTokens(run.outputTokens)}
-        </TableCell>
-        <TableCell className="px-2 py-2.5 font-mono text-[11px] text-[#96908d]" title={runtimeTitle}>
-          {fmtDuration(runtimeMs(run, now))}
-        </TableCell>
-      </TableRow>
-      {expanded && (critique || run.metrics) && (
-        <TableRow className="border-[#3b3636] hover:bg-transparent">
-          <TableCell colSpan={9} className="min-w-0 overflow-hidden whitespace-normal bg-[#151111] px-4 py-3">
-            <div className="min-w-0 max-w-full overflow-hidden">
-            {critique && (
-              <div className="mb-3">
-                <CritiqueRoundView loopId={loopId} round={critique} />
-              </div>
-            )}
-            <div className="grid gap-1.5 font-mono text-[11px]">
-              {(run.metrics?.agents ?? [])
-                .filter((agent) => agent.source !== 'workflow')
-                .map((agent) => (
-                  <div
-                    key={agent.id}
-                    className={
-                      agent.id === 'orchestrator' || agent.id === 'critic'
-                        ? 'text-[#ded9d6]'
-                        : // A worker launched by another agent nests under it.
-                          `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`
-                    }
-                  >
-                    {/* Transparent when idle so every row keeps the same indent. */}
-                    <span
-                      className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${agentActive(agent) ? 'animate-pulse bg-emerald-400' : 'bg-transparent'}`}
-                    />
-                    {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}
-                    {agent.label}
-                    <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out{' '}
-                    {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
-                  </div>
-                ))}
-              <WorkflowAgents agents={run.metrics?.agents ?? []} />
-              {Object.entries(run.metrics?.perModel ?? {}).map(([model, mu]) => (
-                <div key={model} className="text-[#9fb2c8]">
-                  {model}: {mu.costUsd != null ? `$${mu.costUsd.toFixed(2)}` : '$—'} · in {fmtTokens(mu.tokens.input)} · out {fmtTokens(mu.tokens.output)}
-                </div>
-              ))}
-            </div>
-            </div>
-          </TableCell>
-        </TableRow>
-      )}
-    </>
-  )
+function selectInList(current: LoopSnapshot[], detail: LoopSnapshot): LoopSnapshot[] {
+  return [detail, ...current.filter((item) => item.loop.id !== detail.loop.id).map(compactForList)]
 }
 
 export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.JSX.Element {
@@ -642,18 +56,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [impl, setImpl] = useState<ImplementerFields>(DEFAULT_IMPLEMENTER)
   const [critic, setCritic] = useState<CriticFields>(DEFAULT_CRITIC)
   const [research, setResearch] = useState<ResearchFields>(DEFAULT_RESEARCH)
-  const [asset, setAsset] = useState<AssetFields>(DEFAULT_ASSET)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
-  const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
-  const [selectedRound, setSelectedRound] = useState<number | null>(null)
-  const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
-  const [renaming, setRenaming] = useState(false)
-  const [titleDraft, setTitleDraft] = useState('')
-  const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
+  const [assets, setAssets] = useState<AssetFields>(DEFAULT_ASSET)
   const [reports, setReports] = useState<ReportRecord[]>([])
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null)
   const [editingRuns, setEditingRuns] = useState(false)
@@ -661,22 +64,42 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteFiles, setDeleteFiles] = useState(false)
   const [namingReport, setNamingReport] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [critiqueError, setCritiqueError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [historyWarning, setHistoryWarning] = useState<string | null>(null)
+  const [hasMoreHistories, setHasMoreHistories] = useState(false)
+  const [historyOffset, setHistoryOffset] = useState(0)
+  const [historyPageCount, setHistoryPageCount] = useState(0)
+  const [runPageBusy, setRunPageBusy] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [revealing, setRevealing] = useState<Set<string>>(new Set())
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set())
+  const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
+  const [selectedRound, setSelectedRound] = useState<number | null>(null)
+  const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
   const [referenceStudies, setReferenceStudies] = useState<Map<string, ReferenceStudy>>(new Map())
-  const [detailTab, setDetailTab] = useState<'activity' | 'references'>('activity')
+  const [exactPrompts, setExactPrompts] = useState<{ implement: string | null; critique: string | null }>({ implement: null, critique: null })
   const loopIdRef = useRef<string | null>(null)
   const mainRef = useRef<HTMLElement | null>(null)
-  const logRef = useRef<HTMLDivElement | null>(null)
-  const stickRef = useRef(true)
 
   useEffect(() => {
-    const removeUpdate = window.loops.onUpdate((snap) => {
-      if (!loopIdRef.current || snap.loop.id === loopIdRef.current) {
-        loopIdRef.current = snap.loop.id
-        setSnapshot(snap)
+    setExpandedRuns((current) => pruneExpandedLoops(current, snapshots))
+    setVisibleRounds((current) => pruneVisibleRoundCounts(current, snapshots, RUN_ROUNDS_PAGE_SIZE))
+  }, [snapshots])
+
+  useEffect(() => {
+    let disposed = false
+    const removeUpdate = window.loops.onUpdate((nextSnapshot) => {
+      if (!loopIdRef.current || nextSnapshot.loop.id === loopIdRef.current) {
+        loopIdRef.current = nextSnapshot.loop.id
+        setSnapshot((current) => applySnapshotUpdate(current, nextSnapshot))
       }
       setSnapshots((current) => {
-        const next = [snap, ...current.filter((item) => item.loop.id !== snap.loop.id)]
-        return next.sort((a, b) => b.loop.createdAt.localeCompare(a.loop.createdAt))
+        const retained = current.find((item) => item.loop.id === nextSnapshot.loop.id)
+        const detail = applySnapshotUpdate(retained ?? null, nextSnapshot)
+        const next = selectInList(current, detail)
+        return next.sort((a, b) => a.loop.createdAt < b.loop.createdAt ? 1 : a.loop.createdAt > b.loop.createdAt ? -1 : 0)
       })
     })
     const removeLog = window.loops.onLog((line) => {
@@ -696,212 +119,182 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       }
     })
     void (async () => {
-      const [all, snap, defaultDir, savedReports] = await Promise.all([
-        window.loops.list(),
-        window.loops.active(),
-        window.loops.defaultWorkspace(),
-        window.reports.list(),
-      ])
-      setSnapshots(all)
-      setReports(savedReports)
-      const initial = snap ?? all[0] ?? null
-      setWorkspaceDir((current) => current || initial?.loop.workspaceDir || defaultDir)
-      if (initial) {
-        loopIdRef.current = initial.loop.id
-        setSnapshot(initial)
-        setImpl({
-          orchestratorModel: initial.loop.models.orchestratorModel,
-          orchestratorEffort: initial.loop.models.orchestratorEffort,
-          subagentModel: initial.loop.models.subagentModel,
-          subagentEffort: initial.loop.models.subagentEffort,
-        })
-        setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
-        setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
-        setAsset({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
-        setExpandedRuns(new Set([initial.loop.id]))
-        setLines(await window.loops.log(initial.loop.id))
-      } else {
-        setComposing(true)
+      try {
+        const [page, active, defaultDir, savedReports] = await Promise.all([
+          window.loops.list(),
+          window.loops.active(),
+          window.loops.defaultWorkspace(),
+          window.reports.list(),
+        ])
+        if (disposed) return
+        setReports(savedReports)
+        setHasMoreHistories(page.hasMore)
+        setHistoryOffset(page.offset)
+        setHistoryPageCount(page.snapshots.length)
+        setHistoryWarning(page.hasMore ? `Showing the newest ${page.snapshots.length} of ${page.total} histories.` : null)
+        let initial = active
+        if (!initial && page.snapshots[0]) initial = await window.loops.get(page.snapshots[0].loop.id)
+        if (disposed) return
+        setSnapshots(initial ? selectInList(page.snapshots, initial) : page.snapshots)
+        setWorkspaceDir((current) => current || initial?.loop.workspaceDir || defaultDir)
+        if (initial) {
+          loopIdRef.current = initial.loop.id
+          setSnapshot(initial)
+          setImpl({ orchestratorModel: initial.loop.models.orchestratorModel, orchestratorEffort: initial.loop.models.orchestratorEffort, subagentModel: initial.loop.models.subagentModel, subagentEffort: initial.loop.models.subagentEffort })
+          setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
+          setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
+          setAssets({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
+          setExpandedRuns(new Set([initial.loop.id]))
+          const history = await window.loops.log(initial.loop.id)
+          if (!disposed) setLines(history)
+        } else {
+          setComposing(true)
+        }
+      } catch (cause) {
+        if (!disposed) {
+          setComposing(true)
+          setError(`Could not load runs: ${cause instanceof Error ? cause.message : 'IPC request failed.'}`)
+        }
+      } finally {
+        if (!disposed) setLoaded(true)
       }
-      setLoaded(true)
     })()
-    return () => {
-      removeUpdate()
-      removeLog()
-    }
+    return () => { disposed = true; removeUpdate(); removeLog() }
   }, [])
 
-  useEffect(() => {
-    if (stickRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
-  }, [lines])
-
   const [critiqueRounds, setCritiqueRounds] = useState<CritiqueRound[]>([])
-  const finishedCritiques = snapshot?.runs.filter((r) => r.role === 'critique' && r.status !== 'running').length ?? 0
-
+  const finishedCritiques = snapshot?.runs.filter((run) => run.role === 'critique' && run.status !== 'running').length ?? 0
   const activeLoopId = snapshot?.loop.id ?? null
-  const referenceSignature = snapshot?.runs
-    .filter((run) => run.role === 'reference')
-    .map((run) => `${run.id}:${run.status}:${run.inputTokens ?? 0}:${run.outputTokens ?? 0}`)
-    .join('|') ?? ''
+  const referenceSignature = `${activeLoopId ?? ''}:${snapshot?.loop.status ?? ''}:${snapshot?.totalRuns ?? snapshot?.runs.length ?? 0}`
 
   useEffect(() => {
     if (!activeLoopId) return
-    void window.loops.critique(activeLoopId).then(setCritiqueRounds)
+    let disposed = false
+    void window.loops.critique(activeLoopId).then((result) => {
+      if (disposed) return
+      if (result.ok) { setCritiqueRounds(result.value); setCritiqueError(null) }
+      else { setCritiqueRounds([]); setCritiqueError(`Could not load critique details: ${result.error}`) }
+    }).catch((cause: unknown) => {
+      if (!disposed) setCritiqueError(`Could not load critique details: ${cause instanceof Error ? cause.message : 'IPC request failed.'}`)
+    })
+    return () => { disposed = true }
   }, [activeLoopId, finishedCritiques])
+
   useEffect(() => {
     if (!activeLoopId || !snapshot) return
-    const runs = snapshot.runs.filter((run) => run.role === 'reference')
-    void Promise.all(runs.map((run) => window.loops.reference(activeLoopId, run.id))).then((studies) => {
-      setReferenceStudies(new Map(studies.filter((study): study is ReferenceStudy => study != null).map((study) => [study.runId, study])))
+    let disposed = false
+    void window.loops.reference(activeLoopId).then((study) => {
+      if (!disposed) setReferenceStudies(study ? new Map([[study.runId, study]]) : new Map())
+    }).catch((cause: unknown) => {
+      if (!disposed) setError(`Could not load reference study: ${errorMessage(cause, 'IPC request failed.')}`)
     })
+    return () => { disposed = true }
   }, [activeLoopId, referenceSignature])
+
   useEffect(() => {
     if (!activeLoopId) return
-    void window.loops.playState(activeLoopId).then(setPlay)
-    return window.loops.onPlayState((state) => {
-      if (state.loopId === activeLoopId) setPlay(state)
+    let disposed = false
+    const round = selectedRound ?? 1
+    setExactPrompts({ implement: null, critique: null })
+    void Promise.all([
+      window.loops.prompt(activeLoopId, 'implement', round),
+      window.loops.prompt(activeLoopId, 'critique', round),
+    ]).then(([implement, critique]) => {
+      if (!disposed) setExactPrompts({
+        implement: implement.ok ? implement.value.prompt : null,
+        critique: critique.ok ? critique.value.prompt : null,
+      })
+    }).catch((cause: unknown) => {
+      if (!disposed) setError(`Could not load exact prompts: ${errorMessage(cause, 'IPC request failed.')}`)
     })
+    return () => { disposed = true }
+  }, [activeLoopId, selectedRound])
+
+  useEffect(() => {
+    if (!activeLoopId) return
+    let disposed = false
+    void window.loops.playState(activeLoopId).then((state) => {
+      if (!disposed) setPlay(state)
+    }).catch((cause: unknown) => {
+      if (!disposed) setPlay({ running: false, url: null, error: `Could not load game process state: ${errorMessage(cause, 'IPC request failed.')}`, round: null })
+    })
+    const removePlayState = window.loops.onPlayState((state) => { if (!disposed && state.loopId === activeLoopId) setPlay(state) })
+    return () => { disposed = true; removePlayState() }
   }, [activeLoopId])
 
   const loop = snapshot?.loop ?? null
-  const running = loop?.status === 'running'
-  const now = useNow(running)
-  const liveRun = snapshot?.runs.find((r) => r.status === 'running') ?? null
-  const referenceRuns = snapshot?.runs.filter((run) => run.role === 'reference') ?? []
-  const activeReferenceRun = referenceRuns.at(-1)
-  const activeReferenceStudy = activeReferenceRun ? referenceStudies.get(activeReferenceRun.id) : undefined
-  const visibleRuns = selectedRound == null ? (snapshot?.runs ?? []) : (snapshot?.runs.filter((run) => run.round === selectedRound) ?? [])
-  const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
-  const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
-  const filteredLines = visibleLines.filter((line) => lineMatchesFilter(line, logFilter))
-  const initialImplementPrompt = snapshot?.runs.find((run) => run.role === 'implement')?.prompt ?? ''
-  const systemPrompt = loop && initialImplementPrompt.startsWith(loop.prompt)
-    ? initialImplementPrompt.slice(loop.prompt.length).trim()
-    : initialImplementPrompt
-  // The rubric is deterministic loop configuration, so show it from the
-  // moment a loop is created instead of waiting for the first critique job.
-  const critiqueRubric = snapshot?.runs.find((run) => run.role === 'critique')?.prompt
-    ?? (loop ? buildCriticPrompt(loop.prompt, 1, snapshot?.runs.some((run) => run.role === 'reference') ? `reference/${loop.id}` : 'reference', engineGateRules()) : '')
-  const detailStatus = selectedRound == null
-    ? loop?.status
-    : visibleRuns.some((run) => run.status === 'running')
-      ? 'running'
-      : (visibleRuns.at(-1)?.status ?? 'queued')
-  const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
-  // The exact prompts those runs were launched with — the implement one carries
-  // the previous round's critic verdict and findings baked in.
-  const roundImplementRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'implement').at(-1)
-  const roundCritiqueRun = selectedRound == null ? undefined : visibleRuns.filter((run) => run.role === 'critique').at(-1)
-  const totals = visibleRuns.reduce(
-    (sum, run) => ({
-      costUsd: sum.costUsd + (run.costUsd ?? 0),
-      inputTokens: sum.inputTokens + (run.inputTokens ?? 0),
-      outputTokens: sum.outputTokens + (run.outputTokens ?? 0),
-      durationMs: sum.durationMs + (runtimeMs(run, now) ?? 0),
-      bestScore: Math.max(sum.bestScore, run.verdict?.score ?? 0),
-      hasScore: sum.hasScore || Boolean(run.verdict),
-    }),
-    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
-  )
-  const totalTokens = totals.inputTokens + totals.outputTokens
-  /** Wall-clock span of the loop, for the summary card only — the table shows per-attempt runtime. */
-  const visibleElapsedMs = visibleRuns.reduce<number | null>((latest, run) => {
-    const elapsed = loop ? elapsedThroughRunMs(loop.createdAt, run) : null
-    return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
-  }, null)
-  const playingSelectedBuild = play.running && play.round === selectedRound
-  const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
-  const selectedRoundPlayable = selectedRevision != null
 
   const start = async (): Promise<void> => {
     setBusy(true)
     setError(null)
     setNotice(null)
     try {
-      const result = await window.loops.start({
-        prompt,
-        workspaceDir,
-        maxRounds: Number(maxRounds) || 10,
-        budgetUsd: budget.trim() ? Number(budget) : null,
-        ...impl,
-        ...critic,
-        ...research,
-        ...asset,
-      })
-      if (!result.ok) {
-        setError(result.error ?? 'Failed to start.')
-        return
-      }
+      const result = await window.loops.start({ prompt, workspaceDir, maxRounds: Number(maxRounds) || 10, budgetUsd: budget.trim() ? Number(budget) : null, ...impl, ...critic, ...research, ...assets })
+      if (!result.ok) { setError(result.error ?? 'Failed to start.'); return }
       loopIdRef.current = result.loopId ?? null
-      setSelectedReportId(null)
       setLines([])
-      setExpanded(new Set())
       setSelectedRound(null)
-      setLogFilter(ALL_LOG_FILTER)
-      setDetailTab('activity')
       setComposing(false)
+      setSelectedReportId(null)
       setProjectOpen(false)
-      const snap = result.loopId ? await window.loops.get(result.loopId) : await window.loops.active()
-      if (snap) {
-        setSnapshot(snap)
-        setSnapshots((current) => [snap, ...current.filter((item) => item.loop.id !== snap.loop.id)])
-        setExpandedRuns((current) => new Set(current).add(snap.loop.id))
+      const nextSnapshot = result.loopId ? await window.loops.get(result.loopId) : await window.loops.active()
+      if (nextSnapshot) {
+        setSnapshot(nextSnapshot)
+        setSnapshots((current) => selectInList(current, nextSnapshot))
+        setExpandedRuns((current) => new Set(current).add(nextSnapshot.loop.id))
       }
       setPrompt('')
+    } catch (cause) {
+      setError(`Could not start run: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
   }
 
   const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
-    loopIdRef.current = next.loop.id
-    setSelectedReportId(null)
-    setSnapshot(next)
-    setImpl({
-      orchestratorModel: next.loop.models.orchestratorModel,
-      orchestratorEffort: next.loop.models.orchestratorEffort,
-      subagentModel: next.loop.models.subagentModel,
-      subagentEffort: next.loop.models.subagentEffort,
-    })
-    setCritic({ criticModel: next.loop.models.criticModel, criticEffort: next.loop.models.criticEffort })
-    setResearch({ researchModel: next.loop.models.researchModel, researchEffort: next.loop.models.researchEffort })
-    setAsset({ assetModel: next.loop.models.assetModel, assetEffort: next.loop.models.assetEffort })
-    setSelectedRound(round)
-    setLogFilter(ALL_LOG_FILTER)
-    setDetailTab('activity')
-    setRenaming(false)
-    setComposing(false)
-    setProjectOpen(false)
-    setExpanded(new Set())
-    setNotice(null)
-    setLines(await window.loops.log(next.loop.id))
+    setBusy(true)
+    setError(null)
+    try {
+      const detail = await window.loops.get(next.loop.id)
+      if (!detail) throw new Error('Run history is no longer available.')
+      loopIdRef.current = detail.loop.id
+      setSnapshot(detail)
+      setSnapshots((current) => selectInList(current, detail))
+      setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: detail.loop.models.orchestratorEffort, subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
+      setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
+      setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
+      setSelectedRound(round)
+      setComposing(false)
+      setSelectedReportId(null)
+      setProjectOpen(false)
+      setNotice(null)
+      setLines(await window.loops.log(detail.loop.id))
+    } catch (cause) {
+      setLines([])
+      setError(`Could not load run history: ${errorMessage(cause, 'IPC request failed.')}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const beginNewRun = (): void => {
     setComposing(true)
     setSelectedReportId(null)
     setSelectedRound(null)
-    setDetailTab('activity')
     setPrompt('')
     setError(null)
     setNotice(null)
     setProjectOpen(false)
   }
 
-  const saveTitle = async (): Promise<void> => {
-    if (!loop) return
-    const title = titleDraft.trim()
-    if (!title || title === loop.title) {
-      setRenaming(false)
-      setTitleDraft(loop.title)
-      return
-    }
-    const updated = await window.loops.rename(loop.id, title)
-    if (!updated) return
+  const renameLoop = async (title: string): Promise<OperationResult<LoopRecord>> => {
+    if (!loop) return { ok: false, error: 'Run is no longer selected.' }
+    const result = await window.loops.rename(loop.id, title)
+    if (!result.ok) return result
+    const updated = result.value
     setSnapshot((current) => current && current.loop.id === updated.id ? { ...current, loop: updated } : current)
     setSnapshots((current) => current.map((item) => item.loop.id === updated.id ? { ...item, loop: updated } : item))
-    setTitleDraft(updated.title)
-    setRenaming(false)
+    return result
   }
 
   const importRun = async (): Promise<void> => {
@@ -911,28 +304,26 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     try {
       const result = await window.loops.importRun()
       if (result.canceled) return
-      if (!result.ok || !result.snapshot) {
-        setError(result.error ?? 'Failed to import run.')
-        return
-      }
+      if (!result.ok || !result.snapshot) { setError(result.error ?? 'Failed to import run.'); return }
       const imported = result.snapshot
-      const importedSnapshots = result.snapshots ?? [imported]
-      const importedIds = new Set(importedSnapshots.map((item) => item.loop.id))
+      const page = await window.loops.list()
       loopIdRef.current = imported.loop.id
-      setSelectedReportId(null)
       setSnapshot(imported)
-      setSnapshots((current) => [...importedSnapshots, ...current.filter((item) => !importedIds.has(item.loop.id))])
+      setSnapshots(selectInList(page.snapshots, imported))
+      setHasMoreHistories(page.hasMore)
+      setHistoryOffset(page.offset)
+      setHistoryPageCount(page.snapshots.length)
+      setHistoryWarning(page.hasMore ? `Showing the newest ${page.snapshots.length} of ${page.total} histories.` : null)
       setWorkspaceDir(imported.loop.workspaceDir)
       setLines(await window.loops.log(imported.loop.id, LOG_LIMIT))
-      setExpanded(new Set())
       setExpandedRuns((current) => new Set(current).add(imported.loop.id))
       setSelectedRound(null)
-      setLogFilter(ALL_LOG_FILTER)
-      setDetailTab('activity')
-      setRenaming(false)
       setProjectOpen(false)
       setComposing(false)
+      setSelectedReportId(null)
       setNotice(`Opened the complete run folder at ${imported.loop.workspaceDir}. Its project files and SQLite history remain together.`)
+    } catch (cause) {
+      setError(`Could not import run: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
@@ -946,11 +337,10 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     try {
       const result = await window.loops.exportRun(loop.id)
       if (result.canceled) return
-      if (!result.ok) {
-        setError(result.error ?? 'Failed to export run.')
-        return
-      }
-      setNotice(`Exported the complete project and SQLite history to ${result.filePath ?? 'the selected folder'}.`)
+      if (!result.ok) { setError(result.error ?? 'Failed to export run.'); return }
+      setNotice(`Exported the complete project and SQLite history to ${result.filePath ?? 'the selected folder'}. ${result.warning ?? ''}`.trim())
+    } catch (cause) {
+      setError(`Could not export run: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
@@ -969,7 +359,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         setSnapshots(remaining)
         setCheckedRuns((current) => new Set([...current].filter((id) => !removed.has(id))))
         if (loopIdRef.current && removed.has(loopIdRef.current)) {
-          // The open run just went away, so land somewhere that still exists.
           const next = remaining[0] ?? null
           loopIdRef.current = next?.loop.id ?? null
           setSnapshot(next)
@@ -977,14 +366,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           setLines(next ? await window.loops.log(next.loop.id) : [])
           if (!next) setComposing(true)
         }
-        setNotice(
-          `Deleted ${removed.size} ${removed.size === 1 ? 'run' : 'runs'}${deleteFiles ? ' and removed the project folders from disk' : '. The project folders are still on disk, so Import run can bring them back'}.`,
-        )
+        setNotice(`Deleted ${removed.size} ${removed.size === 1 ? 'run' : 'runs'}${deleteFiles ? ' and removed the project folders from disk' : '. The project folders remain on disk and can be imported again'}.`)
       }
       if (result.errors.length > 0) setError(result.errors.join(' '))
       setDeleteOpen(false)
       setDeleteFiles(false)
       if (removed.size > 0 && checkedRuns.size === removed.size) setEditingRuns(false)
+    } catch (cause) {
+      setError(`Could not delete runs: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
@@ -996,16 +385,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setNotice(null)
     try {
       const created = await window.reports.create(name, [...checkedRuns])
-      if (!created) {
-        setError('Could not create that report.')
-        return
-      }
+      if (!created) { setError('Could not create that report.'); return }
       setReports((current) => [created, ...current])
       setSelectedReportId(created.id)
       setNamingReport(false)
       setEditingRuns(false)
       setCheckedRuns(new Set())
       setComposing(false)
+    } catch (cause) {
+      setError(`Could not create report: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
@@ -1018,36 +406,131 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     try {
       const result = await window.reports.importReport()
       if (result.canceled) return
-      if (!result.ok || !result.report) {
-        setError(result.error ?? 'Could not import that report.')
-        return
-      }
+      if (!result.ok || !result.report) { setError(result.error ?? 'Could not import that report.'); return }
       const imported = result.report
-      setReports((current) => [imported, ...current])
+      setReports((current) => [imported, ...current.filter((item) => item.id !== imported.id)])
       setSelectedReportId(imported.id)
       setComposing(false)
-      setNotice(`Opened "${imported.name}" with ${imported.rows.length} ${imported.rows.length === 1 ? 'run' : 'runs'} in it.`)
+      setNotice(`Opened “${imported.name}” with ${imported.rows.length} ${imported.rows.length === 1 ? 'run' : 'runs'}.`)
+    } catch (cause) {
+      setError(`Could not import report: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
       setBusy(false)
     }
   }
 
-  const selectedReport = reports.find((item) => item.id === selectedReportId) ?? null
-  const composeVisible = !selectedReport && (composing || !loop)
+  const loadRunPage = async (offset: number): Promise<void> => {
+    if (!snapshot || runPageBusy) return
+    setRunPageBusy(true)
+    setError(null)
+    try {
+      const page = await window.loops.get(snapshot.loop.id, offset)
+      if (!page) throw new Error('Run history is no longer available.')
+      setSnapshot(page)
+      setSnapshots((current) => selectInList(current, page))
+      setSelectedRound(null)
+    } catch (cause) {
+      setError(`Could not load attempt page: ${errorMessage(cause, 'IPC request failed.')}`)
+    } finally {
+      setRunPageBusy(false)
+    }
+  }
+
+  const loadHistoryPage = async (offset: number): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const page = await window.loops.list(offset)
+      setSnapshots(snapshot ? selectInList(page.snapshots, snapshot) : page.snapshots)
+      setHasMoreHistories(page.hasMore)
+      setHistoryOffset(page.offset)
+      setHistoryPageCount(page.snapshots.length)
+      const first = page.snapshots.length > 0 ? page.offset + 1 : 0
+      const last = page.offset + page.snapshots.length
+      setHistoryWarning(page.total > page.snapshots.length ? `Showing histories ${first}–${last} of ${page.total}.` : null)
+    } catch (cause) {
+      setError(`Could not load older histories: ${errorMessage(cause, 'IPC request failed.')}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revealStream = async (input: RevealStreamInput): Promise<void> => {
+    const key = `${input.runId}:${input.stream}:${input.agentId ?? ''}`
+    if (revealing.has(key)) return
+    setRevealing((current) => new Set(current).add(key))
+    setError(null)
+    try {
+      const result = await window.loops.revealStream(input)
+      if (!result.ok) setError(result.error ?? 'Could not reveal the raw stream.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not reveal the raw stream.')
+    } finally {
+      setRevealing((current) => { const next = new Set(current); next.delete(key); return next })
+    }
+  }
+
+  const resumeLoop = async (): Promise<void> => {
+    if (!loop || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.loops.resume(loop.id)
+      if (!result.ok) setError(result.error ?? 'Could not resume.')
+    } catch (cause) {
+      setError(`Could not resume: ${errorMessage(cause, 'IPC request failed.')}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startPlay = async (round: number | null): Promise<void> => {
+    if (!loop) return
+    try {
+      setPlay(await window.loops.playStart(loop.id, round))
+    } catch (cause) {
+      setPlay({ running: false, url: null, error: `Could not start game process: ${errorMessage(cause, 'IPC request failed.')}`, round })
+    }
+  }
+
+  const stopPlay = async (): Promise<void> => {
+    if (!loop) return
+    try {
+      await window.loops.playStop(loop.id)
+    } catch (cause) {
+      setPlay((current) => ({ ...current, error: `Could not stop game process: ${errorMessage(cause, 'IPC request failed.')}` }))
+    }
+  }
+
+  const stopLoop = async (): Promise<void> => {
+    if (!loop || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.loops.stop(loop.id)
+      if (!result.ok) setError(result.error)
+    } catch (cause) {
+      setError(`Could not stop run: ${errorMessage(cause, 'IPC request failed.')}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pickWorkspace = async (): Promise<void> => {
+    try {
+      const directory = await window.loops.pickWorkspace()
+      if (directory) setWorkspaceDir(directory)
+      setProjectOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not choose a project folder.')
+    }
+  }
+
   const projects = [...new Set([workspaceDir, ...snapshots.map((item) => item.loop.workspaceDir)].filter(Boolean))]
+  const selectedReport = reports.find((item) => item.id === selectedReportId) ?? null
 
-  const selectDetailTab = (tab: 'activity' | 'references'): void => {
-    setDetailTab(tab)
-    requestAnimationFrame(() => mainRef.current?.scrollTo({ top: 0 }))
-  }
-
-  if (!loaded) {
-    return (
-      <main className="grid h-screen place-items-center bg-[#100d0e]">
-        <LoaderCircle className="size-5 animate-spin text-[#68615f]" />
-      </main>
-    )
-  }
+  if (!loaded) return <main className="grid h-screen place-items-center bg-[#100d0e]"><LoaderCircle className="size-5 animate-spin text-[#68615f]" /></main>
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#100d0e]">
@@ -1065,708 +548,112 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         onImportRun={() => void importRun()}
         onSelectRun={(next) => void selectRun(next)}
         onSelectRound={(next, round) => void selectRun(next, round)}
-        onToggleRun={(loopId) =>
-          setExpandedRuns((current) => {
-            const next = new Set(current)
-            if (next.has(loopId)) next.delete(loopId)
-            else next.add(loopId)
-            return next
-          })
-        }
-        onLoadMore={(loopId) =>
-          setVisibleRounds((current) => ({ ...current, [loopId]: (current[loopId] ?? ROUNDS_PAGE_SIZE) + ROUNDS_PAGE_SIZE }))
-        }
+        onToggleRun={(loopId) => setExpandedRuns((current) => { const next = new Set(current); if (next.has(loopId)) next.delete(loopId); else next.add(loopId); return next })}
+        onLoadMore={(loopId) => setVisibleRounds((current) => ({ ...current, [loopId]: (current[loopId] ?? RUN_ROUNDS_PAGE_SIZE) + RUN_ROUNDS_PAGE_SIZE }))}
         onOpenAgents={onOpenAgents}
         onToggleEditing={() => {
           setEditingRuns((current) => !current)
           setCheckedRuns(new Set())
         }}
-        onToggleChecked={(loopId) =>
-          setCheckedRuns((current) => {
-            const next = new Set(current)
-            if (next.has(loopId)) next.delete(loopId)
-            else next.add(loopId)
-            return next
-          })
-        }
-        onToggleAllChecked={() =>
-          setCheckedRuns((current) =>
-            current.size === snapshots.length ? new Set() : new Set(snapshots.map((item) => item.loop.id)),
-          )
-        }
-        onDeleteChecked={() => {
-          setDeleteFiles(false)
-          setDeleteOpen(true)
-        }}
+        onToggleChecked={(loopId) => setCheckedRuns((current) => {
+          const next = new Set(current)
+          if (next.has(loopId)) next.delete(loopId)
+          else next.add(loopId)
+          return next
+        })}
+        onToggleAllChecked={() => setCheckedRuns((current) => current.size === snapshots.length ? new Set() : new Set(snapshots.map((item) => item.loop.id)))}
+        onDeleteChecked={() => { setDeleteFiles(false); setDeleteOpen(true) }}
         onCreateReport={() => setNamingReport(true)}
         onSelectReport={(report) => {
           setSelectedReportId(report.id)
           setComposing(false)
-          setRenaming(false)
           setNotice(null)
           setError(null)
         }}
         onImportReport={() => void importReport()}
+        onLoadOlderHistories={() => void loadHistoryPage(historyOffset + historyPageCount)}
+        onLoadNewestHistories={() => void loadHistoryPage(0)}
+        busy={busy}
+        historyWarning={historyWarning}
+        hasMoreHistories={hasMoreHistories}
+        hasNewerHistories={historyOffset > 0}
       />
       <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-[min(980px,calc(100%-48px))] py-12 max-sm:w-[calc(100%-28px)] max-sm:py-7">
-
-      {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
-      {error && !composeVisible && (
-        <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs leading-relaxed text-[#f0aaaa]">{error}</p>
-      )}
-
-      {selectedReport ? (
-        <ReportPanel
-          report={selectedReport}
-          snapshots={snapshots}
-          onReplace={(next) => setReports((current) => current.map((item) => (item.id === next.id ? next : item)))}
-          onDeleted={(reportId) => {
-            setReports((current) => current.filter((item) => item.id !== reportId))
-            setSelectedReportId(null)
-            setNotice('Deleted that report. The runs it listed are untouched.')
-          }}
-          onNotice={(text) => {
-            setNotice(text)
-            setError(null)
-          }}
-          onError={(text) => {
-            setError(text)
-            setNotice(null)
-          }}
-        />
-      ) : composing || !loop ? (
-        <Card className="gap-0 overflow-visible border-[#393433] bg-[#1d1919] p-0 shadow-2xl shadow-black/20">
-          <div className="border-b border-[#393433] p-3">
-            <ProjectChooser
-              value={workspaceDir}
-              projects={projects}
-              open={projectOpen}
-              onOpenChange={setProjectOpen}
-              onChange={setWorkspaceDir}
-              onAddProject={() => {
-                void window.loops.pickWorkspace().then((dir) => {
-                  if (dir) setWorkspaceDir(dir)
-                  setProjectOpen(false)
-                })
+          {notice && <p className="mb-5 rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-300">{notice}</p>}
+          {error && selectedReport && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
+          {selectedReport ? (
+            <ReportPanel
+              report={selectedReport}
+              snapshots={snapshots}
+              onReplace={(next) => setReports((current) => current.map((item) => item.id === next.id ? next : item))}
+              onDeleted={(reportId) => {
+                setReports((current) => current.filter((item) => item.id !== reportId))
+                setSelectedReportId(null)
+                setNotice('Deleted that report. The runs it listed are untouched.')
               }}
+              onNotice={(text) => { setNotice(text); setError(null) }}
+              onError={(text) => { setError(text); setNotice(null) }}
             />
-          </div>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={14}
-            spellCheck={false}
-            autoFocus
-            placeholder="What do you want to work on?"
-            className="min-h-[360px] w-full resize-y bg-transparent px-5 py-5 text-[15px] leading-relaxed text-[#eeeae7] outline-none placeholder:text-[#68615f]"
-          />
-          <div className="mx-5 mb-4 grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
-            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-              <span className="text-xs text-[#7d7772]">Orchestrator</span>
-              <Select
-                value={impl.orchestratorModel}
-                onValueChange={(value) =>
-                  setImpl((current) => ({
-                    ...current,
-                    orchestratorModel: value,
-                    // ultracode and ultra belong to different CLIs, so a switch
-                    // between harnesses must not carry the old level across.
-                    orchestratorEffort: orchestratorEfforts(value).includes(current.orchestratorEffort)
-                      ? current.orchestratorEffort
-                      : 'high',
-                  }))
-                }
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select value={impl.orchestratorEffort} onValueChange={(value) => setImpl((current) => ({ ...current, orchestratorEffort: value }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {orchestratorEfforts(impl.orchestratorModel).map((effort) => (
-                    <SelectItem key={effort} value={effort}>
-                      {effort === 'ultracode' ? 'ultracode (xhigh + workflows)' : effort === 'ultra' ? 'ultra (max + delegation)' : effort}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-              <span className="text-xs text-[#7d7772]">Subagents</span>
-              <Select
-                value={impl.subagentModel ?? SOLO_SUBAGENT}
-                onValueChange={(value) => setImpl((current) => ({ ...current, subagentModel: value === SOLO_SUBAGENT ? null : value }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-                  <SelectItem value={SOLO_SUBAGENT}>none (solo)</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={impl.subagentEffort}
-                onValueChange={(value) => setImpl((current) => ({ ...current, subagentEffort: value }))}
-                disabled={impl.subagentModel === null}
-              >
-                <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-              <span className="text-xs text-[#7d7772]">Research</span>
-              <Select
-                value={research.researchModel ?? SOLO_SUBAGENT}
-                onValueChange={(value) => setResearch((current) => ({ ...current, researchModel: value === SOLO_SUBAGENT ? null : value }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-                  <SelectItem value={SOLO_SUBAGENT}>none (no fan-out)</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={research.researchEffort}
-                onValueChange={(value) => setResearch((current) => ({ ...current, researchEffort: value }))}
-                disabled={research.researchModel === null}
-              >
-                <SelectTrigger className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-              <span className="text-xs text-[#7d7772]">Assets</span>
-              <Select
-                value={asset.assetModel ?? SOLO_SUBAGENT}
-                onValueChange={(value) => setAsset((current) => ({ ...current, assetModel: value === SOLO_SUBAGENT ? null : value }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-                  <SelectItem value={SOLO_SUBAGENT}>none (no asset phase)</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={asset.assetEffort}
-                onValueChange={(value) => setAsset((current) => ({ ...current, assetEffort: value }))}
-                disabled={asset.assetModel === null}
-              >
-                <SelectTrigger className={asset.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-              <span className="text-xs text-[#7d7772]">Critic</span>
-              <Select
-                value={critic.criticModel}
-                onValueChange={(value) => setCritic((current) => ({ ...current, criticModel: value }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select
-                value={critic.criticEffort}
-                onValueChange={(value) => setCritic((current) => ({ ...current, criticEffort: value }))}
-              >
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
-              <label className="grid gap-1.5 text-xs text-[#96908d]">
-                Max rounds
-                <input value={maxRounds} onChange={(event) => setMaxRounds(event.target.value)} inputMode="numeric" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none focus:border-[#5a524f]" />
-              </label>
-              <label className="grid gap-1.5 text-xs text-[#96908d]">
-                Budget $ (optional)
-                <input value={budget} onChange={(event) => setBudget(event.target.value)} inputMode="decimal" placeholder="none" className="h-9 rounded-lg border border-[#393433] bg-[#141010] px-3 text-xs text-[#eeeae7] outline-none placeholder:text-[#68615f] focus:border-[#5a524f]" />
-              </label>
-            </div>
-            <p className="text-xs leading-relaxed text-[#7d7772]">
-              {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
-              {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
-              {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
-              {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}{' '}
-              {asset.assetModel ? `Each cast entry gets its own sculptor on ${modelLabel(asset.assetModel)} at ${asset.assetEffort} effort.` : 'No asset phase — implement rounds sculpt their own models.'}
-            </p>
-          </div>
-          {error && <p className="mx-5 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
-          <div className="flex justify-end px-5 pb-5">
-            <Button
-              className="h-10 bg-[#eeeae7] px-5 text-[#1c1716] hover:bg-white"
-              disabled={busy || !prompt.trim() || !workspaceDir}
-              onClick={() => void start()}
-            >
-              {busy ? <LoaderCircle className="animate-spin" /> : null} Create
-            </Button>
-          </div>
-        </Card>
-      ) : (
-        <>
-          {selectedRound != null && (
-            <button
-              type="button"
-              onClick={() => setSelectedRound(null)}
-              className="mb-4 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#8f8885] hover:bg-white/[0.04] hover:text-[#ded9d6]"
-            >
-              <ArrowLeft className="size-3.5" /> Run detail
-            </button>
-          )}
-          <div className={`${selectedRound == null ? 'mb-2' : 'mb-6'} flex max-w-3xl items-center gap-2`}>
-            {selectedRound == null && renaming ? (
-              <>
-                <input
-                  value={titleDraft}
-                  onChange={(event) => setTitleDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') void saveTitle()
-                    if (event.key === 'Escape') {
-                      setTitleDraft(loop.title)
-                      setRenaming(false)
-                    }
-                  }}
-                  autoFocus
-                  maxLength={80}
-                  aria-label="Run name"
-                  className="h-10 min-w-0 flex-1 rounded-lg border border-[#514947] bg-[#181414] px-3 text-[20px] font-semibold text-[#eeeae7] outline-none focus:border-[#716763]"
-                />
-                <button type="button" onClick={() => void saveTitle()} className="grid size-9 place-items-center rounded-lg text-[#9f9895] hover:bg-white/[0.05] hover:text-white" aria-label="Save run name">
-                  <Check className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTitleDraft(loop.title)
-                    setRenaming(false)
-                  }}
-                  className="grid size-9 place-items-center rounded-lg text-[#77706d] hover:bg-white/[0.05] hover:text-white"
-                  aria-label="Cancel rename"
-                >
-                  <X className="size-4" />
-                </button>
-              </>
-            ) : (
-              <>
-                <h1 className="line-clamp-2 text-[22px] font-semibold leading-tight tracking-[-0.02em] text-[#eeeae7]" title={loop.title}>
-                  {selectedRound == null ? loop.title : `Round ${selectedRound}`}
-                </h1>
-                {selectedRound == null && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTitleDraft(loop.title)
-                      setRenaming(true)
-                    }}
-                    className="grid size-8 shrink-0 place-items-center rounded-lg text-[#68615f] hover:bg-white/[0.05] hover:text-[#ded9d6]"
-                    aria-label="Rename run"
-                  >
-                    <Pencil className="size-3.5" />
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          {selectedRound == null && <RunModelSummary models={loop.models} />}
-          <div className="mb-5 flex flex-wrap items-center gap-3">
-            <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus ?? ''] ?? ''}`}>{detailStatus}</Badge>
-            <span className="text-sm text-[#ded9d6]">
-              {selectedRound == null
-                ? liveRun?.role === 'reference'
-                  ? 'reference study · rounds not started'
-                  : `round ${loop.round}/${loop.maxRounds}`
-                : visibleRuns.length === 1 ? '1 attempt' : `${visibleRuns.length} attempts`}
-            </span>
-            <span className="font-mono text-sm text-[#9fb2c8]">
-              ${totals.costUsd.toFixed(2)} equiv
-            </span>
-            <span className="font-mono text-sm text-[#b7cbe0]" title={`${totalTokens.toLocaleString()} combined tokens`}>
-              {fmtTokens(totalTokens)} tokens
-            </span>
-            {selectedRevision && (
-              <span className="font-mono text-[11px] text-[#8f8885]" title={selectedRevision}>
-                commit {selectedRevision.slice(0, 12)}
-              </span>
-            )}
-            <span className="max-w-[320px] truncate font-mono text-[11px] text-[#68615f]" title={loop.workspaceDir}>
-              {loop.workspaceDir}
-            </span>
-            {selectedRound == null && <div className="ml-auto flex items-center gap-2">
-              {playingSelectedBuild && play.url && (
-                <button
-                  type="button"
-                  onClick={() => void window.loops.playStart(loop.id)}
-                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20"
-                  title="Open in browser"
-                >
-                  {play.url}
-                </button>
-              )}
-              {playingSelectedBuild ? (
-                <Button
-                  variant="outline"
-                  className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
-                  onClick={() => void window.loops.playStop(loop.id)}
-                >
-                  <Square /> Stop game
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  className="border-emerald-600/50 bg-transparent text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
-                  onClick={() => void window.loops.playStart(loop.id).then(setPlay)}
-                >
-                  <Play className="fill-current" /> Play
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
-                disabled={busy || running}
-                title={running ? 'Stop the run first to export an exact folder snapshot' : 'Export the complete project folder and SQLite history'}
-                onClick={() => void exportRun()}
-              >
-                <Upload /> Export
-              </Button>
-              {running ? (
-                <Button
-                  variant="outline"
-                  className="border-[#6b4a44] bg-transparent text-[#f0b8aa] hover:bg-[#3a2622] hover:text-[#f7cec2]"
-                  onClick={() => void window.loops.stop(loop.id)}
-                >
-                  <Square className="fill-current" /> Stop
-                </Button>
-              ) : (
-                <>
-                  {(loop.status === 'stopped' || loop.status === 'exhausted' || loop.status === 'failed') && (
-                    <Button
-                      variant="outline"
-                      className="border-amber-500/50 bg-transparent text-amber-300 hover:bg-amber-500/10 hover:text-amber-200"
-                      onClick={() =>
-                        void window.loops.resume(loop.id).then((result) => {
-                          if (!result.ok) setError(result.error ?? 'Could not resume.')
-                        })
-                      }
-                    >
-                      <Play className="fill-current" /> Resume loop
-                    </Button>
-                  )}
-                  <Button
-                    variant="outline"
-                    className="border-[#494343] bg-transparent text-[#eeeae7] hover:bg-white/5 hover:text-white"
-                    onClick={beginNewRun}
-                  >
-                    <Plus /> New run
-                  </Button>
-                </>
-              )}
-            </div>}
-            {selectedRound != null && <div className="ml-auto flex items-center gap-2">
-              {playingSelectedBuild && play.url && (
-                <button
-                  type="button"
-                  onClick={() => void window.loops.playStart(loop.id, selectedRound)}
-                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20"
-                  title="Open this round in the browser"
-                >
-                  {play.url}
-                </button>
-              )}
-              {playingSelectedBuild ? (
-                <Button
-                  variant="outline"
-                  className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
-                  onClick={() => void window.loops.playStop(loop.id)}
-                >
-                  <Square /> Stop game
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  className="border-emerald-600/50 bg-transparent text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
-                  disabled={!selectedRoundPlayable}
-                  title={selectedRoundPlayable ? `Launch commit ${selectedRevision.slice(0, 12)} from round ${selectedRound}` : 'No Git revision was recorded for this round'}
-                  onClick={() => void window.loops.playStart(loop.id, selectedRound).then(setPlay)}
-                >
-                  <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
-                </Button>
-              )}
-            </div>}
-          </div>
-
-          {selectedRound == null && loop.stopReason && !running && (
-            <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>
-          )}
-
-          {play.error && (
-            <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>
-          )}
-          {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
-
-          {selectedRound == null && (
-            <div role="tablist" aria-label="Run detail" className="mb-5 flex border-b border-[#332e2e]">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={detailTab === 'activity'}
-                onClick={() => selectDetailTab('activity')}
-                className={`relative px-3 py-2.5 text-[12px] transition-colors ${
-                  detailTab === 'activity' ? 'text-[#eeeae7] after:absolute after:inset-x-0 after:bottom-[-1px] after:h-px after:bg-[#c9b5aa]' : 'text-[#77706d] hover:text-[#c9c3c0]'
-                }`}
-              >
-                Run activity
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={detailTab === 'references'}
-                onClick={() => selectDetailTab('references')}
-                className={`relative flex items-center gap-2 px-3 py-2.5 text-[12px] transition-colors ${
-                  detailTab === 'references' ? 'text-amber-200 after:absolute after:inset-x-0 after:bottom-[-1px] after:h-px after:bg-amber-300' : 'text-[#77706d] hover:text-[#c9c3c0]'
-                }`}
-              >
-                Reference assets
-                {activeReferenceStudy && (
-                  <span className="rounded-full border border-[#49413a] bg-amber-500/[0.07] px-1.5 py-0.5 font-mono text-[9px] text-amber-300/80">
-                    {activeReferenceStudy.pack.images.length + activeReferenceStudy.pack.motion.length + activeReferenceStudy.pack.videos.length}
-                  </span>
-                )}
-              </button>
-            </div>
-          )}
-
-          {selectedRound == null && detailTab === 'references' ? (
-            <section role="tabpanel" className="grid min-w-0 gap-4 overflow-hidden">
-              <div className="min-w-0 overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212] p-4">
-                {activeReferenceStudy ? (
-                  <ReferenceStudyPanel loopId={loop.id} study={activeReferenceStudy} />
-                ) : referenceRuns.length > 0 ? (
-                  <div className="flex items-center gap-2 py-10 text-sm text-[#77706d]"><LoaderCircle className="size-4 animate-spin" /> Loading Reference Pack…</div>
-                ) : (
-                  <div className="py-10 text-center">
-                    <div className="text-sm text-[#aaa4a1]">No Reference Study was recorded for this run.</div>
-                    <div className="mt-1 text-xs text-[#68615f]">Reference assets appear here for runs created with the Reference Study workflow.</div>
-                  </div>
-                )}
-              </div>
-            </section>
+          ) : composing || !snapshot || !loop ? (
+            <RunForm
+              workspaceDir={workspaceDir}
+              projects={projects}
+              projectOpen={projectOpen}
+              prompt={prompt}
+              maxRounds={maxRounds}
+              budget={budget}
+              impl={impl}
+              critic={critic}
+              research={research}
+              assets={assets}
+              error={error}
+              busy={busy}
+              onProjectOpenChange={setProjectOpen}
+              onWorkspaceChange={setWorkspaceDir}
+              onAddProject={() => void pickWorkspace()}
+              onPromptChange={setPrompt}
+              onMaxRoundsChange={setMaxRounds}
+              onBudgetChange={setBudget}
+              onImplChange={setImpl}
+              onCriticChange={setCritic}
+              onResearchChange={setResearch}
+              onAssetsChange={setAssets}
+              onCreate={() => void start()}
+            />
           ) : (
-          <>
-          {selectedRound == null && (
-            <>
-              <div className="mb-5 grid grid-cols-4 gap-3 max-md:grid-cols-2">
-                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
-                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Total tokens</div>
-                  <div className="mt-1 font-mono text-lg text-[#d7e2ed]" title={totalTokens.toLocaleString()}>{fmtTokens(totalTokens)}</div>
-                </div>
-                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
-                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Input / output</div>
-                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
-                </div>
-                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
-                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Equivalent cost</div>
-                  <div className="mt-1 font-mono text-lg text-[#b7cbe0]">${totals.costUsd.toFixed(2)}</div>
-                </div>
-                <div className="rounded-lg border border-[#332e2e] bg-[#181414] p-3.5">
-                  <div className="text-[10px] uppercase tracking-wide text-[#716a67]">Attempts / elapsed</div>
-                  <div className="mt-1 font-mono text-sm text-[#c2bbb7]">{visibleRuns.length} / {fmtDuration(visibleElapsedMs)}</div>
-                </div>
-              </div>
-              <div className="mb-5">
-                <PromptBrowser
-                  prompts={[
-                    { id: 'original', title: 'Original', description: 'The operator goal and quality bar for this run.', value: loop.prompt },
-                    { id: 'reference', title: 'Reference Study', description: 'Research and validation instructions used to create the frozen Reference Pack.', value: activeReferenceRun?.prompt ?? '' },
-                    { id: 'implementer', title: 'System / Implementer', description: 'Implementation rules, delegation contract, and Reference Pack handoff.', value: systemPrompt },
-                    { id: 'critique', title: 'Critique', description: 'Evaluation protocol, evidence requirements, scoring rubric, and passing threshold.', value: critiqueRubric },
-                  ]}
-                />
-              </div>
-            </>
+            <RunDetail
+              key={`${loop.id}:${selectedRound ?? 'all'}`}
+              snapshot={snapshot}
+              selectedRound={selectedRound}
+              lines={lines}
+              critiqueRounds={critiqueRounds}
+              critiqueError={critiqueError}
+              referenceStudies={referenceStudies}
+              play={play}
+              busy={busy}
+              revealing={revealing}
+              error={error}
+              projectionWarning={snapshot.projectionWarning ?? null}
+              exactImplementPrompt={exactPrompts.implement}
+              exactCritiquePrompt={exactPrompts.critique}
+              canLoadOlderRuns={olderRunPageOffset(snapshot) != null}
+              canLoadNewerRuns={(snapshot.runOffset ?? 0) > 0}
+              loadingOlderRuns={runPageBusy}
+              onBack={() => setSelectedRound(null)}
+              onRename={renameLoop}
+              onPlayStart={(round) => { void startPlay(round) }}
+              onPlayStop={() => { void stopPlay() }}
+              onExport={() => void exportRun()}
+              onStop={() => { void stopLoop() }}
+              onResume={() => void resumeLoop()}
+              onNewRun={beginNewRun}
+              onReveal={(input) => void revealStream(input)}
+              onLoadOlderRuns={() => { const offset = olderRunPageOffset(snapshot); if (offset != null) void loadRunPage(offset) }}
+              onLoadNewestRuns={() => void loadRunPage(0)}
+              onScrollTop={() => requestAnimationFrame(() => mainRef.current?.scrollTo({ top: 0 }))}
+            />
           )}
-
-          {selectedRound != null && (
-            <div className="mb-5">
-              <PromptBrowser
-                prompts={[
-                  {
-                    id: `round-${selectedRound}-implement`,
-                    title: `Round ${selectedRound} implementer`,
-                    description: selectedRound > 1
-                      ? `The exact prompt this round's implementer received, including the previous critic's score, summary, and must-fix findings.`
-                      : `The exact prompt this round's implementer received: the goal, Reference Pack handoff, and delegation rules.`,
-                    value: roundImplementRun?.prompt ?? '',
-                  },
-                  {
-                    id: `round-${selectedRound}-critique`,
-                    title: `Round ${selectedRound} critic`,
-                    description: `The exact prompt this round's critic received, with its evidence and scoring protocol.`,
-                    value: roundCritiqueRun?.prompt ?? '',
-                  },
-                ]}
-              />
-            </div>
-          )}
-
-          {selectedRound != null && selectedCritique && (
-            <section className="mb-5 rounded-lg border border-[#332e2e] bg-[#151212] p-4">
-              <h2 className="mb-3 text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">Round {selectedRound} critique</h2>
-              <CritiqueRoundView loopId={loop.id} round={selectedCritique} />
-            </section>
-          )}
-
-          {liveRun?.metrics && liveRun.metrics.agents.length > 0 && (selectedRound == null || liveRun.round === selectedRound) && (
-            <div className="mb-5 flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
-              {liveRun.metrics.agents.map((agent) => {
-                const active = agentActive(agent)
-                const filterKey = agentFilterKey(agent.id)
-                const selected = filterKey != null && logFilter.agent === filterKey
-                const chip = (
-                  <>
-                    <span
-                      className={`size-1.5 rounded-full ${
-                        agent.done ? 'bg-[#68615f]' : active ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'
-                      }`}
-                    />
-                    {agent.label}
-                    <span className="font-mono text-[10px] text-[#9fb2c8]">
-                      {fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}
-                    </span>
-                    {agent.done && '✓'}
-                  </>
-                )
-                const chipClass = `flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${
-                  selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'
-                }`
-                // A chip that maps to log lines doubles as the agent filter.
-                return filterKey != null ? (
-                  <button
-                    type="button"
-                    key={agent.id}
-                    title="Filter the log to this agent"
-                    onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))}
-                    className={chipClass}
-                  >
-                    {chip}
-                  </button>
-                ) : (
-                  <span key={agent.id} className={chipClass}>
-                    {chip}
-                  </span>
-                )
-              })}
-            </div>
-          )}
-
-          <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e] [&_[data-slot=table-container]]:overflow-x-hidden [&_td]:overflow-hidden [&_th]:overflow-hidden">
-            <Table className="table-fixed">
-              <colgroup>
-                <col className="w-8" />
-                <col className="w-[58px]" />
-                <col className="w-[76px]" />
-                <col className="w-[160px]" />
-                <col className="w-[88px]" />
-                <col className="w-[58px]" />
-                <col className="w-[70px]" />
-                <col className="w-[120px]" />
-                <col className="w-[85px]" />
-              </colgroup>
-              <TableHeader>
-                <TableRow className="border-[#3b3636] hover:bg-transparent">
-                  <TableHead className="w-8 px-2 text-[11px] text-[#68615f]" />
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Round</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Role</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Model</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Status</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Cost</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead>
-                  <TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">
-                    Runtime
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="text-xs">
-                {visibleRuns.map((run) => (
-                  <RunRow
-                    key={run.id}
-                    run={run}
-                    loopCreatedAt={loop.createdAt}
-                    loopId={loop.id}
-                    critique={run.role === 'critique' ? critiqueRounds.find((c) => c.runId === run.id) : undefined}
-                    expanded={expanded.has(run.id)}
-                    onToggle={() =>
-                      setExpanded((current) => {
-                        const next = new Set(current)
-                        if (next.has(run.id)) next.delete(run.id)
-                        else next.add(run.id)
-                        return next
-                      })
-                    }
-                  />
-                ))}
-                <TableRow className="border-t-2 border-[#4a4342] bg-[#181414] font-medium hover:bg-[#181414]">
-                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">
-                    Total · {visibleRuns.length} attempts
-                  </TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">
-                    {totals.hasScore ? `best ${totals.bestScore.toFixed(2)}` : '—'}
-                  </TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${totals.costUsd.toFixed(2)}</TableCell>
-                  <TableCell
-                    className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]"
-                    title={`${totalTokens.toLocaleString()} combined tokens · ${totals.inputTokens.toLocaleString()} input (including cache) / ${totals.outputTokens.toLocaleString()} output`}
-                  >
-                    <div>{fmtTokens(totalTokens)} total</div>
-                    <div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(totals.inputTokens)} / {fmtTokens(totals.outputTokens)}</div>
-                  </TableCell>
-                  <TableCell
-                    className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]"
-                    title="Sum of the runtimes of the visible attempts"
-                  >
-                    {fmtDuration(totals.durationMs)}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </div>
-
-          <LogFilterStrip lines={visibleLines} filter={logFilter} onChange={setLogFilter} />
-          <div
-            ref={logRef}
-            onScroll={() => {
-              const el = logRef.current
-              if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-            }}
-            className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]"
-          >
-            {filteredLines.length === 0 && <span className="text-[#68615f]">Waiting for output…</span>}
-            {filteredLines.map((line, index) => (
-              <div key={index} className="flex gap-2 whitespace-pre-wrap break-all">
-                <span className="shrink-0 text-[#4d4744]">{fmtTs(line.ts)}</span>
-                <span className={logLineColor(line)}>
-                  {line.agentId && <span className="text-[#c0aee6]">[{line.agentId}] </span>}
-                  {line.text}
-                </span>
-              </div>
-            ))}
-          </div>
-          </>
-          )}
-        </>
-      )}
         </div>
       </main>
       {deleteOpen && (
@@ -1775,10 +662,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           deleteFiles={deleteFiles}
           busy={busy}
           onToggleFiles={() => setDeleteFiles((current) => !current)}
-          onCancel={() => {
-            setDeleteOpen(false)
-            setDeleteFiles(false)
-          }}
+          onCancel={() => { setDeleteOpen(false); setDeleteFiles(false) }}
           onConfirm={() => void deleteCheckedRuns()}
         />
       )}

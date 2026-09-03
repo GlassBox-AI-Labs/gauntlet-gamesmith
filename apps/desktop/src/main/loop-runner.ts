@@ -1,41 +1,77 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import type { AccountRotation, HarnessKind, ProbeResult } from '../shared/harness'
 import type {
-  AgentMetric,
   LoopLogLine,
   LoopModels,
   LoopRecord,
   LoopSnapshot,
-  RunMetrics,
   RunRecord,
   RunRole,
   StartLoopInput,
   StartLoopResult,
-  TokenTotals,
   Verdict,
 } from '../shared/loop'
-import type { AccountRotation, HarnessKind } from '../shared/harness'
-import { channelForKind, RESUME_PREFIX, runPromptLabel } from '../shared/loop'
-import { describeModels, harnessFor, isCrossHarness, isUltracode, resolveModels } from '../shared/models'
-import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from '../shared/prompts'
-import { agentsDir, childrenActive, readChildAgents } from './child-agents'
-import { codexTokens, readCodexUsage } from './codex-usage'
-import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
-import { engineContract, engineGateRules, scaffoldEngine, type ScaffoldResult } from './engine-stack'
-import { assetsPlan, critiquePlan, DISPATCHER_MODEL, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, ensureSkill, runsDir, sharedHome, subscriptionEnv } from './harness-env'
-import type { Ledger } from './ledger'
-import { estimateCostUsd } from './pricing'
-import { referencePackDir, scanReferencePack } from './reference-pack'
-import { assetPassProgress, assetTargets, type CastEntry, parseCast, scaffoldAssetTools, unbuiltCast } from './asset-phase'
+import { channelForKind, markResumePrompt, runPromptLabel } from '../shared/loop'
+import { IPC } from '../shared/ipc'
+import { describeModels, harnessFor, isUltracode, resolveModels } from '../shared/models'
+import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt, effectivePromptForRun } from '../shared/prompts'
+import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
+import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
+import {
+  assertChildStreamBoundary,
+  childrenActive,
+  observeChildStreams,
+  recoverChildStreams,
+  type ChildStreamBoundary,
+} from './child-agents'
+import { archiveChildStreams } from './child-stream-archive'
+import { assetTargets, parseCast, type CastEntry, unbuiltCast, scaffoldAssetTools } from './asset-phase'
+import { cliExecutable, validatedExecutableEnv } from './cli-executable'
+import { delegationRules, GAUNTLET_IMPLEMENTER_AGENT_PREFIX, implementerAgentDefinition, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
+import { engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
+import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
+import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { parseClaudeStatus, parseCodexStatus } from './harness-status'
+import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
+import type { Ledger, RunProcessOwnership } from './ledger'
+import { publishOwnedWorkspaceFile, publishOwnedWorkspaceSnapshot, writeWorkspaceFileSafely } from './owned-workspace-write'
+import { phaseTreeFingerprint, referencePackFingerprint } from './phase-contracts'
+import { PRICE_TABLE_VERSION } from './pricing'
+import { isRateLimitError, MAX_RATE_LIMIT_PAUSES, rateLimitPause, retryAtFromError } from './rate-limit'
+import { scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
-import { captureRoundRevision } from './round-revision'
-import { translateClaudeLine } from './streams/claude-stream'
+import { createCritiqueProtocol } from './roles/critique'
+import { createClaudeImplementProtocol } from './roles/implement-claude'
+export { implementCostUsd, implementTokens } from './roles/implement-claude'
+import { createCodexImplementProtocol } from './roles/implement-codex'
+import { finalizeImplement, type ImplementOutcome } from './roles/implement-finalize'
+import { createReferenceProtocol } from './roles/reference'
+import type { ExitInfo, LogGate, StreamParser } from './roles/types'
+import { planCompletion, planResume } from './round-planner'
+import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
+import {
+  completeProcessMeta,
+  interruptCapturedProcessGroup,
+  interruptProcessGroup,
+  prepareProcessMeta,
+  processMatches,
+  processGroupIdentity,
+  processGroupStillOwned,
+  processMetaPath,
+  processStreamPaths,
+  safePid,
+  type ProcessStreamIdentity,
+  type RunProcessMeta,
+} from './run-process'
+import { commitRunningAttempt } from './run-transition'
 import { ChildStreamTailer } from './streams/child-tailer'
-import { translateCodexLine } from './streams/codex-stream'
-import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from './workflow-progress'
-import { WorkflowTail, workflowTailDir } from './workflow-tail'
+import { prepareVerdictArtifact } from './verdict'
+import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
+import { boundedLoopSnapshot } from './ipc-projection'
 
 /**
  * How long a run may make no progress before we call it stuck. This is idle
@@ -46,118 +82,22 @@ import { WorkflowTail, workflowTailDir } from './workflow-tail'
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
-/**
- * The Reference Study gets implement's shape — quiet-based, not wall-clock.
- *
- * It used to run one flat hour used as both idle and cap, which killed a
- * working agent exactly like a stalled one. That bit on the first Pac-Man run:
- * the study gathered 53 stills, 49 journey shots and 46 object shots, then died
- * at the hour with every document still unwritten, because step 7 makes it VIEW
- * every still and motion frame before it may write the README. Acquiring more
- * material buys more viewing, so a fixed hour is a budget the phase can
- * outgrow — and it did once the cast list and `objects/` were added to it.
- */
-const REFERENCE_IDLE_MS = 40 * 60_000
-const REFERENCE_HARD_CAP_MS = 3 * 60 * 60_000
-// The Asset Build fans out like implement, and a sculptor's correction loop is
-// slow, so it gets implement's shape rather than the critique's flat hour. The
-// cap is lower: a cast is a bounded list, unlike a whole game.
-const ASSETS_IDLE_MS = 40 * 60_000
-const ASSETS_HARD_CAP_MS = 6 * 60 * 60_000
-
-/** How a fan-out run is closed out. Implement commits a revision; assets does not. */
-type FinishFanOut = (loop: LoopRecord, run: RunRecord, exit: ExitInfo, collect: () => ImplementOutcome) => Promise<void>
-
-const IDLE_MS_FOR: Partial<Record<RunRole, number>> = {
-  reference: REFERENCE_IDLE_MS,
-  assets: ASSETS_IDLE_MS,
-  implement: IMPLEMENT_IDLE_MS,
-  critique: CRITIQUE_TIMEOUT_MS,
-}
-const CAP_MS_FOR: Partial<Record<RunRole, number>> = {
-  reference: REFERENCE_HARD_CAP_MS,
-  assets: ASSETS_HARD_CAP_MS,
-  implement: IMPLEMENT_HARD_CAP_MS,
-  critique: CRITIQUE_TIMEOUT_MS,
-}
+const REFERENCE_TIMEOUT_MS = 60 * 60_000
 /** No write to a delegated worker's stream for this long counts as finished. */
 const CHILD_QUIET_MS = 2 * 60_000
 const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
-/**
- * A subscription's usage ceiling, reported as prose by both CLIs.
- *
- * The wordings are not interchangeable and guessing them does not work: the
- * first version of this matched "usage limit" and "rate limit" and missed the
- * one Claude Code actually prints — "You've hit your session limit · resets
- * 3:20am" — so a real build ended instead of changing accounts. Matched
- * loosely on purpose, which is why rotation is capped rather than trusted to
- * stop on its own.
- */
-/** " (2/8 passes)" when the sculptor recorded its progress, else nothing. */
-function passLabel(workspaceDir: string, name: string): string {
-  const progress = assetPassProgress(workspaceDir, name)
-  return progress ? ` (${progress.completed}/${progress.total} passes)` : ''
-}
-
-const USAGE_LIMIT = /rate.?limit|(?:usage|session|weekly) limit|limit reached|out of extra usage/i
-/** Account changes one loop may spend on usage limits before it gives up. */
 const MAX_ACCOUNT_ROTATIONS = 3
-/** The longest a loop will sit waiting for a usage window to reopen. */
-const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1000
+const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
+const MAX_STREAM_READ_BYTES = 1024 * 1024
+const MAX_PARTIAL_LINE_CHARS = 256 * 1024
+const UNTRUSTED_HISTORY_MESSAGE = 'Untrusted history (imported or created before trust provenance shipped) is read-only; start a new trusted run in this workspace.'
+const UNSAFE_WORKSPACE_MESSAGE = 'Workspace safety check failed: the path overlaps private app data or CLI credential homes. Start a new trusted run in a separate project folder.'
+const UNKNOWN_LAUNCH_OWNERSHIP = 'Launch identity was not durably recorded before the app exited.'
 
-/**
- * `rotated` retries now on another account; `waitMs` retries later, when the
- * first exhausted window reopens; a message alone means the loop is over.
- */
-type UsageLimitOutcome = { rotated: true; waitMs?: number } | { rotated: false; message: string | null }
-
-/**
- * Which cost figure to trust for an implement run.
- *
- * `total_cost_usd` covers the main thread only. On a run that fanned out
- * through a workflow it reported $5.11 while the CLI's own per-model
- * accounting reported $14.39 for the same run — the fan-out is missing from
- * it. `modelUsage` counts every agent and is what the run's breakdown itemises,
- * so the headline total comes from there whenever the CLI provides it, and the
- * total always equals the sum of the parts shown beneath it.
- */
-export function implementCostUsd(
-  perModel: RunMetrics['perModel'],
-  totalCostUsd: number | null,
-  liveEstimate: number | null,
-): number | null {
-  const costs = Object.values(perModel).map((m) => m.costUsd)
-  if (costs.some((c) => c != null)) return costs.reduce((sum: number, c) => sum + (c ?? 0), 0)
-  return totalCostUsd ?? liveEstimate
-}
-
-/**
- * Token totals for an implement run.
- *
- * `result.usage` covers the orchestrator's own thread. On a fan-out that is a
- * sliver of the run, so writing it over the live figures at finalize made the
- * counter collapse the moment the round ended — the same trap implementCostUsd
- * already avoids for cost. `perModel` comes from the CLI's own modelUsage,
- * which counts every agent, so it wins whenever the CLI provides it. Null means
- * neither source knows, and the live figures should be left alone.
- */
-export function implementTokens(
-  perModel: RunMetrics['perModel'],
-  usage: Record<string, number> | undefined,
-): { input: number; output: number } | null {
-  const models = Object.values(perModel)
-  if (models.length) {
-    return {
-      input: models.reduce((sum, m) => sum + m.tokens.input + m.tokens.cacheRead + m.tokens.cacheWrite, 0),
-      output: models.reduce((sum, m) => sum + m.tokens.output, 0),
-    }
-  }
-  if (!usage) return null
-  return {
-    input: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-    output: usage.output_tokens ?? 0,
-  }
+function requireWorkspaceIdentity(loop: Pick<LoopRecord, 'workspaceIdentity'>): { dev: number; ino: number } {
+  if (!loop.workspaceIdentity) throw new Error('Workspace identity is unavailable; app-owned publication is blocked.')
+  return loop.workspaceIdentity
 }
 
 function trunc(value: string, max: number): string {
@@ -165,119 +105,111 @@ function trunc(value: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
-function emptyTokens(): TokenTotals {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+function detectCliVersion(binary: string, env: Record<string, string>, cwd: string): string {
+  const result = spawnSync(binary, ['--version'], { cwd, env, encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024 })
+  const output = (result.stdout || result.stderr || '').trim().replace(/\s+/g, ' ')
+  return result.status === 0 && output ? output.slice(0, 200) : 'unavailable'
 }
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
+export function accountLabelForProbe(kind: HarnessKind, probe: ProbeResult): string {
+  const preferred = kind === 'claude' ? ['Email', 'Organization', 'Login method'] : ['Provider', 'Auth']
+  const values = preferred.map((label) => probe.details?.find(([key]) => key === label)?.[1]).filter(Boolean)
+  const bounded = values.join(':').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220)
+  const label = kind === 'codex'
+    ? `codex:app-profile-1:${bounded || 'profile-unavailable'}`
+    : `claude:${bounded || 'profile-unavailable'}`
+  return redactLogText(label).slice(0, 255)
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function detectAccountLabel(kind: HarnessKind, binary: string, env: Record<string, string>, cwd: string): string {
+  const args = kind === 'claude' ? ['auth', 'status', '--json'] : ['login', 'status']
+  const result = spawnSync(binary, args, { cwd, env, encoding: 'utf8', timeout: 8_000, maxBuffer: 64 * 1024 })
+  const probe = kind === 'claude'
+    ? parseClaudeStatus(result.stdout, result.stderr, null)
+    : parseCodexStatus(result.status === 0, result.stdout, result.stderr, null)
+  return accountLabelForProbe(kind, probe)
 }
 
-export function parseVerdict(text: string): Verdict | null {
-  const candidates: string[] = []
-  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) candidates.push(match[1].trim())
-  candidates.reverse()
-  const scoreIdx = text.lastIndexOf('"score"')
-  if (scoreIdx >= 0) {
-    const start = text.lastIndexOf('{', scoreIdx)
-    if (start >= 0) {
-      let depth = 0
-      for (let i = start; i < text.length; i += 1) {
-        if (text[i] === '{') depth += 1
-        else if (text[i] === '}') {
-          depth -= 1
-          if (depth === 0) {
-            candidates.push(text.slice(start, i + 1))
-            break
-          }
-        }
-      }
-    }
-  }
-  for (const candidate of candidates) {
-    try {
-      const verdict = normalizeVerdict(JSON.parse(candidate))
-      if (verdict) return verdict
-    } catch {
-      /* try next candidate */
-    }
-  }
-  return null
+interface DetachedSpawnOptions {
+  cwd: string
+  env: Record<string, string>
+  detached: true
+  stdio: ['ignore', number, number]
 }
 
-/**
- * Deterministic verdict channel: the critique protocol also writes its verdict
- * to critique/round-<n>/verdict.json, so a critic that muffs the final-message
- * format does not throw away a finished evaluation. `sinceMs` rejects files
- * left behind by an earlier loop that reused the same workspace and round.
- */
-export function readVerdictArtifact(workspaceDir: string, round: number, sinceMs: number): Verdict | null {
-  const file = path.join(workspaceDir, 'critique', `round-${round}`, 'verdict.json')
-  try {
-    if (fs.statSync(file).mtimeMs < sinceMs) return null
-    return parseVerdict(fs.readFileSync(file, 'utf8'))
-  } catch {
-    return null
-  }
+/** Internal orchestration seams; production defaults stay behind one boundary. */
+export interface LoopRunnerDeps {
+  now(): number
+  wait(ms: number): Promise<void>
+  defer(work: () => void, ms: number): NodeJS.Timeout
+  cancelDeferred(timer: NodeJS.Timeout): void
+  repeat(work: () => void, ms: number): NodeJS.Timeout
+  cancelRepeat(timer: NodeJS.Timeout): void
+  spawnChild(command: string, args: string[], options: DetachedSpawnOptions): ReturnType<typeof spawn>
+  completeProcessMeta(
+    workspaceDir: string,
+    runId: string,
+    marker: ReturnType<typeof prepareProcessMeta>,
+    pid: number,
+    streams: ProcessStreamIdentity,
+    groupIdentities: readonly string[],
+  ): RunProcessMeta
+  signalProcess(pid: number, signal: 0 | NodeJS.Signals): void
+  processGroupIdentity(groupId: number): readonly string[]
+  processGroupStillOwned(groupId: number, identity: readonly string[]): boolean
+  cliVersion(binary: string, env: Record<string, string>, cwd: string): string
+  accountLabel(kind: HarnessKind, binary: string, env: Record<string, string>, cwd: string): string
+  hostname(): string
+  harnessHome(kind: 'claude' | 'codex'): string
+  protectedRoots(): string[]
+  subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
+  cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
+  validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
+  rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
 }
 
-function normalizeVerdict(value: unknown): Verdict | null {
-  if (!value || typeof value !== 'object') return null
-  const raw = value as Record<string, unknown>
-  let score = Number(raw.score)
-  if (!Number.isFinite(score)) return null
-  if (score > 1 && score <= 10) score /= 10
-  score = Math.min(1, Math.max(0, score))
-  const findings = Array.isArray(raw.findings)
-    ? raw.findings
-        .map((f) => {
-          const finding = f as Record<string, unknown>
-          const text = typeof finding?.text === 'string' ? finding.text : typeof f === 'string' ? f : ''
-          return { severity: typeof finding?.severity === 'string' ? finding.severity : 'note', text: text.slice(0, 600) }
-        })
-        .filter((f) => f.text)
-        .slice(0, 100)
-    : []
-  return { score, pass: raw.pass === true, summary: String(raw.summary ?? '').slice(0, 2000), findings }
+const DEFAULT_DEPS: LoopRunnerDeps = {
+  now: () => Date.now(),
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  defer: (work, ms) => setTimeout(work, ms),
+  cancelDeferred: (timer) => clearTimeout(timer),
+  repeat: (work, ms) => setInterval(work, ms),
+  cancelRepeat: (timer) => clearInterval(timer),
+  spawnChild: (command, args, options) => spawn(command, args, options),
+  completeProcessMeta: (workspaceDir, runId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+    workspaceDir,
+    runId,
+    marker,
+    pid,
+    undefined,
+    streams,
+    groupIdentities,
+  ),
+  signalProcess: (pid, signal) => process.kill(pid, signal),
+  processGroupIdentity,
+  processGroupStillOwned,
+  cliVersion: detectCliVersion,
+  accountLabel: detectAccountLabel,
+  hostname: os.hostname,
+  harnessHome: cliHome,
+  protectedRoots: () => [cliHome('claude'), cliHome('codex')],
+  subscriptionReady: (kind, cwd, home) => subscriptionReadiness(kind, cwd, home),
+  cliExecutable,
+  validatedExecutableEnv,
 }
 
-/**
- * The user's prompt says what game to build; the engine contract says what to
- * build it out of. It is passed on every round rather than only the first,
- * because by round seven the critic is pushing hard on lighting and game feel
- * and the architecture is exactly what gets quietly traded away to fix
- * findings.
- */
 function buildImplementPrompt(
   models: LoopModels,
   userPrompt: string,
   round: number,
   verdict: Verdict | null,
   referenceDir: string,
-  wanted: CastEntry[],
+  wanted: CastEntry[] = [],
 ): string {
   const rules = [delegationRules(models, referenceDir), wanted.length > 0 ? sculptorRules(models, referenceDir) : '']
     .filter(Boolean)
     .join(' ')
   return composeImplementPrompt(userPrompt, round, verdict, rules, referenceDir, engineContract(), wanted)
-}
-
-/** On-disk record of a detached run process; lets the app die and re-attach. */
-interface ProcMeta {
-  pid: number
-  outPath: string
-  errPath: string
-  startedAtMs: number
-  loggedOutLines: number
-  loggedErrLines: number
-  /** Byte offsets into each child stream, so a re-attach does not replay child logs. */
-  childOffsets?: Record<string, number>
 }
 
 interface ExitHolder {
@@ -286,121 +218,631 @@ interface ExitHolder {
   spawnError: string | null
 }
 
-/** What an implement parser hands back once its process has exited. */
-interface ImplementOutcome {
-  metrics: RunMetrics
-  costUsd: number | null
-  tokens: { input: number; output: number } | null
-  numTurns: number | null
-  sessionId: string | null
-  summary: string | null
-  /** Non-null when the harness reported the run as failed. */
-  error: string | null
-  /** The CLI's own result event, for the metric log line. */
-  logResult: Record<string, unknown> | null
-}
-
-interface ExitInfo {
-  code: number | null // null = exit code unknown (re-attached process)
-  timedOut: boolean
-  spawnError: string | null
-}
-
-interface StreamParser {
-  onLine(line: string): void
-  onStderr(text: string): void
-  /** Called on the drive loop regardless of output, for work that must happen
-   *  while the process is quiet — an orchestrator waiting on a fan-out emits
-   *  nothing for minutes, which is exactly when its agents need reading. */
-  tick?(): void
-  /** Epoch ms of the last observed progress, for idle detection. */
-  progressAt?(): number
-  finalize(exit: ExitInfo): Promise<void> | void
-}
-
 interface Attachment {
   loopId: string
   runId: string
-  pid: number
+  meta: RunProcessMeta
   timedOut: boolean
-}
-
-interface LogGate {
-  suppress: boolean
 }
 
 export class LoopRunner {
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
-  /** Account changes spent on usage limits, per loop, so a bad error cannot walk every account. */
+  private retryTimers = new Map<string, NodeJS.Timeout>()
+  /** Account changes spent per loop, bounded independently of retry pauses. */
   private rotations = new Map<string, number>()
-  /** Loops parked until a usage window reopens, so a stop can cancel the wait. */
-  private waits = new Map<string, NodeJS.Timeout>()
-  /** Round/role of a run never change, so stamping log lines needs one lookup per run. */
-  private runStamps = new Map<string, { round: number; role: RunRole }>()
+  /** Newly spawned groups whose durable identity write failed remain owned until exit/escalation. */
+  private terminatingLoops = new Set<string>()
+  /** A run has at most one bounded signal escalation chain. */
+  private interruptingRuns = new Set<string>()
   /** Child streams of the run being driven; also pumped while awaiting stragglers. */
-  private childTail: { loopId: string; runId: string; tailer: ChildStreamTailer } | null = null
+  private childTail: { loopId: string; runId: string; boundary: ChildStreamBoundary; tailer: ChildStreamTailer } | null = null
+  /** IPC notifications queued until their enclosing ledger transaction commits. */
+  private logNotificationBuffer: LoopLogLine[] | null = null
+  /** Renderer/report refreshes requested during a transaction run only after commit. */
+  private broadcastBuffer: Set<string> | null = null
+  private deps: LoopRunnerDeps
 
   constructor(
     private ledger: Ledger,
     private send: (channel: string, payload: unknown) => void,
-    private rotateAccount: (kind: HarnessKind, error: string) => Promise<AccountRotation>,
-  ) {}
+    deps: Partial<LoopRunnerDeps> | ((kind: HarnessKind, error: string) => Promise<AccountRotation>) = {},
+  ) {
+    this.deps = typeof deps === 'function'
+      ? { ...DEFAULT_DEPS, rotateAccount: deps }
+      : { ...DEFAULT_DEPS, ...deps }
+  }
+
+  private nowIso(): string {
+    return new Date(this.deps.now()).toISOString()
+  }
 
   snapshot(): LoopSnapshot | null {
     const loop = this.ledger.runningLoop() ?? this.ledger.latestLoop()
     if (!loop) return null
-    return { loop, runs: this.ledger.runsForLoop(loop.id) }
+    const totalRuns = this.ledger.runCount(loop.id)
+    const projection = this.ledger.recentRunProjectionForLoop(loop.id, 200)
+    return boundedLoopSnapshot({
+      loop,
+      runs: projection.runs,
+      totalRuns,
+      hasMoreRuns: totalRuns > projection.runs.length,
+      detailTruncated: projection.truncatedFields,
+      aggregate: this.ledger.runAggregate(loop.id),
+    })
   }
 
   /** New loops own a scoped pack; pre-v1 loops keep using their legacy root. */
   private referenceDir(loopId: string): string {
-    return this.ledger.runsForLoop(loopId).some((run) => run.role === 'reference') ? referencePackDir(loopId) : 'reference'
+    return referenceRootForLoop(
+      loopId,
+      this.ledger.hasRunRole(loopId, 'reference'),
+    )
+  }
+
+  private referenceFingerprint(loopId: string): string | null {
+    const referenceId = this.ledger.firstSucceededRunIdForRole(loopId, 'reference')
+    if (!referenceId) return null
+    const prefix = 'Reference Pack frozen at sha256:'
+    const text = this.ledger.eventTextForRunWithPrefix(referenceId, prefix)
+    return text?.slice(prefix.length).trim() ?? null
+  }
+
+  /** Fail closed when a later phase sees a changed frozen Reference Pack. */
+  private verifyReferenceBoundary(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop)
+    if (!pack.ready) {
+      const message = pack.issues.join('; ')
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        `Reference Pack is not ready: ${message}`,
+        `Frozen Reference Pack failed its phase-boundary scan before ${run.role}: ${message}`,
+        terminalLog,
+      )
+      return false
+    }
+    let actual: string
+    try {
+      actual = referencePackFingerprint(loop.workspaceDir, this.referenceDir(loop.id))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        `Reference Pack verification failed: ${message}`,
+        `Frozen Reference Pack could not be verified before ${run.role}: ${message}`,
+        terminalLog,
+      )
+      return false
+    }
+    const expected = this.referenceFingerprint(loop.id)
+    if (!expected) {
+      // Compatibility for runs created before pack fingerprints: bind once at
+      // the first safe phase seam, then enforce it for every later attempt.
+      const referenceId = this.ledger.firstSucceededRunIdForRole(loop.id, 'reference')
+      this.log(loop.id, referenceId, 'artifact', `Reference Pack frozen at sha256:${actual}`)
+      return true
+    }
+    if (actual === expected) return true
+    this.log(loop.id, run.id, 'error', `Phase boundary rejected: Reference Pack changed (expected ${expected}, found ${actual}).`)
+    this.failAttemptAndLoop(
+      loop,
+      run,
+      'Frozen Reference Pack changed before phase execution.',
+      `Frozen Reference Pack changed before round ${run.round} ${run.role}.`,
+      terminalLog,
+    )
+    return false
+  }
+
+  /** Bind the research phase to the source tree that existed before it ran. */
+  private ensureReferenceSourceBaseline(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      if (run.revision) {
+        if (workspaceMatchesRevision(loop.workspaceDir, loop.id, run.revision)) return true
+        throw new Error(`workspace no longer matches source baseline ${run.revision.slice(0, 12)}`)
+      }
+      const revision = captureRoundRevision({ workspaceDir: loop.workspaceDir, loopId: loop.id, round: 0 })
+      this.ledger.patchRun(run.id, { revision })
+      run.revision = revision
+      this.log(loop.id, run.id, 'artifact', `Reference source baseline frozen at revision ${revision}.`)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.log(loop.id, run.id, 'error', `Reference source boundary rejected: ${message}`)
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        `Reference source boundary rejected: ${message}`,
+        `Reference Study could not prove that project source stayed unchanged: ${message}`,
+        terminalLog,
+      )
+      return false
+    }
+  }
+
+  private critiqueTreeBaseline(runId: string): string | null {
+    const prefix = 'Critique evidence baseline frozen at sha256:'
+    return this.ledger.eventsForRun(runId, 'artifact', 100).find((event) => event.text.startsWith(prefix))?.text.slice(prefix.length).trim() ?? null
+  }
+
+  private copyCritiqueTreeBaseline(sourceRunId: string, targetRunId: string): void {
+    const baseline = this.critiqueTreeBaseline(sourceRunId)
+    if (baseline) this.log(this.ledger.getRun(targetRunId)!.loopId, targetRunId, 'artifact', `Critique evidence baseline frozen at sha256:${baseline}`)
+  }
+
+  /** Implementers may read prior critique but cannot forge or replace it. */
+  private verifyCritiqueTreeBoundary(loop: LoopRecord, run: RunRecord, bind: boolean, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      const actual = phaseTreeFingerprint(loop.workspaceDir, 'critique')
+      const expected = this.critiqueTreeBaseline(run.id)
+      if (!expected && bind) {
+        this.log(loop.id, run.id, 'artifact', `Critique evidence baseline frozen at sha256:${actual}`)
+        return true
+      }
+      if (expected === actual) return true
+      throw new Error(expected ? `expected ${expected}, found ${actual}` : 'no pre-launch baseline was recorded')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.log(loop.id, run.id, 'error', `Critique evidence boundary rejected: ${message}`)
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        `Critique evidence boundary rejected: ${message}`,
+        `Round ${run.round} implement could not prove critique evidence stayed unchanged: ${message}`,
+        terminalLog,
+      )
+      return false
+    }
+  }
+
+  private scheduleRetry(loopId: string, retryAtMs: number): void {
+    if (this.retryTimers.has(loopId)) return
+    const delay = Math.max(0, retryAtMs - this.deps.now())
+    const timer = this.deps.defer(() => {
+      this.retryTimers.delete(loopId)
+      void this.executeNext(loopId)
+    }, delay)
+    timer.unref()
+    this.retryTimers.set(loopId, timer)
+  }
+
+  private queuedRetryAt(loopId: string): number | null {
+    const latest = this.ledger.latestInterruptedRunForLoop(loopId)
+    return retryAtFromError(latest?.error ?? null)
+  }
+
+  /** Try another configured subscription profile before falling back to a pause. */
+  private async rotateForUsageLimit(
+    loop: LoopRecord,
+    run: RunRecord,
+    error: string,
+  ): Promise<{ rotated: boolean; waitMs?: number; message?: string | null }> {
+    if (!isRateLimitError(error) || !this.deps.rotateAccount) return { rotated: false, message: null }
+    const used = this.rotations.get(loop.id) ?? 0
+    if (used >= MAX_ACCOUNT_ROTATIONS) {
+      return {
+        rotated: false,
+        message: `Stopped after changing accounts ${MAX_ACCOUNT_ROTATIONS} time(s); reconnect an account on the Agents tab, then Resume.`,
+      }
+    }
+    const outcome = await this.deps.rotateAccount(run.harness, error)
+    if (outcome.ok) {
+      this.rotations.set(loop.id, used + 1)
+      this.log(loop.id, run.id, 'system', `Usage window exhausted on ${outcome.from}; continuing with ${outcome.to ?? 'the next account'}.`)
+      return { rotated: true }
+    }
+    const waitMs = outcome.resetAt == null ? null : outcome.resetAt - this.deps.now()
+    if (waitMs != null && waitMs > 0 && waitMs <= MAX_LIMIT_WAIT_MS) {
+      this.log(loop.id, run.id, 'system', `Every usable account is cooling down; retrying when the first window reopens in ${Math.ceil(waitMs / 60_000)}m.`)
+      return { rotated: true, waitMs }
+    }
+    return {
+      rotated: false,
+      message: `${outcome.from} is rate limited and ${outcome.reason ?? 'no other account can take over'}. Connect or refresh an account on the Agents tab, then Resume.`,
+    }
+  }
+
+  /** Persist a failed phase and loop, charging a running attempt once. */
+  private failAttemptAndLoop(loop: LoopRecord, run: RunRecord, error: string, reason: string, terminalLog?: { kind: string; text: string }): boolean {
+    let applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+      status: 'failed',
+      error,
+      finishedAt: this.nowIso(),
+    }, () => {
+      if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      this.persistLoopTerminal(loop.id, 'failed', reason)
+    })
+    if (!applied && this.ledger.getRun(run.id)?.status === 'queued') {
+      this.ledger.transaction(() => {
+        if (this.ledger.getRun(run.id)?.status !== 'queued') return
+        this.ledger.patchRun(run.id, { status: 'failed', error, finishedAt: this.nowIso() })
+        if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.persistLoopTerminal(loop.id, 'failed', reason)
+        applied = true
+      })
+    }
+    if (applied) {
+      if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      this.finishLoop(loop.id, 'failed', reason)
+    }
+    return applied
+  }
+
+  private async retryRateLimit(loop: LoopRecord, run: RunRecord, error: string, terminalLog?: { kind: string; text: string }): Promise<boolean> {
+    const priorPauses = this.ledger.rateLimitPauseCount(loop.id, run.role, run.round)
+    if (!isRateLimitError(error)) return false
+    const rotation = await this.rotateForUsageLimit(loop, run, error)
+    if (priorPauses >= MAX_RATE_LIMIT_PAUSES) {
+      const reason = `${run.role} remains rate limited after ${MAX_RATE_LIMIT_PAUSES} automatic pauses; Resume later to retry without losing phase progress.`
+      const applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+        status: 'interrupted',
+        error: `Automatic rate-limit pause budget reached after ${MAX_RATE_LIMIT_PAUSES} pauses. ${error}`,
+      }, () => {
+        if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+      })
+      if (applied) {
+        if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.finishLoop(loop.id, 'stopped', reason)
+      }
+      return true
+    }
+    const pause = rotation.rotated
+      ? {
+          delayMs: rotation.waitMs ?? 0,
+          retryAtMs: this.deps.now() + (rotation.waitMs ?? 0),
+        }
+      : rateLimitPause(error, priorPauses, this.deps.now())
+    if (!pause) return false
+    if (this.budgetReached(loop.id, this.ledger.getRun(run.id)?.costUsd ?? 0)) {
+      const latest = this.ledger.getLoop(loop.id)
+      const reason = latest?.budgetUsd
+        ? `Budget ceiling hit: $${latest.totalCostUsd.toFixed(2)} of $${latest.budgetUsd.toFixed(2)} (equivalent API cost).`
+        : 'Equivalent API cost budget reached.'
+      const applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+        status: 'interrupted',
+        error: `Rate limited; retry skipped because the equivalent API cost budget was reached. ${error}`,
+      }, () => {
+        if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+      })
+      if (applied) {
+        if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.finishLoop(loop.id, 'stopped', reason)
+      }
+      return true
+    }
+    const retryAt = new Date(pause.retryAtMs).toISOString()
+    let queuedId: string | null = null
+    const applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+      status: 'interrupted',
+      error: `Rate limited; retry scheduled for ${retryAt}. ${error}`,
+    }, () => {
+      if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      const queued = this.ledger.createRun({
+        loopId: loop.id,
+        round: run.round,
+        role: run.role,
+        harness: harnessFor(run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
+        prompt:
+          run.role === 'implement' ? markResumePrompt(run.prompt) : run.prompt,
+      })
+      queuedId = queued.id
+      if (run.revision) this.ledger.patchRun(queued.id, { revision: run.revision })
+    })
+    if (!applied) return true
+    if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+    if (run.role === 'implement' && queuedId) this.copyCritiqueTreeBaseline(run.id, queuedId)
+    this.log(loop.id, run.id, 'system', `Rate limit is a retryable pause — next ${run.role} attempt at ${retryAt} (backoff ${Math.ceil(pause.delayMs / 1_000)}s).`)
+    this.broadcast(loop.id)
+    this.scheduleRetry(loop.id, pause.retryAtMs)
+    return true
+  }
+
+  /** One same-phase retry protocol for artifact phases; rate pauses do not consume attempts. */
+  private async failOrRetryPhase(loop: LoopRecord, run: RunRecord, error: string, label: string, maxAttempts: number, prompt: string, terminalLog?: { kind: string; text: string }): Promise<void> {
+    if (await this.retryRateLimit(loop, run, error, terminalLog)) return
+    const attempts = this.ledger.failedRunCount(loop.id, run.role, run.round) + 1
+    if (this.budgetReached(loop.id, this.ledger.getRun(run.id)?.costUsd ?? 0)) {
+      const latest = this.ledger.getLoop(loop.id)
+      const reason = latest?.budgetUsd
+        ? `Budget ceiling hit: $${latest.totalCostUsd.toFixed(2)} of $${latest.budgetUsd.toFixed(2)} (equivalent API cost).`
+        : 'Equivalent API cost budget reached.'
+      const applied = commitRunningAttempt(this.ledger, loop.id, run.id, { status: 'failed', error }, () => {
+        if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+      })
+      if (applied) {
+        if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+        this.finishLoop(loop.id, 'stopped', reason)
+      }
+      return
+    }
+    if (attempts >= maxAttempts) {
+      this.failAttemptAndLoop(loop, run, error, `${label} failed after ${maxAttempts} attempts: ${error}`, terminalLog)
+      return
+    }
+    this.log(loop.id, run.id, 'system', `${label} failed (${error}) — retrying without discarding valid phase artifacts.`)
+    let retryId: string | null = null
+    const applied = commitRunningAttempt(this.ledger, loop.id, run.id, { status: 'failed', error }, () => {
+      if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      const retry = this.ledger.createRun({
+        loopId: loop.id,
+        round: run.round,
+        role: run.role,
+        harness: harnessFor(run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
+        prompt,
+      })
+      retryId = retry.id
+      if (run.revision) this.ledger.patchRun(retry.id, { revision: run.revision })
+    })
+    if (!applied) return
+    if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+    if (run.role === 'implement' && retryId) this.copyCritiqueTreeBaseline(run.id, retryId)
+    this.broadcast(loop.id)
+    void this.executeNext(loop.id)
+  }
+
+  /** Apply the identical user-stop/timeout terminal transition for every phase. */
+  private finishCancelledAttempt(loop: LoopRecord, run: RunRecord, exit: ExitInfo, timeoutReason: string, terminalLog?: { kind: string; text: string }): boolean {
+    const userStopped = this.stopRequested.has(loop.id)
+    if (!userStopped && !exit.timedOut) return false
+    const runError = userStopped ? 'Stopped by user.' : 'Timed out.'
+    const reason = userStopped ? 'Stopped by user.' : timeoutReason
+    const applied = commitRunningAttempt(this.ledger, loop.id, run.id, { status: 'cancelled', error: runError }, () => {
+      if (terminalLog) this.persistLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      this.persistLoopTerminal(loop.id, 'stopped', reason)
+    })
+    if (applied) {
+      if (terminalLog) this.notifyPersistedLog(loop.id, run.id, terminalLog.kind, terminalLog.text)
+      this.finishLoop(loop.id, 'stopped', reason)
+    }
+    return true
+  }
+
+  /** Stop without retrying whenever the selected profile is not subscription-backed. */
+  private stopForSubscription(loop: LoopRecord, run: RunRecord, harness: HarnessKind, readiness: SubscriptionReadiness): void {
+    const reason = this.subscriptionBlockMessage(harness, readiness)
+    let applied = false
+    if (this.ledger.getRun(run.id)?.status === 'running') {
+      applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+        status: 'interrupted',
+        error: reason,
+        finishedAt: this.nowIso(),
+      }, () => {
+        this.persistLog(loop.id, run.id, 'error', reason)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+      })
+    } else {
+      this.atomicLogs(() => {
+        if (this.ledger.getRun(run.id)?.status !== 'queued') return
+        this.ledger.patchRun(run.id, { status: 'interrupted', error: reason, finishedAt: this.nowIso() })
+        this.persistLog(loop.id, run.id, 'error', reason)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+        applied = true
+      })
+    }
+    if (!applied) return
+    if (this.ledger.getRun(run.id)?.status === 'interrupted') this.notifyPersistedLog(loop.id, run.id, 'error', reason)
+    this.notifyPersistedLog(loop.id, null, 'done', this.terminalMessage('stopped', reason))
+    this.broadcast(loop.id)
+  }
+
+  private quarantineRunningAttempt(loop: LoopRecord, run: RunRecord, reason: string): void {
+    const applied = commitRunningAttempt(this.ledger, loop.id, run.id, {
+      status: 'interrupted',
+      error: reason,
+      finishedAt: this.nowIso(),
+    }, () => {
+      this.persistLog(loop.id, run.id, 'error', reason)
+      this.persistLoopTerminal(loop.id, 'stopped', reason)
+    })
+    if (!applied) return
+    this.notifyPersistedLog(loop.id, run.id, 'error', reason)
+    this.notifyPersistedLog(loop.id, null, 'done', this.terminalMessage('stopped', reason))
+    this.broadcast(loop.id)
+  }
+
+  private requiredHarnesses(loop: LoopRecord, role: RunRole, primary: HarnessKind): HarnessKind[] {
+    const workerModels = role === 'implement'
+      ? [loop.models.subagentModel, loop.models.assetModel]
+      : role === 'reference'
+        ? [loop.models.researchModel]
+        : []
+    return [...new Set<HarnessKind>([
+      primary,
+      ...workerModels.filter((model): model is string => model != null).map(harnessFor),
+    ])]
+  }
+
+  private subscriptionBlock(
+    loop: LoopRecord,
+    role: RunRole,
+    primary: HarnessKind,
+  ): { harness: HarnessKind; readiness: SubscriptionReadiness } | null {
+    for (const harness of this.requiredHarnesses(loop, role, primary)) {
+      const readiness = this.deps.subscriptionReady(harness, loop.workspaceDir, this.deps.harnessHome(harness))
+      if (!readiness.ok) return { harness, readiness }
+    }
+    return null
+  }
+
+  private subscriptionBlockForRun(loop: LoopRecord, run: RunRecord): { harness: HarnessKind; readiness: SubscriptionReadiness } | null {
+    return this.subscriptionBlock(loop, run.role, run.harness)
+  }
+
+  private executableRoots(loop: LoopRecord): string[] {
+    return [loop.workspaceDir, ...this.deps.protectedRoots()]
+  }
+
+  /** Resolve and pin every CLI this phase may execute, including workers. */
+  private executableEnvironment(loop: LoopRecord, run: RunRecord, planEnv: Record<string, string>): { command: string; env: Record<string, string> } {
+    const roots = this.executableRoots(loop)
+    const executables = new Map(
+      this.requiredHarnesses(loop, run.role, run.harness).map((harness) => [harness, this.deps.cliExecutable(harness, roots)]),
+    )
+    const env = {
+      ...subscriptionEnv(planEnv, process.env, run.harness, roots),
+      ...this.deps.validatedExecutableEnv(executables, roots),
+    }
+    return {
+      command: executables.get(run.harness)!,
+      env,
+    }
+  }
+
+  private processMetaFromOwnership(loop: LoopRecord, run: RunRecord, ownership: RunProcessOwnership): RunProcessMeta {
+    const projection = run.metrics?.projection
+    return {
+      version: 1,
+      pid: ownership.pid,
+      processIdentity: ownership.processIdentity,
+      groupIdentities: [...ownership.groupIdentities],
+      startedAtMs: ownership.startedAtMs,
+      outDev: ownership.outDev,
+      outIno: ownership.outIno,
+      errDev: ownership.errDev,
+      errIno: ownership.errIno,
+      ...processStreamPaths(loop.workspaceDir, run.id),
+      loggedOutLines: projection?.loggedOutLines ?? 0,
+      loggedErrLines: projection?.loggedErrLines ?? 0,
+      childOffsets: projection?.childOffsets ?? {},
+      childIdentities: projection?.childIdentities ?? {},
+      workflowOffsets: projection?.workflowOffsets ?? {},
+      workflowIdentities: projection?.workflowIdentities ?? {},
+    }
+  }
+
+  /** A canonical owner blocks all new launches until its whole group is gone. */
+  private retainedProcessOwnership(): { loop: LoopRecord; run: RunRecord; meta: RunProcessMeta } | null {
+    const retained = this.ledger.runsWithProcessOwnership()[0]
+    if (!retained) return null
+    const loop = this.ledger.getLoop(retained.run.loopId)
+    if (!loop) throw new Error('Retained process ownership references a missing loop.')
+    // This is a control-only view: path derivation is side-effect free, so a
+    // removed/replaced workspace can still be quarantined and its canonical
+    // process group interrupted without touching that filesystem surface.
+    const meta = this.processMetaFromOwnership(loop, retained.run, retained.ownership)
+    let groupPresent = processMatches(meta)
+    try {
+      groupPresent ||= this.deps.processGroupStillOwned(meta.pid, retained.ownership.groupIdentities)
+    } catch {
+      groupPresent = true
+    }
+    // A running attempt still needs its canonical ownership row to drain and
+    // finalize streams after a leader exited while the app was down. Recovery,
+    // not this launch guard, decides that transition.
+    if (groupPresent || retained.run.status === 'running') return { loop, run: retained.run, meta }
+    this.ledger.clearRunProcessOwnership(retained.run.id)
+    return null
+  }
+
+  private retainedOwnershipMessage(owner: { loop: LoopRecord; run: RunRecord; meta: RunProcessMeta }): string {
+    return `A previously launched ${owner.run.role} process group (${owner.meta.pid}) is still owned for workspace ${owner.loop.workspaceDir}; wait for it to exit before starting or resuming work.`
+  }
+
+  private quarantinedUnknownLaunch(workspaceDir: string): boolean {
+    return this.ledger.hasRunErrorPrefixForWorkspace(workspaceDir, UNKNOWN_LAUNCH_OWNERSHIP)
+  }
+
+  private subscriptionBlockMessage(harness: HarnessKind, readiness: SubscriptionReadiness): string {
+    return `Subscription readiness blocked ${harness}: ${redactedErrorMessage(readiness.error, 'The selected CLI profile is not ready for subscription execution.')}`
+  }
+
+  /** Revalidate the canonical project root at every privileged phase seam. */
+  private verifyWorkspaceBoundary(loop: LoopRecord): boolean {
+    try {
+      this.ledger.assertLoopWorkspaceIdentity(loop.id)
+      return true
+    } catch {
+      // This Ledger operation updates canonical state atomically and
+      // intentionally does not mirror into the now-untrusted workspace.
+      if (this.ledger.quarantineUnsafeWorkspace(loop.id, UNSAFE_WORKSPACE_MESSAGE)) {
+        this.notifyWorkspaceQuarantine(loop.id)
+      }
+      return false
+    }
+  }
+
+  /** Project the canonical quarantine without regenerating a workspace report. */
+  private notifyWorkspaceQuarantine(loopId: string): void {
+    const event = [...this.ledger.eventsForLoop(loopId, 20)].reverse().find((line) => line.kind === 'workspace-boundary')
+    if (event) this.notifyLog(event)
+    const loop = this.ledger.getLoop(loopId)
+    if (!loop) return
+    const projection = this.ledger.recentRunProjectionForLoop(loopId, 200)
+    try {
+      this.send(IPC.loop.update, boundedLoopSnapshot({
+        loop,
+        runs: projection.runs,
+        totalRuns: this.ledger.runCount(loopId),
+        detailTruncated: projection.truncatedFields,
+        aggregate: this.ledger.runAggregate(loopId),
+      }))
+    } catch {
+      /* canonical quarantine remains visible after renderer reconnect */
+    }
   }
 
   start(input: StartLoopInput): StartLoopResult {
-    if (this.current || this.ledger.runningLoop()) return { ok: false, error: 'A loop is already running. Stop it first.' }
-    const prompt = input.prompt.trim()
-    if (!prompt) return { ok: false, error: 'Prompt is empty.' }
-    const workspaceDir = input.workspaceDir.trim()
-    if (!workspaceDir || !path.isAbsolute(workspaceDir)) return { ok: false, error: 'Workspace must be an absolute path.' }
+    if (this.current) return { ok: false, error: 'A loop is already running. Stop it first.' }
+    try {
+      const owner = this.retainedProcessOwnership()
+      if (owner) return { ok: false, error: this.retainedOwnershipMessage(owner) }
+    } catch (error) {
+      return { ok: false, error: redactedErrorMessage(error, 'Retained process ownership could not be verified.') }
+    }
+    if (this.terminatingLoops.size > 0 || this.ledger.runningLoop()) return { ok: false, error: 'A loop is already running. Stop it first.' }
+    const prompt = input.prompt
+    if (!prompt.trim()) return { ok: false, error: 'Prompt is empty.' }
+    if (prompt.length > 100_000) return { ok: false, error: 'Prompt must be at most 100000 characters.' }
+    if (redactLogText(prompt) !== prompt) {
+      return { ok: false, error: 'Prompt contains credential-shaped material. Remove credentials or secrets before starting the loop.' }
+    }
+    const requestedWorkspace = input.workspaceDir.trim()
+    if (!requestedWorkspace || !path.isAbsolute(requestedWorkspace)) return { ok: false, error: 'Workspace must be an absolute path.' }
     const maxRounds = Math.max(1, Math.min(100, Math.floor(input.maxRounds) || 10))
     const budgetUsd = input.budgetUsd && input.budgetUsd > 0 ? input.budgetUsd : null
-    let scaffold: ScaffoldResult
+    let workspaceDir: string
+    let scaffold: ReturnType<typeof scaffoldEngine>
     try {
+      workspaceDir = assertWorkspaceBoundary(requestedWorkspace, this.deps.protectedRoots())
       fs.mkdirSync(workspaceDir, { recursive: true })
-      // Round one starts on the engine rather than spending its budget
-      // deciding on one — and deciding differently in every workspace.
-      scaffold = scaffoldEngine(workspaceDir)
+      const captured = captureWorkspaceIdentity(workspaceDir, this.deps.protectedRoots())
+      workspaceDir = captured.workspaceDir
+      scaffold = scaffoldEngine(workspaceDir, captured.workspaceIdentity)
     } catch (error) {
-      return { ok: false, error: `Cannot create workspace: ${error instanceof Error ? error.message : String(error)}` }
+      return { ok: false, error: `Cannot use workspace: ${redactedErrorMessage(error, 'The selected path is unsafe.')}` }
+    }
+    if (this.quarantinedUnknownLaunch(workspaceDir)) {
+      return { ok: false, error: `${UNKNOWN_LAUNCH_OWNERSHIP} This workspace is quarantined against another editor launch because process exit was never observed.` }
     }
 
     const models = resolveModels(input, input, input, input)
-    const loop = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
-    this.log(loop.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
-    this.log(
-      loop.id,
-      null,
-      'system',
-      scaffold.created.length
-        ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
-        : 'Engine contract refreshed; workspace already scaffolded.',
-    )
-    this.log(
-      loop.id,
-      null,
-      'system',
-      describeModels(models),
-    )
-    const referenceDir = referencePackDir(loop.id)
-    this.ledger.createRun({
-      loopId: loop.id,
-      round: 0,
-      role: 'reference',
-      harness: harnessFor(models.orchestratorModel),
-      prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
-    })
+    let loop: LoopRecord
+    try {
+      loop = this.atomicLogs(() => {
+        const created = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
+        this.log(created.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
+        this.log(created.id, null, 'system', scaffold.created.length
+          ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
+          : 'Engine contract refreshed; workspace already scaffolded.')
+        this.log(created.id, null, 'system', describeModels(models))
+        const referenceDir = referencePackDir(created.id)
+        this.ledger.createRun({
+          loopId: created.id,
+          round: 0,
+          role: 'reference',
+          harness: harnessFor(models.orchestratorModel),
+          prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
+        })
+        return created
+      })
+    } catch (error) {
+      return { ok: false, error: `Could not start loop: ${redactedErrorMessage(error, 'History could not be created.')}` }
+    }
     this.broadcast(loop.id)
     void this.executeNext(loop.id)
     return { ok: true, loopId: loop.id }
@@ -413,13 +855,94 @@ export class LoopRunner {
    * no process metadata exists do we requeue a fresh attempt.
    */
   recoverAll(): void {
+    try {
+      const owner = this.retainedProcessOwnership()
+      if (owner && owner.run.status !== 'running') {
+        const workspaceSafe = this.verifyWorkspaceBoundary(owner.loop)
+        // Quit may have ended the direct leader while a captured descendant
+        // remained. Resume the identity-bound SIGINT→SIGKILL supervision on
+        // boot; never leave a billed stopped owner with no settlement path.
+        this.interrupt(owner.meta, owner.loop.id, owner.run.id)
+        if (workspaceSafe) {
+          this.log(owner.loop.id, owner.run.id, 'error', this.retainedOwnershipMessage(owner))
+          this.broadcast(owner.loop.id)
+        }
+        if (this.ledger.runProcessOwnership(owner.run.id)) return
+      }
+    } catch (error) {
+      // A corrupt or ambiguous canonical owner must fail closed before any
+      // queued recovery can create a second detached editor.
+      console.error('Cannot audit retained process ownership:', error)
+      return
+    }
     for (const loop of this.ledger.runningLoops()) {
-      const runs = this.ledger.runsForLoop(loop.id)
-      const active = runs.find((r) => r.status === 'running')
+      try {
+      try {
+        this.ledger.assertLoopWorkspaceIdentity(loop.id)
+      } catch {
+        const active = this.ledger.activeRunForLoop(loop.id)
+        const ownership = active ? this.ledger.runProcessOwnership(active.id) : null
+        if (active && ownership) {
+          const meta = this.processMetaFromOwnership(loop, active, ownership)
+          this.interrupt(meta, loop.id, active.id)
+        }
+        if (this.ledger.quarantineUnsafeWorkspace(loop.id, UNSAFE_WORKSPACE_MESSAGE)) this.notifyWorkspaceQuarantine(loop.id)
+        continue
+      }
+      if (!loop.playTrusted) {
+        this.finishLoop(loop.id, 'stopped', UNTRUSTED_HISTORY_MESSAGE)
+        continue
+      }
+        const active = this.ledger.activeRunForLoop(loop.id)
       if (active) {
-        const meta = this.readMeta(loop.workspaceDir, active.id)
-        if (meta) {
-          const alive = this.pidAlive(meta.pid)
+        const ownership = this.ledger.runProcessOwnership(active.id)
+        if (!ownership) {
+          const reason = `${UNKNOWN_LAUNCH_OWNERSHIP} Canonical process ownership is missing, so recovery will not trust portable workspace metadata or launch a duplicate editor. Confirm any CLI process is stopped, then start a new trusted run.`
+          this.quarantineRunningAttempt(loop, active, reason)
+          continue
+        }
+        if (active.role === 'assets') {
+          const meta = this.processMetaFromOwnership(loop, active, ownership)
+          this.interrupt(meta, loop.id, active.id)
+          this.quarantineRunningAttempt(
+            loop,
+            active,
+            'Legacy standalone Asset Build was stopped during recovery; Resume hands its remaining cast to the implement phase.',
+          )
+          continue
+        }
+        const subscriptionBlock = this.subscriptionBlockForRun(loop, active)
+        if (subscriptionBlock) {
+          if (!this.verifyWorkspaceBoundary(loop)) continue
+          const meta = this.processMetaFromOwnership(loop, active, ownership)
+          this.interrupt(meta, loop.id, active.id)
+          this.stopForSubscription(loop, active, subscriptionBlock.harness, subscriptionBlock.readiness)
+          continue
+        }
+        // Subscription probes execute external binaries and may take seconds.
+        // Rebind the exact registered root before reading any recovery surface.
+        if (!this.verifyWorkspaceBoundary(loop)) continue
+        const meta = this.processMetaFromOwnership(loop, active, ownership)
+        {
+          const canonicalProjection = active.metrics?.projection
+          if (canonicalProjection) {
+            meta.loggedOutLines = canonicalProjection.loggedOutLines
+            meta.loggedErrLines = canonicalProjection.loggedErrLines
+            meta.childOffsets = canonicalProjection.childOffsets
+            meta.childIdentities = canonicalProjection.childIdentities ?? {}
+            meta.workflowOffsets = canonicalProjection.workflowOffsets
+            meta.workflowIdentities = canonicalProjection.workflowIdentities ?? {}
+          }
+          const expectedStart = Date.parse(active.startedAt ?? '')
+          const startMatches = Number.isFinite(expectedStart) && Math.abs(expectedStart - meta.startedAtMs) <= 5_000
+          const pidExists = this.pidExists(meta.pid)
+          const alive = startMatches && processMatches(meta)
+          if (!startMatches || (pidExists && !alive)) {
+            const reason = `App restart rejected unsafe ${active.role} canonical ownership — ${!startMatches ? 'recorded start does not match this attempt' : 'PID identity no longer belongs to this run'}. The retained owner must be verified absent before new work can start.`
+            this.interruptCaptured(meta, ownership.groupIdentities, loop.id, active.id)
+            this.quarantineRunningAttempt(loop, active, reason)
+            continue
+          }
           this.log(
             loop.id,
             active.id,
@@ -430,134 +953,289 @@ export class LoopRunner {
           )
           this.broadcast(loop.id)
           const gate: LogGate = { suppress: false }
+          const childBoundary = recoverChildStreams(loop.workspaceDir, loop)
           const parser =
             active.role === 'reference'
-              ? this.makeReferenceParser(loop, active, gate)
-              : active.role === 'assets'
-                ? this.assetsParser(loop, active, gate)
-                : active.role === 'implement'
-                ? this.makeImplementParser(loop, active, gate)
+              ? this.makeReferenceParser(loop, active, gate, childBoundary)
+              : active.role === 'implement'
+                ? this.makeImplementParser(loop, active, gate, childBoundary, meta.workflowOffsets, meta.workflowIdentities)
                 : this.makeCritiqueParser(loop, active, gate)
-          const idle = IDLE_MS_FOR[active.role] ?? CRITIQUE_TIMEOUT_MS
-          const cap = CAP_MS_FOR[active.role] ?? CRITIQUE_TIMEOUT_MS
-          void this.driveRun(loop, active, meta, idle, cap, parser, gate, null)
+          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const recoveredGroup = ownership.groupIdentities
+          void this.driveRun(loop, active, meta, idle, cap, parser, gate, null, recoveredGroup, childBoundary)
           continue
         }
-        this.ledger.requeueInterruptedRun(active)
-        this.log(loop.id, null, 'system', `App restarted — no live process found; requeued round ${active.round} ${active.role}.`)
-      } else if (!runs.some((r) => r.status === 'queued')) {
-        this.finishLoop(loop.id, 'stopped', 'No pending work found after app restart.')
-        continue
+      } else {
+        const queued = this.ledger.oldestQueuedRunForLoop(loop.id)
+        if (!queued) {
+          this.finishLoop(loop.id, 'stopped', 'No pending work found after app restart.')
+          continue
+        }
+        const subscriptionBlock = this.subscriptionBlockForRun(loop, queued)
+        if (subscriptionBlock) {
+          this.stopForSubscription(loop, queued, subscriptionBlock.harness, subscriptionBlock.readiness)
+          continue
+        }
       }
       this.broadcast(loop.id)
       void this.executeNext(loop.id)
+      } catch (error) {
+        try {
+          this.quarantineRecoveryFailure(loop, error)
+        } catch (quarantineError) {
+          // Preserve iteration: a canonical ownership row still blocks any
+          // replacement launch even if its visibility transition also fails.
+          console.error('Could not quarantine failed loop recovery:', quarantineError)
+        }
+      }
     }
+  }
+
+  /** Isolate one broken recovery surface without abandoning later loops. */
+  private quarantineRecoveryFailure(loop: LoopRecord, error: unknown): void {
+    const reason = `Recovery setup failed safely: ${redactedErrorMessage(error, 'Recovery state could not be validated.')}`
+    const run = this.ledger.latestRunForLoop(loop.id)
+    if (run?.status === 'running') {
+      const ownership = this.ledger.runProcessOwnership(run.id)
+      if (ownership) {
+        const meta = this.processMetaFromOwnership(loop, run, ownership)
+        this.interruptCaptured(meta, ownership.groupIdentities, loop.id, run.id)
+      }
+      this.quarantineRunningAttempt(loop, run, reason)
+      return
+    }
+    if (run?.status === 'queued') {
+      this.atomicLogs(() => {
+        this.ledger.patchRun(run.id, { status: 'interrupted', error: reason, finishedAt: this.nowIso() })
+        this.persistLog(loop.id, run.id, 'error', reason)
+        this.persistLoopTerminal(loop.id, 'stopped', reason)
+      })
+      this.notifyPersistedLog(loop.id, run.id, 'error', reason)
+      this.notifyPersistedLog(loop.id, null, 'done', this.terminalMessage('stopped', reason))
+      this.broadcast(loop.id)
+      return
+    }
+    this.finishLoop(loop.id, 'stopped', reason)
   }
 
   /** The run currently being supervised, if any. */
   activeRun(): { loopId: string; runId: string; pid: number; role: string } | null {
-    if (!this.current) return null
-    const run = this.ledger.getRun(this.current.runId)
-    return { loopId: this.current.loopId, runId: this.current.runId, pid: this.current.pid, role: run?.role ?? 'run' }
+    if (this.current) {
+      const run = this.ledger.getRun(this.current.runId)
+      return { loopId: this.current.loopId, runId: this.current.runId, pid: this.current.meta.pid, role: run?.role ?? 'run' }
+    }
+    const retained = this.retainedProcessOwnership()
+    return retained
+      ? { loopId: retained.loop.id, runId: retained.run.id, pid: retained.meta.pid, role: retained.run.role }
+      : null
+  }
+
+  /** True while quitting would discard ownership-settlement supervision. */
+  hasUnsettledOwnership(): boolean {
+    return this.terminatingLoops.size > 0 || this.ledger.runsWithProcessOwnership().length > 0
   }
 
   /**
-   * Graceful shutdown chosen at quit: SIGINT the agent and mark the loop
-   * stopped so the next launch does not resume it. (The SIGTERM/SIGKILL
-   * escalation timers die with the app; SIGINT is the reliable signal.)
+   * Whether quit must wait regardless of the dialog's Keep-agents choice.
+   * A normal current run may intentionally survive quit; a group already in
+   * stop/recovery escalation may not lose its only settlement timers.
+   */
+  quitSettlementPending(): boolean {
+    return this.terminatingLoops.size > 0 || (!this.current && this.ledger.runsWithProcessOwnership().length > 0)
+  }
+
+  /**
+   * Begin graceful shutdown: SIGINT the agent and mark the loop stopped.
+   * Callers that intend to exit the app must use stopForQuitAndWait below so
+   * bounded escalation and verified group-absence checks remain alive.
    */
   stopForQuit(): void {
-    if (!this.current) return
-    const { loopId, runId, pid } = this.current
-    this.interruptPid(pid)
-    this.ledger.patchRun(runId, { status: 'cancelled', error: 'Stopped by user at quit.', finishedAt: new Date().toISOString() })
-    this.ledger.patchLoop(loopId, { status: 'stopped', stopReason: 'Stopped by user at quit.' })
+    if (!this.current) {
+      const owner = this.retainedProcessOwnership()
+      if (owner) {
+        this.stopRequested.add(owner.loop.id)
+        const workspaceSafe = this.verifyWorkspaceBoundary(owner.loop)
+        this.interrupt(owner.meta, owner.loop.id, owner.run.id)
+        if (workspaceSafe && owner.run.status === 'running') {
+          const reason = 'Stopped by user at quit.'
+          try {
+            const finishedAt = this.nowIso()
+            this.ledger.cancelRunAndStopLoopCanonical(
+              owner.loop.id,
+              owner.run.id,
+              reason,
+              finishedAt,
+              Math.max(0, Math.floor(this.deps.now() - owner.meta.startedAtMs)),
+            )
+            this.notifyPersistedLog(owner.loop.id, owner.run.id, 'process-control', reason)
+          } catch (error) {
+            if (this.ledger.quarantineUnsafeWorkspace(owner.loop.id, UNSAFE_WORKSPACE_MESSAGE)) this.notifyWorkspaceQuarantine(owner.loop.id)
+            this.controlLog(owner.loop.id, owner.run.id, 'error', `Quit state could not be committed after process interruption began: ${redactedErrorMessage(error, 'canonical process ownership remains active.')}`)
+          }
+        }
+        return
+      }
+      const paused = this.ledger.runningLoop()
+      if (paused) this.finishLoop(paused.id, 'stopped', 'Stopped by user at quit.')
+      return
+    }
+    const { loopId, runId, meta } = this.current
+    this.stopRequested.add(loopId)
+    const loop = this.ledger.getLoop(loopId)
+    const workspaceSafe = loop ? this.verifyWorkspaceBoundary(loop) : false
+    this.interrupt(meta, loopId, runId)
+    if (!workspaceSafe) return
+    const run = this.ledger.getRun(runId)
+    const reason = 'Stopped by user at quit.'
+    try {
+      const finishedAt = this.nowIso()
+      this.ledger.cancelRunAndStopLoopCanonical(
+        loopId,
+        runId,
+        reason,
+        finishedAt,
+        Math.max(0, Math.floor(this.deps.now() - Date.parse(run?.startedAt ?? run?.createdAt ?? finishedAt))),
+      )
+      this.notifyPersistedLog(loopId, runId, 'process-control', reason)
+    } catch (error) {
+      if (this.ledger.quarantineUnsafeWorkspace(loopId, UNSAFE_WORKSPACE_MESSAGE)) this.notifyWorkspaceQuarantine(loopId)
+      this.controlLog(loopId, runId, 'error', `Quit state could not be committed after process interruption began: ${redactedErrorMessage(error, 'canonical process ownership remains active.')}`)
+    }
   }
 
-  /** Revive a stopped loop: requeue where it left off and keep going. */
   /**
-   * The phase a resume should pick up from.
-   *
-   * Not simply the last run. A failed Asset Build is tolerated on purpose —
-   * the implementer models whatever is missing — so a usage limit that ends
-   * the assets run still lets the loop advance and fail the implement run
-   * behind it. Retrying only the last run then rebuilds the game around a
-   * half-built cast and never revisits the models.
-   *
-   * So resume goes back to the earliest phase of the round that has no
-   * succeeded run, and retries that phase's most recent attempt.
+   * Stop a loop and keep the caller alive through bounded group settlement.
+   * Electron's before-quit handler must await this result: `false` means the
+   * identity-bound group is still present or could not be proven absent, so
+   * quitting would discard the escalation timers and must be cancelled.
    */
+  async stopForQuitAndWait(maxWaitMs = 20_000): Promise<boolean> {
+    this.stopForQuit()
+    const attempts = Math.max(1, Math.ceil(Math.min(Math.max(maxWaitMs, 0), 60_000) / 100))
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (this.ledger.runsWithProcessOwnership().length === 0) return true
+      await this.deps.wait(100)
+    }
+    return this.ledger.runsWithProcessOwnership().length === 0
+  }
+
+  /** Earliest unfinished phase in one historical round (legacy Asset Build included). */
   private resumeTarget(loopId: string, round: number): RunRecord | null {
+    if (round < 1) return null
     const runs = this.ledger.runsForLoop(loopId).filter((run) => run.round === round)
     for (const role of ['assets', 'implement', 'critique'] as const) {
       const attempts = runs.filter((run) => run.role === role)
-      if (attempts.length === 0 || attempts.some((run) => run.status === 'succeeded')) continue
-      return attempts.at(-1) ?? null
+      if (attempts.length === 0) continue
+      if (!attempts.some((run) => run.status === 'succeeded')) return attempts.at(-1) ?? null
     }
     return null
   }
 
+  /** Revive a stopped loop: requeue where it left off and keep going. */
   resumeLoop(loopId: string): StartLoopResult {
     const loop = this.ledger.getLoop(loopId)
     if (!loop) return { ok: false, error: 'Loop not found.' }
+    try {
+      this.ledger.assertLoopWorkspaceIdentity(loop.id)
+    } catch {
+      if (this.ledger.quarantineUnsafeWorkspace(loop.id, UNSAFE_WORKSPACE_MESSAGE)) this.notifyWorkspaceQuarantine(loop.id)
+      return { ok: false, error: UNSAFE_WORKSPACE_MESSAGE }
+    }
+    if (this.ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, UNKNOWN_LAUNCH_OWNERSHIP)) {
+      return { ok: false, error: `${UNKNOWN_LAUNCH_OWNERSHIP} Resume is disabled to avoid duplicating an untracked editor; start a new trusted run after confirming the old CLI is stopped.` }
+    }
+    if (!loop.playTrusted) return { ok: false, error: UNTRUSTED_HISTORY_MESSAGE }
     if (loop.status === 'running') return { ok: false, error: 'Loop is already running.' }
     if (loop.status === 'passed') return { ok: false, error: 'Loop already passed — start a new run to keep improving.' }
-    if (this.current || this.ledger.runningLoop()) return { ok: false, error: 'Another loop is running. Stop it first.' }
+    if (this.current || this.terminatingLoops.size > 0 || this.ledger.runningLoop()) return { ok: false, error: 'Another loop is running. Stop it first.' }
+    try {
+      const owner = this.retainedProcessOwnership()
+      if (owner) return { ok: false, error: this.retainedOwnershipMessage(owner) }
+    } catch (error) {
+      return { ok: false, error: redactedErrorMessage(error, 'Retained process ownership could not be verified.') }
+    }
+    const last = this.ledger.latestRunForLoop(loopId)
+    const resume = planResume(last, loop.maxRounds)
+    const resumeTarget: { role: RunRole; harness: HarnessKind } | null =
+      resume.kind === 'continue-queued' || resume.kind === 'retry'
+        ? { role: resume.run.role, harness: resume.run.harness }
+        : resume.kind === 'queue-critique'
+          ? { role: 'critique', harness: harnessFor(loop.models.criticModel) }
+          : resume.kind === 'finish-exhausted'
+            ? null
+            : { role: resume.kind === 'queue-reference' ? 'reference' : 'implement', harness: harnessFor(loop.models.orchestratorModel) }
+    if (resumeTarget) {
+      const subscriptionBlock = this.subscriptionBlock(loop, resumeTarget.role, resumeTarget.harness)
+      if (subscriptionBlock) return { ok: false, error: this.subscriptionBlockMessage(subscriptionBlock.harness, subscriptionBlock.readiness) }
+    }
     this.stopRequested.delete(loopId)
-
-    const runs = this.ledger.runsForLoop(loopId)
-    const last = runs.at(-1)
-    // Round 0 has no phase order to walk back through, so the reference run is
-    // its own resume target.
-    const retry = last && last.status !== 'succeeded' ? (this.resumeTarget(loopId, last.round) ?? last) : null
-    this.ledger.patchLoop(loopId, { status: 'running', stopReason: null })
-    if (retry) {
-      const base = retry.prompt.startsWith(RESUME_PREFIX) ? retry.prompt.slice(RESUME_PREFIX.length) : retry.prompt
-      this.ledger.createRun({
-        loopId,
-        round: retry.round,
-        role: retry.role,
-        harness: retry.harness,
-        prompt: retry.role === 'implement' ? RESUME_PREFIX + base : base,
-      })
-      const skipped = retry.id === last?.id ? '' : ` (the ${last?.role} run after it never succeeded either)`
-      this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${retry.round} ${retry.role}${skipped}.`)
-    } else if (last?.role === 'reference') {
-      this.queueImplement(loop, 1, null)
-      this.log(loopId, null, 'system', 'Loop resumed by user — Reference Pack ready; starting round 1.')
-    } else if (last?.role === 'assets') {
-      this.queueImplement(loop, last.round, this.verdictForRound(loopId, last.round - 1))
-      this.log(loopId, null, 'system', `Loop resumed by user — Asset Build done; starting round ${last.round}.`)
-    } else if (last?.role === 'implement' && last.round >= loop.maxRounds) {
-      this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${last.round} — no critique, since no round is left for it to gate.`)
-      return { ok: true }
-    } else if (last?.role === 'implement') {
-      this.ledger.createRun({
-        loopId,
-        round: last.round,
-        role: 'critique',
-        harness: loop.models.criticHarness,
-        prompt: buildCriticPrompt(loop.prompt, last.round, this.referenceDir(loopId), engineGateRules()),
-      })
-      this.log(loopId, null, 'system', `Loop resumed by user — judging round ${last.round}.`)
-    } else if (last?.role === 'critique') {
-      const nextRound = last.round + 1
-      if (nextRound > loop.maxRounds) {
-        this.finishLoop(loopId, 'exhausted', `Max rounds (${loop.maxRounds}) reached.`)
-        return { ok: false, error: 'Max rounds already reached.' }
+    let earlyResult: StartLoopResult | null = null
+    this.atomicLogs(() => {
+      this.ledger.patchLoop(loopId, { status: 'running', stopReason: null })
+      if (resume.kind === 'continue-queued') {
+        this.log(loopId, null, 'system', `Loop resumed by user — continuing the already queued round ${resume.run.round} ${resume.run.role}.`)
+      } else if (resume.kind === 'retry') {
+        const prior = resume.run
+        const retry = this.ledger.createRun({
+          loopId,
+          round: prior.round,
+          role: prior.role,
+          harness: harnessFor(prior.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
+          prompt: prior.role === 'implement' ? markResumePrompt(prior.prompt) : prior.prompt,
+        })
+        if (prior.revision) this.ledger.patchRun(retry.id, { revision: prior.revision })
+        if (prior.role === 'implement') this.copyCritiqueTreeBaseline(prior.id, retry.id)
+        this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${prior.round} ${prior.role}.`)
+      } else if (resume.kind === 'queue-implement') {
+        this.ledger.patchLoop(loopId, { round: resume.round })
+        this.ledger.createRun({
+          loopId,
+          round: resume.round,
+          role: 'implement',
+          harness: harnessFor(loop.models.orchestratorModel),
+          prompt: this.nextImplementPrompt(loop, resume.round, resume.prior?.verdict ?? null),
+        })
+        this.log(loopId, null, 'system', resume.prior?.role === 'critique' ? `Loop resumed by user — starting round ${resume.round}.` : 'Loop resumed by user — Reference Pack ready; starting round 1.')
+      } else if (resume.kind === 'queue-critique') {
+        const prior = resume.prior
+        const critique = this.ledger.createRun({
+          loopId,
+          round: resume.round,
+          role: 'critique',
+          harness: harnessFor(loop.models.criticModel),
+          prompt: buildCriticPrompt(loop.prompt, resume.round, this.referenceDir(loopId), prior.revision ?? '<missing-revision>'),
+        })
+        this.ledger.patchRun(critique.id, { revision: prior.revision })
+        this.log(loopId, null, 'system', `Loop resumed by user — judging round ${resume.round}.`)
+      } else if (resume.kind === 'finish-exhausted') {
+        const afterImplement = resume.prior.role === 'implement'
+        const reason = afterImplement
+          ? `Max rounds (${loop.maxRounds}) reached after round ${resume.prior.round} — no critique, since no round is left for it to gate.`
+          : `Max rounds (${loop.maxRounds}) reached.`
+        this.persistLoopTerminal(loopId, 'exhausted', reason)
+        earlyResult = afterImplement ? { ok: true } : { ok: false, error: 'Max rounds already reached.' }
+      } else {
+        const referenceDir = referencePackDir(loopId)
+        this.ledger.createRun({
+          loopId,
+          round: 0,
+          role: 'reference',
+          harness: harnessFor(loop.models.orchestratorModel),
+          prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
+        })
+        this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
       }
-      this.queueImplement(loop, nextRound, last.verdict)
-      this.log(loopId, null, 'system', `Loop resumed by user — starting round ${nextRound}.`)
-    } else {
-      const referenceDir = referencePackDir(loopId)
-      this.ledger.createRun({
-        loopId,
-        round: 0,
-        role: 'reference',
-        harness: harnessFor(loop.models.orchestratorModel),
-        prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
-      })
-      this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
+    })
+    if (earlyResult) {
+      if (resume.kind === 'finish-exhausted') {
+        const reason = resume.prior.role === 'implement'
+          ? `Max rounds (${loop.maxRounds}) reached after round ${resume.prior.round} — no critique, since no round is left for it to gate.`
+          : `Max rounds (${loop.maxRounds}) reached.`
+        this.notifyPersistedLog(loopId, null, 'done', this.terminalMessage('exhausted', reason))
+      }
+      this.broadcast(loopId)
+      return earlyResult
     }
     this.broadcast(loopId)
     void this.executeNext(loopId)
@@ -565,16 +1243,41 @@ export class LoopRunner {
   }
 
   stop(loopId: string): void {
+    const loop = this.ledger.getLoop(loopId)
+    if (!loop) return
     this.stopRequested.add(loopId)
     if (this.current?.loopId === loopId) {
-      this.log(loopId, this.current.runId, 'system', 'Stop requested — interrupting current run (SIGINT).')
-      this.interruptPid(this.current.pid)
+      const workspaceSafe = this.verifyWorkspaceBoundary(loop)
+      this.interrupt(this.current.meta, loopId, this.current.runId)
+      this.controlLog(
+        loopId,
+        this.current.runId,
+        'system',
+        workspaceSafe
+          ? 'Stop requested — interrupting current run (SIGINT).'
+          : 'Stop requested after the workspace root changed — interrupting the canonical process group (SIGINT).',
+      )
+      return
+    }
+    const retained = this.retainedProcessOwnership()
+    if (retained?.loop.id === loopId) {
+      const workspaceSafe = this.verifyWorkspaceBoundary(loop)
+      this.interrupt(retained.meta, loopId, retained.run.id)
+      this.controlLog(
+        loopId,
+        retained.run.id,
+        'system',
+        workspaceSafe
+          ? 'Stop requested — resuming interruption of the retained process group (SIGINT).'
+          : 'Stop requested after the workspace root changed — resuming canonical process-group interruption (SIGINT).',
+      )
       return
     }
     this.finishLoop(loopId, 'stopped', 'Stopped by user.')
   }
 
-  private pidAlive(pid: number): boolean {
+  private pidExists(pid: number): boolean {
+    if (!safePid(pid)) return false
     try {
       process.kill(pid, 0)
       return true
@@ -583,71 +1286,196 @@ export class LoopRunner {
     }
   }
 
-  private interruptPid(pid: number): void {
-    const tryKill = (signal: NodeJS.Signals): void => {
+  /** Persist every currently verified member before a stop can outlive us. */
+  private refreshCanonicalGroup(meta: RunProcessMeta, loopId: string, runId: string): void {
+    const ownership = this.ledger.runProcessOwnership(runId)
+    if (!ownership || !processMatches(meta)) return
+    const fresh = this.deps.processGroupIdentity(meta.pid)
+    if (!fresh.includes(`${meta.pid}:${meta.processIdentity}`)) return
+    const union = [...new Set([...ownership.groupIdentities, ...fresh])]
+    if (union.length === ownership.groupIdentities.length) return
+    this.ledger.updateRunProcessGroupIdentities(runId, union)
+    meta.groupIdentities = union
+    if (!this.ledger.getLoop(loopId)) throw new Error('Cannot advance process-group ownership for a missing loop.')
+  }
+
+  private interrupt(meta: RunProcessMeta, loopId: string, runId: string): void {
+    if (this.interruptingRuns.has(runId)) return
+    if (!processMatches(meta)) {
+      const captured = this.ledger.runProcessOwnership(runId)?.groupIdentities ?? meta.groupIdentities
+      this.interruptCaptured(meta, captured, loopId, runId)
+      return
+    }
+    const report = (message: string): void => {
       try {
-        process.kill(pid, signal)
-      } catch {
-        /* already gone */
+        this.controlLog(loopId, runId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
+      } catch (error) {
+        console.error('Could not persist process-control event:', error)
       }
     }
-    tryKill('SIGINT')
-    setTimeout(() => this.pidAlive(pid) && tryKill('SIGTERM'), 10_000).unref()
-    setTimeout(() => this.pidAlive(pid) && tryKill('SIGKILL'), 15_000).unref()
-  }
-
-  private metaPath(workspaceDir: string, runId: string): string {
-    return path.join(runsDir(workspaceDir), `${runId}.json`)
-  }
-
-  private readMeta(workspaceDir: string, runId: string): ProcMeta | null {
     try {
-      return JSON.parse(fs.readFileSync(this.metaPath(workspaceDir, runId), 'utf8')) as ProcMeta
-    } catch {
-      return null
+      this.refreshCanonicalGroup(meta, loopId, runId)
+    } catch (error) {
+      report(`Could not advance canonical process-group ownership before interruption: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    this.interruptingRuns.add(runId)
+    this.terminatingLoops.add(loopId)
+    interruptProcessGroup(
+      meta,
+      report,
+      {
+        identityMatches: processMatches,
+        kill: this.deps.signalProcess,
+        defer: this.deps.defer,
+        groupIdentity: this.deps.processGroupIdentity,
+        groupStillOwned: this.deps.processGroupStillOwned,
+      },
+      (outcome) => {
+        this.interruptingRuns.delete(runId)
+        this.terminatingLoops.delete(loopId)
+        if (outcome === 'gone') {
+          if (this.ledger.runProcessOwnership(runId)) this.ledger.clearRunProcessOwnership(runId)
+          if (this.ledger.getLoop(loopId)?.status === 'running') void this.executeNext(loopId)
+        } else {
+          report('Process-group ownership could not be proven settled; the canonical ownership claim remains and new work is blocked pending manual intervention.')
+        }
+      },
+    )
+  }
+
+  private interruptCaptured(
+    meta: RunProcessMeta,
+    groupIdentity: readonly string[],
+    loopId: string,
+    runId: string,
+  ): void {
+    if (this.interruptingRuns.has(runId)) return
+    const report = (message: string): void => {
+      try {
+        this.controlLog(loopId, runId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
+      } catch (error) {
+        console.error('Could not persist process-control event:', error)
+      }
+    }
+    this.interruptingRuns.add(runId)
+    this.terminatingLoops.add(loopId)
+    interruptCapturedProcessGroup(
+      meta.pid,
+      groupIdentity,
+      report,
+      (outcome) => {
+        this.interruptingRuns.delete(runId)
+        this.terminatingLoops.delete(loopId)
+        if (outcome === 'gone') {
+          if (this.ledger.runProcessOwnership(runId)) this.ledger.clearRunProcessOwnership(runId)
+          if (this.ledger.getLoop(loopId)?.status === 'running') void this.executeNext(loopId)
+        } else {
+          report('Process-group ownership could not be proven settled; the canonical ownership claim remains and new work is blocked pending manual intervention.')
+        }
+      },
+      {
+        kill: this.deps.signalProcess,
+        defer: this.deps.defer,
+        groupIdentity: this.deps.processGroupIdentity,
+        groupStillOwned: this.deps.processGroupStillOwned,
+      },
+    )
+  }
+
+  /** Persist one event without crossing the IPC boundary (safe inside a DB transaction). */
+  private persistLog(loopId: string, runId: string | null, kind: string, text: string, agentId?: string): LoopLogLine {
+    const line: LoopLogLine = { loopId, runId, ts: this.nowIso(), kind, channel: channelForKind(kind), text: redactLogText(text.slice(0, 4000)) }
+    if (agentId) line.agentId = redactLogText(agentId).slice(0, 256)
+    if (runId) {
+      const run = this.ledger.getRun(runId)
+      if (run) {
+        line.round = run.round
+        line.role = run.role
+      }
+    }
+    this.ledger.appendEvent(line)
+    return line
+  }
+
+  /** Process control must remain durable even when the workspace mirror is unsafe. */
+  private controlLog(loopId: string, runId: string, kind: string, text: string): void {
+    try {
+      const run = this.ledger.getRun(runId)
+      const line: LoopLogLine = {
+        loopId,
+        runId,
+        ts: this.nowIso(),
+        kind,
+        channel: channelForKind(kind),
+        text: redactLogText(text.slice(0, 4000)),
+        ...(run ? { round: run.round, role: run.role } : {}),
+      }
+      this.ledger.appendCanonicalEvent(line)
+      this.notifyLog(line)
+    } catch (error) {
+      console.error('Could not persist canonical process-control event:', error)
     }
   }
 
-  private writeMeta(workspaceDir: string, runId: string, meta: ProcMeta): void {
+  private notifyLog(line: LoopLogLine): void {
     try {
-      fs.writeFileSync(this.metaPath(workspaceDir, runId), JSON.stringify(meta))
+      this.send(IPC.loop.log, line)
     } catch {
-      /* non-fatal */
+      /* durable log delivery survives a transient renderer boundary failure */
     }
   }
 
   private log(loopId: string, runId: string | null, kind: string, text: string, agentId?: string): void {
-    const line: LoopLogLine = { loopId, runId, ts: new Date().toISOString(), kind, channel: channelForKind(kind), text: text.slice(0, 4000) }
-    if (agentId) line.agentId = agentId
-    if (runId) {
-      let stamp = this.runStamps.get(runId)
-      if (!stamp) {
-        const run = this.ledger.getRun(runId)
-        if (run) {
-          stamp = { round: run.round, role: run.role }
-          this.runStamps.set(runId, stamp)
-        }
-      }
-      if (stamp) {
-        line.round = stamp.round
-        line.role = stamp.role
-      }
+    const line = this.persistLog(loopId, runId, kind, text, agentId)
+    if (this.logNotificationBuffer) this.logNotificationBuffer.push(line)
+    else this.notifyLog(line)
+  }
+
+  /** Commit projected events/state before exposing any of those events over IPC. */
+  private atomicLogs<T>(work: () => T): T {
+    if (this.logNotificationBuffer) return this.ledger.transaction(work)
+    const notifications: LoopLogLine[] = []
+    const broadcasts = new Set<string>()
+    this.logNotificationBuffer = notifications
+    this.broadcastBuffer = broadcasts
+    try {
+      const result = this.ledger.transaction(work)
+      this.logNotificationBuffer = null
+      this.broadcastBuffer = null
+      for (const line of notifications) this.notifyLog(line)
+      for (const loopId of broadcasts) this.broadcast(loopId)
+      return result
+    } catch (error) {
+      this.logNotificationBuffer = null
+      this.broadcastBuffer = null
+      throw error
     }
-    this.ledger.appendEvent(line)
-    this.send('loop:log', line)
+  }
+
+  private notifyPersistedLog(loopId: string, runId: string | null, kind: string, text: string): void {
+    const safeText = redactLogText(text.slice(0, 4000))
+    const events = runId ? this.ledger.eventsForRun(runId, kind, 100) : this.ledger.eventsForLoop(loopId, 100)
+    const line = [...events].reverse().find((event) => event.kind === kind && event.text === safeText)
+    if (line) this.notifyLog(line)
   }
 
   /** Surface every delegated child's stream in the run log, attributed to its slug. */
-  private pumpChildStreams(): void {
-    if (!this.childTail) return
-    const { loopId, runId, tailer } = this.childTail
-    for (const event of tailer.poll()) this.log(loopId, runId, event.kind, event.text, event.agentId)
+  private pumpChildStreams(): number {
+    if (!this.childTail) return 0
+    const { loopId, runId, boundary, tailer } = this.childTail
+    assertChildStreamBoundary(boundary)
+    const events = tailer.poll()
+    for (const event of events) this.log(loopId, runId, event.kind, event.text, event.agentId)
+    return events.length
   }
 
   /** Preserve a complete execution prompt in the event log without hitting the per-line cap. */
   private logPrompt(loopId: string, runId: string, label: string, prompt: string): void {
     const chunkSize = 3_600
-    const chunks = Array.from({ length: Math.ceil(prompt.length / chunkSize) }, (_, index) => prompt.slice(index * chunkSize, (index + 1) * chunkSize))
+    // Redact before slicing so a credential-shaped value cannot straddle two
+    // separately sanitized log records.
+    const safePrompt = redactLogText(prompt)
+    const chunks = Array.from({ length: Math.ceil(safePrompt.length / chunkSize) }, (_, index) => safePrompt.slice(index * chunkSize, (index + 1) * chunkSize))
     for (const [index, chunk] of chunks.entries()) {
       const suffix = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''
       this.log(loopId, runId, 'prompt', `${label}${suffix}:\n${chunk}`)
@@ -655,123 +1483,258 @@ export class LoopRunner {
   }
 
   private broadcast(loopId: string): void {
+    if (this.broadcastBuffer) {
+      this.broadcastBuffer.add(loopId)
+      return
+    }
     const loop = this.ledger.getLoop(loopId)
     if (!loop) return
-    const runs = this.ledger.runsForLoop(loopId)
-    this.send('loop:update', { loop, runs })
+    const totalRuns = this.ledger.runCount(loopId)
+    const projection = this.ledger.recentRunProjectionForLoop(loopId, 200)
     try {
-      fs.writeFileSync(
-        path.join(loop.workspaceDir, 'gauntlet-report.md'),
-        buildReport(loop, runs, scanCritiqueArtifacts(loop.workspaceDir), scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))),
-      )
+      this.send(IPC.loop.update, boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns, detailTruncated: projection.truncatedFields, aggregate: this.ledger.runAggregate(loopId) }))
     } catch {
-      /* workspace may be gone; the in-app report still works */
+      /* the ledger remains authoritative across a transient renderer failure */
+    }
+    if (loop.status !== 'running') try {
+      const runs = this.ledger.recentRunProjectionForLoop(loopId, 500).runs
+      const snapshot = publishOwnedWorkspaceSnapshot(
+        loop.workspaceDir,
+        requireWorkspaceIdentity(loop),
+        ['.gauntlet-gamesmith', 'reports', loop.id],
+        'report-v2',
+        '.md',
+        buildReport(
+          loop,
+          runs,
+          scanCritiqueArtifacts(loop.workspaceDir, loop),
+          scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop),
+          { totalRuns, aggregate: this.ledger.runAggregate(loopId) },
+        ),
+        'html',
+        { managedPrefix: 'report-v2-', maxFiles: 8, maxBytes: 8 * 1024 * 1024 },
+      )
+      const relativeSnapshot = path.relative(loop.workspaceDir, snapshot)
+      const message = `Immutable report snapshot: ${relativeSnapshot}`
+      if (!this.ledger.eventsForLoop(loop.id, 100).some((event) => event.kind === 'artifact' && event.text === message)) {
+        const line = this.persistLog(loop.id, null, 'artifact', message)
+        this.notifyLog(line)
+      }
+    } catch (error) {
+      this.log(loop.id, null, 'error', `Report write failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private terminalMessage(status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): string {
+    const icon = status === 'passed' ? '🏆' : status === 'failed' ? '✗' : '■'
+    return `${icon} Loop ${status}: ${reason}`
+  }
+
+  /** State and canonical terminal event are written together; safe to call repeatedly. */
+  private persistLoopTerminal(loopId: string, status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void {
+    this.ledger.patchLoop(loopId, { status, stopReason: reason })
+    const message = this.terminalMessage(status, reason)
+    if (!this.ledger.eventsForLoop(loopId, 100).some((event) => event.kind === 'done' && event.text === message)) {
+      this.persistLog(loopId, null, 'done', message)
     }
   }
 
   private finishLoop(loopId: string, status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void {
-    this.ledger.patchLoop(loopId, { status, stopReason: reason })
-    this.stopRequested.delete(loopId)
+    const retryTimer = this.retryTimers.get(loopId)
+    if (retryTimer) this.deps.cancelDeferred(retryTimer)
+    this.retryTimers.delete(loopId)
     this.rotations.delete(loopId)
-    clearTimeout(this.waits.get(loopId))
-    this.waits.delete(loopId)
-    const icon = status === 'passed' ? '🏆' : status === 'failed' ? '✗' : '■'
-    this.log(loopId, null, 'done', `${icon} Loop ${status}: ${reason}`)
+    this.ledger.transaction(() => this.persistLoopTerminal(loopId, status, reason))
+    this.stopRequested.delete(loopId)
+    this.notifyPersistedLog(loopId, null, 'done', this.terminalMessage(status, reason))
     this.broadcast(loopId)
   }
 
-  /**
-   * Answer a usage limit by changing accounts rather than ending the run.
-   *
-   * The limit belongs to the account, not the work, so the run is retried on
-   * the next account that is signed in and not inside its own window. Callers
-   * requeue the work themselves — each role rebuilds its prompt differently —
-   * and fall back to their normal failure when this returns `rotated: false`.
-   */
-  private async rotateForUsageLimit(loop: LoopRecord, run: RunRecord, error: string): Promise<UsageLimitOutcome> {
-    if (!USAGE_LIMIT.test(error)) return { rotated: false, message: null }
-
-    const used = this.rotations.get(loop.id) ?? 0
-    if (used >= MAX_ACCOUNT_ROTATIONS) {
-      return {
-        rotated: false,
-        message: `Rate limited after changing accounts ${used} time(s) — stopping rather than working through every account. (${error})`,
-      }
-    }
-
-    const rotation = await this.rotateAccount(run.harness, error)
-    if (!rotation.ok) {
-      // Every account spent is a pause, not a failure: the build waits for the
-      // first window to reopen rather than throwing away its progress.
-      const waitMs = rotation.resetAt == null ? 0 : rotation.resetAt - Date.now()
-      if (waitMs > 0 && waitMs <= MAX_LIMIT_WAIT_MS) {
-        this.rotations.set(loop.id, used + 1)
-        const clock = new Date(rotation.resetAt!).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-        this.log(
-          loop.id,
-          run.id,
-          'system',
-          `⏸ Every account is inside its limit window — waiting until ${clock} to retry round ${run.round} ${run.role}.`,
-        )
-        return { rotated: true, waitMs }
-      }
-      return {
-        rotated: false,
-        message: `Rate limited on ${rotation.from} and ${rotation.reason} — wait for the window to reset, or sign another account in on the Agents tab. (${error})`,
-      }
-    }
-
-    this.rotations.set(loop.id, used + 1)
-    this.log(
-      loop.id,
-      run.id,
-      'system',
-      `⇄ Rate limited on ${rotation.from} — switched to ${rotation.to} and retrying round ${run.round} ${run.role}.`,
-    )
-    return { rotated: true }
-  }
-
-  /**
-   * Pick the queued work up again — now, or when a usage window reopens.
-   *
-   * A wait keeps the loop `running` so it still reads as alive; stopping it
-   * cancels the timer through `finishLoop`.
-   */
-  private resumeAfter(loopId: string, waitMs?: number): void {
-    if (!waitMs) {
-      void this.executeNext(loopId)
-      return
-    }
-    clearTimeout(this.waits.get(loopId))
-    this.waits.set(
-      loopId,
-      setTimeout(() => {
-        this.waits.delete(loopId)
-        void this.executeNext(loopId)
-      }, waitMs),
-    )
-  }
-
   private async executeNext(loopId: string): Promise<void> {
-    if (this.current) return
+    if (this.current || this.terminatingLoops.has(loopId)) return
     const loop = this.ledger.getLoop(loopId)
     if (!loop || loop.status !== 'running') return
+    if (!this.verifyWorkspaceBoundary(loop)) return
+    const owner = this.retainedProcessOwnership()
+    if (owner) {
+      this.log(loop.id, null, 'error', this.retainedOwnershipMessage(owner))
+      return
+    }
     if (this.stopRequested.has(loopId)) {
       this.finishLoop(loopId, 'stopped', 'Stopped by user.')
+      return
+    }
+    const retryAt = this.queuedRetryAt(loopId)
+    if (retryAt && retryAt > this.deps.now()) {
+      this.scheduleRetry(loopId, retryAt)
       return
     }
     const run = this.ledger.nextQueuedRun(loopId)
     if (!run) return
     try {
+      if (run.role === 'assets') {
+        this.atomicLogs(() => {
+          this.ledger.patchRun(run.id, {
+            status: 'interrupted',
+            error: 'Legacy Asset Build handed over to the folded implement phase.',
+            finishedAt: this.nowIso(),
+          })
+          this.ledger.createRun({
+            loopId: loop.id,
+            round: run.round,
+            role: 'implement',
+            harness: harnessFor(loop.models.orchestratorModel),
+            prompt: this.nextImplementPrompt(loop, run.round, this.verdictForRound(loop.id, run.round - 1)),
+          })
+          this.log(loop.id, run.id, 'system', 'Legacy Asset Build migrated into the implement round; no standalone asset process was launched.')
+        })
+        this.broadcast(loop.id)
+        void this.executeNext(loop.id)
+        return
+      }
+      const subscriptionBlock = this.subscriptionBlockForRun(loop, run)
+      if (subscriptionBlock) {
+        this.stopForSubscription(loop, run, subscriptionBlock.harness, subscriptionBlock.readiness)
+        return
+      }
+      // Authentication/status probes are external calls. Re-check immediately
+      // before handing the project path to a role in case it changed meanwhile.
+      if (!this.verifyWorkspaceBoundary(loop)) return
       if (run.role === 'reference') await this.executeReference(loop, run)
-      else if (run.role === 'assets') await this.executeAssets(loop, run)
       else if (run.role === 'implement') await this.executeImplement(loop, run)
       else await this.executeCritique(loop, run)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.ledger.patchRun(run.id, { status: 'failed', error: message, finishedAt: new Date().toISOString() })
-      this.finishLoop(loopId, 'failed', `Run crashed: ${message}`)
+      const persisted = this.ledger.getRun(run.id)
+      this.ledger.patchRun(run.id, {
+        durationMs: persisted?.startedAt ? this.deps.now() - Date.parse(persisted.startedAt) : 0,
+        finishedAt: this.nowIso(),
+      })
+      this.failAttemptAndLoop(loop, run, message, `Run crashed: ${message}`)
     }
+  }
+
+  private prepareChildStreams(loop: LoopRecord, run: RunRecord): ChildStreamBoundary {
+    const priorRunId = this.ledger.latestRunIdExcept(loop.id, run.id)
+    if (priorRunId) {
+      const archived = archiveChildStreams(loop.workspaceDir, priorRunId, loop)
+      if (archived) this.log(loop.id, run.id, 'system', `Archived ${archived} delegated raw stream${archived === 1 ? '' : 's'} under .gauntlet-gamesmith/agents/${priorRunId}/.`)
+    }
+    return observeChildStreams(loop.workspaceDir, loop)
+  }
+
+  private failLaunch(loop: LoopRecord, run: RunRecord, message: string, startedAtMs: number): void {
+    this.ledger.patchRun(run.id, {
+      durationMs: Math.max(0, this.deps.now() - startedAtMs),
+      finishedAt: this.nowIso(),
+    })
+    // Workspace process metadata is immutable portable evidence. Canonical
+    // ownership in SQLite controls recovery; never unlink an agent-replaceable
+    // pathname after a separable identity check.
+    this.log(loop.id, run.id, 'error', message)
+    this.failAttemptAndLoop(loop, run, message, message)
+  }
+
+  /** Fail closed after spawn without consulting the workspace mirror. */
+  private stopSpawnedRunCanonical(loop: LoopRecord, run: RunRecord, reason: string, startedAtMs: number): void {
+    this.stopRequested.add(loop.id)
+    if (this.ledger.getRun(run.id)?.status !== 'running') return
+    try {
+      const finishedAt = this.nowIso()
+      this.ledger.interruptRunAndStopLoopCanonical(
+        loop.id,
+        run.id,
+        reason,
+        finishedAt,
+        Math.max(0, Math.floor(this.deps.now() - startedAtMs)),
+      )
+      this.notifyPersistedLog(loop.id, run.id, 'process-control', reason)
+    } catch (error) {
+      try {
+        this.controlLog(loop.id, run.id, 'error', `Post-spawn quarantine could not be committed; launch supervision remains active: ${redactedErrorMessage(error, 'canonical state unavailable.')}`)
+      } catch {
+        /* process supervision and stopRequested remain authoritative in memory */
+      }
+    }
+  }
+
+  /**
+   * A returned ChildProcess is still owned even when the OS has not supplied a
+   * safe recoverable PID. Keep its error/exit handle live through
+   * SIGINT→SIGKILL, and quarantine instead of pretending an unobserved child is
+   * gone.
+   */
+  private superviseUnidentifiedChild(
+    loop: LoopRecord,
+    run: RunRecord,
+    child: ReturnType<typeof spawn>,
+    own: ExitHolder,
+    message: string,
+    startedAtMs: number,
+  ): void {
+    this.terminatingLoops.add(loop.id)
+    this.stopRequested.add(loop.id)
+    const report = (kind: string, text: string): void => {
+      try {
+        this.controlLog(loop.id, run.id, kind, text)
+      } catch (error) {
+        console.error('Could not persist direct-child process-control event:', error)
+      }
+    }
+    let finished = false
+    const reason = `${UNKNOWN_LAUNCH_OWNERSHIP} ${message} Canonical process-group ownership was not established after the stock CLI started; an early direct-child exit cannot prove that no detached descendant survived. This workspace remains quarantined against another launch.`
+    const finishKnownGone = (): void => {
+      if (finished || !own.exited) return
+      finished = true
+      this.terminatingLoops.delete(loop.id)
+      // Even an observed direct-leader exit cannot prove that no detached
+      // descendant survived before canonical group ownership was captured.
+      // Preserve the durable quarantine marker and keep Resume denied.
+    }
+    child.once('error', finishKnownGone)
+    child.once('exit', finishKnownGone)
+    let interruptError: unknown = null
+    try {
+      child.kill('SIGINT')
+    } catch (error) {
+      interruptError = error
+    }
+    report(
+      interruptError ? 'error' : 'system',
+      interruptError
+        ? `Direct child SIGINT could not be sent: ${interruptError instanceof Error ? interruptError.message : String(interruptError)}`
+        : 'SIGINT sent through the newly returned child handle while launch identity is incomplete.',
+    )
+    if (!own.exited) this.deps.defer(() => {
+      if (own.exited) {
+        finishKnownGone()
+        return
+      }
+      let killError: unknown = null
+      try {
+        child.kill('SIGKILL')
+      } catch (error) {
+        killError = error
+      }
+      report(
+        killError ? 'error' : 'system',
+        killError
+          ? `Direct child SIGKILL could not be sent: ${killError instanceof Error ? killError.message : String(killError)}`
+          : 'SIGKILL sent through the newly returned child handle after launch supervision timed out.',
+      )
+      this.deps.defer(() => {
+        if (own.exited) {
+          finishKnownGone()
+          return
+        }
+        this.terminatingLoops.delete(loop.id)
+        report('error', 'The unidentified direct child never reported exit after SIGKILL; permanent workspace quarantine remains in force.')
+      }, 1_000).unref?.()
+    }, 15_000).unref?.()
+    // Scheduling direct-handle escalation precedes durable state work so a DB
+    // or visibility failure cannot strand the child without a kill timer.
+    this.stopSpawnedRunCanonical(loop, run, reason, startedAtMs)
+    if (own.exited) finishKnownGone()
   }
 
   /** Spawn a detached CLI process whose stdout/stderr stream to files. */
@@ -781,23 +1744,125 @@ export class LoopRunner {
     command: string,
     args: string[],
     env: Record<string, string>,
-  ): { meta: ProcMeta; own: ExitHolder } | null {
-    const outPath = path.join(runsDir(loop.workspaceDir), `${run.id}.out.ndjson`)
-    const errPath = path.join(runsDir(loop.workspaceDir), `${run.id}.err.log`)
-    const own: ExitHolder = { exited: false, code: null, spawnError: null }
-    let outFd: number
-    let errFd: number
-    try {
-      outFd = fs.openSync(outPath, 'a')
-      errFd = fs.openSync(errPath, 'a')
-    } catch (error) {
-      this.ledger.patchRun(run.id, { status: 'failed', error: `Cannot open stream files: ${String(error)}` })
-      this.finishLoop(loop.id, 'failed', 'Cannot open run stream files.')
+    effectivePrompt = run.prompt,
+  ): { meta: RunProcessMeta; own: ExitHolder; groupIdentity: readonly string[] } | null {
+    const subscriptionBlock = this.subscriptionBlockForRun(loop, run)
+    if (subscriptionBlock) {
+      this.stopForSubscription(loop, run, subscriptionBlock.harness, subscriptionBlock.readiness)
       return null
     }
-    const child = spawn(command, args, { cwd: loop.workspaceDir, env, detached: true, stdio: ['ignore', outFd, errFd] })
-    fs.closeSync(outFd)
-    fs.closeSync(errFd)
+    // CLI version/account probes can take seconds. They are provenance setup,
+    // not part of the detached attempt: capture the launch time only after
+    // those probes finish so boot recovery does not reject a healthy process
+    // whose durable process start legitimately trails the run timestamp.
+    let startedAtMs = 0
+    let marker: ReturnType<typeof prepareProcessMeta>
+    const own: ExitHolder = { exited: false, code: null, spawnError: null }
+    let outFd: number | null = null
+    let errFd: number | null = null
+    const closeStreams = (): void => {
+      if (outFd !== null) {
+        try { fs.closeSync(outFd) } catch { /* already closed */ }
+        outFd = null
+      }
+      if (errFd !== null) {
+        try { fs.closeSync(errFd) } catch { /* already closed */ }
+        errFd = null
+      }
+    }
+    let streamIdentity: ProcessStreamIdentity
+    let spawnedOutFd = -1
+    let spawnedErrFd = -1
+    try {
+      const model = run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel
+      const effort = run.role === 'critique' ? loop.models.criticEffort : loop.models.orchestratorEffort
+      const version = redactLogText(this.deps.cliVersion(command, env, loop.workspaceDir))
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 200) || 'unavailable'
+      const promptSha256 = createHash('sha256').update(effectivePrompt).digest('hex')
+      let machineLabel = 'unknown-host'
+      try {
+        machineLabel = this.deps.hostname().trim().slice(0, 255) || machineLabel
+      } catch {
+        /* a missing host label does not justify reading any broader machine state */
+      }
+      let accountLabel = `${run.harness}:profile-unavailable`
+      try {
+        accountLabel = redactLogText(this.deps.accountLabel(run.harness, command, env, loop.workspaceDir))
+          .replace(/[\u0000-\u001f\u007f]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 255) || accountLabel
+      } catch {
+        /* the status command failed without widening into credential-file reads */
+      }
+      // Version/account probes are external processes. Rebind the root before
+      // launch state is committed or the detached editor is spawned.
+      if (!this.verifyWorkspaceBoundary(loop)) {
+        closeStreams()
+        return null
+      }
+      startedAtMs = this.deps.now()
+      marker = prepareProcessMeta(loop.workspaceDir, run.id, startedAtMs, requireWorkspaceIdentity(loop))
+      const flags = fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_APPEND | fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW ?? 0)
+      outFd = fs.openSync(marker.outPath, flags, 0o600)
+      errFd = fs.openSync(marker.errPath, flags, 0o600)
+      spawnedOutFd = outFd
+      spawnedErrFd = errFd
+      const outStat = fs.fstatSync(spawnedOutFd)
+      const errStat = fs.fstatSync(spawnedErrFd)
+      streamIdentity = {
+        outDev: outStat.dev,
+        outIno: outStat.ino,
+        errDev: errStat.dev,
+        errIno: errStat.ino,
+      }
+      this.ledger.patchRun(run.id, {
+        prompt: effectivePrompt,
+        status: 'running',
+        startedAt: new Date(startedAtMs).toISOString(),
+        model,
+        effort,
+        cliVersion: version,
+        priceTableVersion: PRICE_TABLE_VERSION,
+        costSource: null,
+        promptSha256,
+        accountLabel,
+        machineLabel,
+        authMode: 'subscription',
+      })
+      this.logPrompt(loop.id, run.id, runPromptLabel(run), effectivePrompt)
+      this.log(
+        loop.id,
+        run.id,
+        'system',
+        `Run provenance: ${command} ${version} · model ${model} · effort ${effort} · prompt sha256:${promptSha256} · ${accountLabel} on ${machineLabel} · subscription auth · price table ${PRICE_TABLE_VERSION} · cost labeled equivalent API cost.`,
+      )
+      this.broadcast(loop.id)
+    } catch (error) {
+      closeStreams()
+      const message = startedAtMs === 0
+        ? `Could not establish run provenance: ${error instanceof Error ? error.message : String(error)}`
+        : `Cannot persist process launch record: ${error instanceof Error ? error.message : String(error)}`
+      this.failLaunch(loop, run, message, startedAtMs || this.deps.now())
+      return null
+    }
+    if (!this.verifyWorkspaceBoundary(loop)) {
+      closeStreams()
+      return null
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = this.deps.spawnChild(command, args, { cwd: loop.workspaceDir, env, detached: true, stdio: ['ignore', spawnedOutFd, spawnedErrFd] })
+    } catch (error) {
+      closeStreams()
+      const message = `Could not spawn ${command}: ${error instanceof Error ? error.message : String(error)}`
+      this.failLaunch(loop, run, message, startedAtMs)
+      return null
+    }
+    closeStreams()
     child.on('error', (error) => {
       own.spawnError = error.message
       own.exited = true
@@ -807,15 +1872,89 @@ export class LoopRunner {
       own.exited = true
       own.code = code
     })
-    child.unref()
-    // Every run's exact execution prompt lands in its log, round-labeled, so
-    // the log alone tells the full story of what each agent was asked to do.
-    this.logPrompt(loop.id, run.id, runPromptLabel(run), run.prompt)
-    const meta: ProcMeta = { pid: child.pid ?? -1, outPath, errPath, startedAtMs: Date.now(), loggedOutLines: 0, loggedErrLines: 0 }
-    this.writeMeta(loop.workspaceDir, run.id, meta)
-    this.ledger.patchRun(run.id, { status: 'running', startedAt: new Date().toISOString() })
-    this.broadcast(loop.id)
-    return { meta, own }
+    try {
+      child.unref()
+    } catch (error) {
+      this.controlLog(loop.id, run.id, 'error', `Spawned child could not be detached from the app handle: ${error instanceof Error ? error.message : String(error)}. Continuing direct supervision.`)
+    }
+    if (!safePid(child.pid)) {
+      const message = `${command} spawned without a safe PID.`
+      this.superviseUnidentifiedChild(loop, run, child, own, message, startedAtMs)
+      return null
+    }
+    let meta: RunProcessMeta | null = null
+    let groupIdentity: readonly string[] = []
+    try {
+      groupIdentity = this.deps.processGroupIdentity(child.pid)
+      meta = this.deps.completeProcessMeta(loop.workspaceDir, run.id, marker, child.pid, streamIdentity, groupIdentity)
+      if (!groupIdentity.includes(`${meta.pid}:${meta.processIdentity}`)) {
+        throw new Error('Spawned process group did not retain the captured leader identity.')
+      }
+      this.ledger.setRunProcessOwnership(run.id, {
+        pid: meta.pid,
+        processIdentity: meta.processIdentity,
+        groupIdentities: [...groupIdentity],
+        startedAtMs: meta.startedAtMs,
+        outDev: meta.outDev,
+        outIno: meta.outIno,
+        errDev: meta.errDev,
+        errIno: meta.errIno,
+      })
+    } catch (error) {
+      const message = `Could not persist spawned process identity: ${error instanceof Error ? error.message : String(error)}`
+      if (!meta) {
+        this.superviseUnidentifiedChild(loop, run, child, own, message, startedAtMs)
+        return null
+      }
+      this.stopRequested.add(loop.id)
+      this.terminatingLoops.add(loop.id)
+      let settled = false
+      const settle = (outcome: 'gone' | 'unresolved'): void => {
+        if (settled) return
+        settled = true
+        this.terminatingLoops.delete(loop.id)
+        if (outcome === 'gone') {
+          const canonical = this.ledger.runProcessOwnership(run.id)
+          if (canonical && canonical.pid === meta!.pid && canonical.processIdentity === meta!.processIdentity) {
+            this.ledger.clearRunProcessOwnership(run.id)
+          }
+          return
+        }
+        try {
+          this.controlLog(loop.id, run.id, 'error', `${UNKNOWN_LAUNCH_OWNERSHIP} The owned process group remained live after bounded escalation; manual intervention is required.`)
+        } catch (reportError) {
+          console.error('Could not persist unresolved process-control event:', reportError)
+        }
+      }
+      const report = (line: string): void => {
+        try {
+          this.controlLog(loop.id, run.id, line.includes('could not') || line.includes('skipped') ? 'error' : 'system', line)
+        } catch (reportError) {
+          console.error('Could not persist process-control event:', reportError)
+        }
+      }
+      const processDeps = {
+        kill: this.deps.signalProcess,
+        defer: this.deps.defer,
+        groupIdentity: this.deps.processGroupIdentity,
+        groupStillOwned: this.deps.processGroupStillOwned,
+      }
+      if (processMatches(meta)) {
+        interruptProcessGroup(meta, report, { ...processDeps, identityMatches: processMatches }, settle)
+      } else {
+        // The leader may have exited after forking. Continue only from the
+        // exact launch snapshot; never adopt a fresh numeric PGID.
+        interruptCapturedProcessGroup(meta.pid, groupIdentity, report, settle, processDeps)
+      }
+      this.stopSpawnedRunCanonical(
+        loop,
+        run,
+        `${UNKNOWN_LAUNCH_OWNERSHIP} ${message} Process-group ownership could not be committed after the stock CLI started; this workspace remains quarantined against another launch.`,
+        startedAtMs,
+      )
+      return null
+    }
+    return { meta, own, groupIdentity }
   }
 
   /**
@@ -826,147 +1965,355 @@ export class LoopRunner {
   private async driveRun(
     loop: LoopRecord,
     run: RunRecord,
-    meta: ProcMeta,
+    meta: RunProcessMeta,
     idleMs: number,
     hardCapMs: number,
     parser: StreamParser,
     gate: LogGate,
     own: ExitHolder | null,
+    initialGroupIdentity: readonly string[],
+    childBoundary: ChildStreamBoundary,
   ): Promise<void> {
-    const att: Attachment = { loopId: loop.id, runId: run.id, pid: meta.pid, timedOut: false }
+    try {
+      await this.driveOwnedRun(loop, run, meta, idleMs, hardCapMs, parser, gate, own, initialGroupIdentity, childBoundary)
+    } catch (error) {
+      const message = `Run supervision could not start safely: ${error instanceof Error ? error.message : String(error)}`
+      this.stopRequested.add(loop.id)
+      this.interrupt(meta, loop.id, run.id)
+      this.controlLog(loop.id, run.id, 'error', message)
+      this.stopSpawnedRunCanonical(loop, run, message, meta.startedAtMs)
+      if (this.current?.runId === run.id) this.current = null
+      if (this.childTail?.runId === run.id) this.childTail = null
+    }
+  }
+
+  private async driveOwnedRun(
+    loop: LoopRecord,
+    run: RunRecord,
+    meta: RunProcessMeta,
+    idleMs: number,
+    hardCapMs: number,
+    parser: StreamParser,
+    gate: LogGate,
+    own: ExitHolder | null,
+    initialGroupIdentity: readonly string[],
+    childBoundary: ChildStreamBoundary,
+  ): Promise<void> {
+    // Extend ownership only across an exact member overlap. The leader proves
+    // the first snapshot; a captured child can then prove a later grandchild
+    // after the leader exits. A reused PGID with no overlap is never adopted.
+    const capturedGroupIdentity = new Set(initialGroupIdentity)
+    const groupSnapshot = (): readonly string[] => [...capturedGroupIdentity]
+    const canonicalProjection = this.ledger.getRun(run.id)?.metrics?.projection
+    if (canonicalProjection) {
+      meta.loggedOutLines = canonicalProjection.loggedOutLines
+      meta.loggedErrLines = canonicalProjection.loggedErrLines
+      meta.childOffsets = canonicalProjection.childOffsets
+      meta.childIdentities = canonicalProjection.childIdentities ?? {}
+      meta.workflowOffsets = canonicalProjection.workflowOffsets
+      meta.workflowIdentities = canonicalProjection.workflowIdentities ?? {}
+    }
+    const att: Attachment = { loopId: loop.id, runId: run.id, meta, timedOut: false }
     this.current = att
-    const childTailer = new ChildStreamTailer(agentsDir(loop.workspaceDir), meta.startedAtMs, meta.childOffsets)
-    this.childTail = { loopId: loop.id, runId: run.id, tailer: childTailer }
+    const childDirectory = assertChildStreamBoundary(childBoundary)
+    const childTailer = new ChildStreamTailer(
+      childDirectory,
+      meta.startedAtMs,
+      meta.childOffsets,
+      meta.childIdentities,
+    )
+    this.childTail = { loopId: loop.id, runId: run.id, boundary: childBoundary, tailer: childTailer }
 
     let outOffset = 0
     let outRemainder = ''
     let outLine = 0
     let errOffset = 0
     let errRemainder = ''
+    let warnedLongOut = false
+    let warnedLongErr = false
     let errLine = 0
     let lastMetaWrite = 0
+    let lastChildProgressAt = meta.startedAtMs
     const initialOutLogged = meta.loggedOutLines
     const initialErrLogged = meta.loggedErrLines
 
-    const readNew = (filePath: string, offset: number): { text: string; size: number } | null => {
+    const readNew = (filePath: string, offset: number): { text: string; nextOffset: number } | null => {
+      let fd: number | null = null
       try {
-        const size = fs.statSync(filePath).size
+        const expected = filePath === meta.outPath
+          ? { dev: meta.outDev, ino: meta.outIno }
+          : { dev: meta.errDev, ino: meta.errIno }
+        const entry = fs.lstatSync(filePath)
+        if (
+          !entry.isFile()
+          || entry.isSymbolicLink()
+          || entry.nlink !== 1
+          || entry.dev !== expected.dev
+          || entry.ino !== expected.ino
+        ) throw new Error('run stream changed identity after launch')
+        fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+        const stat = fs.fstatSync(fd)
+        if (
+          !stat.isFile()
+          || stat.nlink !== 1
+          || stat.dev !== entry.dev
+          || stat.ino !== entry.ino
+          || stat.dev !== expected.dev
+          || stat.ino !== expected.ino
+        ) throw new Error('run stream changed identity while it was opened')
+        const size = stat.size
         if (size <= offset) return null
-        const fd = fs.openSync(filePath, 'r')
-        const buf = Buffer.alloc(size - offset)
-        fs.readSync(fd, buf, 0, buf.length, offset)
-        fs.closeSync(fd)
-        return { text: buf.toString('utf8'), size }
-      } catch {
-        return null
+        const buf = Buffer.alloc(Math.min(MAX_STREAM_READ_BYTES, size - offset))
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset)
+        return { text: buf.subarray(0, bytesRead).toString('utf8'), nextOffset: offset + bytesRead }
+      } finally {
+        if (fd !== null) fs.closeSync(fd)
       }
     }
 
+    const parseStdout = (line: string): void => {
+      try {
+        parser.onLine(line)
+      } catch (error) {
+        this.log(
+          loop.id,
+          run.id,
+          'error',
+          `Parser rejected a ${run.harness} stdout line: ${error instanceof Error ? error.message : String(error)} · raw ${trunc(line, 300)}`,
+        )
+      }
+    }
+
+    const parseStderr = (line: string): void => {
+      try {
+        parser.onStderr(line)
+      } catch (error) {
+        this.log(loop.id, run.id, 'error', `Parser rejected stderr: ${error instanceof Error ? error.message : String(error)} · raw ${trunc(line, 300)}`)
+      }
+    }
+
+    const boundPartialLine = (text: string, stream: 'stdout' | 'stderr'): string => {
+      if (text.length <= MAX_PARTIAL_LINE_CHARS) return text
+      const warned = stream === 'stdout' ? warnedLongOut : warnedLongErr
+      if (!warned) {
+        this.log(
+          loop.id,
+          run.id,
+          'error',
+          `${run.harness} ${stream} emitted a line longer than ${MAX_PARTIAL_LINE_CHARS} characters; retaining its tail and continuing supervision.`,
+        )
+        if (stream === 'stdout') warnedLongOut = true
+        else warnedLongErr = true
+      }
+      return text.slice(-MAX_PARTIAL_LINE_CHARS)
+    }
+
     const pump = (): void => {
+      this.atomicLogs(() => {
       const out = readNew(meta.outPath, outOffset)
       if (out) {
-        outOffset = out.size
+        outOffset = out.nextOffset
         const lines = (outRemainder + out.text).split('\n')
-        outRemainder = lines.pop() ?? ''
+        outRemainder = boundPartialLine(lines.pop() ?? '', 'stdout')
         for (const line of lines) {
+          warnedLongOut = false
           outLine += 1
           gate.suppress = outLine <= initialOutLogged
-          try {
-            parser.onLine(line)
-          } catch {
-            /* one bad line must not kill the drive loop */
-          }
+          parseStdout(line.length > MAX_PARTIAL_LINE_CHARS ? boundPartialLine(line, 'stdout') : line)
         }
         gate.suppress = false
         meta.loggedOutLines = Math.max(meta.loggedOutLines, outLine)
       }
       const err = readNew(meta.errPath, errOffset)
       if (err) {
-        errOffset = err.size
+        errOffset = err.nextOffset
         const lines = (errRemainder + err.text).split('\n')
-        errRemainder = lines.pop() ?? ''
+        errRemainder = boundPartialLine(lines.pop() ?? '', 'stderr')
         for (const line of lines) {
+          warnedLongErr = false
           errLine += 1
           gate.suppress = errLine <= initialErrLogged
-          if (line.trim()) parser.onStderr(line)
+          if (line.trim()) parseStderr(line.length > MAX_PARTIAL_LINE_CHARS ? boundPartialLine(line, 'stderr') : line)
         }
         gate.suppress = false
         meta.loggedErrLines = Math.max(meta.loggedErrLines, errLine)
       }
+      if (this.pumpChildStreams() > 0) lastChildProgressAt = this.deps.now()
+      parser.tick?.()
+      meta.childOffsets = childTailer.snapshot()
+      meta.childIdentities = childTailer.identitySnapshot()
+      meta.workflowOffsets = parser.workflowOffsets?.() ?? meta.workflowOffsets ?? {}
+      meta.workflowIdentities = parser.workflowIdentities?.() ?? meta.workflowIdentities ?? {}
+      const currentMetrics = this.ledger.getRun(run.id)?.metrics ?? { agents: [], perModel: {} }
+      this.ledger.patchRun(run.id, {
+        metrics: {
+          ...currentMetrics,
+          projection: {
+            loggedOutLines: meta.loggedOutLines,
+            loggedErrLines: meta.loggedErrLines,
+            childOffsets: meta.childOffsets ?? {},
+            childIdentities: meta.childIdentities ?? {},
+            workflowOffsets: meta.workflowOffsets,
+            workflowIdentities: meta.workflowIdentities,
+          },
+        },
+      })
+      if (this.deps.now() - lastMetaWrite > 1_000) lastMetaWrite = this.deps.now()
+      })
+    }
+    let driveFailed = false
+    let workspaceSafe = true
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const interval = this.deps.repeat(() => {
+          try {
+            pump()
+            const now = this.deps.now()
+            const progressAt = Math.max(parser.progressAt?.() ?? meta.startedAtMs, lastChildProgressAt)
+            const idleFor = now - progressAt
+            const stalled = idleFor > idleMs
+            const overCap = now - meta.startedAtMs > hardCapMs
+            if (!att.timedOut && (stalled || overCap)) {
+              att.timedOut = true
+              if (processMatches(meta)) this.interrupt(meta, loop.id, run.id)
+              else this.interruptCaptured(meta, groupSnapshot(), loop.id, run.id)
+              this.controlLog(
+                loop.id,
+                run.id,
+                'error',
+                stalled
+                  ? `No progress for ${Math.round(idleFor / 60_000)} min — interrupting.`
+                  : `Run exceeded the ${Math.round(hardCapMs / 3_600_000)}h ceiling — interrupting.`,
+              )
+            }
+            const leaderDead = own ? own.exited : !processMatches(meta)
+            const refreshed = this.deps.processGroupIdentity(meta.pid)
+            if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
+              let advanced = false
+              for (const identity of refreshed) {
+                if (!capturedGroupIdentity.has(identity)) advanced = true
+                capturedGroupIdentity.add(identity)
+              }
+              if (advanced) {
+                const union = [...groupSnapshot()]
+                this.ledger.updateRunProcessGroupIdentities(run.id, union)
+                meta.groupIdentities = union
+              }
+            }
+            const captured = groupSnapshot()
+            const descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
+            if (leaderDead && !descendantsRemain) {
+              this.deps.cancelRepeat(interval)
+              resolve()
+            }
+          } catch (error) {
+            this.deps.cancelRepeat(interval)
+            reject(error)
+          }
+        }, 400)
+      })
+      await this.deps.wait(300)
+      workspaceSafe = this.verifyWorkspaceBoundary(loop)
+      if (!workspaceSafe) return
+      pump()
+      if (outRemainder.trim()) parseStdout(outRemainder)
+
+      // `current` intentionally remains owned through finalize. Finalizers can
+      // wait on children or queue successors without opening a duplicate seam.
+      await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
       this.pumpChildStreams()
-      if (Date.now() - lastMetaWrite > 1_000) {
-        lastMetaWrite = Date.now()
-        meta.childOffsets = childTailer.snapshot()
-        this.writeMeta(loop.workspaceDir, run.id, meta)
+    } catch (error) {
+      driveFailed = true
+      const message = error instanceof Error ? error.message : String(error)
+      // Process control and its event are canonical-only: a broken portable
+      // mirror must never prevent SIGINT or bounded escalation.
+      this.interrupt(meta, loop.id, run.id)
+      this.controlLog(loop.id, run.id, 'error', `Run supervision failed: ${message}`)
+      workspaceSafe = this.verifyWorkspaceBoundary(loop)
+      if (!workspaceSafe) {
+        // Keep process control, but do not refresh portable metadata or touch
+        // any path beneath a workspace root that now resolves into app data.
+        return
       }
-    }
-
-    await new Promise<void>((resolve) => {
-      const interval = setInterval(() => {
-        pump()
-        parser.tick?.()
-        const now = Date.now()
-        const idleFor = now - (parser.progressAt?.() ?? now)
-        const stalled = idleFor > idleMs
-        const overCap = now - meta.startedAtMs > hardCapMs
-        if (!att.timedOut && (stalled || overCap)) {
-          att.timedOut = true
-          this.log(
-            loop.id,
-            run.id,
-            'error',
-            stalled
-              ? `No progress for ${Math.round(idleFor / 60_000)} min — interrupting.`
-              : `Run exceeded the ${Math.round(hardCapMs / 3_600_000)}h ceiling — interrupting.`,
-          )
-          this.interruptPid(meta.pid)
+      const currentRun = this.ledger.getRun(run.id)
+      if (currentRun && (currentRun.status === 'running' || currentRun.status === 'queued')) {
+        this.ledger.patchRun(run.id, {
+          durationMs: this.deps.now() - meta.startedAtMs,
+          finishedAt: this.nowIso(),
+        })
+      }
+      if (this.ledger.getLoop(loop.id)?.status === 'running') {
+        this.failAttemptAndLoop(loop, run, `Run supervision failed: ${message}`, `Run supervision failed: ${message}`)
+      }
+    } finally {
+      if (workspaceSafe && this.childTail?.runId === run.id) {
+        try {
+          this.pumpChildStreams()
+        } catch (error) {
+          this.controlLog(loop.id, run.id, 'error', `Final child-stream drain failed: ${error instanceof Error ? error.message : String(error)}`)
         }
-        const dead = own ? own.exited : !this.pidAlive(meta.pid)
-        if (dead) {
-          clearInterval(interval)
-          resolve()
-        }
-      }, 400)
-    })
-    await sleep(300)
-    pump()
-    if (outRemainder.trim()) parser.onLine(outRemainder)
-
-    this.current = null
-    // finalize may keep waiting on delegated children; their streams stay tailed until it returns.
-    await parser.finalize({ code: own ? own.code : null, timedOut: att.timedOut, spawnError: own?.spawnError ?? null })
-    this.pumpChildStreams()
-    this.childTail = null
-    try {
-      fs.unlinkSync(this.metaPath(loop.workspaceDir, run.id))
-    } catch {
-      /* already gone */
+        this.childTail = null
+      } else if (this.childTail?.runId === run.id) {
+        this.childTail = null
+      }
+      if (this.current?.runId === run.id) this.current = null
+      const captured = groupSnapshot()
+      let descendantsRemain = captured.length > 0
+      try {
+        descendantsRemain &&= this.deps.processGroupStillOwned(meta.pid, captured)
+      } catch (error) {
+        descendantsRemain = true
+        this.controlLog(loop.id, run.id, 'error', `Final process-group absence could not be verified; canonical ownership is retained: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      if (!descendantsRemain && this.ledger.runProcessOwnership(run.id)) this.ledger.clearRunProcessOwnership(run.id)
+      // Retain the workspace process snapshot as portable replay evidence.
+      // Canonical ownership is cleared only in SQLite after verified absence.
     }
+    if (!driveFailed) void this.executeNext(loop.id)
   }
 
-  /** Session id of the newest earlier implement run in this loop, if claude reported one. */
-  private lastImplementSessionId(loopId: string, exceptRunId: string): string | null {
-    const prior = this.ledger
-      .runsForLoop(loopId)
-      .filter((r) => r.role === 'implement' && r.id !== exceptRunId && r.sessionId)
-      .at(-1)
-    return prior?.sessionId ?? null
+  /** Session id of an earlier attempt for this exact round, if reported. */
+  private lastImplementSessionId(loopId: string, round: number, exceptRunId: string): string | null {
+    return this.ledger.latestImplementSessionId(loopId, round, exceptRunId)
   }
 
-  /** True if the workspace has a prior claude session transcript to `--continue` from. */
-  private hasClaudeSession(workspaceDir: string): boolean {
-    const projectDir = path.join(sharedHome('claude'), 'projects', workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'))
-    try {
-      return fs.readdirSync(projectDir).some((file) => file.endsWith('.jsonl'))
-    } catch {
-      return false
-    }
+  private castFor(loop: LoopRecord): CastEntry[] {
+    return parseCast(scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop).manifest)
+  }
+
+  private wantedCast(loop: LoopRecord, verdict: Verdict | null): CastEntry[] {
+    if (!loop.models.assetModel) return []
+    const cast = this.castFor(loop)
+    if (cast.length === 0) return []
+    const faulted = assetTargets(verdict?.findings ?? [])
+    return faulted.length > 0
+      ? cast.filter((entry) => faulted.includes(entry.name))
+      : unbuiltCast(loop.workspaceDir, cast)
+  }
+
+  private verdictForRound(loopId: string, round: number): Verdict | null {
+    return this.ledger.runsForLoop(loopId)
+      .find((candidate) => candidate.role === 'critique' && candidate.round === round && candidate.verdict)
+      ?.verdict ?? null
+  }
+
+  private nextImplementPrompt(loop: LoopRecord, round: number, verdict: Verdict | null): string {
+    return buildImplementPrompt(
+      loop.models,
+      loop.prompt,
+      round,
+      verdict,
+      this.referenceDir(loop.id),
+      this.wantedCast(loop, verdict),
+    )
   }
 
   // --------------------------------------------------------------- reference
 
   private async executeReference(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
+    if (!this.ensureReferenceSourceBaseline(loop, run)) return
+    const childBoundary = this.prepareChildStreams(loop, run)
     this.log(
       loop.id,
       run.id,
@@ -976,402 +2323,96 @@ export class LoopRunner {
     const plan = referencePlan({
       models,
       prompt: run.prompt,
-      claudeHome: cliHome('claude'),
-      codexHome: cliHome('codex'),
+      claudeHome: this.deps.harnessHome('claude'),
+      codexHome: this.deps.harnessHome('codex'),
     })
-    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
-    if (!spawned) return
-    this.ledger.patchRun(run.id, { model: models.orchestratorModel })
+    const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }
-    const parser = this.makeReferenceParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, REFERENCE_IDLE_MS, REFERENCE_HARD_CAP_MS, parser, gate, spawned.own)
-  }
-
-  private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
-    const model = loop.models.orchestratorModel
-    const tokens = emptyTokens()
-    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
-    let sawUsage = false
-    let failure: string | null = null
-    let summary = ''
-    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
-    const plog = (kind: string, text: string): void => {
-      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
-    }
-    const flush = (): void => {
-      const costUsd = estimateCostUsd(model, tokens)
-      const agent: AgentMetric = {
-        id: 'reference',
-        label: 'reference researcher',
-        model,
-        messages: 1,
-        tokens: { ...tokens },
-        firstTs: new Date(startedAtMs).toISOString(),
-        lastTs: new Date().toISOString(),
-      }
-      this.ledger.patchRun(run.id, {
-        inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
-        outputTokens: tokens.output,
-        costUsd,
-        metrics: { agents: [agent], perModel: { [model]: { costUsd, tokens: { ...tokens } } } },
-      })
-      this.broadcast(loop.id)
-    }
-    const onClaudeLine = (line: string): void => {
-      const t = translateClaudeLine(line)
-      if (!t) return
-      if (t.init) {
-        sessionId = t.init.sessionId ?? sessionId
-        this.ledger.patchRun(run.id, { sessionId })
-        plog('system', `claude session ${sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? model}`)
-      }
-      if (t.usage) {
-        sawUsage = true
-        tokens.input += t.usage.usage.input_tokens ?? 0
-        tokens.output += t.usage.usage.output_tokens ?? 0
-        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
-        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
-        flush()
-      }
-      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
-      if (t.summary !== undefined) summary = t.summary
-      if (t.result) {
-        if (t.result.text !== null) summary = t.result.text
-        const usage = t.result.usage
-        if (usage) {
-          sawUsage = true
-          tokens.input = usage.input_tokens ?? tokens.input
-          tokens.output = usage.output_tokens ?? tokens.output
-          tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
-          tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
-        }
-        if (t.result.isError) failure = t.result.text !== null ? trunc(t.result.text, 400) : 'claude reference study failed'
-      }
-    }
-    const onCodexLine = (line: string): void => {
-      const t = translateCodexLine(line)
-      if (!t) return
-      if (t.threadStarted !== undefined) {
-        sessionId = t.threadStarted ?? sessionId
-        this.ledger.patchRun(run.id, { sessionId })
-        plog('system', `codex thread ${sessionId?.slice(0, 8) ?? '?'}`)
-      }
-      for (const event of t.events) plog(event.kind, `[reference] ${event.text}`)
-      if (t.summary !== undefined) summary = t.summary
-      if (t.turn?.usage) {
-        sawUsage = true
-        const turn = codexTokens(t.turn.usage)
-        tokens.input += turn.input
-        tokens.output += turn.output
-        tokens.cacheRead += turn.cacheRead
-        tokens.cacheWrite += turn.cacheWrite
-        flush()
-      }
-      if (t.error) {
-        failure = t.error
-        plog('error', failure)
-      }
-    }
-    const finalize = async (exit: ExitInfo): Promise<void> => {
-      const durationMs = Date.now() - startedAtMs
-      const costUsd = sawUsage ? estimateCostUsd(model, tokens) : null
-      const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id))
-      const processError = exit.spawnError ?? failure ?? (exit.code !== 0 && exit.code !== null ? `${run.harness} exited ${exit.code}` : null)
-      const artifactError = pack.ready ? null : pack.issues.join('; ')
-      this.ledger.patchRun(run.id, {
-        inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
-        outputTokens: sawUsage ? tokens.output : null,
-        costUsd,
-        durationMs,
-        sessionId,
-        summary: summary ? summary.slice(0, 4000) : null,
-        finishedAt: new Date().toISOString(),
-      })
-      this.accumulateCost(loop.id, costUsd)
-      this.log(loop.id, run.id, 'metric', `▤ reference metrics: ${costUsd != null ? `$${costUsd.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`)
-      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
-      if (stopReason) {
-        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Reference Study timed out.')
-        return
-      }
-      if (processError || artifactError) {
-        const error = processError ?? artifactError!
-        const limit = await this.rotateForUsageLimit(loop, run, error)
-        this.ledger.patchRun(run.id, { status: 'failed', error })
-        // A usage limit is not the study failing, so it does not spend one of
-        // the study's own two attempts.
-        const attempts = this.ledger
-          .runsForLoop(loop.id)
-          .filter((item) => item.role === 'reference' && !USAGE_LIMIT.test(item.error ?? '')).length
-        if (limit.rotated || attempts < MAX_REFERENCE_ATTEMPTS) {
-          if (!limit.rotated) {
-            this.log(loop.id, run.id, 'system', `Reference Study incomplete (${error}) — retrying and preserving downloaded files.`)
-          }
-          this.ledger.createRun({
-            loopId: loop.id,
-            round: 0,
-            role: 'reference',
-            harness: harnessFor(model),
-            prompt: buildReferencePrompt(loop.prompt, this.referenceDir(loop.id), researchRules(loop.models, this.referenceDir(loop.id))),
-          })
-          this.broadcast(loop.id)
-          this.resumeAfter(loop.id, limit.rotated ? limit.waitMs : undefined)
-          return
-        }
-        this.finishLoop(loop.id, 'failed', limit.message ?? `Reference Study failed twice: ${error}`)
-        return
-      }
-      this.ledger.patchRun(run.id, { status: 'succeeded' })
-      this.log(loop.id, run.id, 'shot', `▦ Reference Pack ready: ${pack.images.length} stills · ${pack.motion.length} motion frames · ${pack.journey.length} journey shots · ${pack.videos.length} video → ${pack.root}/`)
-      if (this.overBudget(loop.id)) return
-      this.queueImplement(loop, 1, null)
-      this.log(loop.id, null, 'system', 'Reference Pack frozen — round 1 queued.')
-      this.broadcast(loop.id)
-      void this.executeNext(loop.id)
-    }
-    return {
-      onLine: run.harness === 'claude' ? onClaudeLine : onCodexLine,
-      onStderr: (text) => plog('stderr', trunc(text, 400)),
-      finalize,
-    }
-  }
-
-  // ------------------------------------------------------------------- assets
-
-  /** The cast the Reference Study named, best-priority first. */
-  private castFor(loop: LoopRecord): CastEntry[] {
-    return parseCast(scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id)).manifest)
-  }
-
-  /**
-   * The cast entries this round still owes, or `[]` when there is nothing to
-   * sculpt.
-   *
-   * Three ways to owe nothing: the operator turned the phase off, the game has
-   * no sculptable objects (a maze of neon walls and bloom is rendering, not
-   * models), or every named entry already finished its passes — finished being
-   * every pass in its pipeline, not merely a factory file on disk, which exists
-   * from the first rough blockout onward.
-   *
-   * A finding against the model itself has a pipeline to go back to; a finding
-   * about how the model is used does not — `assetTargets` is what splits them,
-   * and it is what stops the implementer hand-editing a generated factory
-   * instead of asking for a resculpt, which is the one thing that would rot the
-   * library back to where it started.
-   */
-  private wantedCast(loop: LoopRecord, verdict: Verdict | null): CastEntry[] {
-    if (!loop.models.assetModel) return []
-    const cast = this.castFor(loop)
-    if (cast.length === 0) return []
-    const faulted = assetTargets(verdict?.findings ?? [])
-    return faulted.length > 0 ? cast.filter((entry) => faulted.includes(entry.name)) : unbuiltCast(loop.workspaceDir, cast)
-  }
-
-  /** The verdict a round was judged on, for feeding the next implement run. */
-  private verdictForRound(loopId: string, round: number): Verdict | null {
-    return this.ledger.runsForLoop(loopId).find((r) => r.role === 'critique' && r.round === round && r.verdict)?.verdict ?? null
-  }
-
-  private queueImplement(loop: LoopRecord, round: number, verdict: Verdict | null): void {
-    this.ledger.patchLoop(loop.id, { round })
-    const wanted = this.wantedCast(loop, verdict)
-    this.ledger.createRun({
-      loopId: loop.id,
-      round,
-      role: 'implement',
-      harness: harnessFor(loop.models.orchestratorModel),
-      prompt: buildImplementPrompt(loop.models, loop.prompt, round, verdict, this.referenceDir(loop.id), wanted),
-    })
-    if (wanted.length > 0) {
-      this.log(
-        loop.id,
-        null,
-        'system',
-        assetTargets(verdict?.findings ?? []).length > 0
-          ? `Round ${round} also rebuilds ${wanted.length} model${wanted.length === 1 ? '' : 's'} the critic faulted: ${wanted.map((e) => e.name).join(', ')}.`
-          : `Round ${round} also sculpts ${wanted.length} model${wanted.length === 1 ? '' : 's'}: ${wanted.map((e) => e.name).join(', ')}.`,
-      )
-    }
-  }
-
-  private async executeAssets(loop: LoopRecord, run: RunRecord): Promise<void> {
-    const models = loop.models
-    const harness = harnessFor(models.orchestratorModel)
-    const referenceDir = this.referenceDir(loop.id)
-
-    // The skill is what this whole phase runs on, and a missing one does not
-    // announce itself: the sculptor cannot call forge/, so it hand-writes a
-    // model shaped like the skill's output and the round reads as fine. Stop
-    // here instead. Nothing has been spawned yet, so this costs nothing, and a
-    // broken install is worth more than a run of models nobody can trust.
-    const skill = ensureSkill()
-    if (!skill.dir) {
-      const error = 'The img2threejs skill is missing from this install, so the Asset Build cannot run.'
-      this.ledger.patchRun(run.id, { status: 'failed', error })
-      this.log(loop.id, run.id, 'system', `✗ ${error} Reinstall the app — a sculptor without the skill hand-writes models instead of sculpting them.`)
-      this.finishLoop(loop.id, 'failed', error)
-      return
-    }
-    if (skill.status !== 'current') this.log(loop.id, run.id, 'system', `▦ img2threejs skill ${skill.status} → ${skill.dir}`)
-
-    // The crop tool is rewritten every round for the reason the engine gate is:
-    // it is the one thing in the workspace a worker has an incentive to weaken,
-    // and a guard that can be edited away is not a guard.
-    scaffoldAssetTools(loop.workspaceDir, skill.dir)
-    const agentMd = sculptorAgentMd(models, referenceDir)
-    if (agentMd) {
-      const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
-      fs.mkdirSync(agentDir, { recursive: true })
-      fs.writeFileSync(path.join(agentDir, 'sculptor.md'), agentMd)
-    }
-    fs.rmSync(agentsDir(loop.workspaceDir), { recursive: true, force: true })
-    fs.mkdirSync(agentsDir(loop.workspaceDir), { recursive: true })
-
-    this.log(
-      loop.id,
-      run.id,
-      'system',
-      `● Asset Build — sculptors on ${models.assetModel} at ${models.assetEffort} effort (orchestrated by ${harness} ${models.orchestratorModel}).`,
-    )
-    const plan = assetsPlan({ models, prompt: run.prompt, claudeHome: cliHome('claude'), codexHome: cliHome('codex') })
-    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
+    const parser = this.makeReferenceParser(loop, run, gate, childBoundary)
+    const spawned = this.spawnDetached(loop, run, executable.command, plan.args, executable.env)
     if (!spawned) return
-    const gate: LogGate = { suppress: false }
-    const parser = this.assetsParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, ASSETS_IDLE_MS, ASSETS_HARD_CAP_MS, parser, gate, spawned.own)
+    await this.driveRun(loop, run, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
   }
 
-  /** The implement stream parser, closed out the asset way. */
-  private assetsParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
-    const finish: FinishFanOut = (l, r, e, collect) => this.finishAssets(l, r, e, collect)
-    return harnessFor(loop.models.orchestratorModel) === 'claude'
-      ? this.makeImplementParser(loop, run, gate, finish)
-      : this.makeCodexImplementParser(loop, run, gate, finish)
-  }
-
-  /**
-   * Close out an Asset Build and hand on to implement.
-   *
-   * No revision is committed here: a round's revision marks a playable build,
-   * and a library of models is not one. A failed Asset Build does not stop the
-   * loop either — the implement prompt already tells the orchestrator to model
-   * anything missing itself, so a bad sculpting round costs quality rather than
-   * the whole run.
-   */
-  private async finishAssets(loop: LoopRecord, run: RunRecord, exit: ExitInfo, collect: () => ImplementOutcome): Promise<void> {
-    await this.awaitChildren(loop, run)
-    const out = collect()
-    this.ledger.patchRun(run.id, {
-      metrics: out.metrics,
-      costUsd: out.costUsd,
-      inputTokens: out.tokens?.input,
-      outputTokens: out.tokens?.output,
-      numTurns: out.numTurns,
-      sessionId: out.sessionId,
-      summary: out.summary,
+  private makeReferenceParser(loop: LoopRecord, run: RunRecord, gate: LogGate, childBoundary: ChildStreamBoundary): StreamParser {
+    return createReferenceProtocol({
+      ledger: this.ledger,
+      loop,
+      run,
+      gate,
+      childBoundary,
+      referenceDir: this.referenceDir(loop.id),
+      maxAttempts: MAX_REFERENCE_ATTEMPTS,
+      now: this.deps.now,
+      nowIso: () => this.nowIso(),
+      harnessHome: this.deps.harnessHome,
+      log: (kind, text, agentId) => this.log(loop.id, run.id, kind, text, agentId),
+      persistLog: (kind, text) => { this.persistLog(loop.id, run.id, kind, text) },
+      notifyPersistedLog: (kind, text) => this.notifyPersistedLog(loop.id, run.id, kind, text),
+      broadcast: () => this.broadcast(loop.id),
+      awaitChildren: () => this.awaitChildren(loop, run, childBoundary),
+      isStopRequested: () => this.stopRequested.has(loop.id),
+      finishCancelled: (exit, reason, terminalLog) => this.finishCancelledAttempt(loop, run, exit, reason, terminalLog),
+      ensureSourceBaseline: (terminalLog) => this.ensureReferenceSourceBaseline(loop, run, terminalLog),
+      failOrRetry: (error, label, maxAttempts, prompt, terminalLog) => this.failOrRetryPhase(loop, run, error, label, maxAttempts, prompt, terminalLog),
+      overBudget: () => this.overBudget(loop.id),
+      persistLoopTerminal: (status, reason) => this.persistLoopTerminal(loop.id, status, reason),
+      implementPrompt: (round, verdict) => this.nextImplementPrompt(loop, round, verdict),
     })
-    const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
-    if (stopReason) {
-      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Asset Build timed out.')
-      return
-    }
-    const built = unbuiltCast(loop.workspaceDir, this.castFor(loop))
-    if (out.error) {
-      // A usage limit would sink the implement run that follows just as surely,
-      // so rotate here rather than carry a half-built cast into it.
-      const limit = await this.rotateForUsageLimit(loop, run, out.error)
-      this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
-      if (limit.rotated) {
-        this.ledger.createRun({
-          loopId: loop.id,
-          round: run.round,
-          role: 'assets',
-          harness: run.harness,
-          prompt: run.prompt,
-        })
-        this.broadcast(loop.id)
-        this.resumeAfter(loop.id, limit.waitMs)
-        return
-      }
-      this.log(loop.id, run.id, 'system', `Asset Build failed (${out.error}) — continuing; the implementer models what is missing.`)
-    } else {
-      this.ledger.patchRun(run.id, { status: 'succeeded' })
-      this.log(
-        loop.id,
-        run.id,
-        'system',
-        built.length === 0
-          ? '▦ Asset Build complete — every cast entry finished its sculpt passes.'
-          : `▦ Asset Build complete — ${built.length} entry(s) unfinished: ${built.map((e) => `${e.name}${passLabel(loop.workspaceDir, e.name)}`).join(', ')}. The implementer models those itself, and a later round picks them up where they stopped.`,
-      )
-    }
-    if (this.overBudget(loop.id)) return
-    this.queueImplement(loop, run.round, this.verdictForRound(loop.id, run.round - 1))
-    this.broadcast(loop.id)
-    void this.executeNext(loop.id)
   }
-
   // ---------------------------------------------------------------- implement
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
     const harness = harnessFor(models.orchestratorModel)
-    const referenceDir = this.referenceDir(loop.id)
-    const agentDir = path.join(loop.workspaceDir, '.claude', 'agents')
-    fs.mkdirSync(agentDir, { recursive: true })
-    const agentMd = implementerAgentMd(models, referenceDir)
-    if (agentMd) fs.writeFileSync(path.join(agentDir, 'implementer.md'), agentMd)
-
-    // Recomputed fresh rather than carried from queue time: a resumed round's
-    // prompt already tells the orchestrator to audit disk first, so a list that
-    // shrank since queueing (or grew, on a fresh critique target) just works.
+    if (!this.verifyReferenceBoundary(loop, run)) return
+    if (!this.verifyCritiqueTreeBoundary(loop, run, true)) return
     const wanted = this.wantedCast(loop, this.verdictForRound(loop.id, run.round - 1))
     if (wanted.length > 0) {
-      // Same halt-before-spawning-anything guard the standalone Asset Build
-      // used to run: a sculptor with no skill hand-writes a model shaped like
-      // the skill's output, and nothing downstream can tell.
       const skill = ensureSkill()
       if (!skill.dir) {
-        const error = 'The img2threejs skill is missing from this install, so the round cannot sculpt its cast.'
-        this.ledger.patchRun(run.id, { status: 'failed', error })
-        this.log(loop.id, run.id, 'system', `✗ ${error} Reinstall the app — a sculptor without the skill hand-writes models instead of sculpting them.`)
-        this.finishLoop(loop.id, 'failed', error)
+        this.failAttemptAndLoop(
+          loop,
+          run,
+          'The img2threejs skill is missing from this install.',
+          'The implement round cannot sculpt its Reference Study cast until Gauntlet Gamesmith is reinstalled.',
+        )
         return
       }
-      if (skill.status !== 'current') this.log(loop.id, run.id, 'system', `▦ img2threejs skill ${skill.status} → ${skill.dir}`)
-      // Rewritten every round for the same reason the engine gate is: the one
-      // thing in the workspace a worker has an incentive to weaken.
-      scaffoldAssetTools(loop.workspaceDir, skill.dir)
-      const sculptorMd = sculptorAgentMd(models, referenceDir)
-      if (sculptorMd) fs.writeFileSync(path.join(agentDir, 'sculptor.md'), sculptorMd)
-    } else {
-      // Drop a stale sculptor.md from a round that did have sculpting to do —
-      // an orchestrator should never see a dispatch target for work already done.
-      fs.rmSync(path.join(agentDir, 'sculptor.md'), { force: true })
+      scaffoldAssetTools(loop.workspaceDir, skill.dir, requireWorkspaceIdentity(loop))
+      const sculptor = sculptorAgentMd(models, this.referenceDir(loop.id))
+      if (sculptor) {
+        const result = writeWorkspaceFileSafely(
+          loop.workspaceDir,
+          requireWorkspaceIdentity(loop),
+          ['.claude', 'agents'],
+          'sculptor.md',
+          sculptor,
+          { replace: true },
+        )
+        if (result === 'created' || result === 'updated') {
+          this.log(loop.id, run.id, 'system', `Published the sculptor agent definition (${result}).`)
+        }
+      }
     }
-
-    // Rewrite the contract and the gate every round. The gate is the one file
-    // in the workspace a worker has an incentive to weaken, and a gate that
-    // can be edited to pass is not a gate.
-    const scaffold = scaffoldEngine(loop.workspaceDir)
-    if (scaffold.refreshed.length) {
-      this.log(loop.id, run.id, 'system', `Restored app-owned files: ${scaffold.refreshed.join(', ')}.`)
+    const scaffold = scaffoldEngine(loop.workspaceDir, requireWorkspaceIdentity(loop))
+    if (scaffold.refreshed.length > 0) {
+      this.log(loop.id, run.id, 'system', `Restored app-owned engine files: ${scaffold.refreshed.join(', ')}.`)
     }
-    // Delegated workers write their streams here. Clearing the directory keeps
-    // last round's children out of this round's metrics and liveness check.
-    fs.rmSync(agentsDir(loop.workspaceDir), { recursive: true, force: true })
-    fs.mkdirSync(agentsDir(loop.workspaceDir), { recursive: true })
+    const agent = implementerAgentDefinition(models, this.referenceDir(loop.id))
+    if (agent) {
+      publishOwnedWorkspaceFile(loop.workspaceDir, requireWorkspaceIdentity(loop), ['.claude', 'agents'], agent.filename, agent.markdown, 'yaml-frontmatter', {
+        managedPrefix: GAUNTLET_IMPLEMENTER_AGENT_PREFIX,
+        maxFiles: 256,
+        maxBytes: 4 * 1024 * 1024,
+      })
+    }
+    const childBoundary = this.prepareChildStreams(loop, run)
 
-    const priorSessionId = this.lastImplementSessionId(loop.id, run.id)
-    const canResume = harness === 'claude' ? priorSessionId != null || this.hasClaudeSession(loop.workspaceDir) : priorSessionId != null
-    const isResume = run.prompt.startsWith(RESUME_PREFIX) && canResume
-    const prompt = isResume
-      ? 'The app running you was restarted and your previous session was interrupted. Continue exactly where you left off. First audit what already landed on disk; do NOT redo completed work — dispatch workers only for the remaining gaps, telling each one to read the existing code in its slice before writing. Same rules apply.'
-      : run.prompt.startsWith(RESUME_PREFIX)
-        ? run.prompt.slice(RESUME_PREFIX.length)
-        : run.prompt
+    const priorSessionId = this.lastImplementSessionId(loop.id, run.round, run.id)
+    const effective = effectivePromptForRun(run.prompt)
+    const isResume = effective.resumeRequested && priorSessionId != null
+    const prompt = effective.prompt
 
     this.log(
       loop.id,
@@ -1382,17 +2423,19 @@ export class LoopRunner {
     const plan = implementPlan({
       models,
       prompt,
-      claudeHome: cliHome('claude'),
-      codexHome: cliHome('codex'),
+      claudeHome: this.deps.harnessHome('claude'),
+      codexHome: this.deps.harnessHome('codex'),
       resumeId: isResume ? priorSessionId : null,
-      resumeLatest: isResume && !priorSessionId,
     })
-    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
-    if (!spawned) return
+    const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }
     const parser =
-      harness === 'claude' ? this.makeImplementParser(loop, run, gate) : this.makeCodexImplementParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, IMPLEMENT_IDLE_MS, IMPLEMENT_HARD_CAP_MS, parser, gate, spawned.own)
+      harness === 'claude'
+        ? this.makeImplementParser(loop, run, gate, childBoundary)
+        : this.makeCodexImplementParser(loop, run, gate, childBoundary)
+    const spawned = this.spawnDetached(loop, run, executable.command, plan.args, executable.env, prompt)
+    if (!spawned) return
+    await this.driveRun(loop, run, spawned.meta, IMPLEMENT_IDLE_MS, IMPLEMENT_HARD_CAP_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
   }
 
   /**
@@ -1403,326 +2446,48 @@ export class LoopRunner {
    * the codex runs" and exited, which committed a half-written build eight
    * minutes before codex finished. Waiting is the app's job, not an agent's.
    */
-  private async awaitChildren(loop: LoopRecord, run: RunRecord): Promise<void> {
-    const deadline = Date.now() + IMPLEMENT_HARD_CAP_MS
+  private async awaitChildren(loop: LoopRecord, run: RunRecord, childBoundary: ChildStreamBoundary): Promise<void> {
+    const deadline = this.deps.now() + IMPLEMENT_HARD_CAP_MS
     let announced = false
-    while (childrenActive(loop.workspaceDir, CHILD_QUIET_MS) && Date.now() < deadline) {
+    while (!this.stopRequested.has(loop.id) && childrenActive(childBoundary, CHILD_QUIET_MS, this.deps.now()) && this.deps.now() < deadline) {
       if (!announced) {
         announced = true
         this.log(loop.id, run.id, 'system', '⏳ orchestrator finished, delegated workers still running — holding the round open.')
       }
-      await sleep(15_000)
+      await this.deps.wait(15_000)
       this.pumpChildStreams()
     }
-    if (announced) this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
+    if (this.stopRequested.has(loop.id)) return
+    if (announced) {
+      const stillActive = childrenActive(childBoundary, CHILD_QUIET_MS, this.deps.now())
+      if (stillActive) throw new Error('Delegated-worker deadline expired before every worker emitted a terminal protocol event and became quiet.')
+      this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
+    }
   }
 
   private makeImplementParser(
     loop: LoopRecord,
     run: RunRecord,
     gate: LogGate,
-    finish: FinishFanOut = (l, r, e, collect) => this.finishImplement(l, r, e, collect),
+    childBoundary: ChildStreamBoundary,
+    initialWorkflowOffsets: Record<string, number> = {},
+    initialWorkflowIdentities: Record<string, { dev: number; ino: number }> = {},
   ): StreamParser {
-    const plog = (kind: string, text: string): void => {
-      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
-    }
-    const agentLabels = new Map<string, { label: string; model: string | null }>()
-    const finishedAgents = new Set<string>()
-    // The CLI now launches subagents in the background: the Agent tool_result
-    // comes back within a millisecond saying "launched", and the real ending
-    // arrives much later as a system/task_notification. Treating that launch
-    // receipt as completion marked every agent done the instant it started.
-    const backgrounded = new Set<string>()
-    /** Tracked tasks that are shell commands, not agents. */
-    const notAgents = new Set<string>()
-    /**
-     * slice → the agent whose tool call launched that delegated worker.
-     *
-     * A cross-harness worker is a process the app never started, so nothing
-     * links it to its owner except the command that started it: the redirect
-     * into `<run metadata dir>/agents/<slice>.<harness>.jsonl` names the slice, and
-     * the tool call carrying it names the agent. Without this every delegated
-     * worker hung off the bottom of the list instead of under its dispatcher.
-     */
-    const childParents = new Map<string, string>()
-    const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
-    let result: Record<string, unknown> | null = null
-    let fallbackId = 0
-    let lastTokenFlush = Date.now()
-    let liveCostEstimate: number | null = null
-    // Filled from the init event; without it we cannot locate the workflow dir.
-    let sessionId: string | null = this.ledger.getRun(run.id)?.sessionId ?? null
-    let workflowAgents: AgentMetric[] = []
-    let childAgents: AgentMetric[] = []
-    let workflowRuns: WorkflowRunSummary[] = []
-    let workflowTokens = 0
-    const loggedWorkflowRuns = new Set<string>()
-
-    let tail: WorkflowTail | null = null
-
-    // Last state we logged per agent, so a poll only reports what changed.
-    const loggedAgents = new Map<string, { done: boolean; lastToolAt: number; tools: number }>()
-
-    const logWorkflowActivity = (agents: AgentMetric[]): void => {
-      for (const agent of agents) {
-        const seen = loggedAgents.get(agent.id)
-        if (!seen) {
-          loggedAgents.set(agent.id, { done: false, lastToolAt: 0, tools: agent.toolCalls ?? 0 })
-          plog('spawn', `⇉ [${agent.phase ?? 'workflow'}] "${agent.label}" started (${agent.model ?? '?'})`)
-          continue
-        }
-        if (agent.state === 'done' && !seen.done) {
-          seen.done = true
-          plog(
-            'spawn',
-            `⇊ "${agent.label}" finished — ${agent.costUsd != null ? `$${agent.costUsd.toFixed(2)} · ` : ''}${agent.toolCalls ?? 0} tools · ${formatTokens(agent.totalTokens ?? 0)} tokens`,
-          )
-          if (agent.note) plog('agent', `  [${agent.label}] ${trunc(agent.note, 300)}`)
-          continue
-        }
-        // While an agent works, report what it is doing at most once a minute —
-        // thirteen agents each logging every tool call would bury the feed.
-        if (agent.state !== 'done' && agent.lastTool && (agent.toolCalls ?? 0) > seen.tools && Date.now() - seen.lastToolAt > 60_000) {
-          seen.lastToolAt = Date.now()
-          seen.tools = agent.toolCalls ?? 0
-          plog('tool', `  [${agent.label}] → ${agent.lastTool} (${agent.toolCalls} tools · ${formatTokens(agent.totalTokens ?? 0)} tokens)`)
-        }
-      }
-    }
-
-    const pollWorkflows = (): void => {
-      if (!sessionId) return
-      // Live agent state comes from the transcripts the runtime appends as it
-      // works; the wf_*.json summary only lands when a workflow ends, and is
-      // read for the run status and phase names it carries.
-      tail ??= new WorkflowTail(workflowTailDir(sharedHome('claude'), loop.workspaceDir, sessionId))
-      const live = tail.poll()
-      const progress = readWorkflowProgress(workflowDir(sharedHome('claude'), loop.workspaceDir, sessionId))
-      const phaseById = new Map(progress.agents.map((a) => [a.id.split(':').at(-1), a.phase]))
-      workflowAgents = live.map((a) => ({ ...a, phase: a.phase ?? phaseById.get(a.id.split(':').at(-1)) }))
-      workflowRuns = progress.runs
-      workflowTokens = live.reduce((sum, a) => sum + (a.totalTokens ?? 0), 0) || progress.totalTokens
-      logWorkflowActivity(workflowAgents)
-      for (const wf of progress.runs) {
-        const key = `${wf.runId}:${wf.status}`
-        if (loggedWorkflowRuns.has(key)) continue
-        loggedWorkflowRuns.add(key)
-        plog('spawn', `⇉ workflow "${wf.name}" ${wf.status} — ${wf.agentCount} agents · ${formatTokens(wf.totalTokens)} tokens`)
-      }
-    }
-
-    // Codex subagents spend outside Claude's accounting entirely, so their
-    // tokens are read from codex's own session logs. Cumulative per session, so
-    // this replaces the previous figures rather than adding to them.
-    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
-    const pollChildren = (): void => {
-      if (!isCrossHarness(loop.models)) return
-      childAgents = readChildAgents(loop.workspaceDir, loop.models.subagentModel, cliHome('codex'))
-    }
-
-    // Live token + cost visibility: persist running totals every ~15s so the
-    // ledger, dashboard, and report show tokens and estimated cost mid-run.
-    const flushTokens = (force = false): void => {
-      if (!force && Date.now() - lastTokenFlush < 15_000) return
-      lastTokenFlush = Date.now()
-      pollWorkflows()
-      pollChildren()
-      let input = 0
-      let output = 0
-      const perModel = new Map<string, TokenTotals>()
-      for (const { usage, model } of msgUsage.values()) {
-        const t = perModel.get(model ?? loop.models.orchestratorModel) ?? emptyTokens()
-        t.input += usage.input_tokens ?? 0
-        t.output += usage.output_tokens ?? 0
-        t.cacheRead += usage.cache_read_input_tokens ?? 0
-        t.cacheWrite += usage.cache_creation_input_tokens ?? 0
-        perModel.set(model ?? loop.models.orchestratorModel, t)
-        input += (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-        output += usage.output_tokens ?? 0
-      }
-      liveCostEstimate = null
-      for (const [model, t] of perModel) {
-        const cost = estimateCostUsd(model, t)
-        if (cost != null) liveCostEstimate = (liveCostEstimate ?? 0) + cost
-      }
-      // The message stream carries the orchestrator only. While a fan-out is
-      // running that is a tiny fraction of the spend — $1.50 against $87 of
-      // agent work on one round — so add what the agents' own transcripts say.
-      // At finalize this is replaced by the CLI's modelUsage, which already
-      // counts them, so the two are never added together.
-      for (const agent of [...workflowAgents, ...childAgents]) {
-        if (agent.costUsd != null) liveCostEstimate = (liveCostEstimate ?? 0) + agent.costUsd
-        input += agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite
-        output += agent.tokens.output
-      }
-      this.ledger.patchRun(run.id, {
-        inputTokens: input,
-        outputTokens: output,
-        costUsd: liveCostEstimate,
-        metrics: this.buildImplementMetrics(loop.models, agentLabels, msgUsage, null, finishedAgents, workflowAgents, childAgents, childParents),
-      })
-      this.broadcast(loop.id)
-    }
-
-    const onLine = (line: string): void => {
-      if (!line.trim()) return
-      lastProgressAt = Date.now()
-      let obj: Record<string, unknown>
-      try {
-        obj = JSON.parse(line) as Record<string, unknown>
-      } catch {
-        return
-      }
-      const type = obj.type as string
-      const parentId = (obj.parent_tool_use_id as string | null) ?? null
-      const agentKey = parentId ?? 'orchestrator'
-      const who = parentId ? (agentLabels.get(parentId)?.label ?? `agent-${parentId.slice(-6)}`) : 'orchestrator'
-
-      if (type === 'system' && obj.subtype === 'init') {
-        const model = obj.model as string | undefined
-        sessionId = (obj.session_id as string | undefined) ?? sessionId
-        if (model || sessionId) this.ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
-        plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
-        return
-      }
-      // The CLI raises task_started/task_notification for every tracked task,
-      // shell commands included — `task_type: 'local_bash'` outnumbered real
-      // agents ten to one on a real round, and each one logged as a subagent.
-      // Only `local_agent` is an agent; the notification carries no task_type,
-      // so the shell ones have to be remembered from their start event.
-      if (type === 'system' && (obj.subtype === 'task_started' || obj.subtype === 'task_notification')) {
-        const toolUseId = obj.tool_use_id as string | undefined
-        if (!toolUseId) return
-        if (obj.subtype === 'task_started') {
-          // Two ways to be an agent: the CLI says so, or we watched the
-          // orchestrator call the Agent tool with this id. Anything else is a
-          // shell command wearing a task notice.
-          if (obj.task_type !== 'local_agent' && !agentLabels.has(toolUseId)) {
-            notAgents.add(toolUseId)
-            return
-          }
-          if (obj.is_backgrounded) backgrounded.add(toolUseId)
-          if (!agentLabels.has(toolUseId)) {
-            agentLabels.set(toolUseId, { label: trunc((obj.description as string | undefined) ?? 'subagent', 30), model: null })
-          }
-          return
-        }
-        if (notAgents.has(toolUseId) || finishedAgents.has(toolUseId)) return
-        finishedAgents.add(toolUseId)
-        const label = agentLabels.get(toolUseId)?.label ?? `agent-${toolUseId.slice(-6)}`
-        plog('spawn', `⇊ subagent "${label}" ${(obj.status as string | undefined) ?? 'finished'}`)
-        return
-      }
-      if (type === 'assistant') {
-        const message = obj.message as Record<string, unknown> | undefined
-        if (!message) return
-        const msgId = (message.id as string | undefined) ?? `noid-${fallbackId++}`
-        if (message.usage && typeof message.usage === 'object') {
-          msgUsage.set(msgId, {
-            agentKey,
-            model: (message.model as string | undefined) ?? null,
-            usage: message.usage as Record<string, number>,
-            ts: new Date().toISOString(),
-          })
-          flushTokens()
-        }
-        // Register spawns before displaying: the translator narrates them, but
-        // only this parser tracks the tool_use id that later events reference.
-        const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type !== 'tool_use') continue
-          const name = block.name as string
-          const input = block.input as Record<string, unknown> | undefined
-          if ((name === 'Agent' || name === 'Task') && block.id) {
-            const label = trunc((input?.description as string | undefined) ?? (input?.subagent_type as string | undefined) ?? 'subagent', 30)
-            const model = (input?.model as string | undefined) ?? null
-            agentLabels.set(block.id as string, { label, model })
-          } else {
-            const raw = input ? JSON.stringify(input) : ''
-            const stream = /agents[\\/]+([^/'"\s\\]+)\.(?:claude|codex)\.jsonl/.exec(raw)
-            if (stream && parentId) childParents.set(stream[1], parentId)
-          }
-        }
-        for (const event of translateClaudeLine(line)?.events ?? []) {
-          plog(event.kind === 'claude' && parentId ? 'agent' : event.kind, `[${who}] ${event.text}`)
-        }
-        return
-      }
-      if (type === 'user') {
-        const message = obj.message as Record<string, unknown> | undefined
-        const content = Array.isArray(message?.content) ? (message?.content as Record<string, unknown>[]) : []
-        for (const block of content) {
-          if (block.type !== 'tool_result') continue
-          const toolUseId = block.tool_use_id as string | undefined
-          if (toolUseId && agentLabels.has(toolUseId) && !backgrounded.has(toolUseId) && !finishedAgents.has(toolUseId)) {
-            finishedAgents.add(toolUseId)
-            plog('spawn', `⇊ subagent "${agentLabels.get(toolUseId)!.label}" finished`)
-          }
-        }
-        for (const event of translateClaudeLine(line)?.events ?? []) plog(event.kind, `[${who}] ${event.text}`)
-        return
-      }
-      if (type === 'result') {
-        result = obj
-      }
-    }
-
-    const finalize = async (exit: ExitInfo): Promise<void> => {
-      await finish(loop, run, exit, () => {
-        pollWorkflows()
-        pollChildren()
-        const metrics = this.buildImplementMetrics(loop.models, agentLabels, msgUsage, result, finishedAgents, workflowAgents, childAgents, childParents)
-        if (workflowRuns.length) {
-          plog(
-            'metric',
-            `▤ workflow fan-out: ${workflowRuns.length} workflow${workflowRuns.length === 1 ? '' : 's'} · ${workflowAgents.length} agents · ${formatTokens(workflowTokens)} tokens`,
-          )
-        }
-        const res = result as Record<string, unknown> | null
-        const usage = (res?.usage as Record<string, number> | undefined) ?? undefined
-        const succeeded = res !== null && res.is_error !== true && (exit.code === 0 || exit.code === null)
-        return {
-          metrics,
-          costUsd: implementCostUsd(
-            metrics.perModel,
-            typeof res?.total_cost_usd === 'number' ? (res.total_cost_usd as number) : null,
-            liveCostEstimate,
-          ),
-          tokens: implementTokens(metrics.perModel, usage),
-          numTurns: typeof res?.num_turns === 'number' ? (res.num_turns as number) : null,
-          sessionId: (res?.session_id as string | undefined) ?? null,
-          summary: typeof res?.result === 'string' ? (res.result as string).slice(0, 4000) : null,
-          error: succeeded
-            ? null
-            : (exit.spawnError ??
-              (typeof res?.result === 'string'
-                ? trunc(res.result as string, 400)
-                : `claude exited ${exit.code}${res ? ` (${res.subtype})` : ' without a result'}`)),
-          logResult: res,
-        }
-      })
-    }
-
-    let lastProgressAt = Date.now()
-    let lastWorkflowFootprint = ''
-    let lastTick = 0
-    const tick = (): void => {
-      if (Date.now() - lastTick < 10_000) return
-      lastTick = Date.now()
-      const before = workflowAgents.length + childAgents.length
-      pollWorkflows()
-      pollChildren()
-      // Any agent gaining tokens or tool calls counts as the run progressing.
-      const footprint = [...workflowAgents, ...childAgents].map((a) => `${a.id}:${a.totalTokens}:${a.toolCalls}:${a.state}`).join('|')
-      if (footprint !== lastWorkflowFootprint) {
-        lastWorkflowFootprint = footprint
-        lastProgressAt = Date.now()
-      }
-      if (workflowAgents.length + childAgents.length === 0 && before === 0) return
-      flushTokens(true)
-    }
-
-    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), tick, progressAt: () => lastProgressAt, finalize }
+    return createClaudeImplementProtocol({
+      ledger: this.ledger,
+      loop,
+      run,
+      gate,
+      childBoundary,
+      initialWorkflowOffsets,
+      initialWorkflowIdentities,
+      now: this.deps.now,
+      nowIso: () => this.nowIso(),
+      harnessHome: this.deps.harnessHome,
+      log: (kind, text, agentId) => this.log(loop.id, run.id, kind, text, agentId),
+      broadcast: () => this.broadcast(loop.id),
+      finalize: (exit, collect) => this.finishImplement(loop, run, childBoundary, exit, collect),
+    })
   }
 
   /**
@@ -1739,613 +2504,146 @@ export class LoopRunner {
    * workers, when the run delegates across harnesses, report through their own
    * stream files instead.
    */
-  private makeCodexImplementParser(
-    loop: LoopRecord,
-    run: RunRecord,
-    gate: LogGate,
-    finish: FinishFanOut = (l, r, e, collect) => this.finishImplement(l, r, e, collect),
-  ): StreamParser {
-    const plog = (kind: string, text: string): void => {
-      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
-    }
-    const models = loop.models
-    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
-    const tokens = emptyTokens()
-    let threadId: string | null = null
-    let lastAgentMessage = ''
-    let failure: string | null = null
-    let turns = 0
-    let workers: AgentMetric[] = []
-    let lastFlush = Date.now()
-    let lastProgressAt = Date.now()
-
-    const pollWorkers = (): void => {
-      // Codex's own subagent threads, minus the orchestrator's own thread,
-      // plus any claude workers this run delegated to a separate CLI.
-      const spawned = readCodexUsage(cliHome('codex'), startedAtMs, models.subagentModel ?? models.orchestratorModel, threadId)
-      const delegated = isCrossHarness(models) ? readChildAgents(loop.workspaceDir, models.subagentModel, cliHome('codex')) : []
-      workers = [...spawned, ...delegated]
-    }
-
-    const metricsNow = (): RunMetrics => {
-      const orchestrator: AgentMetric = {
-        id: 'orchestrator',
-        label: 'orchestrator',
-        model: models.orchestratorModel,
-        messages: turns,
-        tokens,
-        firstTs: new Date(startedAtMs).toISOString(),
-        lastTs: new Date().toISOString(),
-        costUsd: estimateCostUsd(models.orchestratorModel, tokens),
-      }
-      const perModel: RunMetrics['perModel'] = {}
-      for (const agent of [orchestrator, ...workers]) {
-        const key = agent.model ?? models.orchestratorModel
-        const entry = perModel[key] ?? { costUsd: 0, tokens: emptyTokens() }
-        entry.tokens.input += agent.tokens.input
-        entry.tokens.output += agent.tokens.output
-        entry.tokens.cacheRead += agent.tokens.cacheRead
-        entry.tokens.cacheWrite += agent.tokens.cacheWrite
-        entry.costUsd = estimateCostUsd(key, entry.tokens)
-        perModel[key] = entry
-      }
-      return { agents: [orchestrator, ...workers], perModel }
-    }
-
-    const flush = (force = false): void => {
-      if (!force && Date.now() - lastFlush < 15_000) return
-      lastFlush = Date.now()
-      pollWorkers()
-      const metrics = metricsNow()
-      const totals = implementTokens(metrics.perModel, undefined)
-      this.ledger.patchRun(run.id, {
-        metrics,
-        inputTokens: totals?.input,
-        outputTokens: totals?.output,
-        costUsd: Object.values(metrics.perModel).reduce((sum, m) => sum + (m.costUsd ?? 0), 0),
-      })
-      this.broadcast(loop.id)
-    }
-
-    const onLine = (line: string): void => {
-      if (!line.trim()) return
-      lastProgressAt = Date.now()
-      const t = translateCodexLine(line)
-      if (!t) return
-      if (t.threadStarted !== undefined) {
-        threadId = t.threadStarted
-        this.ledger.patchRun(run.id, { sessionId: threadId })
-        plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
-      }
-      for (const event of t.events) plog(event.kind, event.text)
-      if (t.summary !== undefined) lastAgentMessage = t.summary
-      if (t.turn) {
-        const turn = codexTokens(t.turn.usage)
-        tokens.input += turn.input
-        tokens.output += turn.output
-        tokens.cacheRead += turn.cacheRead
-        tokens.cacheWrite += turn.cacheWrite
-        turns += 1
-        flush(true)
-      }
-      if (t.error) {
-        failure = t.error
-        plog('error', failure)
-      }
-    }
-
-    const finalize = async (exit: ExitInfo): Promise<void> => {
-      await finish(loop, run, exit, () => {
-        pollWorkers()
-        const metrics = metricsNow()
-        const failed = failure ?? exit.spawnError ?? (exit.code !== 0 && exit.code !== null ? `codex exited ${exit.code}` : null)
-        return {
-          metrics,
-          costUsd: Object.values(metrics.perModel).reduce((sum, m) => sum + (m.costUsd ?? 0), 0),
-          tokens: implementTokens(metrics.perModel, undefined),
-          numTurns: turns,
-          sessionId: threadId,
-          summary: lastAgentMessage ? lastAgentMessage.slice(0, 4000) : null,
-          error: failed,
-          logResult: null,
-        }
-      })
-    }
-
-    return {
-      onLine,
-      onStderr: (text) => plog('stderr', trunc(text, 400)),
-      tick: () => flush(),
-      progressAt: () => lastProgressAt,
-      finalize,
-    }
+  private makeCodexImplementParser(loop: LoopRecord, run: RunRecord, gate: LogGate, childBoundary: ChildStreamBoundary): StreamParser {
+    return createCodexImplementProtocol({
+      ledger: this.ledger,
+      loop,
+      run,
+      gate,
+      childBoundary,
+      now: this.deps.now,
+      nowIso: () => this.nowIso(),
+      harnessHome: this.deps.harnessHome,
+      log: (kind, text, agentId) => this.log(loop.id, run.id, kind, text, agentId),
+      broadcast: () => this.broadcast(loop.id),
+      finalize: (exit, collect) => this.finishImplement(loop, run, childBoundary, exit, collect),
+    })
   }
 
   private async finishImplement(
     loop: LoopRecord,
     run: RunRecord,
+    childBoundary: ChildStreamBoundary,
     exit: ExitInfo,
     collect: () => ImplementOutcome,
   ): Promise<void> {
-    // Counted after the wait, so a worker that outlived the orchestrator is in
-    // the round's totals rather than missing from them.
-    await this.awaitChildren(loop, run)
-    const out = collect()
-    this.ledger.patchRun(run.id, {
-      metrics: out.metrics,
-      costUsd: out.costUsd,
-      inputTokens: out.tokens?.input,
-      outputTokens: out.tokens?.output,
-      numTurns: out.numTurns,
-      // A CLI's own duration restarts whenever it re-inits mid-run: a 150-minute
-      // run reported 3m16s, the time since its last init event. Our own start
-      // time is the only one that spans the whole run.
-      durationMs: Date.now() - (this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.parse(run.startedAt ?? run.createdAt)),
-      sessionId: out.sessionId,
-      summary: out.summary,
-      finishedAt: new Date().toISOString(),
-    })
-    this.logRunMetrics(loop.id, run.id, 'implement', out.costUsd, out.logResult, out.metrics)
-    this.accumulateCost(loop.id, out.costUsd)
-
-    const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
-    if (stopReason) {
-      this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-      this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Implement run timed out.')
-      return
-    }
-    if (out.error) {
-      const limit = await this.rotateForUsageLimit(loop, run, out.error)
-      this.ledger.patchRun(run.id, { status: 'failed', error: out.error })
-      if (limit.rotated) {
-        const base = run.prompt.startsWith(RESUME_PREFIX) ? run.prompt.slice(RESUME_PREFIX.length) : run.prompt
-        this.ledger.createRun({
-          loopId: loop.id,
-          round: run.round,
-          role: 'implement',
-          harness: run.harness,
-          prompt: RESUME_PREFIX + base,
-        })
-        this.broadcast(loop.id)
-        this.resumeAfter(loop.id, limit.waitMs)
-        return
-      }
-      this.finishLoop(loop.id, 'stopped', limit.message ?? `Implement run failed: ${out.error}`)
-      return
-    }
-    try {
-      const parentRevision = this.ledger
-        .runsForLoop(loop.id)
-        .filter((prior) => prior.role === 'implement' && prior.round < run.round && prior.revision)
-        .at(-1)?.revision
-      const revision = captureRoundRevision({
-        workspaceDir: loop.workspaceDir,
-        loopId: loop.id,
-        round: run.round,
-        parentRevision,
-      })
-      this.ledger.patchRun(run.id, { status: 'succeeded', revision })
-      this.log(loop.id, run.id, 'system', `Round ${run.round} committed at ${revision.slice(0, 12)}.`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.ledger.patchRun(run.id, { status: 'failed', error: `Could not commit round revision: ${message}` })
-      this.finishLoop(loop.id, 'failed', `Round ${run.round} finished, but its Git revision could not be saved: ${message}`)
-      return
-    }
-    if (this.overBudget(loop.id)) return
-    // A verdict only earns its cost by gating another round. On the last one
-    // there is no round left to gate, so the loop ends with the build itself.
-    if (run.round >= loop.maxRounds) {
-      this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached after round ${run.round} — no critique, since no round is left for it to gate.`)
-      return
-    }
-    this.ledger.createRun({
-      loopId: loop.id,
-      round: run.round,
-      role: 'critique',
-      harness: loop.models.criticHarness,
-      prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
-    })
-    this.broadcast(loop.id)
-    void this.executeNext(loop.id)
-  }
-
-  private buildImplementMetrics(
-    models: LoopModels,
-    agentLabels: Map<string, { label: string; model: string | null }>,
-    msgUsage: Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>,
-    result: Record<string, unknown> | null,
-    finished: Set<string> = new Set(),
-    workflowAgents: AgentMetric[] = [],
-    childAgents: AgentMetric[] = [],
-    childParents: Map<string, string> = new Map(),
-  ): RunMetrics {
-    const agents = new Map<string, AgentMetric>()
-    const ensure = (key: string): AgentMetric => {
-      let agent = agents.get(key)
-      if (!agent) {
-        const reg = agentLabels.get(key)
-        // On a cross-harness run these subagents write no code — each one
-        // only launches the other CLI — so the row says so rather than reading as a
-        // claude worker that quietly ignored the picked model.
-        const dispatches = key !== 'orchestrator' && isCrossHarness(models)
-        agent = {
-          id: key,
-          label:
-            key === 'orchestrator'
-              ? 'orchestrator'
-              : `${reg?.label ?? `subagent ${key.slice(-6)}`}${dispatches ? ' (dispatcher)' : ''}`,
-          // A dispatcher is a claude subagent whatever the workers are, so its
-          // fallback is the model implementer.md pins it to — never the codex
-          // model, which claude cannot run as a subagent.
-          model:
-            key === 'orchestrator'
-              ? models.orchestratorModel
-              : (reg?.model ?? (dispatches ? DISPATCHER_MODEL : (models.subagentModel ?? models.orchestratorModel))),
-          messages: 0,
-          tokens: emptyTokens(),
-          firstTs: null,
-          lastTs: null,
-        }
-        agents.set(key, agent)
-      }
-      return agent
-    }
-    ensure('orchestrator')
-    // Seed from the spawn registry, not just from messages: a backgrounded agent
-    // can start and finish without a single assistant message reaching this
-    // stream, and it still belongs in the list.
-    for (const key of agentLabels.keys()) ensure(key)
-    for (const { agentKey, model, usage, ts } of msgUsage.values()) {
-      const agent = ensure(agentKey)
-      agent.messages += 1
-      if (model && agent.id !== 'orchestrator') agent.model = model
-      agent.tokens.input += usage.input_tokens ?? 0
-      agent.tokens.output += usage.output_tokens ?? 0
-      agent.tokens.cacheRead += usage.cache_read_input_tokens ?? 0
-      agent.tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
-      if (!agent.firstTs || ts < agent.firstTs) agent.firstTs = ts
-      if (!agent.lastTs || ts > agent.lastTs) agent.lastTs = ts
-    }
-    const perModel: RunMetrics['perModel'] = {}
-    const modelUsage = result?.modelUsage as Record<string, Record<string, number>> | undefined
-    if (modelUsage) {
-      for (const [model, mu] of Object.entries(modelUsage)) {
-        perModel[model] = {
-          costUsd: typeof mu.costUSD === 'number' ? mu.costUSD : null,
-          tokens: {
-            input: mu.inputTokens ?? 0,
-            output: mu.outputTokens ?? 0,
-            cacheRead: mu.cacheReadInputTokens ?? 0,
-            cacheWrite: mu.cacheCreationInputTokens ?? 0,
-          },
-        }
-      }
-    }
-    // Delegated workers carry a real input/output/cache split, so unlike
-    // workflow agents they can be priced into perModel — which is what implementCostUsd
-    // sums for the headline figure, so their spend reaches the budget ceiling.
-    if (childAgents.length && models.subagentModel) {
-      const tokens = emptyTokens()
-      for (const agent of childAgents) {
-        tokens.input += agent.tokens.input
-        tokens.output += agent.tokens.output
-        tokens.cacheRead += agent.tokens.cacheRead
-        tokens.cacheWrite += agent.tokens.cacheWrite
-      }
-      perModel[models.subagentModel] = { costUsd: estimateCostUsd(models.subagentModel, tokens), tokens }
-    }
-    for (const [key, agent] of agents) {
-      if (key !== 'orchestrator') agent.done = finished.has(key)
-    }
-    const list = [...agents.values()]
-    // '\uffff' keeps agents that never spoke at the end, in spawn order.
-    list.sort((a, b) => (a.id === 'orchestrator' ? -1 : b.id === 'orchestrator' ? 1 : (a.firstTs ?? '\uffff').localeCompare(b.firstTs ?? '\uffff')))
-    // A delegated worker sits under whoever launched it; one nobody claims
-    // stays at the end of the list.
-    const byParent = new Map<string, AgentMetric[]>()
-    const orphans: AgentMetric[] = []
-    for (const child of childAgents) {
-      const parent = childParents.get(child.id.replace(/^child:/, ''))
-      child.parentId = parent
-      if (parent && agents.has(parent)) byParent.set(parent, [...(byParent.get(parent) ?? []), child])
-      else orphans.push(child)
-    }
-    const nested = list.flatMap((agent) => [agent, ...(byParent.get(agent.id) ?? [])])
-    // Workflow agents carry only a scalar token count, so they cannot join
-    // perModel — that stays priced off the stream and the CLI's own figures.
-    return { agents: [...nested, ...workflowAgents, ...orphans], perModel }
-  }
-
-  private logRunMetrics(
-    loopId: string,
-    runId: string,
-    role: string,
-    costUsd: number | null,
-    res: Record<string, unknown> | null,
-    metrics: RunMetrics,
-  ): void {
-    const duration = typeof res?.duration_ms === 'number' ? `${Math.round((res.duration_ms as number) / 60_000)}m` : '?'
-    const turns = typeof res?.num_turns === 'number' ? res.num_turns : '?'
-    this.log(loopId, runId, 'metric', `▤ ${role} metrics: ${costUsd !== null ? `$${costUsd.toFixed(2)} equiv` : 'cost n/a'} · ${turns} turns · ${duration}`)
-    for (const agent of metrics.agents) {
-      const t = agent.tokens
-      const indent = agent.id === 'orchestrator' ? '  ' : agent.parentId && agent.parentId !== 'orchestrator' ? '        ↳ ' : '    ↳ '
-      this.log(
-        loopId,
-        runId,
-        'metric',
-        `${indent}${agent.label} (${agent.model ?? '?'}): ${agent.messages} msgs · in ${formatTokens(t.input)} · out ${formatTokens(t.output)} · cache r/w ${formatTokens(t.cacheRead)}/${formatTokens(t.cacheWrite)}`,
-      )
-    }
-    for (const [model, mu] of Object.entries(metrics.perModel)) {
-      this.log(
-        loopId,
-        runId,
-        'metric',
-        `  ${model}: ${mu.costUsd !== null ? `$${mu.costUsd.toFixed(2)}` : '$?'} · in ${formatTokens(mu.tokens.input)} · out ${formatTokens(mu.tokens.output)}`,
-      )
-    }
+    await finalizeImplement({
+      ledger: this.ledger,
+      loop,
+      run,
+      now: this.deps.now,
+      nowIso: () => this.nowIso(),
+      referenceDir: this.referenceDir(loop.id),
+      awaitChildren: () => this.awaitChildren(loop, run, childBoundary),
+      isStopRequested: () => this.stopRequested.has(loop.id),
+      finishCancelled: (finalExit, reason, terminalLog) => this.finishCancelledAttempt(loop, run, finalExit, reason, terminalLog),
+      verifyCritiqueTree: (terminalLog) => this.verifyCritiqueTreeBoundary(loop, run, false, terminalLog),
+      retryRateLimit: (error, terminalLog) => this.retryRateLimit(loop, run, error, terminalLog),
+      failAttempt: (error, reason, terminalLog) => { this.failAttemptAndLoop(loop, run, error, reason, terminalLog) },
+      verifyReference: (terminalLog) => this.verifyReferenceBoundary(loop, run, terminalLog),
+      persistLog: (kind, text) => { this.persistLog(loop.id, run.id, kind, text) },
+      notifyPersistedLog: (kind, text) => this.notifyPersistedLog(loop.id, run.id, kind, text),
+      persistLoopTerminal: (status, reason) => this.persistLoopTerminal(loop.id, status, reason),
+      finishLoop: (status, reason) => this.finishLoop(loop.id, status, reason),
+      broadcast: () => this.broadcast(loop.id),
+    }, exit, collect)
   }
 
   // ---------------------------------------------------------------- critique
 
-  private verdictFilePath(workspaceDir: string, runId: string): string {
-    return path.join(runsDir(workspaceDir), `${runId}.verdict.txt`)
-  }
-
   private async executeCritique(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
+    if (!this.verifyReferenceBoundary(loop, run)) return
+    const childBoundary = this.prepareChildStreams(loop, run)
+    if (!run.revision) {
+      this.failAttemptAndLoop(loop, run, 'Critique has no implementation revision binding.', `Round ${run.round} critique has no implementation revision binding.`)
+      return
+    }
+    if (!workspaceMatchesRevision(loop.workspaceDir, loop.id, run.revision)) {
+      this.log(loop.id, run.id, 'error', `Stale critique rejected before launch: workspace no longer matches revision ${run.revision}.`)
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        'Workspace changed after implementation revision capture.',
+        `Workspace changed before round ${run.round} critique could judge revision ${run.revision.slice(0, 12)}.`,
+      )
+      return
+    }
+    let verdictPath: string
+    try {
+      verdictPath = prepareVerdictArtifact(loop.workspaceDir, run.round, run.id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.failAttemptAndLoop(
+        loop,
+        run,
+        `Could not prepare a fresh verdict artifact: ${message}`,
+        `Round ${run.round} critique could not claim its verdict path: ${message}`,
+      )
+      return
+    }
     this.log(
       loop.id,
       run.id,
       'system',
       `● Round ${run.round} — critique (${run.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
     )
+    const exactPrompt = buildCriticPrompt(
+      loop.prompt,
+      run.round,
+      this.referenceDir(loop.id),
+      run.revision,
+      path.basename(verdictPath),
+      engineGateRules(),
+    )
     const plan = critiquePlan({
       models,
-      prompt: run.prompt,
-      claudeHome: cliHome('claude'),
-      codexHome: cliHome('codex'),
-      outFile: this.verdictFilePath(loop.workspaceDir, run.id),
+      prompt: exactPrompt,
+      claudeHome: this.deps.harnessHome('claude'),
+      codexHome: this.deps.harnessHome('codex'),
     })
-    const spawned = this.spawnDetached(loop, run, plan.bin, plan.args, subscriptionEnv(plan.env))
-    if (!spawned) return
-    this.ledger.patchRun(run.id, { model: models.criticModel })
+    const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }
     const parser = this.makeCritiqueParser(loop, run, gate)
-    await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own)
+    const spawned = this.spawnDetached(loop, run, executable.command, plan.args, executable.env, exactPrompt)
+    if (!spawned) return
+    await this.driveRun(loop, run, spawned.meta, CRITIQUE_TIMEOUT_MS, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
   }
 
   private makeCritiqueParser(loop: LoopRecord, run: RunRecord, gate: LogGate): StreamParser {
-    const models = loop.models
-    const plog = (kind: string, text: string): void => {
-      if (!gate.suppress) this.log(loop.id, run.id, kind, text)
-    }
-    let lastAgentMessage = ''
-    const tokens = emptyTokens()
-    let sawUsage = false
-    let failure: string | null = null
-    const startedAtMs = this.readMeta(loop.workspaceDir, run.id)?.startedAtMs ?? Date.now()
-
-    /** Push the running critic totals into the ledger so cost shows mid-run. */
-    const flushCritic = (): void => {
-      this.ledger.patchRun(run.id, {
-        inputTokens: tokens.input + tokens.cacheRead + tokens.cacheWrite,
-        outputTokens: tokens.output,
-        costUsd: estimateCostUsd(models.criticModel, tokens),
-        metrics: {
-          agents: [
-            {
-              id: 'critic',
-              label: 'critic (fresh eyes)',
-              model: models.criticModel,
-              messages: 1,
-              tokens: { ...tokens },
-              firstTs: new Date(startedAtMs).toISOString(),
-              lastTs: new Date().toISOString(),
-            },
-          ],
-          perModel: {},
-        },
-      })
-      this.broadcast(loop.id)
-    }
-
-    // Claude and Codex stream different JSON shapes; each translator feeds the
-    // same state above, so everything downstream of here is harness-agnostic.
-    const onClaudeLine = (line: string): void => {
-      const t = translateClaudeLine(line)
-      if (!t) return
-      if (t.init) {
-        plog('system', `claude session ${t.init.sessionId?.slice(0, 8) ?? '?'} · model ${t.init.model ?? '?'}`)
-        return
-      }
-      if (t.usage) {
-        sawUsage = true
-        tokens.input += t.usage.usage.input_tokens ?? 0
-        tokens.output += t.usage.usage.output_tokens ?? 0
-        tokens.cacheRead += t.usage.usage.cache_read_input_tokens ?? 0
-        tokens.cacheWrite += t.usage.usage.cache_creation_input_tokens ?? 0
-        flushCritic()
-      }
-      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
-      if (t.summary !== undefined) lastAgentMessage = t.summary
-      if (t.result) {
-        // The final result text is the critic's verdict; it also carries the
-        // authoritative usage totals, which replace the per-message tally.
-        if (t.result.text?.trim()) lastAgentMessage = t.result.text
-        const usage = t.result.usage
-        if (usage) {
-          sawUsage = true
-          tokens.input = usage.input_tokens ?? tokens.input
-          tokens.output = usage.output_tokens ?? tokens.output
-          tokens.cacheRead = usage.cache_read_input_tokens ?? tokens.cacheRead
-          tokens.cacheWrite = usage.cache_creation_input_tokens ?? tokens.cacheWrite
-        }
-        if (t.result.subtype !== 'success' && t.result.isError) {
-          failure = t.result.text !== null ? trunc(t.result.text, 400) : `claude critique ${t.result.subtype ?? 'failed'}`
-          plog('error', failure)
-        }
-      }
-    }
-
-    const onCodexLine = (line: string): void => {
-      const t = translateCodexLine(line)
-      if (!t) return
-      if (t.threadStarted !== undefined) {
-        plog('system', `codex thread ${t.threadStarted?.slice(0, 8) ?? '?'}`)
-      }
-      for (const event of t.events) plog(event.kind, `[critic] ${event.text}`)
-      if (t.summary !== undefined) lastAgentMessage = t.summary
-      if (t.turn?.usage) {
-        sawUsage = true
-        const turn = codexTokens(t.turn.usage)
-        tokens.input += turn.input
-        tokens.cacheRead += turn.cacheRead
-        tokens.cacheWrite += turn.cacheWrite
-        tokens.output += turn.output
-        flushCritic()
-      }
-      if (t.error) {
-        failure = t.error
-        plog('error', failure)
-      }
-    }
-
-    const onLine = run.harness === 'claude' ? onClaudeLine : onCodexLine
-
-    const finalize = async (exit: ExitInfo): Promise<void> => {
-      let verdictText = lastAgentMessage
-      if (run.harness === 'codex') {
-        // codex writes its final message to the -o file; claude streams it in
-        // the result event, which onClaudeLine already captured.
-        try {
-          verdictText = fs.readFileSync(this.verdictFilePath(loop.workspaceDir, run.id), 'utf8') || lastAgentMessage
-          fs.unlinkSync(this.verdictFilePath(loop.workspaceDir, run.id))
-        } catch {
-          /* fall back to streamed message */
-        }
-      }
-      let verdict = parseVerdict(verdictText)
-      if (!verdict) {
-        verdict = readVerdictArtifact(loop.workspaceDir, run.round, Date.parse(loop.createdAt))
-        if (verdict) this.log(loop.id, run.id, 'system', `Final message had no parseable verdict — recovered it from critique/round-${run.round}/verdict.json.`)
-      }
-      const durationMs = Date.now() - startedAtMs
-      const criticAgent: AgentMetric = {
-        id: 'critic',
-        label: 'critic (fresh eyes)',
-        model: models.criticModel,
-        messages: 1,
-        tokens,
-        firstTs: new Date(startedAtMs).toISOString(),
-        lastTs: new Date().toISOString(),
-      }
-      const criticCost = sawUsage ? estimateCostUsd(models.criticModel, tokens) : null
-      this.ledger.patchRun(run.id, {
-        metrics: { agents: [criticAgent], perModel: sawUsage ? { [models.criticModel]: { costUsd: criticCost, tokens } } : {} },
-        inputTokens: sawUsage ? tokens.input + tokens.cacheRead + tokens.cacheWrite : null,
-        outputTokens: sawUsage ? tokens.output : null,
-        costUsd: criticCost,
-        durationMs,
-        summary: verdictText ? verdictText.slice(0, 4000) : null,
-        verdict,
-        finishedAt: new Date().toISOString(),
-      })
-      this.accumulateCost(loop.id, criticCost)
-      this.log(
-        loop.id,
-        run.id,
-        'metric',
-        `▤ critique metrics: ${criticCost != null ? `$${criticCost.toFixed(2)} equiv (table est) · ` : ''}in ${formatTokens(tokens.input + tokens.cacheRead)} · out ${formatTokens(tokens.output)} · ${Math.round(durationMs / 60_000)}m`,
-      )
-
-      const stopReason = this.stopRequested.has(loop.id) ? 'user' : exit.timedOut ? 'timeout' : null
-      if (stopReason) {
-        this.ledger.patchRun(run.id, { status: 'cancelled', error: stopReason === 'user' ? 'Stopped by user.' : 'Timed out.' })
-        this.finishLoop(loop.id, 'stopped', stopReason === 'user' ? 'Stopped by user.' : 'Critique run timed out.')
-        return
-      }
-      if (failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
-        // A usage limit is not the critic failing, so it does not spend one of
-        // the critic's own two attempts.
-        const attempts = this.ledger
-          .runsForLoop(loop.id)
-          .filter((r) => r.role === 'critique' && r.round === run.round && !USAGE_LIMIT.test(r.error ?? '')).length
-        const errText = exit.spawnError ?? failure ?? (verdict ? `${run.harness} exited ${exit.code}` : `no parseable verdict (exit ${exit.code})`)
-        const limit = await this.rotateForUsageLimit(loop, run, errText)
-        this.ledger.patchRun(run.id, { status: 'failed', error: errText })
-        if (limit.rotated || attempts < MAX_CRITIQUE_ATTEMPTS) {
-          if (!limit.rotated) {
-            this.log(loop.id, run.id, 'system', `Critique failed (${errText}) — retrying with a fresh critic.`)
-          }
-          this.ledger.createRun({
-            loopId: loop.id,
-            round: run.round,
-            role: 'critique',
-            harness: loop.models.criticHarness,
-            prompt: buildCriticPrompt(loop.prompt, run.round, this.referenceDir(loop.id), engineGateRules()),
-          })
-          this.broadcast(loop.id)
-          this.resumeAfter(loop.id, limit.rotated ? limit.waitMs : undefined)
-          return
-        }
-        this.finishLoop(loop.id, 'failed', limit.message ?? `Critique failed twice: ${errText}`)
-        return
-      }
-
-      this.ledger.patchRun(run.id, { status: 'succeeded' })
-      const evidence = scanCritiqueArtifacts(loop.workspaceDir).find((a) => a.round === run.round)
-      if (evidence && (evidence.shots.length > 0 || evidence.refs.length > 0)) {
-        this.log(
-          loop.id,
-          run.id,
-          'shot',
-          `▦ evidence saved: ${evidence.shots.length} shots · ${evidence.refs.length} refs · ${evidence.videos.length} videos${evidence.pairs ? ` · ${evidence.pairs.length} pairs` : evidence.pairsMd ? ' · pairs.md' : ''} → critique/round-${run.round}/`,
-        )
-        for (const file of [...evidence.shots, ...evidence.refs].slice(0, 10)) this.log(loop.id, run.id, 'shot', `  ${file}`)
-      }
-      this.log(loop.id, run.id, 'verdict', `★ score ${verdict.score.toFixed(2)}/1.00 ${verdict.pass ? '— PASS' : '— not there yet'} · ${trunc(verdict.summary, 300)}`)
-      for (const finding of verdict.findings.slice(0, 12)) this.log(loop.id, run.id, 'verdict', `  · [${finding.severity}] ${trunc(finding.text, 240)}`)
-      if (verdict.findings.length > 12) this.log(loop.id, run.id, 'verdict', `  · …and ${verdict.findings.length - 12} more findings`)
-
-      if (verdict.pass) {
-        this.finishLoop(loop.id, 'passed', `Critic passed the build with score ${verdict.score.toFixed(2)} after round ${run.round}.`)
-        return
-      }
-      if (run.round >= loop.maxRounds) {
-        this.finishLoop(loop.id, 'exhausted', `Max rounds (${loop.maxRounds}) reached. Best score: ${this.bestScore(loop.id).toFixed(2)}.`)
-        return
-      }
-      if (this.overBudget(loop.id)) return
-
-      const nextRound = run.round + 1
-      this.queueImplement(loop, nextRound, verdict)
-      this.log(loop.id, null, 'system', `Verdict fed forward — round ${nextRound} queued.`)
-      this.broadcast(loop.id)
-      void this.executeNext(loop.id)
-    }
-
-    return { onLine, onStderr: (text) => plog('stderr', trunc(text, 400)), finalize }
+    return createCritiqueProtocol({
+      ledger: this.ledger,
+      loop,
+      run,
+      gate,
+      referenceDir: this.referenceDir(loop.id),
+      maxAttempts: MAX_CRITIQUE_ATTEMPTS,
+      now: this.deps.now,
+      nowIso: () => this.nowIso(),
+      log: (kind, text, agentId) => this.log(loop.id, run.id, kind, text, agentId),
+      persistLog: (kind, text) => { this.persistLog(loop.id, run.id, kind, text) },
+      notifyPersistedLog: (kind, text) => this.notifyPersistedLog(loop.id, run.id, kind, text),
+      broadcast: () => this.broadcast(loop.id),
+      finishCancelled: (exit, reason, terminalLog) => this.finishCancelledAttempt(loop, run, exit, reason, terminalLog),
+      verifyReference: (terminalLog) => this.verifyReferenceBoundary(loop, run, terminalLog),
+      failOrRetry: (error, label, maxAttempts, prompt, terminalLog) => this.failOrRetryPhase(loop, run, error, label, maxAttempts, prompt, terminalLog),
+      overBudget: () => this.overBudget(loop.id),
+      finishLoop: (status, reason) => this.finishLoop(loop.id, status, reason),
+      persistLoopTerminal: (status, reason) => this.persistLoopTerminal(loop.id, status, reason),
+      implementPrompt: (round, verdict) => this.nextImplementPrompt(loop, round, verdict),
+    })
   }
-
-  // ---------------------------------------------------------------- helpers
-
-  private accumulateCost(loopId: string, costUsd: number | null): void {
-    if (!costUsd) return
-    const loop = this.ledger.getLoop(loopId)
-    if (loop) this.ledger.patchLoop(loopId, { totalCostUsd: loop.totalCostUsd + costUsd })
-  }
-
   private overBudget(loopId: string): boolean {
+    if (!this.budgetReached(loopId)) return false
     const loop = this.ledger.getLoop(loopId)
-    if (!loop?.budgetUsd || loop.totalCostUsd < loop.budgetUsd) return false
+    if (!loop?.budgetUsd) return false
     this.finishLoop(loopId, 'stopped', `Budget ceiling hit: $${loop.totalCostUsd.toFixed(2)} of $${loop.budgetUsd.toFixed(2)} (equivalent API cost).`)
     return true
   }
 
-  private bestScore(loopId: string): number {
-    return this.ledger.runsForLoop(loopId).reduce((best, r) => (r.verdict && r.verdict.score > best ? r.verdict.score : best), 0)
+  private budgetReached(loopId: string, pendingCostUsd = 0): boolean {
+    const loop = this.ledger.getLoop(loopId)
+    return !!loop?.budgetUsd && loop.totalCostUsd + Math.max(0, pendingCostUsd) >= loop.budgetUsd
   }
+
 }

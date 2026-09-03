@@ -39,10 +39,17 @@ describe('Reference Pack', () => {
     fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
     fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
     fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed — the player dog')
+    const files = [
+      ...Array.from({ length: 8 }, (_, index) => `images/still-${index}.jpg`),
+      ...Array.from({ length: 8 }, (_, index) => `motion/frame-${index}.png`),
+      ...['01-title', '02-main-menu', '03-intro', '04-level-1-start'].map((name) => `journey/${name}.png`),
+      'video/gameplay.webm',
+    ]
     fs.writeFileSync(
       path.join(dir, root, 'manifest.json'),
       JSON.stringify({
-        sources: [{ url: 'https://example.com' }],
+        title: 'Reference Game',
+        sources: files.map((file) => ({ url: 'https://example.com', file })),
         cast: [{ name: 'samoyed', kind: 'character', stills: ['images/still-0.jpg'], locator: 'front left', role: 'the player', priority: 1 }],
       }),
     )
@@ -64,6 +71,20 @@ describe('Reference Pack', () => {
     expect(pack.journeyMd).toContain('Main menu')
     expect(pack.storyMd).toContain('Premise')
     expect(pack.researchMd).toContain('What players say')
+
+    const credentialName = `ghp_${'a'.repeat(36)}.png`
+    fs.writeFileSync(path.join(dir, root, 'images', credentialName), 'do not project this path')
+    const filtered = scanReferencePack(dir, root)
+    expect(filtered.ready).toBe(true)
+    expect(filtered.images.join('\n')).not.toContain(credentialName)
+    expect(filtered.warnings).toContain('credential-shaped artifact paths were omitted from the display projection')
+
+    fs.truncateSync(path.join(dir, root, 'video', 'gameplay.webm'), 512 * 1024 * 1024 + 1)
+    const oversizedVideo = scanReferencePack(dir, root)
+    expect(oversizedVideo.videos).toEqual([])
+    expect(oversizedVideo.ready).toBe(false)
+    expect(oversizedVideo.issues).toContain('needs a gameplay video')
+    expect(oversizedVideo.warnings).toContain('projected media exceeds its byte or display-count safety limit and was truncated')
   })
 
   it('rejects a shallow study that cannot make the critic a game expert', () => {
@@ -86,10 +107,32 @@ describe('Reference Pack', () => {
       url: `https://example.com/source-${index}`,
       note: 'a consulted deep-research source with a reasonably long note attached to it',
     }))
-    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources }, null, 2))
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ title: 'Reference Game', sources }, null, 2))
 
     const pack = scanReferencePack(dir, root)
     expect(pack.manifest!.length).toBeGreaterThan(12_000)
+    expect(pack.issues).not.toContain('manifest.json is not valid JSON')
+  })
+
+  it('redacts credentials from every document projected over IPC while validating the raw manifest', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    const token = `ghp_${'a'.repeat(36)}`
+    fs.writeFileSync(path.join(dir, root, 'README.md'), `Progression model: level-based\n${token}`)
+    fs.writeFileSync(path.join(dir, root, 'research.md'), `Expert gameplay dossier\nAuthorization: Bearer ${token}`)
+    fs.writeFileSync(path.join(dir, root, 'journey.md'), `OPENAI_API_KEY=${token}`)
+    fs.writeFileSync(path.join(dir, root, 'story.md'), `{"password":"two word secret"}`)
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({
+      title: 'Reference Game',
+      sources: [{ url: 'https://example.com', note: `Authorization: Bearer ${token}` }],
+    }))
+
+    const pack = scanReferencePack(dir, root)
+    for (const projected of [pack.readme, pack.researchMd, pack.journeyMd, pack.storyMd, pack.manifest]) {
+      expect(projected).not.toContain(token)
+      expect(projected).toContain('[REDACTED]')
+    }
     expect(pack.issues).not.toContain('manifest.json is not valid JSON')
   })
 
@@ -156,6 +199,96 @@ describe('Reference Pack', () => {
 
     expect(scanReferencePack(dir, root).objects).toEqual([`${root}/objects/samoyed-01.jpg`])
   })
+
+  it('refuses symlinked and oversized machine-readable inputs before reading them', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root), { recursive: true })
+    const outside = path.join(dir, 'outside.json')
+    fs.writeFileSync(outside, JSON.stringify({ sources: [{ url: 'https://secret.test' }] }))
+    fs.symlinkSync(outside, path.join(dir, root, 'manifest.json'))
+    expect(scanReferencePack(dir, root).issues).toContain('needs manifest.json with source attribution')
+
+    fs.unlinkSync(path.join(dir, root, 'manifest.json'))
+    fs.linkSync(outside, path.join(dir, root, 'manifest.json'))
+    expect(scanReferencePack(dir, root).issues).toContain('needs manifest.json with source attribution')
+
+    fs.unlinkSync(path.join(dir, root, 'manifest.json'))
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), ' '.repeat(1_000_001))
+    expect(scanReferencePack(dir, root).issues).toContain('needs manifest.json with source attribution')
+  })
+
+  it('rejects a symlinked pack root and invalid or escaping source entries', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    const outside = path.join(dir, 'outside')
+    fs.mkdirSync(outside, { recursive: true })
+    fs.writeFileSync(path.join(outside, 'manifest.json'), JSON.stringify({ title: 'Secret', sources: [{ url: 'https://example.com' }] }))
+    fs.mkdirSync(path.dirname(path.join(dir, root)), { recursive: true })
+    fs.symlinkSync(outside, path.join(dir, root))
+    expect(scanReferencePack(dir, root).manifest).toBeNull()
+
+    fs.unlinkSync(path.join(dir, root))
+    fs.mkdirSync(path.join(dir, root, 'images'), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'images', 'still.jpg'), 'image')
+    fs.writeFileSync(
+      path.join(dir, root, 'manifest.json'),
+      JSON.stringify({ title: 'Reference Game', sources: [{ url: 'file:///etc/passwd', file: '../outside' }] }),
+    )
+    const issues = scanReferencePack(dir, root).issues
+    expect(issues).toContain('manifest.json contains an invalid source entry')
+    expect(issues).toContain('manifest.json lacks attribution for 1 downloaded evidence file')
+  })
+
+  it('fails closed when the inventory exceeds its file-count cap', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    const images = path.join(dir, root, 'images')
+    fs.mkdirSync(images, { recursive: true })
+    for (let index = 0; index < 301; index += 1) fs.writeFileSync(path.join(images, `${index}.png`), 'x')
+    expect(scanReferencePack(dir, root).issues).toContain('inventory exceeds 300 files or 2000 entries and was truncated')
+  })
+
+  it('excludes oversized images and surfaces the bounded projection', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    const images = path.join(dir, root, 'images')
+    fs.mkdirSync(images, { recursive: true })
+    const oversized = path.join(images, 'oversized.png')
+    fs.writeFileSync(oversized, '')
+    fs.truncateSync(oversized, 32 * 1024 * 1024 + 1)
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.images).toEqual([])
+    expect(pack.warnings).toContain('projected media exceeds its byte or display-count safety limit and was truncated')
+  })
+
+  it('keeps a complete pack ready when only extra display media is truncated', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
+    const files = [
+      ...Array.from({ length: 25 }, (_, index) => `images/still-${index}.jpg`),
+      ...Array.from({ length: 8 }, (_, index) => `motion/frame-${index}.png`),
+      ...Array.from({ length: 4 }, (_, index) => `journey/0${index + 1}.png`),
+      'video/gameplay.webm',
+    ]
+    for (const file of files) fs.writeFileSync(path.join(dir, root, file), 'media')
+    fs.writeFileSync(path.join(dir, root, 'README.md'), 'Progression model: level-based')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), 'Expert gameplay dossier')
+    fs.writeFileSync(path.join(dir, root, 'journey.md'), 'Main menu to Level 1')
+    fs.writeFileSync(path.join(dir, root, 'story.md'), 'Premise and progression')
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), 'none')
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({
+      title: 'Reference Game',
+      sources: files.map((file) => ({ url: 'https://example.test/source', file })),
+    }))
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.ready).toBe(true)
+    expect(pack.images).toHaveLength(24)
+    expect(pack.warnings).toContain('projected media exceeds its byte or display-count safety limit and was truncated')
+  })
 })
 
 /** Everything a pack needs except a cast, so a test can vary just that. */
@@ -173,5 +306,14 @@ function completePack(dir: string, root: string): void {
   fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
   fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
   fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
-  fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({ sources: [{ url: 'https://example.com' }] }))
+  const files = [
+    ...Array.from({ length: 8 }, (_, index) => `images/still-${index}.jpg`),
+    ...Array.from({ length: 8 }, (_, index) => `motion/frame-${index}.png`),
+    ...['01-title', '02-main-menu', '03-intro', '04-level-1-start'].map((name) => `journey/${name}.png`),
+    'video/gameplay.webm',
+  ]
+  fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({
+    title: 'Reference Game',
+    sources: files.map((file) => ({ url: 'https://example.com', file })),
+  }))
 }

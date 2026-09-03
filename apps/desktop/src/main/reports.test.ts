@@ -16,6 +16,7 @@ const loop: LoopRecord = {
   round: 2,
   totalCostUsd: 12.5,
   stopReason: 'Critic passed the build in round 2.',
+  playTrusted: true,
   createdAt: '2026-08-30T20:00:00.000Z',
   updatedAt: '2026-08-30T21:00:00.000Z',
 }
@@ -30,6 +31,14 @@ function run(partial: Partial<RunRecord>): RunRecord {
     status: 'succeeded',
     prompt: 'p',
     model: 'claude-fable-5',
+    effort: null,
+    cliVersion: null,
+    priceTableVersion: null,
+    costSource: null,
+    promptSha256: null,
+    accountLabel: null,
+    machineLabel: null,
+    authMode: null,
     summary: null,
     verdict: null,
     metrics: null,
@@ -230,6 +239,19 @@ describe('report files', () => {
     expect(() =>
       parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 1, report: { ...report, rows: [{ title: 'x' }] } })),
     ).toThrow(/missing its id, title, or prompt hash/)
+  })
+
+  it('validates every imported metric instead of trusting the TypeScript shape', () => {
+    const malformed = toReportFile(report, '2026-09-01T01:00:00.000Z')
+    malformed.report.rows[0]!.rounds[0]!.inputTokens = -1
+
+    expect(() => parseReportFile(JSON.stringify(malformed))).toThrow(/input tokens/i)
+  })
+
+  it('bounds imported report collections', () => {
+    const oversized = toReportFile({ ...report, rows: Array.from({ length: 1_001 }, () => report.rows[0]!) }, '2026-09-01T01:00:00.000Z')
+
+    expect(() => parseReportFile(JSON.stringify(oversized))).toThrow(/too many runs/i)
   })
 
   it('builds a safe file name from the report name', () => {

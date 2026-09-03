@@ -1,17 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { thoughtAvailabilityMessage } from '@/lib/run-visibility'
+import { useMediaBase } from '@/lib/use-media-base'
 import type { CritiqueRound } from '../../../shared/loop'
-
-let mediaBasePromise: Promise<string | null> | null = null
-
-function useMediaBase(): string | null {
-  const [base, setBase] = useState<string | null>(null)
-  useEffect(() => {
-    mediaBasePromise ??= window.loops.mediaBase()
-    void mediaBasePromise.then(setBase)
-  }, [])
-  return base
-}
 
 function Winner({ active }: { active: boolean }): React.JSX.Element | null {
   if (!active) return null
@@ -27,12 +19,44 @@ const FINDING_STYLES: Record<string, string> = {
 /** Full drill-down for one critique round: verdict, thoughts, video, side-by-sides. */
 export function CritiqueRoundView({ loopId, round }: { loopId: string; round: CritiqueRound }): React.JSX.Element {
   const [thoughtsOpen, setThoughtsOpen] = useState(false)
-  const [zoom, setZoom] = useState<string | null>(null)
-  const base = useMediaBase()
+  const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null)
+  const zoomTrigger = useRef<HTMLButtonElement | null>(null)
+  const closeZoomRef = useRef<HTMLButtonElement | null>(null)
+  const { base, error: mediaError, retry: retryMedia } = useMediaBase()
   const mediaUrl = (rel: string): string => (base ? `${base}/${loopId}/${rel.split('/').map(encodeURIComponent).join('/')}` : '')
+  const openZoom = (src: string, alt: string, trigger: HTMLButtonElement): void => {
+    zoomTrigger.current = trigger
+    setZoom({ src, alt })
+  }
+
+  useEffect(() => {
+    if (!zoom) return
+    const trigger = zoomTrigger.current
+    closeZoomRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setZoom(null)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      trigger?.focus()
+    }
+  }, [zoom])
+
+  const unavailableThoughts = thoughtAvailabilityMessage(round.thoughts)
 
   return (
     <div className="grid grid-cols-1 gap-4">
+      {mediaError && (
+        <p role="alert" className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+          {mediaError}{' '}<button type="button" onClick={retryMedia} className="underline hover:text-white">Retry media</button>
+        </p>
+      )}
+      {round.truncated && (
+        <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+          This view shows a bounded subset of the saved evidence because the artifact safety limit was reached.
+        </p>
+      )}
       {round.verdict && (
         <p className="text-xs leading-relaxed text-[#c9c3c0]">
           <span className="font-mono text-[#f2d98c]">★ {round.verdict.score.toFixed(2)}</span>
@@ -40,26 +64,34 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
         </p>
       )}
 
-      {round.thoughts.length > 0 && (
+      {round.thoughts.length > 0 ? (
         <div>
-          <button type="button" onClick={() => setThoughtsOpen((open) => !open)} className="text-xs text-[#a99bc4] hover:text-[#c4b8dd]">
+          <button
+            type="button"
+            aria-expanded={thoughtsOpen}
+            aria-controls={`critique-thoughts-${round.runId}`}
+            onClick={() => setThoughtsOpen((open) => !open)}
+            className="text-xs text-[#a99bc4] hover:text-[#c4b8dd]"
+          >
             𝜓 thought process ({round.thoughts.length}) {thoughtsOpen ? '▾' : '▸'}
           </button>
           {thoughtsOpen && (
-            <ol className="mt-2 grid gap-1.5 border-l border-[#3a3444] pl-3 text-[11px] italic leading-relaxed text-[#a99bc4]">
+            <ol id={`critique-thoughts-${round.runId}`} className="mt-2 grid gap-1.5 border-l border-[#3a3444] pl-3 text-[11px] italic leading-relaxed text-[#a99bc4]">
               {round.thoughts.map((thought, index) => (
                 <li key={index}>{thought}</li>
               ))}
             </ol>
           )}
         </div>
+      ) : (
+        <p className="text-[11px] text-[#77706d]">{unavailableThoughts}</p>
       )}
 
       {round.videos.length > 0 && (
         <div className="grid grid-cols-1 gap-2">
           <span className="text-[11px] uppercase tracking-wide text-[#68615f]">Gameplay recording</span>
           {round.videos.map((video) => (
-            <video key={video} controls muted className="max-h-[320px] w-full rounded-lg border border-[#332e2e] bg-black" src={mediaUrl(video)} />
+            <video key={video} controls muted preload="metadata" className="max-h-[320px] w-full rounded-lg border border-[#332e2e] bg-black" src={mediaUrl(video)} />
           ))}
         </div>
       )}
@@ -72,22 +104,26 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
               <div className="grid grid-cols-2 gap-2">
                 <figure className="relative">
                   <Winner active={pair.winner === 'shot'} />
-                  <img
-                    src={mediaUrl(pair.shot)}
-                    alt="this build"
-                    className="w-full cursor-zoom-in rounded-md border border-[#332e2e] bg-black object-contain"
-                    onClick={() => setZoom(mediaUrl(pair.shot))}
-                  />
+                  <button
+                    type="button"
+                    aria-label={`Expand this build screenshot, comparison ${index + 1}`}
+                    className="block w-full cursor-zoom-in rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c9b5aa]"
+                    onClick={(event) => openZoom(mediaUrl(pair.shot), `This build screenshot, comparison ${index + 1}`, event.currentTarget)}
+                  >
+                    <img loading="lazy" src={mediaUrl(pair.shot)} alt={`This build screenshot, comparison ${index + 1}`} className="w-full rounded-md border border-[#332e2e] bg-black object-contain" />
+                  </button>
                   <figcaption className="mt-0.5 text-[10px] text-[#68615f]">this build</figcaption>
                 </figure>
                 <figure className="relative">
                   <Winner active={pair.winner === 'ref'} />
-                  <img
-                    src={mediaUrl(pair.ref)}
-                    alt="AAA reference"
-                    className="w-full cursor-zoom-in rounded-md border border-[#332e2e] bg-black object-contain"
-                    onClick={() => setZoom(mediaUrl(pair.ref))}
-                  />
+                  <button
+                    type="button"
+                    aria-label={`Expand AAA reference screenshot, comparison ${index + 1}`}
+                    className="block w-full cursor-zoom-in rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c9b5aa]"
+                    onClick={(event) => openZoom(mediaUrl(pair.ref), `AAA reference screenshot, comparison ${index + 1}`, event.currentTarget)}
+                  >
+                    <img loading="lazy" src={mediaUrl(pair.ref)} alt={`AAA reference screenshot, comparison ${index + 1}`} className="w-full rounded-md border border-[#332e2e] bg-black object-contain" />
+                  </button>
                   <figcaption className="mt-0.5 text-[10px] text-[#68615f]">AAA reference{pair.winner === 'tie' ? ' · tie' : ''}</figcaption>
                 </figure>
               </div>
@@ -100,14 +136,30 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
           <div className="grid grid-cols-2 gap-3">
             <div className="grid content-start gap-2">
               <span className="text-[11px] uppercase tracking-wide text-[#68615f]">This build ({round.shots.length})</span>
-              {round.shots.map((shot) => (
-                <img key={shot} src={mediaUrl(shot)} alt="" className="w-full cursor-zoom-in rounded-md border border-[#332e2e] bg-black" onClick={() => setZoom(mediaUrl(shot))} />
+              {round.shots.map((shot, index) => (
+                <button
+                  type="button"
+                  key={shot}
+                  aria-label={`Expand this build screenshot ${index + 1}`}
+                  className="block w-full cursor-zoom-in rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c9b5aa]"
+                  onClick={(event) => openZoom(mediaUrl(shot), `This build critique screenshot ${index + 1}`, event.currentTarget)}
+                >
+                  <img loading="lazy" src={mediaUrl(shot)} alt={`This build critique screenshot ${index + 1}`} className="w-full rounded-md border border-[#332e2e] bg-black" />
+                </button>
               ))}
             </div>
             <div className="grid content-start gap-2">
               <span className="text-[11px] uppercase tracking-wide text-[#68615f]">AAA reference ({round.refs.length})</span>
-              {round.refs.map((ref) => (
-                <img key={ref} src={mediaUrl(ref)} alt="" className="w-full cursor-zoom-in rounded-md border border-[#332e2e] bg-black" onClick={() => setZoom(mediaUrl(ref))} />
+              {round.refs.map((ref, index) => (
+                <button
+                  type="button"
+                  key={ref}
+                  aria-label={`Expand AAA reference screenshot ${index + 1}`}
+                  className="block w-full cursor-zoom-in rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c9b5aa]"
+                  onClick={(event) => openZoom(mediaUrl(ref), `AAA reference screenshot ${index + 1}`, event.currentTarget)}
+                >
+                  <img loading="lazy" src={mediaUrl(ref)} alt={`AAA reference screenshot ${index + 1}`} className="w-full rounded-md border border-[#332e2e] bg-black" />
+                </button>
               ))}
             </div>
           </div>
@@ -142,8 +194,31 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
       )}
 
       {zoom && (
-        <div className="fixed inset-0 z-50 grid cursor-zoom-out place-items-center bg-black/85 p-8" onClick={() => setZoom(null)}>
-          <img src={zoom} alt="" className="max-h-full max-w-full rounded-lg" />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={zoom.alt}
+          className="fixed inset-0 z-50 grid place-items-center bg-black/85 p-8"
+          onClick={(event) => {
+            if (event.currentTarget === event.target) setZoom(null)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Tab') {
+              event.preventDefault()
+              closeZoomRef.current?.focus()
+            }
+          }}
+        >
+          <button
+            ref={closeZoomRef}
+            type="button"
+            aria-label="Close expanded image"
+            className="absolute right-5 top-5 grid size-10 place-items-center rounded-full border border-white/30 bg-black/60 text-white hover:bg-black focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            onClick={() => setZoom(null)}
+          >
+            <X className="size-5" />
+          </button>
+          <img src={zoom.src} alt={zoom.alt} className="max-h-full max-w-full rounded-lg" />
         </div>
       )}
     </div>

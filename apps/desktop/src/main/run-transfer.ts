@@ -1,10 +1,26 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { safeWorkspaceMetadataDir } from './workspace-metadata'
 
 export const RUN_METADATA_DIR = '.gauntlet-gamesmith'
 /** What this folder was called while the app was named Gauntlet Loop. */
 export const LEGACY_RUN_METADATA_DIR = '.gauntlet-loop'
 export const RUN_LEDGER_FILE = 'ledger.db'
+export const MAX_IMPORTED_LEDGER_BYTES = 64 * 1024 * 1024
+export const RAW_EXPORT_WARNING = 'This export includes complete, unsanitized raw CLI streams. If an agent echoed a secret, the raw files contain it; review them before sharing.'
+const SQLITE_SIDECARS = ['-journal', '-wal', '-shm'] as const
+
+export interface RunLedgerSnapshot {
+  ledgerPath: string
+  sourceIdentities: readonly RunLedgerSourceIdentity[]
+  cleanup(): void
+}
+
+export interface RunLedgerSourceIdentity {
+  suffix: '' | (typeof SQLITE_SIDECARS)[number]
+  identity: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint; nlink: bigint } | null
+}
 
 /**
  * Rename a pre-rename run folder's metadata directory to the current name.
@@ -43,6 +59,12 @@ export function safeExportFolderName(projectName: string): string {
   return `${safe}-gauntlet-run`
 }
 
+export function exportActivityError(loopRunning: boolean, playRunning: boolean): string | null {
+  if (loopRunning) return 'Stop the run before exporting so the folder and SQLite history are an exact snapshot.'
+  if (playRunning) return 'Stop the running game before exporting so the project and SQLite history are an exact snapshot.'
+  return null
+}
+
 export function nextAvailableExportPath(parentDir: string, folderName: string): string {
   const first = path.join(parentDir, folderName)
   if (!fs.existsSync(first)) return first
@@ -53,7 +75,9 @@ export function nextAvailableExportPath(parentDir: string, folderName: string): 
   throw new Error('Could not find an available export folder name.')
 }
 
-function resolveThroughExistingAncestor(targetPath: string): string {
+/** Canonicalize a possibly-not-yet-created path through its nearest real ancestor. */
+export function canonicalizePath(targetPath: string): string {
+  if (!path.isAbsolute(targetPath)) throw new Error('Path must be absolute.')
   let ancestor = path.resolve(targetPath)
   const missing: string[] = []
   while (!fs.existsSync(ancestor)) {
@@ -65,40 +89,319 @@ function resolveThroughExistingAncestor(targetPath: string): string {
   return path.join(fs.realpathSync(ancestor), ...missing)
 }
 
-export function assertExportDestination(sourceDir: string, destinationDir: string): void {
+export function assertExportDestination(sourceDir: string, destinationDir: string): string {
   const source = fs.realpathSync(sourceDir)
-  const destination = resolveThroughExistingAncestor(destinationDir)
+  const destination = canonicalizePath(destinationDir)
   const relative = path.relative(source, destination)
   if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
     throw new Error('Choose an export destination outside the project folder.')
   }
+  return destination
+}
+
+interface DirectoryIdentity {
+  dev: number
+  ino: number
+}
+
+function assertExactDirectory(candidate: string, expected: DirectoryIdentity, label: string): void {
+  const stat = fs.lstatSync(candidate)
+  if (
+    !stat.isDirectory()
+    || stat.isSymbolicLink()
+    || stat.dev !== expected.dev
+    || stat.ino !== expected.ino
+    || fs.realpathSync(candidate) !== candidate
+  ) throw new Error(`${label} changed identity while the export was being copied.`)
 }
 
 /** Copy the project as a byte-for-byte folder export, preserving symlinks and timestamps. */
-export async function copyRunFolder(sourceDir: string, destinationDir: string): Promise<void> {
-  assertExportDestination(sourceDir, destinationDir)
+export async function copyRunFolder(
+  sourceDir: string,
+  destinationDir: string,
+  expectedSource?: DirectoryIdentity | null,
+): Promise<void> {
+  const source = fs.realpathSync(sourceDir)
+  const sourceStat = fs.lstatSync(source)
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw new Error('Export source must be a real directory.')
+  const sourceIdentity = { dev: sourceStat.dev, ino: sourceStat.ino }
+  if (expectedSource && (expectedSource.dev !== sourceIdentity.dev || expectedSource.ino !== sourceIdentity.ino)) {
+    throw new Error('Export source no longer matches the canonical workspace identity.')
+  }
+  const destination = assertExportDestination(source, destinationDir)
+  let destinationClaimed = false
   try {
-    await fs.promises.mkdir(path.dirname(destinationDir), { recursive: true })
-    await fs.promises.cp(sourceDir, destinationDir, {
-      recursive: true,
-      preserveTimestamps: true,
-      verbatimSymlinks: true,
-      errorOnExist: true,
-      force: false,
-    })
+    await fs.promises.mkdir(path.dirname(destination), { recursive: true })
+    // Claim this exact path atomically. If another process wins the race, do
+    // not copy into its folder.
+    await fs.promises.mkdir(destination)
+    destinationClaimed = true
+    const claimed = await fs.promises.lstat(destination)
+    if (!claimed.isDirectory() || claimed.isSymbolicLink()) throw new Error('The claimed export destination is not a real directory.')
+    const destinationIdentity = { dev: claimed.dev, ino: claimed.ino }
+    const entries = await fs.promises.readdir(source)
+    for (const entry of entries.sort()) {
+      assertExactDirectory(source, sourceIdentity, 'Export source')
+      assertExactDirectory(destination, destinationIdentity, 'Export destination')
+      await fs.promises.cp(path.join(source, entry), path.join(destination, entry), {
+        recursive: true,
+        preserveTimestamps: true,
+        verbatimSymlinks: true,
+        errorOnExist: true,
+        force: false,
+      })
+      assertExactDirectory(source, sourceIdentity, 'Export source')
+      assertExactDirectory(destination, destinationIdentity, 'Export destination')
+    }
+    assertExactDirectory(source, sourceIdentity, 'Export source')
+    assertExactDirectory(destination, destinationIdentity, 'Export destination')
   } catch (error) {
-    // Only remove the destination we selected and created for this attempt.
-    await fs.promises.rm(destinationDir, { recursive: true, force: true })
-    throw error
+    // Node has no inode-conditional recursive remove primitive. Any
+    // lstat-then-rm rollback would allow a replacement to land between those
+    // operations and delete operator data. Leave the uniquely claimed partial
+    // export for explicit inspection/removal instead.
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      destinationClaimed
+        ? `Export copy failed; partial output was left at ${destination}: ${detail}`
+        : `Export copy failed before the destination was claimed: ${detail}`,
+      { cause: error },
+    )
   }
 }
 
 export function assertRunFolder(workspaceDir: string): string {
-  const ledgerPath = runLedgerPath(workspaceDir)
-  if (!fs.existsSync(ledgerPath) || !fs.statSync(ledgerPath).isFile()) {
+  const workspace = canonicalizePath(workspaceDir)
+  const metadataDir = safeWorkspaceMetadataDir(workspace, [], false)
+  const ledgerPath = path.join(metadataDir, RUN_LEDGER_FILE)
+  let stat: fs.Stats
+  try {
+    stat = fs.lstatSync(ledgerPath)
+  } catch {
     throw new Error(`No ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE} was found in that folder.`)
   }
-  return ledgerPath
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new Error('The folder ledger must be a regular file, not a symlink or hard link.')
+  }
+  const realLedger = fs.realpathSync(ledgerPath)
+  const relative = path.relative(workspace, realLedger)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('The folder ledger resolves outside the selected project.')
+  let totalBytes = stat.size
+  for (const suffix of SQLITE_SIDECARS) {
+    const sidecar = `${ledgerPath}${suffix}`
+    let sidecarStat: fs.Stats
+    try {
+      sidecarStat = fs.lstatSync(sidecar)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw new Error(`Could not validate the folder ledger${suffix} sidecar.`)
+    }
+    if (!sidecarStat.isFile() || sidecarStat.isSymbolicLink() || sidecarStat.nlink !== 1) {
+      throw new Error(`The folder ledger${suffix} sidecar must be a regular file with exactly one link, not a symlink or device.`)
+    }
+    totalBytes += sidecarStat.size
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_IMPORTED_LEDGER_BYTES) {
+      throw new Error('The folder ledger and SQLite sidecars exceed the import safety limit.')
+    }
+  }
+  if (totalBytes > MAX_IMPORTED_LEDGER_BYTES) {
+    throw new Error('The folder ledger and SQLite sidecars exceed the import safety limit.')
+  }
+  return realLedger
+}
+
+function copySnapshotFile(sourcePath: string, targetPath: string): void {
+  let sourceFd: number | null = null
+  let targetFd: number | null = null
+  try {
+    sourceFd = fs.openSync(sourcePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const source = fs.fstatSync(sourceFd)
+    if (!source.isFile() || source.nlink !== 1 || source.size > MAX_IMPORTED_LEDGER_BYTES) {
+      throw new Error('The retained import snapshot is not a safe regular file.')
+    }
+    try {
+      targetFd = fs.openSync(
+        targetPath,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+        0o600,
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || !snapshotMatchesTarget(sourceFd, source, targetPath)) throw error
+      return
+    }
+    const chunk = Buffer.allocUnsafe(1024 * 1024)
+    let copied = 0
+    while (true) {
+      const read = fs.readSync(sourceFd, chunk, 0, chunk.length, null)
+      if (read === 0) break
+      copied += read
+      let written = 0
+      while (written < read) written += fs.writeSync(targetFd, chunk, written, read - written)
+    }
+    if (copied !== source.size) throw new Error('The retained import snapshot changed during rollback.')
+    fs.fsyncSync(targetFd)
+  } finally {
+    if (targetFd !== null) fs.closeSync(targetFd)
+    if (sourceFd !== null) fs.closeSync(sourceFd)
+  }
+}
+
+function snapshotMatchesTarget(sourceFd: number, source: fs.Stats, targetPath: string): boolean {
+  let targetFd: number | null = null
+  try {
+    targetFd = fs.openSync(targetPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const before = fs.fstatSync(targetFd)
+    if (!before.isFile() || before.nlink !== 1 || before.size !== source.size) return false
+    const sourceChunk = Buffer.allocUnsafe(1024 * 1024)
+    const targetChunk = Buffer.allocUnsafe(1024 * 1024)
+    let offset = 0
+    while (offset < source.size) {
+      const length = Math.min(sourceChunk.length, source.size - offset)
+      const sourceRead = fs.readSync(sourceFd, sourceChunk, 0, length, offset)
+      const targetRead = fs.readSync(targetFd, targetChunk, 0, length, offset)
+      if (sourceRead !== targetRead || sourceRead === 0 || !sourceChunk.subarray(0, sourceRead).equals(targetChunk.subarray(0, targetRead))) return false
+      offset += sourceRead
+    }
+    const after = fs.fstatSync(targetFd)
+    const linked = fs.lstatSync(targetPath)
+    return after.dev === before.dev && after.ino === before.ino && after.size === before.size && after.nlink === 1
+      && linked.dev === before.dev && linked.ino === before.ino && linked.nlink === 1
+  } catch {
+    return false
+  } finally {
+    if (targetFd !== null) fs.closeSync(targetFd)
+  }
+}
+
+/** Restore the selected portable ledger exactly after a failed import publish. */
+export function restoreRunLedgerSnapshot(snapshot: RunLedgerSnapshot, workspaceDir: string): void {
+  const workspace = canonicalizePath(workspaceDir)
+  const metadataDir = safeWorkspaceMetadataDir(workspace, [], false)
+  const targetPath = path.join(metadataDir, RUN_LEDGER_FILE)
+  // Restore only into absent names. A failure may itself have been caused by
+  // a concurrent replacement, which must never be overwritten or unlinked.
+  for (const suffix of SQLITE_SIDECARS) {
+    const source = `${snapshot.ledgerPath}${suffix}`
+    const target = `${targetPath}${suffix}`
+    if (fs.existsSync(source)) copySnapshotFile(source, target)
+    else if (fs.existsSync(target)) throw new Error(`A competing portable ledger${suffix} sidecar prevents safe rollback.`)
+  }
+  copySnapshotFile(snapshot.ledgerPath, targetPath)
+}
+
+function sameIdentity(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+function unchanged(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return sameIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.nlink === right.nlink
+}
+
+function containedBy(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function copyVerifiedLedgerFile(
+  sourcePath: string,
+  destinationPath: string,
+  workspace: string,
+  copiedBytes: { value: number },
+): NonNullable<RunLedgerSourceIdentity['identity']> {
+  const sourceFd = fs.openSync(sourcePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  let destinationFd: number | null = null
+  try {
+    const before = fs.fstatSync(sourceFd, { bigint: true })
+    const linkedBefore = fs.lstatSync(sourcePath, { bigint: true })
+    const realSource = fs.realpathSync(sourcePath)
+    if (!before.isFile() || before.nlink !== 1n || !sameIdentity(before, linkedBefore) || !containedBy(workspace, realSource)) {
+      throw new Error('The transferred SQLite file changed identity or escaped the selected project.')
+    }
+    if (before.size > BigInt(MAX_IMPORTED_LEDGER_BYTES - copiedBytes.value)) {
+      throw new Error('The folder ledger and SQLite sidecars exceed the import safety limit.')
+    }
+
+    destinationFd = fs.openSync(
+      destinationPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o600,
+    )
+    const chunk = Buffer.allocUnsafe(1024 * 1024)
+    let fileBytes = 0
+    while (true) {
+      const read = fs.readSync(sourceFd, chunk, 0, chunk.length, null)
+      if (read === 0) break
+      fileBytes += read
+      copiedBytes.value += read
+      if (copiedBytes.value > MAX_IMPORTED_LEDGER_BYTES) {
+        throw new Error('The folder ledger and SQLite sidecars exceed the import safety limit.')
+      }
+      let written = 0
+      while (written < read) written += fs.writeSync(destinationFd, chunk, written, read - written)
+    }
+    fs.fsyncSync(destinationFd)
+
+    const after = fs.fstatSync(sourceFd, { bigint: true })
+    const linkedAfter = fs.lstatSync(sourcePath, { bigint: true })
+    const realAfter = fs.realpathSync(sourcePath)
+    if (!unchanged(before, after) || !sameIdentity(after, linkedAfter) || realAfter !== realSource || fileBytes !== Number(after.size)) {
+      throw new Error('The transferred SQLite file changed while it was being copied.')
+    }
+    return {
+      dev: after.dev,
+      ino: after.ino,
+      size: after.size,
+      mtimeNs: after.mtimeNs,
+      ctimeNs: after.ctimeNs,
+      nlink: after.nlink,
+    }
+  } finally {
+    if (destinationFd != null) fs.closeSync(destinationFd)
+    fs.closeSync(sourceFd)
+  }
+}
+
+/**
+ * Copy an untrusted portable database through verified file descriptors before
+ * SQLite sees it. SQLite only accepts paths, so opening the workspace file
+ * directly would leave a validation-to-open symlink/replacement race.
+ */
+export function snapshotRunLedger(workspaceDir: string): RunLedgerSnapshot {
+  const workspace = canonicalizePath(workspaceDir)
+  const ledgerPath = assertRunFolder(workspace)
+  const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-ledger-import-'))
+  fs.chmodSync(snapshotDir, 0o700)
+  const snapshotPath = path.join(snapshotDir, RUN_LEDGER_FILE)
+  const copiedBytes = { value: 0 }
+  const sourceIdentities: RunLedgerSourceIdentity[] = []
+  try {
+    sourceIdentities.push({ suffix: '', identity: copyVerifiedLedgerFile(ledgerPath, snapshotPath, workspace, copiedBytes) })
+    for (const suffix of SQLITE_SIDECARS) {
+      const source = `${ledgerPath}${suffix}`
+      try {
+        fs.lstatSync(source)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          sourceIdentities.push({ suffix, identity: null })
+          continue
+        }
+        throw error
+      }
+      sourceIdentities.push({ suffix, identity: copyVerifiedLedgerFile(source, `${snapshotPath}${suffix}`, workspace, copiedBytes) })
+    }
+    return {
+      ledgerPath: snapshotPath,
+      sourceIdentities,
+      cleanup: () => fs.rmSync(snapshotDir, { recursive: true, force: true }),
+    }
+  } catch (error) {
+    fs.rmSync(snapshotDir, { recursive: true, force: true })
+    throw error
+  }
 }
 
 /**

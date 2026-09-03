@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, normalizeModels, resolveModels } from './models'
+import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, resolveModels } from './models'
 
 describe('defaults', () => {
   it('starts on Opus 5 at ultracode over Opus 5 subagents', () => {
     const models = resolveModels(DEFAULT_IMPLEMENTER, { criticModel: 'claude-opus-5', criticEffort: 'high' })
     expect(models.orchestratorModel).toBe('claude-opus-5')
     expect(models.orchestratorEffort).toBe('ultracode')
-    expect(models.criticHarness).toBe('claude')
+    expect(harnessFor(models.criticModel)).toBe('claude')
   })
 
   it('falls back to the defaults when the form sends nothing usable', () => {
@@ -97,19 +97,19 @@ describe('normalizeModels', () => {
       criticEffort: 'medium',
     })
     expect(models.orchestratorModel).toBe('claude-fable-5')
-    expect(models.criticHarness).toBe('codex')
+    expect(harnessFor(models.criticModel)).toBe('codex')
     expect(models.criticModel).toBe('gpt-5.6-sol')
   })
 
   it('infers a claude critic harness from a claude critic model', () => {
-    expect(normalizeModels({ criticModel: 'claude-opus-5', criticEffort: 'high' }).criticHarness).toBe('claude')
+    expect(harnessFor(normalizeModels({ criticModel: 'claude-opus-5', criticEffort: 'high' }).criticModel)).toBe('claude')
   })
 })
 
 describe('normalizeModels critic harness', () => {
   it('reads the harness off the model name when no preset matches', () => {
     const models = normalizeModels({ criticModel: 'claude-opus-5', criticEffort: 'max' })
-    expect(models.criticHarness).toBe('claude')
+    expect(harnessFor(models.criticModel)).toBe('claude')
     expect(models.criticModel).toBe('claude-opus-5')
   })
 
@@ -137,5 +137,49 @@ describe('normalizeModels critic harness', () => {
 
   it('keeps the phase off for a loop that stored it off', () => {
     expect(normalizeModels({ criticModel: 'claude-opus-5', assetModel: null }).assetModel).toBeNull()
+  })
+
+  it('ignores a stale stored critic harness and derives it from the model', () => {
+    expect(harnessFor(normalizeModels({ criticHarness: 'claude', criticModel: 'gpt-5.6-sol' }).criticModel)).toBe('codex')
+  })
+
+  it('does not preserve malformed model ids or effort values from stored JSON', () => {
+    const models = normalizeModels({
+      orchestratorModel: { startsWith: 'not a function' } as unknown as string,
+      orchestratorEffort: '../ultra',
+      criticModel: '../../binary',
+      criticEffort: { value: 'max' } as unknown as string,
+    })
+    expect(models).toMatchObject({
+      orchestratorModel: DEFAULT_IMPLEMENTER.orchestratorModel,
+      orchestratorEffort: DEFAULT_IMPLEMENTER.orchestratorEffort,
+      criticModel: DEFAULT_CRITIC.criticModel,
+      criticEffort: DEFAULT_CRITIC.criticEffort,
+    })
+    expect(() => harnessFor(models.orchestratorModel)).not.toThrow()
+  })
+
+  it('preserves bounded historical worker and research model ids', () => {
+    const models = normalizeModels({
+      ...resolveModels({}, {}, {}),
+      subagentModel: 'gpt-5.5-retired',
+      researchModel: 'claude-research-retired-2025',
+    })
+
+    expect(models.subagentModel).toBe('gpt-5.5-retired')
+    expect(models.researchModel).toBe('claude-research-retired-2025')
+  })
+
+  it('does not project credential-shaped provider model ids from stored JSON', () => {
+    const token = `ghp_${'a'.repeat(36)}`
+    const models = normalizeModels({
+      ...resolveModels({}, {}, {}),
+      orchestratorModel: `gpt-${token}`,
+      subagentModel: `claude-${token}`,
+    })
+
+    expect(models.orchestratorModel).toBe(DEFAULT_IMPLEMENTER.orchestratorModel)
+    expect(models.subagentModel).toBe(DEFAULT_IMPLEMENTER.subagentModel)
+    expect(JSON.stringify(models)).not.toContain(token)
   })
 })

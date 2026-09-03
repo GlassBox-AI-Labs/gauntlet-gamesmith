@@ -1,4 +1,5 @@
 import type { TokenTotals } from '../shared/loop'
+import { canonicalModelId, MODEL_IDS } from '../shared/models'
 
 export const PRICE_TABLE_VERSION = '2026-09-02'
 
@@ -16,21 +17,21 @@ export const PRICE_TABLE_VERSION = '2026-09-02'
 // `claude-fable-5-1` starts with `claude-fable-5`, so the longer key has to be
 // found first or 5.1 silently bills at 5's cache-read rate.
 const PRICES: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
-  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 20 },
-  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 10 },
+  [MODEL_IDS.claudeFable51]: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 20 },
+  [MODEL_IDS.claudeFable]: { input: 10, output: 50, cacheRead: 1, cacheWrite: 20 },
+  [MODEL_IDS.claudeOpus]: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 10 },
   // $2/$10 was announced as introductory through 2026-08-31; Anthropic has
   // since made it the standard price and cancelled the rise to $3/$15.
-  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4 },
-  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
-  'gpt-5.6-sol': { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
-  'gpt-5.6-terra': { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
-  'gpt-5.6-luna': { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  [MODEL_IDS.claudeSonnet]: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4 },
+  [MODEL_IDS.claudeHaiku]: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
+  [MODEL_IDS.codexSol]: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
+  [MODEL_IDS.codexTerra]: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+  [MODEL_IDS.codexLuna]: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
 }
 
 export function estimateCostUsd(model: string | null | undefined, tokens: TokenTotals): number | null {
   if (!model) return null
-  const key = Object.keys(PRICES).find((k) => model === k || model.startsWith(k) || model.includes(k))
+  const key = canonicalModelId(model)
   if (!key) return null
   const p = PRICES[key]
   return (

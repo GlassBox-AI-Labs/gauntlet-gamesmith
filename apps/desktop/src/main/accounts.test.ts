@@ -125,6 +125,24 @@ describe('harness accounts', () => {
     expect(readAccounts(root, 'claude').activeId).toBe(PRIMARY_ACCOUNT_ID)
   })
 
+  it('bounds the private account registry before parsing it', () => {
+    fs.writeFileSync(path.join(root, 'accounts.json'), ' '.repeat(64 * 1024 + 1))
+
+    expect(readAccounts(root, 'claude')).toEqual({
+      activeId: PRIMARY_ACCOUNT_ID,
+      accounts: [{ id: PRIMARY_ACCOUNT_ID, label: 'Account 1' }],
+    })
+  })
+
+  it('refuses to write through a forged account-registry symlink', () => {
+    const outside = path.join(root, 'outside.json')
+    fs.writeFileSync(outside, 'outside bytes')
+    fs.symlinkSync(outside, path.join(root, 'accounts.json'))
+
+    expect(() => markLimited(root, 'claude', PRIMARY_ACCOUNT_ID)).toThrow()
+    expect(fs.readFileSync(outside, 'utf8')).toBe('outside bytes')
+  })
+
   it('falls back to the primary account when the stored active one is gone', () => {
     fs.writeFileSync(
       path.join(root, 'accounts.json'),
@@ -151,6 +169,17 @@ describe('harness accounts', () => {
 
     expect(fs.lstatSync(path.join(dir, 'projects')).isSymbolicLink()).toBe(false)
     expect(fs.existsSync(path.join(dir, 'projects', 'own.jsonl'))).toBe(true)
+  })
+
+  it('refuses a forged shared-directory link that escapes the harness store', () => {
+    prepareAccountDir(root, 'claude', PRIMARY_ACCOUNT_ID)
+    const account = path.join(root, 'claude', 'accounts', 'account-2')
+    const outside = path.join(root, 'outside')
+    fs.mkdirSync(account, { recursive: true })
+    fs.mkdirSync(outside)
+    fs.symlinkSync(outside, path.join(account, 'projects'))
+
+    expect(() => addAccount(root, 'claude')).toThrow(/outside the harness store/i)
   })
 
   it('parks a limited account for its usage window', () => {

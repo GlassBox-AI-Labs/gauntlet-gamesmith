@@ -1,0 +1,8 @@
+null
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"pnpm test","status":"in_progress"}}
+{"type":"item.updated","item":{"id":"item_1","type":"command_execution","command":"pnpm test","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"pnpm test","status":"failed","exit_code":1,"aggregated_output":"tests failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"browser","name":"click","arguments":{"ref":"button-1"}}}
+{"type":"item.completed","item":{"id":"item_3","type":"todo_list","items":[{"text":"verify build","completed":true}]}}
+{"type":"error","message":"transport closed"}
