@@ -2,7 +2,7 @@
   "name": "@gauntlet/desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "Gauntlet Loop Electron desktop application",
+  "description": "Gauntlet Gamesmith Electron desktop application",
   "main": "./out/main/index.js",
   "author": "GlassBox AI Labs",
   "scripts": {
@@ -52,8 +52,8 @@
     "vitest": "4.1.11"
   },
   "build": {
-    "appId": "ai.glassbox.gauntlet-loop",
-    "productName": "Gauntlet Loop",
+    "appId": "ai.glassbox.gauntlet-gamesmith",
+    "productName": "Gauntlet Gamesmith",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "../../dist"

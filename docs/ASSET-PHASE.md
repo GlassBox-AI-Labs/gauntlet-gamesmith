@@ -89,7 +89,7 @@ inside one run is what implement already does, so the phase inherits:
   reads `subagentModel` directly.
 - a sibling to `implementerAgentMd()` writing `.claude/agents/sculptor.md` with
   `model: assetModel` and `effort: assetEffort`.
-- the `.gauntlet-loop/agents/<slug>.<harness>.jsonl` stream the app already
+- the `.gauntlet-gamesmith/agents/<slug>.<harness>.jsonl` stream the app already
   parses, so per-asset cost needs no new accounting.
 - `awaitChildren` (`loop-runner.ts:1039`) and `childrenActive`.
 

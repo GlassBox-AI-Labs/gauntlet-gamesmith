@@ -123,7 +123,7 @@ describe('Ledger deletion and report storage', () => {
     expect(ledger.getLoop(loop.id)).toBeNull()
     expect(ledger.runsForLoop(loop.id)).toEqual([])
     expect(ledger.eventsForLoop(loop.id)).toEqual([])
-    expect(fs.existsSync(path.join(workspaceDir, '.gauntlet-loop', 'ledger.db'))).toBe(true)
+    expect(fs.existsSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'))).toBe(true)
 
     const [reimported] = ledger.importRunFolder(workspaceDir)
     expect(reimported.loop.id).toBe(loop.id)

@@ -1,7 +1,9 @@
 import type { LoopModels, LoopStatus, RunStatus } from './loop'
 
 /** Marker and version written into every exported report file. */
-export const REPORT_FILE_KIND = 'gauntlet-loop-report'
+export const REPORT_FILE_KIND = 'gauntlet-gamesmith-report'
+/** The marker on reports exported before the app was renamed. Still valid. */
+export const LEGACY_REPORT_FILE_KIND = 'gauntlet-loop-report'
 export const REPORT_FILE_VERSION = 1
 export const REPORT_FILE_SUFFIX = '.gauntlet-report.json'
 

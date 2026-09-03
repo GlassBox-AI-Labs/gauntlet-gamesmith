@@ -4,7 +4,7 @@ import { translateClaudeLine, type StreamEvent } from './claude-stream'
 import { translateCodexLine } from './codex-stream'
 
 /**
- * Follows every delegated child stream in `.gauntlet-loop/agents/` and turns
+ * Follows every delegated child stream in the run's `agents/` folder and turns
  * new lines into schema events attributed to the child's slug. Children can
  * appear mid-run, so each poll rescans the directory. This adds visibility
  * only — token and cost accounting stays in child-agents.ts, so no usage is

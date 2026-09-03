@@ -31,9 +31,9 @@ describe('delegated workers', () => {
   it('nest under the agent that launched them', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-nesting-'))
     const workspaceDir = path.join(dir, 'workspace')
-    fs.mkdirSync(path.join(workspaceDir, '.gauntlet-loop', 'agents'), { recursive: true })
+    fs.mkdirSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'agents'), { recursive: true })
     fs.writeFileSync(
-      path.join(workspaceDir, '.gauntlet-loop', 'agents', 'core.codex.jsonl'),
+      path.join(workspaceDir, '.gauntlet-gamesmith', 'agents', 'core.codex.jsonl'),
       JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 50 } }) + '\n',
     )
     const ledger = new Ledger(path.join(dir, 'ledger.db'))
@@ -57,7 +57,7 @@ describe('delegated workers', () => {
           id: 'm2',
           model: 'claude-sonnet-5',
           usage: { input_tokens: 5, output_tokens: 5 },
-          content: [{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'codex exec - < .gauntlet-loop/codex-core.md > .gauntlet-loop/agents/core.codex.jsonl' } }],
+          content: [{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'codex exec - < .gauntlet-gamesmith/codex-core.md > .gauntlet-gamesmith/agents/core.codex.jsonl' } }],
         },
       },
     ]

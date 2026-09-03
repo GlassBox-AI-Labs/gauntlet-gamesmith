@@ -1,11 +1,41 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export const RUN_METADATA_DIR = '.gauntlet-loop'
+export const RUN_METADATA_DIR = '.gauntlet-gamesmith'
+/** What this folder was called while the app was named Gauntlet Loop. */
+export const LEGACY_RUN_METADATA_DIR = '.gauntlet-loop'
 export const RUN_LEDGER_FILE = 'ledger.db'
 
+/**
+ * Rename a pre-rename run folder's metadata directory to the current name.
+ *
+ * Doing it once, on sight, is what lets the rest of the app use a single
+ * constant instead of checking two names at every call site. It is a rename
+ * within one folder, so it costs nothing however large the folder is, and a
+ * failure leaves the old directory untouched for `runLedgerPath` to find.
+ */
+export function migrateRunMetadataDir(workspaceDir: string): void {
+  const current = path.join(workspaceDir, RUN_METADATA_DIR)
+  const legacy = path.join(workspaceDir, LEGACY_RUN_METADATA_DIR)
+  if (fs.existsSync(current) || !fs.existsSync(legacy)) return
+  try {
+    fs.renameSync(legacy, current)
+  } catch {
+    // Losing the rename is survivable; losing the folder is not.
+  }
+}
+
+/**
+ * Where this folder's mirrored ledger is. Falls back to the pre-rename
+ * directory so a folder that never got migrated — one copied in from another
+ * machine, say — is still recognised as a run rather than treated as a
+ * stranger. A folder with neither gets the current name, ready to create.
+ */
 export function runLedgerPath(workspaceDir: string): string {
-  return path.join(workspaceDir, RUN_METADATA_DIR, RUN_LEDGER_FILE)
+  const current = path.join(workspaceDir, RUN_METADATA_DIR, RUN_LEDGER_FILE)
+  if (fs.existsSync(current)) return current
+  const legacy = path.join(workspaceDir, LEGACY_RUN_METADATA_DIR, RUN_LEDGER_FILE)
+  return fs.existsSync(legacy) ? legacy : current
 }
 
 export function safeExportFolderName(projectName: string): string {
@@ -73,7 +103,7 @@ export function assertRunFolder(workspaceDir: string): string {
 
 /**
  * Refuse to delete anything that is not plainly a run folder. The proof is the
- * folder's own `.gauntlet-loop/ledger.db`: without it we would be pointing
+ * folder's own mirrored `ledger.db`: without it we would be pointing
  * `rm -rf` at a directory this app never created.
  */
 export function assertDeletableRunFolder(workspaceDir: string, homeDir: string): void {

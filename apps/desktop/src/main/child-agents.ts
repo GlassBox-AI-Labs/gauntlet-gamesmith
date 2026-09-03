@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { AgentMetric, TokenTotals } from '../shared/loop'
 import { codexTokens, usageForThread } from './codex-usage'
 import { estimateCostUsd } from './pricing'
+import { RUN_METADATA_DIR } from './run-transfer'
 
 /**
  * Workers a run delegated to the other CLI.
@@ -13,13 +14,13 @@ import { estimateCostUsd } from './pricing'
  * structured stream is written where the app can read it. Every delegation
  * prompt therefore redirects the child into:
  *
- *   <workspace>/.gauntlet-loop/agents/<slice>.<harness>.jsonl
+ *   <workspace>/<run metadata dir>/agents/<slice>.<harness>.jsonl
  *
  * which is the same stream the app parses when it starts that CLI itself. One
  * parser per harness, serving both roles and delegated children alike.
  */
 export function agentsDir(workspaceDir: string): string {
-  return path.join(workspaceDir, '.gauntlet-loop', 'agents')
+  return path.join(workspaceDir, RUN_METADATA_DIR, 'agents')
 }
 
 interface ChildTotals {

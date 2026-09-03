@@ -73,7 +73,7 @@ describe('buildReport', () => {
 
   it('handles a loop with no verdicts yet', () => {
     const report = buildReport(loop, [run({ id: 'a', status: 'running' })])
-    expect(report).toContain('Gauntlet Loop report')
+    expect(report).toContain('Gauntlet Gamesmith report')
     expect(report).not.toContain('Score trend')
   })
 
