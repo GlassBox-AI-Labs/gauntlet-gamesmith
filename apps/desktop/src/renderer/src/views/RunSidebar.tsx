@@ -84,7 +84,7 @@ export function RunSidebar({
   const checkedCount = checkedRuns.size
   const allChecked = snapshots.length > 0 && checkedCount === snapshots.length
   return (
-    <aside className="flex h-screen w-[252px] shrink-0 flex-col border-r border-[#2a2626] bg-[#141112]">
+    <aside className="flex h-screen w-[252px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-[#2a2626] bg-[#141112]">
       <div className="px-3 pb-3 pt-5">
         <button type="button" onClick={onNewRun} disabled={busy} className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-[#ded9d6] transition-colors hover:bg-white/[0.05] hover:text-white disabled:cursor-not-allowed disabled:opacity-40">
           <Plus className="size-4" /> Run
@@ -94,7 +94,7 @@ export function RunSidebar({
         </button>
       </div>
       <div className="border-t border-[#2f2a2b]" />
-      <div className="min-h-0 flex-1 overflow-y-auto px-2.5 py-4">
+      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-2.5 py-4">
         {editing ? (
           <div className="mb-2 flex items-center gap-1">
             <span className="pl-2 pr-1"><RunCheckbox checked={allChecked} mixed={checkedCount > 0 && !allChecked} label={allChecked ? 'Select none' : 'Select all runs'} onToggle={onToggleAllChecked} /></span>

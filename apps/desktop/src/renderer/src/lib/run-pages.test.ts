@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LoopSnapshot } from '../../../shared/loop'
-import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts } from './run-pages'
+import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts, selectSnapshotInList } from './run-pages'
 
 function snapshot(offset: number, runIds: string[], totalRuns = 500): LoopSnapshot {
   return {
@@ -18,6 +18,28 @@ function snapshot(offset: number, runIds: string[], totalRuns = 500): LoopSnapsh
 }
 
 describe('bounded run-page state', () => {
+  it('hydrates a clicked run without promoting it to the top of the sidebar', () => {
+    const newest = snapshot(0, ['newest-summary'])
+    newest.loop.id = 'newest'
+    newest.loop.createdAt = '2026-01-03T00:00:00.000Z'
+    const middle = snapshot(0, [])
+    middle.loop.id = 'middle'
+    middle.loop.createdAt = '2026-01-02T00:00:00.000Z'
+    const oldest = snapshot(0, ['oldest-summary'])
+    oldest.loop.id = 'oldest'
+    oldest.loop.createdAt = '2026-01-01T00:00:00.000Z'
+    const selectedDetail = snapshot(0, ['middle-detail'])
+    selectedDetail.loop.id = 'middle'
+    selectedDetail.loop.createdAt = middle.loop.createdAt
+
+    const result = selectSnapshotInList([newest, middle, oldest], selectedDetail)
+
+    expect(result.map((item) => item.loop.id)).toEqual(['newest', 'middle', 'oldest'])
+    expect(result[1]).toBe(selectedDetail)
+    expect(result[0].runs).toEqual([])
+    expect(result[2].runs).toEqual([])
+  })
+
   it('preserves an older selected page across a live newest-page update', () => {
     const older = snapshot(200, ['older'])
     const live = snapshot(0, ['newest'], 501)

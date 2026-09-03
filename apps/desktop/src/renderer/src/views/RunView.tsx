@@ -4,7 +4,7 @@ import { RunDetail } from '@/views/RunDetail'
 import { RunForm } from '@/views/RunForm'
 import { RunSidebar, RUN_ROUNDS_PAGE_SIZE } from '@/views/RunSidebar'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
-import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts } from '@/lib/run-pages'
+import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts, selectSnapshotInList } from '@/lib/run-pages'
 import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RevealStreamInput } from '../../../shared/loop'
 import {
   DEFAULT_CRITIC,
@@ -23,23 +23,6 @@ const LOG_LIMIT = 1500
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback
-}
-
-/** Keep at most one heavy detail snapshot resident in renderer state. */
-function compactForList(snapshot: LoopSnapshot): LoopSnapshot {
-  if (snapshot.runs.length === 0) return snapshot
-  const totalRuns = snapshot.totalRuns ?? snapshot.runs.length
-  return {
-    loop: { ...snapshot.loop, prompt: snapshot.loop.prompt.slice(0, 1_024) },
-    runs: [],
-    totalRuns,
-    hasMoreRuns: totalRuns > 0,
-    projectionWarning: totalRuns > 0 ? 'Select this run to load its bounded attempt history.' : null,
-  }
-}
-
-function selectInList(current: LoopSnapshot[], detail: LoopSnapshot): LoopSnapshot[] {
-  return [detail, ...current.filter((item) => item.loop.id !== detail.loop.id).map(compactForList)]
 }
 
 export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.JSX.Element {
@@ -98,7 +81,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       setSnapshots((current) => {
         const retained = current.find((item) => item.loop.id === nextSnapshot.loop.id)
         const detail = applySnapshotUpdate(retained ?? null, nextSnapshot)
-        const next = selectInList(current, detail)
+        const next = selectSnapshotInList(current, detail)
         return next.sort((a, b) => a.loop.createdAt < b.loop.createdAt ? 1 : a.loop.createdAt > b.loop.createdAt ? -1 : 0)
       })
     })
@@ -135,7 +118,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         let initial = active
         if (!initial && page.snapshots[0]) initial = await window.loops.get(page.snapshots[0].loop.id)
         if (disposed) return
-        setSnapshots(initial ? selectInList(page.snapshots, initial) : page.snapshots)
+        setSnapshots(initial ? selectSnapshotInList(page.snapshots, initial) : page.snapshots)
         setWorkspaceDir((current) => current || defaultDir)
         if (initial) {
           loopIdRef.current = initial.loop.id
@@ -240,7 +223,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       const nextSnapshot = result.loopId ? await window.loops.get(result.loopId) : await window.loops.active()
       if (nextSnapshot) {
         setSnapshot(nextSnapshot)
-        setSnapshots((current) => selectInList(current, nextSnapshot))
+        setSnapshots((current) => selectSnapshotInList(current, nextSnapshot))
         setExpandedRuns((current) => new Set(current).add(nextSnapshot.loop.id))
       }
       setPrompt('')
@@ -259,7 +242,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       if (!detail) throw new Error('Run history is no longer available.')
       loopIdRef.current = detail.loop.id
       setSnapshot(detail)
-      setSnapshots((current) => selectInList(current, detail))
+      setSnapshots((current) => selectSnapshotInList(current, detail))
       setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: detail.loop.models.orchestratorEffort, subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
       setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
       setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
@@ -309,7 +292,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       const page = await window.loops.list()
       loopIdRef.current = imported.loop.id
       setSnapshot(imported)
-      setSnapshots(selectInList(page.snapshots, imported))
+      setSnapshots(selectSnapshotInList(page.snapshots, imported))
       setHasMoreHistories(page.hasMore)
       setHistoryOffset(page.offset)
       setHistoryPageCount(page.snapshots.length)
@@ -426,7 +409,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       const page = await window.loops.get(snapshot.loop.id, offset)
       if (!page) throw new Error('Run history is no longer available.')
       setSnapshot(page)
-      setSnapshots((current) => selectInList(current, page))
+      setSnapshots((current) => selectSnapshotInList(current, page))
       setSelectedRound(null)
     } catch (cause) {
       setError(`Could not load attempt page: ${errorMessage(cause, 'IPC request failed.')}`)
@@ -441,7 +424,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setError(null)
     try {
       const page = await window.loops.list(offset)
-      setSnapshots(snapshot ? selectInList(page.snapshots, snapshot) : page.snapshots)
+      setSnapshots(snapshot ? selectSnapshotInList(page.snapshots, snapshot) : page.snapshots)
       setHasMoreHistories(page.hasMore)
       setHistoryOffset(page.offset)
       setHistoryPageCount(page.snapshots.length)

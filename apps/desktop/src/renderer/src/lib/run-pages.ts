@@ -1,5 +1,27 @@
 import type { LoopSnapshot } from '../../../shared/loop'
 
+/** Keep at most one heavy detail snapshot resident in renderer state. */
+function compactForList(snapshot: LoopSnapshot): LoopSnapshot {
+  if (snapshot.runs.length === 0) return snapshot
+  const totalRuns = snapshot.totalRuns ?? snapshot.runs.length
+  return {
+    loop: { ...snapshot.loop, prompt: snapshot.loop.prompt.slice(0, 1_024) },
+    runs: [],
+    totalRuns,
+    hasMoreRuns: totalRuns > 0,
+    projectionWarning: totalRuns > 0 ? 'Select this run to load its bounded attempt history.' : null,
+  }
+}
+
+/** Hydrate the selected run in place so clicking a history never changes sidebar order. */
+export function selectSnapshotInList(current: LoopSnapshot[], detail: LoopSnapshot): LoopSnapshot[] {
+  const selectedIndex = current.findIndex((item) => item.loop.id === detail.loop.id)
+  const compacted = current.map(compactForList)
+  if (selectedIndex < 0) return [detail, ...compacted]
+  compacted[selectedIndex] = detail
+  return compacted
+}
+
 /** Keep an explicitly selected older page stable while live updates refresh canonical loop totals. */
 export function applySnapshotUpdate(current: LoopSnapshot | null, incoming: LoopSnapshot): LoopSnapshot {
   if (!current || current.loop.id !== incoming.loop.id || (current.runOffset ?? 0) === 0) return incoming
