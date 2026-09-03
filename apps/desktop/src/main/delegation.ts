@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { LoopModels } from '../shared/loop'
 import { DISPATCHER_MODEL_ID, harnessFor, isUltracode } from '../shared/models'
 import { ASSET_WAVE_SIZE, MACOS_BROWSER_SANDBOX_RULE } from '../shared/prompts'
+import { CHILD_PROCESS_EXIT_EVENT } from './child-process-exit'
 import { assertChildSlug } from './child-stream-name'
 import { claudeArgs, codexArgs } from './harness-plans'
 import { RUN_METADATA_DIR } from './run-transfer'
@@ -41,10 +42,24 @@ function commandSlug(slug: string): string {
   return slug === '<slug>' ? slug : assertChildSlug(slug)
 }
 
+/**
+ * Create the stream before launch, refuse replacement evidence, and append a
+ * controller-readable exit record even when the CLI dies before its first
+ * protocol event. The compound command matters: callers may background it,
+ * and the marker must stay in the same job as the child process.
+ */
+function observedChildCommand(command: string, stream: string): string {
+  return `( set -C; : > ${stream} || exit $?; ${command} >> ${stream}; gauntlet_child_status=$?; printf '\\n{"type":"${CHILD_PROCESS_EXIT_EVENT}","exit_code":%d}\\n' "$gauntlet_child_status" >> ${stream}; exit "$gauntlet_child_status" )`
+}
+
 /** The command a claude dispatcher runs to hand its slice to codex. */
 export function codexChildCommand(model: string, effort: string, slug: string): string {
   const safeSlug = commandSlug(slug)
-  return `set -C; "\${GAUNTLET_CODEX_BIN:?}" ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${safeSlug}.md > ${STREAM_DIR}/${safeSlug}.codex.jsonl`
+  const stream = `${STREAM_DIR}/${safeSlug}.codex.jsonl`
+  return observedChildCommand(
+    `"\${GAUNTLET_CODEX_BIN:?}" ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${safeSlug}.md`,
+    stream,
+  )
 }
 
 /** The command a codex orchestrator runs to hand a slice to claude. */
@@ -53,7 +68,8 @@ export function claudeChildCommand(model: string, effort: string, slug: string):
   const args = claudeArgs(model, effort, `$(cat ${RUN_METADATA_DIR}/claude-${safeSlug}.md)`)
     .map((arg) => (arg.startsWith('$(cat ') ? `"${arg}"` : quote(arg)))
     .join(' ')
-  return `set -C; "\${GAUNTLET_CLAUDE_BIN:?}" ${args} > ${STREAM_DIR}/${safeSlug}.claude.jsonl`
+  const stream = `${STREAM_DIR}/${safeSlug}.claude.jsonl`
+  return observedChildCommand(`"\${GAUNTLET_CLAUDE_BIN:?}" ${args}`, stream)
 }
 
 /**
@@ -123,6 +139,9 @@ export function researchRules(models: LoopModels, referenceDir: string): string 
     return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
   }
   const harness = harnessFor(models.researchModel)
+  if (harness === 'codex' && harnessFor(models.orchestratorModel) === 'codex') {
+    return `Fan this sweep out to parallel researchers on ${models.researchModel} at ${models.researchEffort} effort — one per angle, cheap and disposable. For each angle choose a short task name using lowercase letters, digits, and underscores (e.g. research_reddit), then delegate it with \`spawn_agent\`, passing model="${models.researchModel}", reasoning_effort="${models.researchEffort}", and fork_turns="none". Each message must be a self-contained brief telling the researcher exactly what to find and to write its findings — every claim with its source URL — to ${referenceDir}/research/<task-name>.md. Researchers research and write notes only; they must never touch project source or download pack media. Launch all angles before waiting, then wait for every researcher to finish. Read their notes and distill them into ${referenceDir}/research.md yourself.`
+  }
   const briefFile = `${RUN_METADATA_DIR}/${harness}-<slug>.md`
   const command =
     harness === 'codex'

@@ -4,6 +4,7 @@ import { childAgentMetricId } from '../shared/agent-id'
 import type { AgentMetric, TokenTotals } from '../shared/loop'
 import { isRecordId } from '../shared/record-id'
 import { codexTokens, usageForThread } from './codex-usage'
+import { CHILD_PROCESS_EXIT_EVENT, parseChildProcessExit } from './child-process-exit'
 import {
   MAX_CHILD_ACCOUNTING_FILE_BYTES,
   MAX_CHILD_ACCOUNTING_TOTAL_BYTES,
@@ -187,6 +188,8 @@ interface ChildTotals {
   threadId?: string | null
   /** The CLI's own end-of-run event: claude's `result`, codex's completed turn. */
   ended: boolean
+  /** App-owned wrapper marker written after the delegated CLI process exits. */
+  exitCode: number | null
 }
 
 /** Claude writes one assistant event per message, repeating ids while streaming. */
@@ -194,8 +197,14 @@ function readClaudeStream(text: string): ChildTotals {
   const usageByMessage = new Map<string, Record<string, number>>()
   let model: string | null = null
   let ended = false
+  let exitCode: number | null = null
   for (const line of text.split('\n')) {
     if (!line.includes('"type"') && !line.includes('"usage"')) continue
+    const processExit = parseChildProcessExit(line)
+    if (processExit) {
+      exitCode = processExit.exitCode
+      continue
+    }
     let obj: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(line)
@@ -219,7 +228,7 @@ function readClaudeStream(text: string): ChildTotals {
     tokens.cacheRead += usage.cache_read_input_tokens ?? 0
     tokens.cacheWrite += usage.cache_creation_input_tokens ?? 0
   }
-  return { tokens, model, messages: usageByMessage.size, ended }
+  return { tokens, model, messages: usageByMessage.size, ended, exitCode }
 }
 
 /** Codex reports usage once per completed turn. */
@@ -228,8 +237,14 @@ function readCodexStream(text: string): ChildTotals {
   let turns = 0
   let threadId: string | null = null
   let ended = false
+  let exitCode: number | null = null
   for (const line of text.split('\n')) {
-    if (!line.includes('thread.started') && !line.includes('turn.completed')) continue
+    if (!line.includes('thread.started') && !line.includes('turn.completed') && !line.includes(CHILD_PROCESS_EXIT_EVENT)) continue
+    const processExit = parseChildProcessExit(line)
+    if (processExit) {
+      exitCode = processExit.exitCode
+      continue
+    }
     let obj: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(line)
@@ -251,7 +266,7 @@ function readCodexStream(text: string): ChildTotals {
       turns += 1
     }
   }
-  return { tokens, model: null, messages: turns, ended, threadId }
+  return { tokens, model: null, messages: turns, ended, threadId, exitCode }
 }
 
 /**
@@ -263,12 +278,55 @@ function readCodexStream(text: string): ChildTotals {
  * lit after its work was over.
  */
 const ENDED_QUIET_MS = 15_000
+/** A structured CLI emits its opening event promptly; an older empty stream beyond this is an abandoned launch. */
+export const CHILD_STARTUP_GRACE_MS = 2 * 60_000
 
 interface OpenedChildStream {
   name: ReturnType<typeof parseChildStreamName> & {}
   file: string
   text: string
   stat: fs.Stats
+}
+
+export interface ChildStreamFailure {
+  agentId: string
+  harness: 'claude' | 'codex'
+  reason: string
+}
+
+interface ChildStreamState {
+  totals: ChildTotals
+  active: boolean
+  done: boolean
+  failure: ChildStreamFailure | null
+}
+
+function childStreamState(
+  stream: OpenedChildStream,
+  quietMs: number,
+  now: number,
+): ChildStreamState {
+  const { name, text, stat } = stream
+  const totals = name.harness === 'claude' ? readClaudeStream(text) : readCodexStream(text)
+  const settled = now - stat.mtimeMs >= Math.max(0, quietMs)
+  let reason: string | null = null
+  if (settled && totals.exitCode !== null && totals.exitCode !== 0) {
+    reason = `exited with status ${totals.exitCode}${totals.ended ? '' : ' before emitting a terminal protocol event'}`
+  } else if (settled && totals.exitCode !== null && !totals.ended) {
+    reason = 'exited without emitting a terminal protocol event'
+  } else if (settled && stat.size === 0) {
+    // Compatibility for streams created before exit markers shipped. Shell
+    // redirection creates the file before exec; no first protocol record after
+    // the grace window means no model session ever became observable.
+    reason = 'produced no protocol output; the worker launch did not become observable'
+  }
+  const done = settled && (totals.ended || totals.exitCode !== null || stat.size === 0)
+  return {
+    totals,
+    active: !done,
+    done,
+    failure: reason ? { agentId: name.slug, harness: name.harness, reason } : null,
+  }
 }
 
 function openedChildStreams(boundary: ChildStreamBoundary): OpenedChildStream[] {
@@ -324,14 +382,15 @@ function openedChildStreams(boundary: ChildStreamBoundary): OpenedChildStream[] 
 /** One metric row per delegated worker, priced from its own stream. */
 export function readChildAgents(boundary: ChildStreamBoundary, fallbackModel: string | null, codexHome?: string, now = Date.now()): AgentMetric[] {
   const rows: AgentMetric[] = []
-  for (const { name: named, text, stat } of openedChildStreams(boundary)) {
-    const totals = named.harness === 'claude' ? readClaudeStream(text) : readCodexStream(text)
+  for (const stream of openedChildStreams(boundary)) {
+    const { name: named, stat } = stream
+    const state = childStreamState(stream, CHILD_STARTUP_GRACE_MS, now)
+    const { totals } = state
     // Until a codex worker completes its turn its stream reports nothing, so
     // fall back to the running count in its own session log.
     const live = !totals.ended && codexHome && totals.threadId ? usageForThread(codexHome, totals.threadId) : null
     const tokens = live ?? totals.tokens
     const model = totals.model ?? fallbackModel
-    const quietFor = now - stat.mtimeMs
     rows.push({
       id: childAgentMetricId(named.slug),
       label: `${named.harness}: ${named.slug}`,
@@ -340,7 +399,8 @@ export function readChildAgents(boundary: ChildStreamBoundary, fallbackModel: st
       tokens,
       firstTs: new Date(stat.birthtimeMs || stat.mtimeMs).toISOString(),
       lastTs: new Date(stat.mtimeMs).toISOString(),
-      done: totals.ended && quietFor >= ENDED_QUIET_MS,
+      done: state.failure ? true : totals.ended && now - stat.mtimeMs >= ENDED_QUIET_MS,
+      ...(state.failure ? { state: 'failed', note: state.failure.reason } : {}),
       totalTokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
       costUsd: estimateCostUsd(model, tokens),
     })
@@ -358,8 +418,12 @@ export function readChildAgents(boundary: ChildStreamBoundary, fallbackModel: st
  * window counts as still running.
  */
 export function childrenActive(boundary: ChildStreamBoundary, quietMs: number, now = Date.now()): boolean {
-  return openedChildStreams(boundary).some(({ name, text, stat }) => {
-    const ended = name.harness === 'claude' ? readClaudeStream(text).ended : readCodexStream(text).ended
-    return !ended || now - stat.mtimeMs < quietMs
-  })
+  return openedChildStreams(boundary).some((stream) => childStreamState(stream, quietMs, now).active)
+}
+
+/** Settled launch/protocol failures, attributed to the worker that produced the stream. */
+export function childStreamFailures(boundary: ChildStreamBoundary, quietMs: number, now = Date.now()): ChildStreamFailure[] {
+  return openedChildStreams(boundary)
+    .map((stream) => childStreamState(stream, quietMs, now).failure)
+    .filter((failure): failure is ChildStreamFailure => failure !== null)
 }

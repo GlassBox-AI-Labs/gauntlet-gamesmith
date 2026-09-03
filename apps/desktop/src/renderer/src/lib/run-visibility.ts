@@ -2,7 +2,15 @@ import type { AgentMetric, LoopLogLine, RevealStreamInput } from '../../../share
 import { parseAgentMetricId } from '../../../shared/agent-id'
 
 export function agentActive(agent: AgentMetric, now = Date.now()): boolean {
-  return !agent.done && agent.lastTs != null && now - new Date(agent.lastTs).getTime() < 90_000
+  return agent.state !== 'failed' && !agent.done && agent.lastTs != null && now - new Date(agent.lastTs).getTime() < 90_000
+}
+
+export type AgentDisplayStatus = 'active' | 'failed' | 'done' | 'waiting'
+
+export function agentDisplayStatus(agent: AgentMetric, now = Date.now()): AgentDisplayStatus {
+  if (agent.state === 'failed') return 'failed'
+  if (agentActive(agent, now)) return 'active'
+  return agent.done ? 'done' : 'waiting'
 }
 
 /** Only agents backed by their own file get a raw-stream action. */

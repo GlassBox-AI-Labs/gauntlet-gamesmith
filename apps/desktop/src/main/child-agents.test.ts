@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { agentsDir, childrenActive, observeChildStreams, readChildAgents, safeAgentsDir } from './child-agents'
+import { agentsDir, CHILD_STARTUP_GRACE_MS, childStreamFailures, childrenActive, observeChildStreams, readChildAgents, safeAgentsDir } from './child-agents'
+import { CHILD_PROCESS_EXIT_EVENT } from './child-process-exit'
 import { captureWorkspaceIdentity } from './workspace-boundary'
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'children-'))
@@ -215,6 +216,52 @@ describe('childrenActive', () => {
     const emptyBoundary = observeChildStreams(empty)
     expect(childrenActive(emptyBoundary, 60_000)).toBe(false)
     fs.rmSync(empty, { recursive: true, force: true })
+  })
+
+  it('releases and exposes an older empty stream as a failed launch', () => {
+    const failedWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-failed-child-'))
+    const failedBoundary = observeChildStreams(failedWorkspace)
+    const stream = path.join(agentsDir(failedWorkspace), 'research.codex.jsonl')
+    fs.writeFileSync(stream, '')
+    const mtime = fs.statSync(stream).mtimeMs
+    try {
+      expect(childrenActive(failedBoundary, CHILD_STARTUP_GRACE_MS, mtime + 1_000)).toBe(true)
+      const settledAt = mtime + CHILD_STARTUP_GRACE_MS + 1
+      expect(childrenActive(failedBoundary, CHILD_STARTUP_GRACE_MS, settledAt)).toBe(false)
+      expect(childStreamFailures(failedBoundary, CHILD_STARTUP_GRACE_MS, settledAt)).toEqual([{
+        agentId: 'research',
+        harness: 'codex',
+        reason: 'produced no protocol output; the worker launch did not become observable',
+      }])
+      expect(readChildAgents(failedBoundary, 'gpt-5.6-luna', undefined, settledAt)[0]).toMatchObject({
+        done: true,
+        state: 'failed',
+        note: 'produced no protocol output; the worker launch did not become observable',
+      })
+    } finally {
+      fs.rmSync(failedWorkspace, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the wrapper exit marker instead of waiting forever for a terminal event', () => {
+    const failedWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'marked-failed-child-'))
+    const failedBoundary = observeChildStreams(failedWorkspace)
+    const stream = path.join(agentsDir(failedWorkspace), 'research.codex.jsonl')
+    fs.writeFileSync(stream, [
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
+      JSON.stringify({ type: CHILD_PROCESS_EXIT_EVENT, exit_code: 1 }),
+      '',
+    ].join('\n'))
+    const settledAt = fs.statSync(stream).mtimeMs + CHILD_STARTUP_GRACE_MS + 1
+    try {
+      expect(childrenActive(failedBoundary, CHILD_STARTUP_GRACE_MS, settledAt)).toBe(false)
+      expect(childStreamFailures(failedBoundary, CHILD_STARTUP_GRACE_MS, settledAt)[0]?.reason).toBe(
+        'exited with status 1 before emitting a terminal protocol event',
+      )
+      expect(readChildAgents(failedBoundary, 'gpt-5.6-luna', undefined, settledAt)[0]?.state).toBe('failed')
+    } finally {
+      fs.rmSync(failedWorkspace, { recursive: true, force: true })
+    }
   })
 
   it('does not follow a planted agent-directory symlink', () => {

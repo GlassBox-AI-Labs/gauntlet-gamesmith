@@ -210,3 +210,30 @@ recorded in each affected run log. The migration is idempotent and never changes
 raw-stream, rename, and Resume restrictions remain in force because legacy history stays untrusted.
 A folder without matching portable provenance continues to fail closed and must be imported or
 otherwise recovered explicitly.
+
+## ADR-008 — Make delegated-worker exit observable (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** Shell redirection creates a delegated worker's stream before its CLI process starts. A
+CLI that failed during initialization therefore left an empty file with no terminal protocol event.
+The app treated that absence as a live worker forever, and each app restart renewed the wait. Codex
+researchers launched through a second Codex CLI were especially exposed because macOS can deny the
+nested app-server initialization inside the orchestrator's existing sandbox. Model tier and effort
+do not participate in that initialization failure.
+
+**Decision.** A Codex reference orchestrator delegates Codex researchers through its native
+`spawn_agent` capability, preserving the selected worker model and effort, instead of starting a
+nested Codex app server. Cross-harness shell delegation remains supported. Its fixed wrapper creates
+each stream with no-clobber semantics and appends a bounded, app-owned exit record after the child
+process terminates. The child-stream module is the single interpreter of CLI terminal events, exit
+records, and compatibility behavior. A pre-marker stream that is still empty after the two-minute
+startup grace period is recorded as a failed launch and no longer blocks phase completion. The final
+phase artifact is still validated independently before the loop advances.
+
+**Consequences.** Failed child starts are attributed and visible in the run log and agent status,
+rather than appearing as indefinitely waiting workers. Existing empty streams recover without
+altering their raw evidence. Non-empty historical streams lacking both a terminal event and an exit
+record continue to fail closed under the existing bounded deadline because their ownership cannot be
+inferred safely. The app-owned exit line is retained in the raw child stream but excluded from CLI
+translation and token accounting.

@@ -4,7 +4,7 @@ import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logL
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { agentActive, agentRawStreamInput, logEmptyMessage } from '@/lib/run-visibility'
+import { agentDisplayStatus, agentRawStreamInput, logEmptyMessage } from '@/lib/run-visibility'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
@@ -220,9 +220,10 @@ function RunRow({
                 {(run.metrics?.agents ?? []).filter((agent) => agent.source !== 'workflow').map((agent) => {
                   const raw = agentRawStreamInput(run.id, agent.id)
                   const rawKey = raw ? `${raw.runId}:${raw.stream}:${raw.agentId}` : null
+                  const display = agentDisplayStatus(agent)
                   return (
-                    <div key={agent.id} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`}>
-                      <span className={`mr-1.5 ${agentActive(agent) ? 'text-emerald-300' : agent.done ? 'text-[#77706d]' : 'text-amber-300'}`}>{agentActive(agent) ? '● active' : agent.done ? '✓ done' : '○ idle'}</span>
+                    <div key={agent.id} title={agent.note} className={agent.id === 'orchestrator' || agent.id === 'critic' ? 'text-[#ded9d6]' : `${agent.parentId && agent.parentId !== 'orchestrator' ? 'pl-10' : 'pl-5'} text-[#a89f9a]`}>
+                      <span className={`mr-1.5 ${display === 'active' ? 'text-emerald-300' : display === 'failed' ? 'text-red-300' : display === 'done' ? 'text-[#77706d]' : 'text-amber-300'}`}>{display === 'active' ? '● active' : display === 'failed' ? '✗ failed' : display === 'done' ? '✓ done' : '○ idle'}</span>
                       {agent.id !== 'orchestrator' && agent.id !== 'critic' ? '↳ ' : ''}{agent.label}
                       <span className="text-[#68615f]"> ({agent.model ?? '?'})</span> · {agent.messages} msgs · in {fmtTokens(agent.tokens.input)} · out {fmtTokens(agent.tokens.output)} · cache r/w {fmtTokens(agent.tokens.cacheRead)}/{fmtTokens(agent.tokens.cacheWrite)}
                       {raw && rawKey && (
@@ -565,15 +566,15 @@ export function RunDetail({
             <div className="mb-5 flex flex-wrap items-center gap-2">
               <span className="mr-1 text-[11px] uppercase tracking-wide text-[#68615f]">Agents</span>
               {liveRun.metrics.agents.map((agent) => {
-                const active = agentActive(agent)
+                const display = agentDisplayStatus(agent)
                 const filterKey = agentFilterKey(agent.id)
                 const selected = filterKey != null && logFilter.agent === filterKey
                 const rawInput = agentRawStreamInput(liveRun.id, agent.id)
                 const rawKey = rawInput ? `${rawInput.runId}:${rawInput.stream}:${rawInput.agentId}` : null
-                const chip = <><span className={`size-1.5 rounded-full ${agent.done ? 'bg-[#68615f]' : active ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'}`} aria-hidden="true" />{agent.label}<span className="font-mono text-[10px] text-[#9fb2c8]">{fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}</span><span>{agent.done ? '✓ done' : active ? 'active' : 'waiting'}</span></>
-                const chipClass = `flex items-center gap-1.5 px-2.5 py-1 text-[11px] ${selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : agent.done ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'}`
+                const chip = <><span className={`size-1.5 rounded-full ${display === 'failed' ? 'bg-red-400' : display === 'done' ? 'bg-[#68615f]' : display === 'active' ? 'animate-pulse bg-emerald-400' : 'bg-amber-400/70'}`} aria-hidden="true" />{agent.label}<span className="font-mono text-[10px] text-[#9fb2c8]">{fmtTokens(agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite)}/{fmtTokens(agent.tokens.output)}</span><span>{display === 'failed' ? '✗ failed' : display === 'done' ? '✓ done' : display}</span></>
+                const chipClass = `flex items-center gap-1.5 px-2.5 py-1 text-[11px] ${selected ? 'border-[#8b7f78] bg-white/[0.08] text-[#eeeae7]' : display === 'failed' ? 'border-red-500/40 text-red-300' : display === 'done' ? 'border-[#332e2e] text-[#68615f]' : 'border-[#494343] text-[#ded9d6]'}`
                 return (
-                  <span key={agent.id} className={`flex items-stretch overflow-hidden rounded-full border ${selected ? 'border-[#8b7f78]' : agent.done ? 'border-[#332e2e]' : 'border-[#494343]'}`}>
+                  <span key={agent.id} title={agent.note} className={`flex items-stretch overflow-hidden rounded-full border ${selected ? 'border-[#8b7f78]' : display === 'failed' ? 'border-red-500/40' : display === 'done' ? 'border-[#332e2e]' : 'border-[#494343]'}`}>
                     {filterKey != null ? <button type="button" title="Filter the log to this agent" onClick={() => setLogFilter((current) => ({ ...current, agent: current.agent === filterKey ? null : filterKey }))} className={chipClass}>{chip}</button> : <span className={chipClass}>{chip}</span>}
                     {rawInput && rawKey && <button type="button" aria-label={`Reveal ${agent.label} raw stream in Finder`} title="Reveal raw stream in Finder" disabled={revealing.has(rawKey)} onClick={() => onReveal(rawInput)} className="grid w-7 place-items-center border-l border-inherit text-[#8f8885] hover:bg-white/[0.05] hover:text-white disabled:opacity-40">{revealing.has(rawKey) ? <LoaderCircle className="size-3 animate-spin" /> : <FileText className="size-3" />}</button>}
                   </span>

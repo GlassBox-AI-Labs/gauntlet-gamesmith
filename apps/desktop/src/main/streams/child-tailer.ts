@@ -7,6 +7,7 @@ import {
   MAX_CHILD_STREAMS,
   parseChildStreamName,
 } from '../child-stream-name'
+import { parseChildProcessExit } from '../child-process-exit'
 import { translateClaudeLine, type StreamEvent } from './claude-stream'
 import { translateCodexLine } from './codex-stream'
 
@@ -227,6 +228,18 @@ export class ChildStreamTailer {
           continue
         }
         try {
+          const processExit = parseChildProcessExit(line)
+          if (processExit) {
+            out.push({
+              agentId: named.slug,
+              channel: processExit.exitCode === 0 ? 'system' : 'error',
+              kind: processExit.exitCode === 0 ? 'done' : 'error',
+              text: processExit.exitCode === 0
+                ? `delegated ${named.harness} process exited`
+                : `delegated ${named.harness} process exited with status ${processExit.exitCode}`,
+            })
+            continue
+          }
           if (named.harness === 'claude') {
             const translated = translateClaudeLine(line)
             for (const event of translated?.events ?? []) out.push({ ...event, agentId: named.slug })

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
 import { ASSET_WAVE_SIZE } from '../shared/prompts'
+import { parseChildProcessExit } from './child-process-exit'
 import {
   claudeChildCommand,
   codexChildCommand,
@@ -49,8 +50,9 @@ describe('quote', () => {
 
   it('uses quoted private executable variables and refuses to clobber a planted stream', () => {
     const command = codexChildCommand('gpt-5.6-sol', 'high', 'renderer')
-    expect(command).toContain('set -C; "${GAUNTLET_CODEX_BIN:?}"')
-    expect(claudeChildCommand('claude-opus-5', 'high', 'renderer')).toContain('set -C; "${GAUNTLET_CLAUDE_BIN:?}"')
+    expect(command).toContain('( set -C; : > .gauntlet-gamesmith/agents/renderer.codex.jsonl')
+    expect(command).toContain('"${GAUNTLET_CODEX_BIN:?}"')
+    expect(claudeChildCommand('claude-opus-5', 'high', 'renderer')).toContain('"${GAUNTLET_CLAUDE_BIN:?}"')
 
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-delegation-noclobber-'))
     try {
@@ -64,6 +66,24 @@ describe('quote', () => {
       })
       expect(result.status).not.toBe(0)
       expect(fs.readFileSync(stream, 'utf8')).toBe('operator evidence')
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('appends the delegated process exit status when the CLI cannot emit protocol output', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-delegation-exit-'))
+    try {
+      fs.mkdirSync(path.join(workspace, '.gauntlet-gamesmith', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(workspace, '.gauntlet-gamesmith', 'codex-renderer.md'), 'brief')
+      const command = codexChildCommand('gpt-5.6-sol', 'low', 'renderer')
+      const result = spawnSync('/bin/sh', ['-c', command], {
+        cwd: workspace,
+        env: { PATH: '/usr/bin:/bin', GAUNTLET_CODEX_BIN: '/usr/bin/false' },
+      })
+      expect(result.status).toBe(1)
+      const lines = fs.readFileSync(path.join(workspace, '.gauntlet-gamesmith', 'agents', 'renderer.codex.jsonl'), 'utf8').trim().split('\n')
+      expect(parseChildProcessExit(lines.at(-1) ?? '')).toEqual({ exitCode: 1 })
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true })
     }
@@ -157,6 +177,15 @@ describe('researchRules', () => {
     expect(rules).toContain('reference/loop-123/research/<slug>.md')
     expect(rules).toContain('reference/loop-123/research.md')
     expect(rules).toContain('never touch project source')
+  })
+
+  it('uses native codex delegation instead of nesting a sandboxed codex app server', () => {
+    const rules = researchRules(models('gpt-5.6-luna', null), 'reference/loop-123')
+    expect(rules).toContain('spawn_agent')
+    expect(rules).toContain('model="gpt-5.6-luna"')
+    expect(rules).toContain('reasoning_effort="medium"')
+    expect(rules).toContain('fork_turns="none"')
+    expect(rules).not.toContain('GAUNTLET_CODEX_BIN')
   })
 
   it('routes claude researchers through the claude CLI', () => {

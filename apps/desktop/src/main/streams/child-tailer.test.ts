@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CHILD_PROCESS_EXIT_EVENT } from '../child-process-exit'
 import { ChildStreamTailer } from './child-tailer'
 
 let dir: string | null = null
@@ -245,6 +246,22 @@ describe('ChildStreamTailer', () => {
       expect.objectContaining({ agentId: 'gameplay', kind: 'system', text: expect.stringContaining('codex thread') }),
       expect.objectContaining({ agentId: 'gameplay', kind: 'done', text: expect.stringContaining('codex turn completed') }),
     ]))
+  })
+
+  it('attributes the app-owned delegated process exit marker', () => {
+    const agents = makeDir()
+    writeBrief(agents, 'codex', 'research')
+    fs.writeFileSync(path.join(agents, 'research.codex.jsonl'), `${JSON.stringify({
+      type: CHILD_PROCESS_EXIT_EVENT,
+      exit_code: 1,
+    })}\n`)
+
+    expect(new ChildStreamTailer(agents, 0).poll()).toContainEqual({
+      agentId: 'research',
+      channel: 'error',
+      kind: 'error',
+      text: 'delegated codex process exited with status 1',
+    })
   })
 
   it('bounds an unterminated projection line while preserving the raw stream', () => {

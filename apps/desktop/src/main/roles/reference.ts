@@ -3,6 +3,7 @@ import { buildReferencePrompt } from '../../shared/prompts'
 import { harnessFor } from '../../shared/models'
 import { createArtifactPhaseStream } from '../artifact-phase-stream'
 import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
+import { readCodexUsage } from '../codex-usage'
 import { researchRules } from '../delegation'
 import type { Ledger } from '../ledger'
 import { referencePackFingerprint } from '../phase-contracts'
@@ -82,9 +83,18 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
       firstTs: new Date(startedAtMs).toISOString(),
       lastTs: runtime.nowIso(),
     }
-    const researchers = loop.models.researchModel
+    const nativeCodexResearchers = !!loop.models.researchModel
+      && harnessFor(loop.models.orchestratorModel) === 'codex'
+      && harnessFor(loop.models.researchModel) === 'codex'
+    const streamedResearchers = loop.models.researchModel
       ? readChildAgents(runtime.childBoundary, loop.models.researchModel, runtime.harnessHome('codex'))
       : []
+    const nativeResearchers = nativeCodexResearchers && state.sessionId && loop.models.researchModel
+      ? readCodexUsage(runtime.harnessHome('codex'), startedAtMs, loop.models.researchModel, state.sessionId)
+      : []
+    // A recovery can finish a run whose prompt predates native Codex research.
+    // Preserve those stream-backed rows while new prompts use native sessions.
+    const researchers = [...nativeResearchers, ...streamedResearchers]
     const agents = [primary, ...researchers]
     const perModel: RunMetrics['perModel'] = {}
     for (const agent of agents) {

@@ -23,6 +23,8 @@ import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
 import {
   assertChildStreamBoundary,
+  CHILD_STARTUP_GRACE_MS,
+  childStreamFailures,
   childrenActive,
   observeChildStreams,
   recoverChildStreams,
@@ -84,8 +86,8 @@ const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
 const CRITIQUE_TIMEOUT_MS = 60 * 60_000
 const REFERENCE_TIMEOUT_MS = 60 * 60_000
-/** No write to a delegated worker's stream for this long counts as finished. */
-const CHILD_QUIET_MS = 2 * 60_000
+/** No observable worker startup or post-terminal write for this long settles its stream. */
+const CHILD_QUIET_MS = CHILD_STARTUP_GRACE_MS
 const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
 const MAX_ACCOUNT_ROTATIONS = 3
@@ -2463,10 +2465,27 @@ export class LoopRunner {
       this.pumpChildStreams()
     }
     if (this.stopRequested.has(loop.id)) return
+    const failures = childStreamFailures(childBoundary, CHILD_QUIET_MS, this.deps.now())
+    for (const failure of failures) {
+      this.log(
+        loop.id,
+        run.id,
+        'error',
+        `Delegated ${failure.harness} worker "${failure.agentId}" ${failure.reason}; it will no longer hold the round open.`,
+        failure.agentId,
+      )
+    }
     if (announced) {
       const stillActive = childrenActive(childBoundary, CHILD_QUIET_MS, this.deps.now())
       if (stillActive) throw new Error('Delegated-worker deadline expired before every worker emitted a terminal protocol event and became quiet.')
-      this.log(loop.id, run.id, 'system', '✓ delegated workers finished.')
+      this.log(
+        loop.id,
+        run.id,
+        failures.length > 0 ? 'error' : 'system',
+        failures.length > 0
+          ? `Delegated-worker wait released after ${failures.length} worker${failures.length === 1 ? '' : 's'} failed to produce a complete protocol stream.`
+          : '✓ delegated workers finished.',
+      )
     }
   }
 
