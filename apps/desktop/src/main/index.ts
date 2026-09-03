@@ -10,7 +10,11 @@ import type {
   DetectionResult,
   HarnessAction,
   HarnessKind,
+  AccountRotation,
+  AccountsResult,
+  AccountsState,
   LoginEvent,
+  LogoutResult,
   ProbeResult,
   TerminalDataEvent,
 } from '../shared/harness'
@@ -18,7 +22,22 @@ import { harnessKinds } from '../shared/harness'
 import { runPromptLabel, type CritiqueRound, type LoopLogLine, type LoopRecord, type ReferenceStudy, type RunRecord, type StartLoopInput } from '../shared/loop'
 import { isCodexModel, resolveModels } from '../shared/models'
 import { REPORT_FILE_SUFFIX, type DeleteRunsResult, type ReportRecord, type ReportRunRow } from '../shared/reports'
-import { cliHome, subscriptionEnv } from './harness-env'
+import {
+  accountDir,
+  addAccount,
+  clearCooldown,
+  earliestReset,
+  isAccountId,
+  isCooling,
+  labelAccount,
+  markLimited,
+  parseResetAt,
+  PRIMARY_ACCOUNT_ID,
+  readAccounts,
+  removeAccount,
+  switchAccount,
+} from './accounts'
+import { cliHome, harnessesRoot, subscriptionEnv } from './harness-env'
 import { Ledger } from './ledger'
 import { LoopRunner } from './loop-runner'
 import { startMediaServer } from './media-server'
@@ -42,6 +61,7 @@ interface HarnessSpec {
   versionArgs: string[]
   statusArgs: string[]
   loginArgs: string[]
+  logoutArgs: string[]
   env: Record<string, string>
 }
 
@@ -137,14 +157,15 @@ function assertHarnessKind(value: unknown): HarnessKind {
   return value as HarnessKind
 }
 
-function harnessSpec(kind: HarnessKind): HarnessSpec {
+function harnessSpec(kind: HarnessKind, home = cliHome(kind)): HarnessSpec {
   if (kind === 'claude') {
     return {
       command: 'claude',
       versionArgs: ['--version'],
       statusArgs: ['auth', 'status', '--json'],
       loginArgs: ['auth', 'login', '--claudeai'],
-      env: { CLAUDE_CONFIG_DIR: cliHome(kind) },
+      logoutArgs: ['auth', 'logout'],
+      env: { CLAUDE_CONFIG_DIR: home },
     }
   }
 
@@ -153,7 +174,8 @@ function harnessSpec(kind: HarnessKind): HarnessSpec {
     versionArgs: ['--version'],
     statusArgs: ['login', 'status'],
     loginArgs: ['login'],
-    env: { CODEX_HOME: cliHome(kind) },
+    logoutArgs: ['logout'],
+    env: { CODEX_HOME: home },
   }
 }
 
@@ -207,13 +229,18 @@ async function detect(kind: HarnessKind): Promise<DetectionResult> {
 }
 
 async function probe(kind: HarnessKind): Promise<ProbeResult> {
-  const spec = harnessSpec(kind)
+  return probeHome(kind, cliHome(kind))
+}
+
+async function probeHome(kind: HarnessKind, home: string): Promise<ProbeResult> {
+  const spec = harnessSpec(kind, home)
   const result = await run(spec.command, spec.statusArgs, spec.env)
 
   if (kind === 'claude') {
     try {
       const status = JSON.parse(result.stdout) as ClaudeStatus
       const loggedIn = Boolean(status.loggedIn)
+      if (loggedIn && status.email) rememberAccountLabel(kind, home, status.email)
       return {
         loggedIn,
         authMethod: loggedIn ? (status.authMethod ?? 'Claude account') : null,
@@ -318,6 +345,8 @@ function startLogin(kind: HarnessKind): void {
 
     const status = await verifyLogin(kind)
     if (status.loggedIn) {
+      const root = harnessesRoot()
+      clearCooldown(root, kind, readAccounts(root, kind).activeId)
       sendLoginAction(kind, { type: 'probe_finished', ...status })
       return
     }
@@ -327,6 +356,108 @@ function startLogin(kind: HarnessKind): void {
       error: `Login command exited ${exitCode}, but the CLI is not signed in.`,
     })
   })
+}
+
+/**
+ * Move off an account that has hit its usage limit onto the next one that can
+ * work.
+ *
+ * The limited account is parked for the rest of its window first, so a loop
+ * that rotates twice cannot land back on it. Candidates are probed rather than
+ * trusted: an account registered but never signed in is no use mid-run.
+ */
+async function rotateAccount(kind: HarnessKind, error = ''): Promise<AccountRotation> {
+  const root = harnessesRoot()
+  const before = readAccounts(root, kind)
+  const from = before.accounts.find((account) => account.id === before.activeId)?.label ?? before.activeId
+  markLimited(root, kind, before.activeId, parseResetAt(error) ?? undefined)
+
+  const state = readAccounts(root, kind)
+  for (const candidate of state.accounts) {
+    if (candidate.id === state.activeId || isCooling(candidate)) continue
+    const status = await probeHome(kind, accountDir(root, kind, candidate.id))
+    if (!status.loggedIn) continue
+    switchAccount(root, kind, candidate.id)
+    mainWindow?.webContents.send('harness:accounts-changed', kind)
+    return { ok: true, from, to: candidate.label }
+  }
+
+  mainWindow?.webContents.send('harness:accounts-changed', kind)
+  const others = state.accounts.filter((account) => account.id !== state.activeId)
+  return {
+    ok: false,
+    from,
+    // Every account spent is not the same as nowhere to go: the caller can wait
+    // for the first window to reopen instead of ending the build.
+    resetAt: others.length > 0 ? (earliestReset(state) ?? undefined) : undefined,
+    reason:
+      others.length === 0
+        ? 'no other account is set up'
+        : 'every other account is signed out or inside its own limit window',
+  }
+}
+
+/** Name whichever account owns this config dir after the email it reports. */
+function rememberAccountLabel(kind: HarnessKind, home: string, email: string): void {
+  const root = harnessesRoot()
+  const owner = readAccounts(root, kind).accounts.find((account) => accountDir(root, kind, account.id) === home)
+  if (owner) labelAccount(root, kind, owner.id, email)
+}
+
+/**
+ * Account changes swap the credentials the next run spawns with, and
+ * `spawnDetached` bakes that in at spawn time, so a loop in flight has to stop
+ * first rather than have its rounds split across two accounts.
+ */
+function accountChange(kind: HarnessKind, change: () => AccountsState): AccountsResult {
+  const root = harnessesRoot()
+  if (ledger?.runningLoop()) {
+    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before switching accounts.' }
+  }
+  runningLogins.get(kind)?.kill()
+  return { ok: true, state: change() }
+}
+
+/** Forget an extra account, signing its CLI out before its folder goes. */
+async function forgetAccount(kind: HarnessKind, accountId: string): Promise<AccountsResult> {
+  const root = harnessesRoot()
+  if (accountId === PRIMARY_ACCOUNT_ID) {
+    return {
+      ok: false,
+      state: readAccounts(root, kind),
+      error: 'Account 1 holds the shared session history. Sign out of it instead of removing it.',
+    }
+  }
+  if (ledger?.runningLoop()) {
+    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before removing an account.' }
+  }
+  runningLogins.get(kind)?.kill()
+  await logout(kind, accountDir(root, kind, accountId))
+  return { ok: true, state: removeAccount(root, kind, accountId) }
+}
+
+/**
+ * Sign the CLI out of its account so a different one can be signed in.
+ *
+ * Each harness keeps its credentials in the app's own home
+ * (`<userData>/harnesses/<kind>`), so this only touches the login the app
+ * drives — never the user's own CLI login in their terminal. A running loop is
+ * spending that login, so it has to be stopped first.
+ */
+async function logout(kind: HarnessKind, home = cliHome(kind)): Promise<LogoutResult> {
+  if (ledger?.runningLoop()) return { ok: false, error: 'Stop the running loop before signing out.' }
+
+  runningLogins.get(kind)?.kill()
+  const spec = harnessSpec(kind, home)
+  const result = await run(spec.command, spec.logoutArgs, spec.env)
+  // Some CLIs exit non-zero when they were already signed out, so trust the
+  // status probe over the exit code.
+  const status = await probeHome(kind, home)
+  if (status.loggedIn) {
+    const message = stripAnsi(result.stderr || result.stdout).trim()
+    return { ok: false, error: message || 'The CLI is still signed in after the logout command.' }
+  }
+  return { ok: true }
 }
 
 function stopAllLogins(): void {
@@ -550,6 +681,24 @@ function registerIpc(): void {
   ipcMain.handle('harness:probe', (_event, value: unknown) => probe(assertHarnessKind(value)))
   ipcMain.handle('harness:start-login', (_event, value: unknown) => startLogin(assertHarnessKind(value)))
   ipcMain.handle('harness:cancel-login', (_event, value: unknown) => runningLogins.get(assertHarnessKind(value))?.kill())
+  ipcMain.handle('harness:logout', (_event, value: unknown) => logout(assertHarnessKind(value)))
+  ipcMain.handle('harness:accounts', (_event, value: unknown) =>
+    readAccounts(harnessesRoot(), assertHarnessKind(value)),
+  )
+  ipcMain.handle('harness:add-account', (_event, value: unknown) => {
+    const kind = assertHarnessKind(value)
+    return accountChange(kind, () => addAccount(harnessesRoot(), kind))
+  })
+  ipcMain.handle('harness:switch-account', (_event, value: unknown, id: unknown) => {
+    const kind = assertHarnessKind(value)
+    if (!isAccountId(id)) throw new Error('Unknown account.')
+    return accountChange(kind, () => switchAccount(harnessesRoot(), kind, id))
+  })
+  ipcMain.handle('harness:remove-account', (_event, value: unknown, id: unknown) => {
+    const kind = assertHarnessKind(value)
+    if (!isAccountId(id)) throw new Error('Unknown account.')
+    return forgetAccount(kind, id)
+  })
   ipcMain.on('harness:terminal-input', (_event, payload: { kind?: unknown; data?: unknown }) => {
     if (typeof payload?.data !== 'string' || payload.data.length > 16_384) return
     runningLogins.get(assertHarnessKind(payload.kind))?.write(payload.data)
@@ -727,7 +876,11 @@ if (hasSingleInstanceLock) {
     // Bring pre-rename run folders onto the current metadata directory name
     // before anything reads one.
     for (const dir of new Set(ledger.loops().map((loop) => loop.workspaceDir))) migrateRunMetadataDir(dir)
-    loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload))
+    loopRunner = new LoopRunner(
+      ledger,
+      (channel, payload) => mainWindow?.webContents.send(channel, payload),
+      rotateAccount,
+    )
     void startMediaServer((loopId) => ledger?.getLoop(loopId)?.workspaceDir ?? null).then((base) => {
       mediaBase = base
     })
