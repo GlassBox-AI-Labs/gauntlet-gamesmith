@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from './prompts'
+import { ASSET_WAVE_SIZE, buildCriticPrompt, buildReferencePrompt, composeImplementPrompt } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
 const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
@@ -169,9 +169,17 @@ describe('sculpting inside the implement prompt', () => {
     expect(prompt.indexOf('Sculpt these BEFORE')).toBeLessThan(prompt.indexOf('WIRE THEM UP'))
   })
 
-  it('still tells the orchestrator to hand each one to its own sculptor and never force a bad crop', () => {
+  it('sculpts in waves rather than fanning the whole list out at once', () => {
     const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
-    expect(prompt).toContain('Hand each to its own sculptor, in parallel')
+    expect(prompt).toContain(`in waves of at most ${ASSET_WAVE_SIZE} at a time`)
+    expect(prompt).toContain('Wait for a wave to report before launching the next')
+    // The old wording said "in parallel", which overrode the wave rule in the
+    // delegation text. Assert it is gone so a revert cannot pass silently.
+    expect(prompt).not.toContain('in parallel')
+  })
+
+  it('still tells the orchestrator to crop properly and never force a bad one', () => {
+    const prompt = composeImplementPrompt('Build a soulslike', 1, null, rules, 'reference/loop-1', contract, cast)
     expect(prompt).toContain('tools/crop.py')
     expect(prompt).toContain('abandon a bad crop rather than force it through')
     // Source order matters: isolated shots first, the derived clip last.
