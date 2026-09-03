@@ -1,5 +1,6 @@
 import type { LoopModels } from '../shared/loop'
 import { harnessFor, isUltracode } from '../shared/models'
+import { ASSET_WAVE_SIZE } from '../shared/prompts'
 import { claudeArgs, codexArgs, DISPATCHER_MODEL } from './harness-plans'
 import { RUN_METADATA_DIR } from './run-transfer'
 
@@ -210,28 +211,33 @@ ${sculptorBrief(referenceDir)}
  * the runner skips the phase entirely rather than running it solo, because one
  * agent sculpting a whole cast in sequence is the thing this phase exists to
  * stop.
+ *
+ * Sculptors run a wave at a time rather than all at once. They share no files,
+ * so width costs nothing in correctness — but a sculptor banks its work only
+ * by finishing, so a usage limit landing mid-wave discards every one still in
+ * flight. See ASSET_WAVE_SIZE.
  */
 export function sculptorRules(models: LoopModels, referenceDir: string): string {
   if (!models.assetModel) return ''
   const orchestrator = harnessFor(models.orchestratorModel)
   const worker = harnessFor(models.assetModel)
   const shared =
-    'One sculptor per cast entry, all launched together — they share no files, so nothing is gained by staging them. Do not sculpt anything yourself; you read the cast, hand out the work, check what came back, and report.'
+    `One sculptor per cast entry, launched ${ASSET_WAVE_SIZE} at a time and never the whole cast at once — a sculptor banks its work only by finishing, so a usage limit landing mid-wave throws away every one still running. Wait for a wave to report, check what it wrote, then launch the next. Do not sculpt anything yourself; you read the cast, hand out the work, check what came back, and report.`
 
   if (orchestrator === 'codex' && worker === 'codex') {
-    return `${shared} Delegate each entry with \`spawn_agent\`, passing model="${models.assetModel}", reasoning_effort="${models.assetEffort}", and fork_turns="none" — the model override is refused on a full-history fork, so each brief must stand alone. Give every agent this brief, with its own entry's line from cast.md at the top:\n\n${sculptorBrief(referenceDir)}`
+    return `${shared} Delegate each entry in the wave with \`spawn_agent\`, passing model="${models.assetModel}", reasoning_effort="${models.assetEffort}", and fork_turns="none" — the model override is refused on a full-history fork, so each brief must stand alone. Give every agent this brief, with its own entry's line from cast.md at the top:\n\n${sculptorBrief(referenceDir)}`
   }
 
   if (orchestrator === 'codex' && worker === 'claude') {
-    return `${shared} For each entry, write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch every sculptor from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
+    return `${shared} For each entry, write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch one wave from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
   }
 
   if (orchestrator === 'claude' && worker === 'codex') {
-    return `${shared} Delegate every entry to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — each hands its object to ${models.assetModel} through the codex CLI), one per cast entry. Each dispatcher holds its call open until codex finishes, so expect them to take a long time and do not chase them.`
+    return `${shared} Delegate the wave's entries to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — each hands its object to ${models.assetModel} through the codex CLI), one per entry. Each dispatcher holds its call open until codex finishes, so expect them to take a long time and do not chase them.`
   }
 
   const workflowRule = isUltracode(models)
-    ? ` When you orchestrate through a workflow, pass \`{agentType: 'sculptor'}\` on every \`agent()\` call so each one runs ${models.assetModel} at ${models.assetEffort} effort rather than inheriting yours.`
+    ? ` When you orchestrate through a workflow, pass \`{agentType: 'sculptor'}\` on every \`agent()\` call so each one runs ${models.assetModel} at ${models.assetEffort} effort rather than inheriting yours, and keep its concurrency to ${ASSET_WAVE_SIZE} — a workflow that fans the whole cast out at once defeats the waves.`
     : ''
-  return `${shared} Delegate every entry to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — they run ${models.assetModel} at ${models.assetEffort} effort), one per cast entry.${workflowRule}`
+  return `${shared} Delegate the wave's entries to parallel \`sculptor\` subagents (defined in .claude/agents/sculptor.md — they run ${models.assetModel} at ${models.assetEffort} effort), one per entry.${workflowRule}`
 }
