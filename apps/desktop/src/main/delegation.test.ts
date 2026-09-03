@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
+import { ASSET_WAVE_SIZE } from '../shared/prompts'
 import { delegationRules, implementerAgentMd, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 
 const models = (orchestratorModel: string, subagentModel: string | null) =>
@@ -122,7 +123,7 @@ describe('sculptorAgentMd', () => {
 })
 
 describe('sculptorRules', () => {
-  it('holds every pairing to one sculptor per entry, launched together', () => {
+  it('holds every pairing to one sculptor per entry, a wave at a time', () => {
     for (const [orchestrator, worker] of [
       ['claude-fable-5', 'claude-opus-5'],
       ['claude-fable-5', 'gpt-5.6-sol'],
@@ -131,9 +132,24 @@ describe('sculptorRules', () => {
     ] as const) {
       const rules = sculptorRules(sculptors(orchestrator, worker), 'reference/loop-1')
       expect(rules).toContain('One sculptor per cast entry')
+      // A wide fan-out loses every unfinished sculptor to a usage limit, so no
+      // pairing may tell the orchestrator to launch the whole cast at once.
+      expect(rules).toContain(`launched ${ASSET_WAVE_SIZE} at a time`)
+      expect(rules).toContain('never the whole cast at once')
+      expect(rules).not.toContain('all launched together')
       // The orchestrator hands out work and checks it; it never sculpts.
       expect(rules).toContain('Do not sculpt anything yourself')
     }
+  })
+
+  it('caps a workflow fan-out to the wave size too', () => {
+    const models = resolveModels({ orchestratorModel: 'claude-fable-5-1', orchestratorEffort: 'ultracode' }, null, null, {
+      assetModel: 'claude-fable-5-1',
+      assetEffort: 'high',
+    })
+    const rules = sculptorRules(models, 'reference/loop-1')
+
+    expect(rules).toContain(`keep its concurrency to ${ASSET_WAVE_SIZE}`)
   })
 
   it('tells a codex orchestrator to override the model per spawn, which needs a bare fork', () => {

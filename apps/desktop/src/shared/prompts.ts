@@ -39,7 +39,7 @@ export function composeImplementPrompt(
       ? wireUpRule
       : `Assets — ${wanted.length} cast ${wanted.length === 1 ? 'entry has' : 'entries have'} no factory yet, or the critic faulted the model itself rather than how it is wired. Sculpt these BEFORE wiring anything up:
 ${wanted.map((entry) => `- \`${entry.name}\` (${entry.kind}) — ${entry.locator || 'see cast.md'}. Plays as: ${entry.role || 'see cast.md'}. Frames: ${entry.stills.join(', ') || 'none named; search the pack'}`).join('\n')}
-Hand each to its own sculptor, in parallel — they share no files and must not wait on each other (the \`sculptor\` subagent's dispatch rules are below, alongside the implementer's). Every sculptor works from a CROP, never a whole gameplay still: \`tools/crop.py\` is in the workspace (\`sheet\`/\`grid\`/\`cut\`) — aim by naming grid cells, never pixel guesses. Source order, best first: \`${referenceDir}/objects/\`, then \`images/\`, \`journey/\`, \`motion/\`, \`video/\` — abandon a bad crop rather than force it through, since a bad crop poisons every later pass and nothing downstream can notice. Verify each finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\` before moving on; report anything unbuildable rather than forcing it.
+Hand the entries out one sculptor each, in waves of at most ${ASSET_WAVE_SIZE} at a time (the \`sculptor\` subagent's dispatch rules are below, alongside the implementer's). Wait for a wave to report before launching the next. Do NOT launch them all at once: sculptors share no files, so a wide fan-out is tempting, but a sculptor only banks its work by finishing, and a usage limit that lands mid-wave throws away everything still in flight. Every sculptor works from a CROP, never a whole gameplay still: \`tools/crop.py\` is in the workspace (\`sheet\`/\`grid\`/\`cut\`) — aim by naming grid cells, never pixel guesses. Source order, best first: \`${referenceDir}/objects/\`, then \`images/\`, \`journey/\`, \`motion/\`, \`video/\` — abandon a bad crop rather than force it through, since a bad crop poisons every later pass and nothing downstream can notice. Check each wave as it lands, not just at the end: verify every finished entry actually wrote ./src/assets/<name>.ts and left its evidence under \`.img2threejs/<name>/\` before the next wave goes out; report anything unbuildable rather than forcing it.
 
 ${wireUpRule}`
   const referenceRule = `Before planning, delegating, or writing code, read ./${referenceDir}/README.md, ./${referenceDir}/research.md, ./${referenceDir}/journey.md, and ./${referenceDir}/story.md; VIEW the relevant stills, motion frames, and ordered journey shots; and WATCH the gameplay clip in the frozen Reference Pack. Treat the Expert gameplay dossier in research.md as the authority for controls, mechanics, advanced techniques, enemies, fail/win states, difficulty, and progression — do not substitute memory. Do not replace or redownload the pack.
@@ -61,6 +61,19 @@ You are the orchestrator and own the integrated game, not just its build. Before
     delegationRules,
   ].join('\n\n')
 }
+
+/**
+ * How many sculptors the Asset Build runs at once.
+ *
+ * Width sets the burn rate, not the total: the same cast costs about the same
+ * whether it is built four at a time or all at once. What a narrow wave buys
+ * is a bounded loss. A sculptor banks its work only by finishing — it writes
+ * `src/assets/<name>.ts` and its evidence at the end — so everything still in
+ * flight when a usage limit ends the run is gone. One run launched 27 at once,
+ * banked 8 in a six-minute burst, then hit the wall: the other 19 left no
+ * crops, no zone analysis, no blockouts, nothing to resume from.
+ */
+export const ASSET_WAVE_SIZE = 4
 
 export function buildCriticPrompt(userPrompt: string, round: number, referenceDir: string, engineGateRules: string): string {
   const evidenceDir = `critique/round-${round}`
