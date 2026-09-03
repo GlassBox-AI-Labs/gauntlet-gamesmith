@@ -222,6 +222,7 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   search: 'search',
   shot: 'media',
   metric: 'usage',
+  'raw-stream': 'system',
   error: 'error',
   stderr: 'error',
   system: 'system',
@@ -290,16 +291,26 @@ export interface RunTransferResult {
 
 export type RawStreamKind = 'stdout' | 'stderr' | 'agent'
 
-export interface RevealStreamInput {
+export interface RawStreamInput {
   runId: string
   stream: RawStreamKind
   /** Required for `agent`; it is the stable id from that run's AgentMetric. */
   agentId?: string
 }
 
-export interface RevealStreamResult {
-  ok: boolean
-  error?: string
+export interface ReadRawStreamInput extends RawStreamInput {
+  /** Byte cursor returned by the previous chunk; zero starts a new read. */
+  offset: number
+  /** File identity returned by the previous chunk prevents mixed-file reads. */
+  identity?: string
+}
+
+export interface RawStreamChunk {
+  contentBase64: string
+  nextOffset: number
+  totalBytes: number
+  complete: boolean
+  identity: string
 }
 
 export interface PlayState {
@@ -390,7 +401,7 @@ export interface LoopApi {
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
   prompt(loopId: string, role: RunRole, round: number): Promise<OperationResult<{ runId: string; prompt: string }>>
-  revealStream(input: RevealStreamInput): Promise<RevealStreamResult>
+  readStream(input: ReadRawStreamInput): Promise<OperationResult<RawStreamChunk>>
   report(loopId: string): Promise<OperationResult<string>>
   exportRun(loopId: string): Promise<RunTransferResult>
   importRun(): Promise<RunTransferResult>

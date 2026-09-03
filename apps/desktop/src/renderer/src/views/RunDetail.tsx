@@ -4,12 +4,13 @@ import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logL
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { agentDisplayStatus, logEmptyMessage } from '@/lib/run-visibility'
+import { agentDisplayStatus, logEmptyMessage, rawStreamForLogLine, rawStreamLinks, type RawStreamLink } from '@/lib/run-visibility'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
+import { RawStreamBrowser } from '@/views/RawStreamBrowser'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
 import { HARNESS_LABELS } from '../../../shared/harness'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, RawStreamChunk, ReadRawStreamInput, ReferenceStudy, RunRecord } from '../../../shared/loop'
 import { harnessFor, modelLabel } from '../../../shared/models'
 import { buildCriticPrompt, buildImplementPromptPreview } from '../../../shared/prompts'
 import { referenceRootForLoop } from '../../../shared/reference-path'
@@ -26,6 +27,13 @@ const STATUS_STYLES: Record<string, string> = {
   queued: 'bg-[#2c2828] text-[#96908d] border-transparent',
   cancelled: 'bg-[#2c2828] text-[#96908d] border-transparent',
   interrupted: 'bg-[#2c2828] text-[#96908d] border-transparent',
+}
+
+interface ActivityLogItem {
+  key: string
+  line: LoopLogLine
+  stream: RawStreamLink | null
+  order: number
 }
 
 function fmtTokens(n: number | null | undefined): string {
@@ -221,6 +229,7 @@ export interface RunDetailProps {
   onNewRun: () => void
   onLoadOlderRuns: () => void
   onLoadNewestRuns: () => void
+  onReadStream: (input: ReadRawStreamInput) => Promise<OperationResult<RawStreamChunk>>
   onScrollTop: () => void
 }
 
@@ -251,6 +260,7 @@ export function RunDetail({
   onNewRun,
   onLoadOlderRuns,
   onLoadNewestRuns,
+  onReadStream,
   onScrollTop,
 }: RunDetailProps): React.JSX.Element {
   const [renaming, setRenaming] = useState(false)
@@ -260,6 +270,7 @@ export function RunDetail({
   const [detailTab, setDetailTab] = useState<'activity' | 'references'>('activity')
   const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [selectedRawStream, setSelectedRawStream] = useState<RawStreamLink | null>(null)
   const logRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
 
@@ -279,8 +290,43 @@ export function RunDetail({
   const visibleRuns = selectedRound == null ? snapshot.runs : snapshot.runs.filter((run) => run.round === selectedRound)
   const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
   const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
-  const filteredLines = visibleLines.filter((line) => lineMatchesFilter(line, logFilter))
-  const emptyLogMessage = logEmptyMessage(visibleLines, filteredLines)
+  const rawStreams = loop.playTrusted ? rawStreamLinks(visibleRuns, visibleLines) : []
+  const linkedStreams = new Set<string>()
+  const loggedActivityItems: ActivityLogItem[] = visibleLines.map((line, index) => {
+    const stream = rawStreamForLogLine(line, rawStreams)
+    if (!stream || linkedStreams.has(stream.key)) return { key: `line:${index}`, line, stream: null, order: index }
+    linkedStreams.add(stream.key)
+    return { key: `line:${index}`, line, stream: { ...stream, ts: line.ts }, order: index }
+  })
+  const fallbackActivityItems: ActivityLogItem[] = rawStreams
+    .filter((stream) => !linkedStreams.has(stream.key))
+    .map((stream, index) => ({
+      key: `raw-stream:${stream.key}`,
+      line: {
+        loopId: loop.id,
+        runId: stream.input.runId,
+        ts: stream.ts,
+        kind: 'raw-stream',
+        channel: 'system',
+        text: stream.input.stream === 'stderr'
+          ? 'Raw error stream produced output for this attempt.'
+          : stream.input.stream === 'agent'
+            ? `Delegated raw stream appeared for ${stream.label}.`
+            : 'Raw output stream opened for this attempt.',
+        agentId: stream.agentId,
+        round: stream.round,
+        role: stream.role,
+      },
+      stream,
+      order: visibleLines.length + index,
+    }))
+  const allActivityItems = [...loggedActivityItems, ...fallbackActivityItems].sort((left, right) => {
+    const delta = Date.parse(left.line.ts) - Date.parse(right.line.ts)
+    return Number.isFinite(delta) && delta !== 0 ? delta : left.order - right.order
+  })
+  const activityItems = allActivityItems.filter((item) => lineMatchesFilter(item.line, logFilter))
+  const activityLines = allActivityItems.map((item) => item.line)
+  const emptyLogMessage = logEmptyMessage(activityLines, activityItems.map((item) => item.line))
   const referenceRoot = referenceRootForLoop(loop.id, referenceRuns.length > 0 || activeReferenceStudy != null)
   const initialImplementPrompt = exactImplementPrompt ?? undefined
   const systemPrompt = initialImplementPrompt
@@ -549,11 +595,21 @@ export function RunDetail({
             </Table>
           </div>
 
-          <LogFilterStrip lines={visibleLines} filter={logFilter} onChange={setLogFilter} />
+          <LogFilterStrip lines={activityLines} filter={logFilter} onChange={setLogFilter} />
           <div ref={logRef} onScroll={() => { const element = logRef.current; if (element) stickRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80 }} className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]">
             {emptyLogMessage && <span className="text-[#68615f]">{emptyLogMessage}</span>}
-            {filteredLines.map((line, index) => <div key={index} className="flex gap-2 whitespace-pre-wrap break-all"><span className="shrink-0 text-[#4d4744]">{fmtTs(line.ts)}</span><span className={logLineColor(line)}>{line.agentId && <span className="text-[#c0aee6]">[{line.agentId}] </span>}{line.text}</span></div>)}
+            {activityItems.map((item) => (
+              <div key={item.key} className="flex gap-2 whitespace-pre-wrap break-all">
+                <span className="shrink-0 text-[#4d4744]">{fmtTs(item.line.ts)}</span>
+                <span className={logLineColor(item.line)}>
+                  {item.line.agentId && <span className="text-[#c0aee6]">[{item.line.agentId}] </span>}
+                  {item.line.text}
+                  {item.stream && <>{' '}· <button type="button" onClick={() => setSelectedRawStream(item.stream)} className="rounded-sm text-[#8faac4] underline decoration-[#40505f] underline-offset-2 hover:text-[#bdd2e5] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#c9b5aa]">View raw stream</button></>}
+                </span>
+              </div>
+            ))}
           </div>
+          <RawStreamBrowser key={selectedRawStream?.key ?? 'closed'} stream={selectedRawStream} onRead={onReadStream} onClose={() => setSelectedRawStream(null)} />
         </section>
       )}
     </>

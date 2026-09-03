@@ -34,7 +34,7 @@ export const IPC = {
     deleteRuns: 'loop:delete',
     pickWorkspace: 'loop:pick-workspace',
     defaultWorkspace: 'loop:default-workspace',
-    revealStream: 'loop:reveal-stream',
+    readStream: 'loop:read-stream',
     update: 'loop:update',
   },
   media: { base: 'media:base' },

@@ -257,3 +257,24 @@ history trust checks remain unchanged.
 server may reload during edits or fail until the current write becomes valid; this is expected and
 is reported through the existing Play state. Play does not pause, stop, or otherwise take ownership
 of agent processes.
+
+## ADR-010 — Event-log-first observability (2026-09-03)
+
+**Status:** accepted.
+
+**Context.** VIS-001 requires complete operator visibility, but representing every new datum with a
+standalone icon, badge, card, or toolbar action makes the default interface harder to scan. Raw
+streams are the clearest case: they must remain reachable without filling attempt rows and agent
+chips with file controls or projecting potentially sensitive byte-complete output into the log.
+
+**Decision.** A new observability surface begins as a timestamped event-log entry and participates in
+the log's existing round, agent, and channel filters. Promotion to persistent UI outside the log must
+be justified by a distinct operator workflow, not merely by the existence of data. A log entry may
+open a transient focused reader when the detail is too large or structured for an inline event. Raw
+stream creation and delegated stream appearance follow this pattern; selecting their inline link
+opens only the associated stream in the side drawer through bounded, ownership-checked IPC.
+
+**Consequences.** The event log remains the default source of truth for behind-the-scenes activity,
+while the surrounding UI stays compact. Focused readers remain discoverable at the time and source
+where the event occurred. New permanent visibility controls require an explicit product rationale,
+and raw transcript bytes retain their existing trust and credential-handling boundaries.

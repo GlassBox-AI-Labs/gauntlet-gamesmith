@@ -45,6 +45,7 @@ export const KIND_COLORS: Record<string, string> = {
   stderr: 'text-[#a08b6f]',
   error: 'text-[#f0aaaa]',
   metric: 'text-[#9fb2c8]',
+  'raw-stream': 'text-[#9fb2c8]',
   verdict: 'text-[#f2d98c]',
   done: 'text-[#a9e5b8]',
 }

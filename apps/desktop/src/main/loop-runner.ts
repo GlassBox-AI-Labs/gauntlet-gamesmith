@@ -1840,6 +1840,7 @@ export class LoopRunner {
         machineLabel,
         authMode: 'subscription',
       })
+      this.log(loop.id, run.id, 'raw-stream', 'Raw output stream opened for this attempt.')
       this.logPrompt(loop.id, run.id, runPromptLabel(run), effectivePrompt)
       this.log(
         loop.id,

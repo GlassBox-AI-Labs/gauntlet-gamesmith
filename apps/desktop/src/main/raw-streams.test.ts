@@ -3,8 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  parseRevealStreamInput,
-  rawRevealTrustError,
+  parseReadStreamInput,
+  rawStreamTrustError,
+  readRawStreamChunk,
+  RAW_STREAM_CHUNK_BYTES,
   resolveProtectedRawStreamPath,
   resolveRawStreamPath,
   type RawStreamRoots,
@@ -30,28 +32,63 @@ afterEach(() => {
   root = null
 })
 
-describe('raw reveal trust', () => {
+describe('raw stream trust', () => {
   it('denies imported history before it can nominate private CLI-home paths', () => {
-    expect(rawRevealTrustError(false)).toMatch(/imported or created before trust provenance shipped/)
-    expect(rawRevealTrustError(true)).toBeNull()
+    expect(rawStreamTrustError(false)).toMatch(/imported or created before trust provenance shipped/)
+    expect(rawStreamTrustError(true)).toBeNull()
   })
 })
 
-describe('parseRevealStreamInput', () => {
+describe('parseReadStreamInput', () => {
   it('accepts typed primary and agent requests', () => {
-    expect(parseRevealStreamInput({ runId, stream: 'stdout' })).toEqual({ runId, stream: 'stdout' })
-    expect(parseRevealStreamInput({ runId, stream: 'agent', agentId: 'child:physics' })).toEqual({
+    expect(parseReadStreamInput({ runId, stream: 'stdout', offset: 0 })).toEqual({ runId, stream: 'stdout', offset: 0 })
+    expect(parseReadStreamInput({ runId, stream: 'agent', agentId: 'child:physics', offset: 42, identity: '1:2' })).toEqual({
       runId,
       stream: 'agent',
       agentId: 'child:physics',
+      offset: 42,
+      identity: '1:2',
     })
   })
 
-  it('rejects traversal, coercion, extra agent ids, and agents without separate streams', () => {
-    expect(() => parseRevealStreamInput({ runId: '../../run', stream: 'stdout' })).toThrow('Invalid run id')
-    expect(() => parseRevealStreamInput({ runId, stream: 'stdout', agentId: 'child:physics' })).toThrow('must not include')
-    expect(() => parseRevealStreamInput({ runId, stream: 'agent', agentId: 'orchestrator' })).toThrow('separate raw stream')
-    expect(() => parseRevealStreamInput({ runId, stream: 1 })).toThrow('Invalid raw stream kind')
+  it('rejects traversal, coercion, invalid cursors, and agents without separate streams', () => {
+    expect(() => parseReadStreamInput({ runId: '../../run', stream: 'stdout', offset: 0 })).toThrow('Invalid run id')
+    expect(() => parseReadStreamInput({ runId, stream: 'stdout', agentId: 'child:physics', offset: 0 })).toThrow('must not include')
+    expect(() => parseReadStreamInput({ runId, stream: 'agent', agentId: 'orchestrator', offset: 0 })).toThrow('separate raw stream')
+    expect(() => parseReadStreamInput({ runId, stream: 1, offset: 0 })).toThrow('Invalid raw stream kind')
+    expect(() => parseReadStreamInput({ runId, stream: 'stdout', offset: -1 })).toThrow('non-negative integer')
+    expect(() => parseReadStreamInput({ runId, stream: 'stdout', offset: 1.5 })).toThrow('non-negative integer')
+    expect(() => parseReadStreamInput({ runId, stream: 'stdout', offset: 0, identity: '../file' })).toThrow('identity is invalid')
+  })
+})
+
+describe('readRawStreamChunk', () => {
+  it('reads a large UTF-8 stream incrementally with a stable identity', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-raw-read-'))
+    const filePath = path.join(root, 'stream.jsonl')
+    const content = `${'a'.repeat(RAW_STREAM_CHUNK_BYTES)}é\n`
+    fs.writeFileSync(filePath, content)
+
+    const first = readRawStreamChunk(filePath, 0)
+    const second = readRawStreamChunk(filePath, first.nextOffset, first.identity)
+
+    expect(first.complete).toBe(false)
+    expect(second.complete).toBe(true)
+    expect(Buffer.concat([
+      Buffer.from(first.contentBase64, 'base64'),
+      Buffer.from(second.contentBase64, 'base64'),
+    ]).toString('utf8')).toBe(content)
+    expect(second.totalBytes).toBe(Buffer.byteLength(content))
+  })
+
+  it('rejects a different file identity between chunks', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-raw-read-'))
+    const filePath = path.join(root, 'stream.jsonl')
+    fs.writeFileSync(filePath, 'first')
+    const first = readRawStreamChunk(filePath, 0)
+    fs.renameSync(filePath, path.join(root, 'original.jsonl'))
+    fs.writeFileSync(filePath, 'replacement')
+    expect(() => readRawStreamChunk(filePath, 0, first.identity)).toThrow('changed between chunks')
   })
 })
 

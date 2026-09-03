@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import fixPath from 'fix-path'
 import type { AccountRotation, AccountsResult, AccountsState, HarnessAction, HarnessKind } from '../shared/harness'
 import { IPC } from '../shared/ipc'
@@ -50,7 +50,7 @@ import { LoopRunner } from './loop-runner'
 import { stopExistingLoop } from './loop-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
 import { hasActivePlay, playAccessError, playState, startPlay, stopAllPlayAndWait, stopPlay } from './play'
-import { parseRevealStreamInput, rawRevealTrustError, resolveProtectedRawStreamPath } from './raw-streams'
+import { parseReadStreamInput, rawStreamTrustError, readRawStreamChunk, resolveProtectedRawStreamPath } from './raw-streams'
 import { scanReferencePack } from './reference-pack'
 import { buildReport, scanCritiqueArtifacts } from './report'
 import { buildReportRow, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
@@ -334,19 +334,19 @@ function registerLoopIpc(): void {
       return failure(redactedErrorMessage(error, 'Could not load the exact prompt.'))
     }
   })
-  ipcMain.handle(IPC.loop.revealStream, (_event, value: unknown) => {
+  ipcMain.handle(IPC.loop.readStream, (_event, value: unknown) => {
     try {
-      if (!ledger) return { ok: false, error: 'Raw streams are not ready.' }
-      const input = parseRevealStreamInput(value)
+      if (!ledger) return failure('Raw streams are not ready.')
+      const input = parseReadStreamInput(value)
       const run = ledger.getRun(input.runId)
-      if (!run) return { ok: false, error: 'Run not found.' }
+      if (!run) return failure('Run not found.')
       if (input.stream === 'agent' && !run.metrics?.agents.some((agent) => agent.id === input.agentId)) {
-        return { ok: false, error: 'Agent stream does not belong to this run.' }
+        return failure('Agent stream does not belong to this run.')
       }
       const loop = ledger.getLoop(run.loopId)
-      if (!loop) return { ok: false, error: 'Run owner not found.' }
-      const trustError = rawRevealTrustError(loop.playTrusted)
-      if (trustError) return { ok: false, error: trustError }
+      if (!loop) return failure('Run owner not found.')
+      const trustError = rawStreamTrustError(loop.playTrusted)
+      if (trustError) return failure(trustError)
       const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
       const latestImplementRunId = ledger.latestRunIdForRole(loop.id, 'implement')
       const streamPath = resolveProtectedRawStreamPath(
@@ -361,10 +361,9 @@ function registerLoopIpc(): void {
         input,
         protectedWorkspaceRoots(),
       )
-      shell.showItemInFolder(streamPath)
-      return { ok: true }
+      return success(readRawStreamChunk(streamPath, input.offset, input.identity))
     } catch (error) {
-      return { ok: false, error: redactedErrorMessage(error, 'Could not reveal raw stream.') }
+      return failure(redactedErrorMessage(error, 'Could not read raw stream.'))
     }
   })
   ipcMain.handle(IPC.loop.report, (_event, value: unknown) => {

@@ -158,7 +158,11 @@ describe('LoopRunner lifecycle boundary', () => {
     const result = runner.start({ ...input(workspaceDir), prompt })
 
     expect(ledger.getLoop(result.loopId!)?.prompt).toBe(prompt)
-    expect(ledger.runsForLoop(result.loopId!)[0].prompt).toContain(`<goal>\n${prompt}\n</goal>`)
+    const [run] = ledger.runsForLoop(result.loopId!)
+    expect(run.prompt).toContain(`<goal>\n${prompt}\n</goal>`)
+    const [rawStreamEvent] = ledger.eventsForRun(run.id).filter((event) => event.kind === 'raw-stream')
+    expect(rawStreamEvent).toEqual(expect.objectContaining({ runId: run.id, text: 'Raw output stream opened for this attempt.' }))
+    expect(Date.parse(rawStreamEvent.ts)).toBeGreaterThanOrEqual(Date.parse(run.startedAt!))
   })
 
   it('creates a dedicated prompt-named project folder for a new UI run', () => {

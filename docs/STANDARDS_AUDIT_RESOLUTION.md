@@ -96,8 +96,10 @@ counts remain reviewable.
   goal, evidence, directory, artifact, and verdict contracts, and expose the effective implement
   contract before round one. Caller text and critic feedback are delimiter-safe. The full effective
   prompt is logged and hashed.
-- Raw primary and delegated streams can be revealed only through typed ownership-checked IPC. The
-  UI explicitly represents unavailable thinking, truncated evidence, async failures, process state,
+- Raw primary and delegated streams can be read only through typed ownership-checked IPC. Each
+  stream is linked from the timestamped event where it opened, appeared, or first emitted error
+  output; its link opens only that stream in a bounded, incremental side-drawer reader. The UI
+  explicitly represents unavailable thinking, truncated evidence, async failures, process state,
   and full nested-agent identity.
 - Evidence controls, disclosures, status indicators, project chooser, and lightbox have semantic
   keyboard/focus behavior and descriptive alternatives. Pure filtering/visibility predicates live

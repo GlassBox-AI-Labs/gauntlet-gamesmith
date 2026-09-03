@@ -52,6 +52,16 @@ describe('withPromptLogs', () => {
     expect(withPromptLogs([record], [event])[0].text).toContain('build the game')
   })
 
+  it('projects one timestamped raw-stream entry for a legacy started attempt', () => {
+    const record = { ...run('build the game'), startedAt: '2026-09-03T00:01:00.000Z' }
+    const projected = withPromptLogs([record], [])
+    expect(projected.filter((line) => line.kind === 'raw-stream')).toEqual([expect.objectContaining({
+      runId: record.id,
+      ts: record.startedAt,
+      text: 'Raw output stream opened for this attempt.',
+    })])
+  })
+
   it('replaces a partial bounded-tail projection with every prompt chunk', () => {
     const record = run('x'.repeat(7_500))
     const partial: LoopLogLine = {

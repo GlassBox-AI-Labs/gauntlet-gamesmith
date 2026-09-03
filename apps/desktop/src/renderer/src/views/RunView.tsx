@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { RunDetail } from '@/views/RunDetail'
 import { RunForm } from '@/views/RunForm'
 import { RunSidebar, RUN_ROUNDS_PAGE_SIZE } from '@/views/RunSidebar'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
 import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts, selectSnapshotInList } from '@/lib/run-pages'
-import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, ReferenceStudy } from '../../../shared/loop'
+import type { CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, RawStreamChunk, ReadRawStreamInput, ReferenceStudy } from '../../../shared/loop'
 import {
   DEFAULT_CRITIC,
   DEFAULT_ASSET,
@@ -480,6 +480,14 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     }
   }
 
+  const readStream = useCallback(async (input: ReadRawStreamInput): Promise<OperationResult<RawStreamChunk>> => {
+    try {
+      return await window.loops.readStream(input)
+    } catch (cause) {
+      return { ok: false, error: `Could not read raw stream: ${errorMessage(cause, 'IPC request failed.')}` }
+    }
+  }, [])
+
   const pickWorkspace = async (): Promise<void> => {
     try {
       const directory = await window.loops.pickWorkspace()
@@ -612,6 +620,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               onNewRun={beginNewRun}
               onLoadOlderRuns={() => { const offset = olderRunPageOffset(snapshot); if (offset != null) void loadRunPage(offset) }}
               onLoadNewestRuns={() => void loadRunPage(0)}
+              onReadStream={readStream}
               onScrollTop={() => requestAnimationFrame(() => mainRef.current?.scrollTo({ top: 0 }))}
             />
           )}

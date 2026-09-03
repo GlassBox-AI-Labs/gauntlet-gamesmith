@@ -29,6 +29,20 @@ function projectedPrompt(run: PromptLogRun, prompt: string): LoopLogLine[] {
   }))
 }
 
+function projectedRawStream(run: PromptLogRun): LoopLogLine | null {
+  if (!run.startedAt) return null
+  return {
+    loopId: run.loopId,
+    runId: run.id,
+    ts: run.startedAt,
+    kind: 'raw-stream',
+    channel: 'system',
+    round: run.round,
+    role: run.role,
+    text: 'Raw output stream opened for this attempt.',
+  }
+}
+
 /**
  * Ensure a bounded log response contains one complete effective prompt per run.
  * A tail query can retain only the final chunk of a long prompt; any partial or
@@ -64,6 +78,14 @@ export function withPromptLogs(runs: PromptLogRun[], source: LoopLogLine[]): Loo
     lines = lines.filter((line) => line.runId !== run.id || line.kind !== 'prompt')
     const firstRunLine = lines.findIndex((line) => line.runId === run.id)
     lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, ...expected)
+  }
+  // Histories launched before raw-stream navigation shipped still get the
+  // same event-log-first presentation without mutating their stored history.
+  for (const run of candidates.slice(-64)) {
+    const rawStream = projectedRawStream(run)
+    if (!rawStream || lines.some((line) => line.runId === run.id && line.kind === 'raw-stream')) continue
+    const firstRunLine = lines.findIndex((line) => line.runId === run.id)
+    lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, rawStream)
   }
   if (omitted && runs[0]) {
     lines.push({

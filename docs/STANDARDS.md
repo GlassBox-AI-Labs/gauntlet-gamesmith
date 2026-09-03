@@ -343,9 +343,14 @@ Channel conventions:
   files and shown nested under the agent that launched them, with their own `agentId`, tool calls,
   tokens, and cost. A worker that runs for an hour with no visible activity is a bug, not a quiet
   success.
+- New observability defaults to a timestamped entry in the event log, where it inherits the existing
+  round, agent, and channel filters. Data does not earn a separate badge, card, icon, or persistent
+  control merely because it exists. Promote it out of the log only when a distinct operator workflow
+  justifies the additional UI; focused detail may open from an event-log link in a transient drawer.
 - Truncation is for the projection only. Log lines cap thought text and tool inputs, but the raw
   stream file for every run and every child stays complete on disk, and the UI must let the operator
-  open it. Do not lower a truncation limit to make the log tidier.
+  inspect it from a timestamped event-log link. Do not lower a truncation limit to make the log
+  tidier or dump byte-complete, potentially sensitive raw output into the projected event log.
 - The exact execution prompt for every run, including delegated briefs written to
   `.gauntlet-loop/`, is visible in the log (LOG-001).
 - All channels are visible by default. Hiding is an operator choice made in the filter strip, and
