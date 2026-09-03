@@ -465,6 +465,28 @@ export class LoopRunner {
   }
 
   /** Revive a stopped loop: requeue where it left off and keep going. */
+  /**
+   * The phase a resume should pick up from.
+   *
+   * Not simply the last run. A failed Asset Build is tolerated on purpose —
+   * the implementer models whatever is missing — so a usage limit that ends
+   * the assets run still lets the loop advance and fail the implement run
+   * behind it. Retrying only the last run then rebuilds the game around a
+   * half-built cast and never revisits the models.
+   *
+   * So resume goes back to the earliest phase of the round that has no
+   * succeeded run, and retries that phase's most recent attempt.
+   */
+  private resumeTarget(loopId: string, round: number): RunRecord | null {
+    const runs = this.ledger.runsForLoop(loopId).filter((run) => run.round === round)
+    for (const role of ['assets', 'implement', 'critique'] as const) {
+      const attempts = runs.filter((run) => run.role === role)
+      if (attempts.length === 0 || attempts.some((run) => run.status === 'succeeded')) continue
+      return attempts.at(-1) ?? null
+    }
+    return null
+  }
+
   resumeLoop(loopId: string): StartLoopResult {
     const loop = this.ledger.getLoop(loopId)
     if (!loop) return { ok: false, error: 'Loop not found.' }
@@ -475,17 +497,21 @@ export class LoopRunner {
 
     const runs = this.ledger.runsForLoop(loopId)
     const last = runs.at(-1)
+    // Round 0 has no phase order to walk back through, so the reference run is
+    // its own resume target.
+    const retry = last && last.status !== 'succeeded' ? (this.resumeTarget(loopId, last.round) ?? last) : null
     this.ledger.patchLoop(loopId, { status: 'running', stopReason: null })
-    if (last && last.status !== 'succeeded') {
-      const base = last.prompt.startsWith(RESUME_PREFIX) ? last.prompt.slice(RESUME_PREFIX.length) : last.prompt
+    if (retry) {
+      const base = retry.prompt.startsWith(RESUME_PREFIX) ? retry.prompt.slice(RESUME_PREFIX.length) : retry.prompt
       this.ledger.createRun({
         loopId,
-        round: last.round,
-        role: last.role,
-        harness: last.harness,
-        prompt: last.role === 'implement' ? RESUME_PREFIX + base : base,
+        round: retry.round,
+        role: retry.role,
+        harness: retry.harness,
+        prompt: retry.role === 'implement' ? RESUME_PREFIX + base : base,
       })
-      this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${last.round} ${last.role}.`)
+      const skipped = retry.id === last?.id ? '' : ` (the ${last?.role} run after it never succeeded either)`
+      this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${retry.round} ${retry.role}${skipped}.`)
     } else if (last?.role === 'reference') {
       const referenceDir = this.referenceDir(loopId)
       this.ledger.patchLoop(loopId, { round: 1 })
