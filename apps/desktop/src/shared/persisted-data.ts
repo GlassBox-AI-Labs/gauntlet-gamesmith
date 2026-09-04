@@ -5,6 +5,7 @@ const VERDICT_SEVERITIES = new Set(['critical', 'major', 'minor'])
 const MAX_SUMMARY_LENGTH = 4_000
 const MAX_FINDINGS = 100
 const MAX_FINDING_LENGTH = 2_000
+const VERDICT_TARGET = /^(?:game|asset:[a-z0-9][a-z0-9-]{0,249})$/
 const MAX_AGENTS = 512
 const MAX_MODELS = 128
 // Historical CLI streams can carry a bounded terminal-style suffix such as
@@ -125,10 +126,15 @@ export function normalizeVerdict(value: unknown): Verdict | null {
 
   const findings: VerdictFinding[] = []
   for (const candidate of value.findings) {
-    if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['severity', 'text'])) return null
+    if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['severity', 'text', 'target'])) return null
     if (typeof candidate.severity !== 'string' || !VERDICT_SEVERITIES.has(candidate.severity)) return null
     if (typeof candidate.text !== 'string' || candidate.text.length === 0 || candidate.text.length > MAX_FINDING_LENGTH) return null
-    findings.push({ severity: candidate.severity, text: redactLogText(candidate.text) })
+    if (candidate.target !== undefined && (typeof candidate.target !== 'string' || !VERDICT_TARGET.test(candidate.target))) return null
+    findings.push({
+      severity: candidate.severity,
+      text: redactLogText(candidate.text),
+      ...(typeof candidate.target === 'string' ? { target: candidate.target } : {}),
+    })
   }
   return { score: value.score, pass: value.pass, summary: redactLogText(value.summary), findings }
 }

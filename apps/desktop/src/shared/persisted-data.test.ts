@@ -13,6 +13,17 @@ describe('normalizeVerdict', () => {
     expect(normalizeVerdict(valid)).toEqual(valid)
   })
 
+  it('accepts and preserves the prompt-required game and asset targets', () => {
+    const targeted = {
+      ...valid,
+      findings: [
+        { severity: 'critical', text: 'The playable field is empty.', target: 'game' },
+        { severity: 'major', text: 'The ghost silhouette is incorrect.', target: 'asset:ghost' },
+      ],
+    }
+    expect(normalizeVerdict(targeted)).toEqual(targeted)
+  })
+
   it('redacts free-form verdict strings without changing score, pass, or severity', () => {
     const secret = `ghp_${'a'.repeat(36)}`
     expect(normalizeVerdict({
@@ -34,6 +45,9 @@ describe('normalizeVerdict', () => {
     { ...valid, pass: 'true' },
     { ...valid, findings: ['too dark'] },
     { ...valid, findings: [{ severity: 'note', text: 'too dark' }] },
+    { ...valid, findings: [{ severity: 'major', text: 'too dark', target: 'ui' }] },
+    { ...valid, findings: [{ severity: 'major', text: 'too dark', target: 'asset:../../escape' }] },
+    { ...valid, findings: [{ severity: 'major', text: 'too dark', target: 'asset:' }] },
     { ...valid, extra: true },
   ])('rejects malformed or coercible verdict %#', (value) => {
     expect(normalizeVerdict(value)).toBeNull()

@@ -30,7 +30,7 @@ describe('parseVerdictArtifact', () => {
     score: 0.34,
     pass: false,
     summary: 'Far below AAA.',
-    findings: [{ severity: 'critical', text: 'No PBR materials.' }],
+    findings: [{ severity: 'critical', text: 'No PBR materials.', target: 'game' }],
   }
 
   it('accepts only the strict, revision-bound machine schema', () => {
@@ -38,7 +38,7 @@ describe('parseVerdictArtifact', () => {
       score: 0.34,
       pass: false,
       summary: 'Far below AAA.',
-      findings: [{ severity: 'critical', text: 'No PBR materials.' }],
+      findings: [{ severity: 'critical', text: 'No PBR materials.', target: 'game' }],
     })
     expect(parseVerdictArtifact({ ...valid, pass: 'false' }, REVISION).verdict).toBeNull()
     expect(parseVerdictArtifact({ ...valid, score: '0.34' }, REVISION).verdict).toBeNull()
