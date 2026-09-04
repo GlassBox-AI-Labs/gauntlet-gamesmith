@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto'
 import type { LoopModels } from '../shared/loop'
-import { harnessFor, isUltracode } from '../shared/models'
-import { ASSET_WAVE_SIZE } from '../shared/prompts'
-import { claudeArgs, codexArgs, DISPATCHER_MODEL } from './harness-plans'
+import { DISPATCHER_MODEL_ID, harnessFor, isUltracode } from '../shared/models'
+import { ASSET_WAVE_SIZE, MACOS_BROWSER_SANDBOX_RULE } from '../shared/prompts'
+import { CHILD_PROCESS_EXIT_EVENT } from './child-process-exit'
+import { assertChildSlug } from './child-stream-name'
+import { claudeArgs, codexArgs } from './harness-plans'
 import { RUN_METADATA_DIR } from './run-transfer'
 
 /**
@@ -20,46 +23,69 @@ import { RUN_METADATA_DIR } from './run-transfer'
  * tokens and cost exactly as it parses a run it started itself.
  */
 const STREAM_DIR = `${RUN_METADATA_DIR}/agents`
+export const GAUNTLET_IMPLEMENTER_AGENT_PREFIX = 'gauntlet-implementer-v2-'
+
+export interface ImplementerAgentDefinition {
+  agentName: string
+  filename: string
+  markdown: string
+}
 
 /** Shell-quote for the single command line an agent is told to run. */
-function quote(value: string): string {
+export function quote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function commandSlug(slug: string): string {
+  // The literal placeholder appears only in prompt templates. Every concrete
+  // slug passed by code must satisfy the same grammar as stream-file readers.
+  return slug === '<slug>' ? slug : assertChildSlug(slug)
+}
+
+/**
+ * Create the stream before launch, refuse replacement evidence, and append a
+ * controller-readable exit record even when the CLI dies before its first
+ * protocol event. The compound command matters: callers may background it,
+ * and the marker must stay in the same job as the child process.
+ */
+function observedChildCommand(command: string, stream: string): string {
+  return `( set -C; : > ${stream} || exit $?; ${command} >> ${stream}; gauntlet_child_status=$?; printf '\\n{"type":"${CHILD_PROCESS_EXIT_EVENT}","exit_code":%d}\\n' "$gauntlet_child_status" >> ${stream}; exit "$gauntlet_child_status" )`
 }
 
 /** The command a claude dispatcher runs to hand its slice to codex. */
 export function codexChildCommand(model: string, effort: string, slug: string): string {
-  return `codex ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${slug}.md > ${STREAM_DIR}/${slug}.codex.jsonl`
+  const safeSlug = commandSlug(slug)
+  const stream = `${STREAM_DIR}/${safeSlug}.codex.jsonl`
+  return observedChildCommand(
+    `"\${GAUNTLET_CODEX_BIN:?}" ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${safeSlug}.md`,
+    stream,
+  )
 }
 
 /** The command a codex orchestrator runs to hand a slice to claude. */
 export function claudeChildCommand(model: string, effort: string, slug: string): string {
-  const args = claudeArgs(model, effort, `$(cat ${RUN_METADATA_DIR}/claude-${slug}.md)`)
+  const safeSlug = commandSlug(slug)
+  const args = claudeArgs(model, effort, `$(cat ${RUN_METADATA_DIR}/claude-${safeSlug}.md)`)
     .map((arg) => (arg.startsWith('$(cat ') ? `"${arg}"` : quote(arg)))
     .join(' ')
-  return `claude ${args} > ${STREAM_DIR}/${slug}.claude.jsonl`
+  const stream = `${STREAM_DIR}/${safeSlug}.claude.jsonl`
+  return observedChildCommand(`"\${GAUNTLET_CLAUDE_BIN:?}" ${args}`, stream)
 }
 
 /**
- * The claude agent definition written to `.claude/agents/implementer.md`.
+ * The claude agent definition written to the versioned Gauntlet-owned agent file.
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function implementerAgentMd(models: LoopModels, referenceDir: string): string | null {
+export function implementerAgentDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition | null {
   if (harnessFor(models.orchestratorModel) !== 'claude' || !models.subagentModel) return null
-  const header = (model: string, effort: string): string => `---
-name: implementer
-description: Builds and polishes one assigned slice of the game to AAA quality. Use for ALL substantial implementation work.
-model: ${model}
-effort: ${effort}
----
+  const workerIsClaude = harnessFor(models.subagentModel) === 'claude'
+  const frontModel = workerIsClaude ? models.subagentModel : DISPATCHER_MODEL_ID
+  const frontEffort = workerIsClaude ? models.subagentEffort : 'low'
+  const body = workerIsClaude
+    ? `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
 `
-  if (harnessFor(models.subagentModel) === 'claude') {
-    return `${header(models.subagentModel, models.subagentEffort)}You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
-`
-  }
-  // Claude Code runs only claude models as subagents, so a codex worker is
-  // fronted by the cheapest claude model, doing nothing but launching it.
-  return `${header(DISPATCHER_MODEL, 'low')}You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
+    : `You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
 2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop. Write your full brief to \`${RUN_METADATA_DIR}/codex-<slug>.md\`: the slice, the files it owns, the exact Reference Pack path and relevant files it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
@@ -70,7 +96,36 @@ effort: ${effort}
    Do NOT use \`run_in_background\`, and do NOT poll it. The timeout ceiling is raised for this run, so the call simply returns when the work is done. The app reads that stream file as it is written, so nothing is lost while you wait.
 4. When it returns, read the tail of the stream file to see what codex did, then report exactly what changed and how to verify it. Say plainly if it changed nothing.
 `
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ version: 2, frontModel, frontEffort, body }))
+    .digest('hex')
+    .slice(0, 24)
+  const agentName = `${GAUNTLET_IMPLEMENTER_AGENT_PREFIX}${digest}`
+  const markdown = `---
+name: ${agentName}
+description: Builds and polishes one assigned slice of the game to AAA quality. Use for ALL substantial implementation work.
+model: ${frontModel}
+effort: ${frontEffort}
+---
+${body}`
+  return { agentName, filename: `${agentName}.md`, markdown }
 }
+
+/** Compatibility accessor for code that only needs the generated markdown. */
+export function implementerAgentMd(models: LoopModels, referenceDir: string): string | null {
+  return implementerAgentDefinition(models, referenceDir)?.markdown ?? null
+}
+
+/*
+ * Agent definitions are immutable and definition-addressed. A workspace can
+ * retain old configurations without a later run replacing their bytes.
+ */
+function requireImplementerDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition {
+  const definition = implementerAgentDefinition(models, referenceDir)
+  if (!definition) throw new Error('Claude implementer definition requested for a non-delegated phase.')
+  return definition
+}
+
 
 /**
  * How the Reference Study fans its deep-research sweep out. Researchers are
@@ -84,6 +139,9 @@ export function researchRules(models: LoopModels, referenceDir: string): string 
     return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
   }
   const harness = harnessFor(models.researchModel)
+  if (harness === 'codex' && harnessFor(models.orchestratorModel) === 'codex') {
+    return `Fan this sweep out to parallel researchers on ${models.researchModel} at ${models.researchEffort} effort — one per angle, cheap and disposable. For each angle choose a short task name using lowercase letters, digits, and underscores (e.g. research_reddit), then delegate it with \`spawn_agent\`, passing model="${models.researchModel}", reasoning_effort="${models.researchEffort}", and fork_turns="none". Each message must be a self-contained brief telling the researcher exactly what to find and to write its findings — every claim with its source URL — to ${referenceDir}/research/<task-name>.md. Researchers research and write notes only; they must never touch project source or download pack media. Launch all angles before waiting, then wait for every researcher to finish. Read their notes and distill them into ${referenceDir}/research.md yourself.`
+  }
   const briefFile = `${RUN_METADATA_DIR}/${harness}-<slug>.md`
   const command =
     harness === 'codex'
@@ -115,15 +173,14 @@ function referenceHandoff(referenceDir: string): string {
 
 /** The rules appended to the implement prompt, per combination. */
 export function delegationRules(models: LoopModels, referenceDir: string): string {
-  const verify =
-    'Verify the game actually builds and runs before you finish. ' +
-    'Browser checks run inside a macOS sandbox: drive them with Playwright\'s bundled browsers (`chromium.launch({ headless: true })`). Never pass `channel: \'chrome\'` / `\'msedge\'` and never launch an installed browser app — the sandbox blocks it from registering with macOS, so it aborts on launch and files a crash report.'
+  const verify = `Verify the game actually builds and runs before you finish. ${MACOS_BROWSER_SANDBOX_RULE}`
   if (!models.subagentModel) {
     return `Working rules: you implement this yourself — do NOT delegate to subagents. ${verify}`
   }
   const rules = `${HANDS_OFF} ${referenceHandoff(referenceDir)} ${verify}`
   const orchestrator = harnessFor(models.orchestratorModel)
   const worker = harnessFor(models.subagentModel)
+  const agent = orchestrator === 'claude' ? requireImplementerDefinition(models, referenceDir) : null
 
   if (orchestrator === 'codex' && worker === 'codex') {
     return `Orchestration rules: you are the orchestrator. Split the work into slices with disjoint write sets and delegate each one with \`spawn_agent\`, passing model="${models.subagentModel}", reasoning_effort="${models.subagentEffort}", and fork_turns="none" — the model override is refused on a full-history fork, so fork_turns="none" is required, which also means each brief must stand alone. Then wait for every agent to finish and integrate their work. Do not implement slices yourself. ${rules}`
@@ -138,7 +195,7 @@ followed by \`wait\`. Each command runs to completion on its own — do not inte
   }
 
   if (orchestrator === 'claude' && worker === 'codex') {
-    return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — each one hands its slice to ${models.subagentModel} through the codex CLI), one per workstream with disjoint write sets, and integrate their results. Each dispatcher holds its call open until codex finishes, so expect them to take a long time and do not chase them. ${rules}`
+    return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`${agent!.agentName}\` subagents (defined in .claude/agents/${agent!.filename} — each one hands its slice to ${models.subagentModel} through the codex CLI), one per workstream with disjoint write sets, and integrate their results. Each dispatcher holds its call open until codex finishes, so expect them to take a long time and do not chase them. ${rules}`
   }
 
   // A workflow agent picks its model as: model the script names → the agent
@@ -146,9 +203,9 @@ followed by \`wait\`. Each command runs to completion on its own — do not inte
   // var (set on the spawn) pins the model either way, but effort only binds
   // through the agent file, so the script has to name the agent type to get it.
   const workflowRule = isUltracode(models)
-    ? ` When you orchestrate through a workflow, pass \`{agentType: 'implementer'}\` on every \`agent()\` call so each one runs ${models.subagentModel} at ${models.subagentEffort} effort rather than inheriting yours.`
+    ? ` When you orchestrate through a workflow, pass \`{agentType: '${agent!.agentName}'}\` on every \`agent()\` call so each one runs ${models.subagentModel} at ${models.subagentEffort} effort rather than inheriting yours.`
     : ''
-  return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`implementer\` subagents (defined in .claude/agents/implementer.md — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} ${rules}`
+  return `Orchestration rules: you are the orchestrator. Delegate ALL substantial implementation work to parallel \`${agent!.agentName}\` subagents (defined in .claude/agents/${agent!.filename} — they run ${models.subagentModel} at ${models.subagentEffort} effort), one per workstream, and integrate their results.${workflowRule} ${rules}`
 }
 
 
@@ -179,7 +236,7 @@ export function sculptorBrief(referenceDir: string): string {
 export function sculptorAgentMd(models: LoopModels, referenceDir: string): string | null {
   if (harnessFor(models.orchestratorModel) !== 'claude' || !models.assetModel) return null
   const claudeWorker = harnessFor(models.assetModel) === 'claude'
-  const model = claudeWorker ? models.assetModel : DISPATCHER_MODEL
+  const model = claudeWorker ? models.assetModel : DISPATCHER_MODEL_ID
   const effort = claudeWorker ? models.assetEffort : 'low'
   const header = `---
 name: sculptor

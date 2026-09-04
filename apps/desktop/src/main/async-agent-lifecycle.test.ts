@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { channelForKind } from '../shared/loop'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
-import { LoopRunner } from './loop-runner'
+import { createClaudeImplementProtocol } from './roles/implement-claude'
+import { observeChildStreams } from './child-agents'
 
 /**
  * Backgrounded subagents answer the Agent tool within a millisecond ("launched")
@@ -28,20 +30,40 @@ afterEach(() => {
   dir = null
 })
 
-function setup(): { runner: LoopRunner; ledger: Ledger; loopId: string; runId: string } {
+function setup(): { ledger: Ledger; loopId: string; runId: string } {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-async-agent-'))
   const workspaceDir = path.join(dir, 'workspace')
   fs.mkdirSync(workspaceDir, { recursive: true })
   const ledger = new Ledger(path.join(dir, 'ledger.db'))
   const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
   const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
-  return { runner: new LoopRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' })), ledger, loopId: loop.id, runId: run.id }
+  return { ledger, loopId: loop.id, runId: run.id }
 }
 
-function replay(lines: unknown[], runner: LoopRunner, ledger: Ledger, loopId: string, runId: string): void {
+function replay(lines: unknown[], ledger: Ledger, loopId: string, runId: string): void {
   const loop = ledger.getLoop(loopId)!
   const run = ledger.getRun(runId)!
-  const parser = (runner as unknown as { makeImplementParser: (l: typeof loop, r: typeof run, g: { suppress: boolean }) => { onLine(line: string): void } }).makeImplementParser(loop, run, { suppress: false })
+  const parser = createClaudeImplementProtocol({
+    ledger,
+    loop,
+    run,
+    gate: { suppress: false },
+    childBoundary: observeChildStreams(loop.workspaceDir),
+    now: Date.now,
+    nowIso: () => new Date().toISOString(),
+    harnessHome: () => path.join(dir!, 'harness'),
+    log: (kind, text, agentId) => ledger.appendEvent({
+      loopId,
+      runId,
+      ts: new Date().toISOString(),
+      kind,
+      channel: channelForKind(kind),
+      text,
+      ...(agentId ? { agentId } : {}),
+    }),
+    broadcast: () => {},
+    finalize: async () => {},
+  })
   for (const line of lines) parser.onLine(JSON.stringify(line))
   // Metrics are persisted on a 15s throttle; jump past it and nudge the parser.
   vi.advanceTimersByTime(20_000)
@@ -62,25 +84,24 @@ const spawnLines = [
 
 describe('backgrounded subagents', () => {
   it('stays running after the launch receipt', () => {
-    const { runner, ledger, loopId, runId } = setup()
-    replay(spawnLines, runner, ledger, loopId, runId)
+    const { ledger, loopId, runId } = setup()
+    replay(spawnLines, ledger, loopId, runId)
     expect(agent(ledger, runId, TOOL_ID)?.done).toBe(false)
   })
 
   it('finishes on task_notification', () => {
-    const { runner, ledger, loopId, runId } = setup()
-    replay([...spawnLines, { type: 'system', subtype: 'task_notification', task_id: 'a1', tool_use_id: TOOL_ID, status: 'completed' }], runner, ledger, loopId, runId)
+    const { ledger, loopId, runId } = setup()
+    replay([...spawnLines, { type: 'system', subtype: 'task_notification', task_id: 'a1', tool_use_id: TOOL_ID, status: 'completed' }], ledger, loopId, runId)
     expect(agent(ledger, runId, TOOL_ID)?.done).toBe(true)
   })
 
   it('lists an agent that never streamed a message of its own', () => {
-    const { runner, ledger, loopId, runId } = setup()
+    const { ledger, loopId, runId } = setup()
     replay(
       [
         { type: 'system', subtype: 'task_started', task_id: 'a2', tool_use_id: 'toolu_silent', description: 'Port the audio bus', task_type: 'local_agent', is_backgrounded: true },
         { type: 'system', subtype: 'task_notification', task_id: 'a2', tool_use_id: 'toolu_silent', status: 'completed' },
       ],
-      runner,
       ledger,
       loopId,
       runId,
@@ -90,33 +111,33 @@ describe('backgrounded subagents', () => {
     expect(silent?.done).toBe(true)
   })
 
-  // A shell command is a tracked task too. It used to be logged and listed as
-  // a subagent — 234 of them against 23 real agents on one real round.
-  it('ignores a tracked shell command', () => {
-    const { runner, ledger, loopId, runId } = setup()
+  // A shell command is a tracked task too. It must stay out of agent metrics,
+  // while VIS-001 still requires its raw lifecycle event in the run log.
+  it('does not classify a tracked shell command as a subagent', () => {
+    const { ledger, loopId, runId } = setup()
     replay(
       [
         { type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'toolu_bash', description: 'Retake final QA screenshots', task_type: 'local_bash', is_backgrounded: false },
         { type: 'system', subtype: 'task_notification', task_id: 'b1', tool_use_id: 'toolu_bash', status: 'completed' },
       ],
-      runner,
       ledger,
       loopId,
       runId,
     )
     expect(agent(ledger, runId, 'toolu_bash')).toBeUndefined()
-    expect(ledger.eventsForRun(runId).some((line) => line.text.includes('Retake final QA screenshots'))).toBe(false)
+    const shellLifecycle = ledger.eventsForRun(runId).filter((line) => line.text.includes('Retake final QA screenshots'))
+    expect(shellLifecycle.length).toBeGreaterThan(0)
+    expect(shellLifecycle.every((line) => line.kind === 'system')).toBe(true)
   })
 
   it('still finishes a synchronous agent on its tool_result', () => {
-    const { runner, ledger, loopId, runId } = setup()
+    const { ledger, loopId, runId } = setup()
     replay(
       [
         spawnLines[0],
         { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: TOOL_ID, content: [{ type: 'text', text: 'done' }] }] } },
         spawnLines[3],
       ],
-      runner,
       ledger,
       loopId,
       runId,

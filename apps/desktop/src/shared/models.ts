@@ -1,5 +1,6 @@
 import type { HarnessKind } from './harness'
 import type { LoopModels } from './loop'
+import { redactLogText } from './redact-log'
 
 /** Per-agent effort. Both CLIs accept these five for any agent. */
 export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -21,14 +22,28 @@ export interface ModelChoice {
   label: string
 }
 
+/** Canonical runtime ids shared by pickers, spawn plans, and pricing. */
+export const MODEL_IDS = {
+  claudeOpus: 'claude-opus-5',
+  claudeFable51: 'claude-fable-5-1',
+  claudeFable: 'claude-fable-5',
+  claudeSonnet: 'claude-sonnet-5',
+  claudeHaiku: 'claude-haiku-4-5',
+  codexSol: 'gpt-5.6-sol',
+  codexTerra: 'gpt-5.6-terra',
+  codexLuna: 'gpt-5.6-luna',
+} as const
+
+export const DISPATCHER_MODEL_ID = MODEL_IDS.claudeSonnet
+
 const CLAUDE_MODELS: readonly ModelChoice[] = [
-  { id: 'claude-opus-5', label: 'Opus 5' },
+  { id: MODEL_IDS.claudeOpus, label: 'Opus 5' },
   // Fable 5.1 needs Claude Code 2.1.251+. An older CLI fails the run with
   // `400 ... does not support this model`, so a loop picking it on a stale
   // binary dies on its first call rather than degrading.
-  { id: 'claude-fable-5-1', label: 'Fable 5.1' },
-  { id: 'claude-fable-5', label: 'Fable 5' },
-  { id: 'claude-sonnet-5', label: 'Sonnet 5' },
+  { id: MODEL_IDS.claudeFable51, label: 'Fable 5.1' },
+  { id: MODEL_IDS.claudeFable, label: 'Fable 5' },
+  { id: MODEL_IDS.claudeSonnet, label: 'Sonnet 5' },
 ]
 
 /**
@@ -42,9 +57,9 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
  */
 export const AGENT_MODEL_CHOICES: readonly ModelChoice[] = [
   ...CLAUDE_MODELS,
-  { id: 'gpt-5.6-sol', label: 'Codex · gpt-5.6-sol' },
-  { id: 'gpt-5.6-terra', label: 'Codex · gpt-5.6-terra' },
-  { id: 'gpt-5.6-luna', label: 'Codex · gpt-5.6-luna' },
+  { id: MODEL_IDS.codexSol, label: 'Codex · gpt-5.6-sol' },
+  { id: MODEL_IDS.codexTerra, label: 'Codex · gpt-5.6-terra' },
+  { id: MODEL_IDS.codexLuna, label: 'Codex · gpt-5.6-luna' },
 ]
 
 export function isCodexModel(id: string | null | undefined): boolean {
@@ -54,6 +69,12 @@ export function isCodexModel(id: string | null | undefined): boolean {
 /** Which CLI a model runs on. Every role derives its harness this way. */
 export function harnessFor(model: string | null | undefined): HarnessKind {
   return isCodexModel(model) ? 'codex' : 'claude'
+}
+
+/** Match a CLI's dated/suffixed model name back to a current canonical id. */
+export function canonicalModelId(model: string | null | undefined): string | null {
+  if (!model) return null
+  return Object.values(MODEL_IDS).find((id) => model === id || model.startsWith(`${id}-`)) ?? null
 }
 
 export function orchestratorEfforts(model: string): readonly string[] {
@@ -81,9 +102,9 @@ export interface ImplementerFields {
 
 /** Where the run form starts: the combination worth reaching for by default. */
 export const DEFAULT_IMPLEMENTER: ImplementerFields = {
-  orchestratorModel: 'claude-opus-5',
+  orchestratorModel: MODEL_IDS.claudeOpus,
   orchestratorEffort: 'ultracode',
-  subagentModel: 'claude-opus-5',
+  subagentModel: MODEL_IDS.claudeOpus,
   subagentEffort: 'high',
 }
 
@@ -94,7 +115,7 @@ export interface CriticFields {
 }
 
 /** Where the run form starts: a critic outside the implementer's model family. */
-export const DEFAULT_CRITIC: CriticFields = { criticModel: 'gpt-5.6-sol', criticEffort: 'medium' }
+export const DEFAULT_CRITIC: CriticFields = { criticModel: MODEL_IDS.codexSol, criticEffort: 'medium' }
 
 /** The Reference Study's deep-research fan-out is picked the same way. */
 export interface ResearchFields {
@@ -103,7 +124,7 @@ export interface ResearchFields {
 }
 
 /** Where the run form starts: cheap, parallel researchers — luna is codex's fast/cheap tier. */
-export const DEFAULT_RESEARCH: ResearchFields = { researchModel: 'gpt-5.6-luna', researchEffort: 'medium' }
+export const DEFAULT_RESEARCH: ResearchFields = { researchModel: MODEL_IDS.codexLuna, researchEffort: 'medium' }
 
 /** The Asset Build's sculptors. Null skips the phase entirely. */
 export interface AssetFields {
@@ -119,7 +140,7 @@ export interface AssetFields {
  * research uses: this phase judges its own renders against a reference photo
  * pass after pass, so the vision is the job.
  */
-export const DEFAULT_ASSET: AssetFields = { assetModel: 'claude-opus-5', assetEffort: 'high' }
+export const DEFAULT_ASSET: AssetFields = { assetModel: MODEL_IDS.claudeOpus, assetEffort: 'high' }
 
 /** The one-line note under the run form, judged against who is implementing. */
 export function describeCritic(criticModel: string, implementerModel: string): string {
@@ -139,6 +160,15 @@ export function isUltracode(models: Pick<LoopModels, 'orchestratorEffort'>): boo
 
 function pick<T extends string>(allowed: readonly T[], value: string | null | undefined, fallback: T): T {
   return allowed.includes(value as T) ? (value as T) : fallback
+}
+
+function storedModel(value: unknown, fallback: string): string {
+  return typeof value === 'string' && /^(?:claude-|gpt-)[a-zA-Z0-9._:-]{1,127}$/.test(value) && redactLogText(value) === value ? value : fallback
+}
+
+function storedOptionalModel(value: unknown, fallback: string | null): string | null {
+  if (value === null) return null
+  return typeof value === 'string' && /^(?:claude-|gpt-)[a-zA-Z0-9._:-]{1,127}$/.test(value) && redactLogText(value) === value ? value : fallback
 }
 
 /** Clamp whatever the form sent to values the CLIs actually accept. */
@@ -187,7 +217,6 @@ export function resolveModels(
         : DEFAULT_ASSET.assetModel
   return {
     ...resolved,
-    criticHarness: harnessFor(criticModel),
     criticModel,
     criticEffort: pick(AGENT_EFFORTS, critic?.criticEffort, DEFAULT_CRITIC.criticEffort as 'medium'),
     researchModel,
@@ -204,7 +233,9 @@ export function resolveModels(
  * the critic-preset era carry a `criticId`, which is ignored: they store the
  * model and effort that preset stood for anyway.
  */
-export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolean }) | null | undefined): LoopModels {
+export function normalizeModels(
+  raw: (Partial<LoopModels> & { ultracode?: boolean; criticHarness?: unknown }) | null | undefined,
+): LoopModels {
   if (!raw) return resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
   const models = resolveModels(
     {
@@ -221,16 +252,31 @@ export function normalizeModels(raw: (Partial<LoopModels> & { ultracode?: boolea
     'assetModel' in raw ? { assetModel: raw.assetModel, assetEffort: raw.assetEffort } : undefined,
   )
   // Keep a model name the picker no longer offers rather than silently
-  // retitling an old run, but only where it is still a name a CLI would accept.
-  const criticModel = raw.criticModel ?? models.criticModel
+  // retitling an old run, but only where it is still a bounded CLI model id.
+  const orchestratorModel = storedModel(raw.orchestratorModel, models.orchestratorModel)
+  const criticModel = storedModel(raw.criticModel, models.criticModel)
+  const subagentModel = storedOptionalModel(raw.subagentModel, models.subagentModel)
+  const researchModel = storedOptionalModel(raw.researchModel, models.researchModel)
+  const allowedOrchestratorEfforts = orchestratorEfforts(orchestratorModel)
+  const fallbackOrchestratorEffort = allowedOrchestratorEfforts.includes(models.orchestratorEffort)
+    ? models.orchestratorEffort
+    : isCodexModel(orchestratorModel) ? 'high' : DEFAULT_IMPLEMENTER.orchestratorEffort
   return {
     ...models,
-    orchestratorModel: raw.orchestratorModel ?? models.orchestratorModel,
-    // A stored model name the picker no longer matches must still spawn on the
-    // right CLI, so fall back to reading the harness off the model name.
-    criticHarness: raw.criticHarness ?? harnessFor(criticModel),
+    orchestratorModel,
+    subagentModel,
+    researchModel,
+    orchestratorEffort: pick(
+      allowedOrchestratorEfforts,
+      typeof raw.orchestratorEffort === 'string' ? raw.orchestratorEffort : undefined,
+      fallbackOrchestratorEffort,
+    ),
     criticModel,
-    criticEffort: raw.criticEffort ?? models.criticEffort,
+    criticEffort: pick(
+      AGENT_EFFORTS,
+      typeof raw.criticEffort === 'string' ? raw.criticEffort : undefined,
+      models.criticEffort as (typeof AGENT_EFFORTS)[number],
+    ),
   }
 }
 
@@ -245,5 +291,5 @@ export function describeModels(models: LoopModels): string {
   const assets = models.assetModel
     ? `${models.assetModel} (${models.assetEffort}) sculptors, one per cast entry`
     : 'no asset phase'
-  return `Implementer: ${impl} · Critic: ${models.criticHarness} ${models.criticModel} (${models.criticEffort}), fresh eyes every round. · Research: ${research}. · Assets: ${assets}.`
+  return `Implementer: ${impl} · Critic: ${harnessFor(models.criticModel)} ${models.criticModel} (${models.criticEffort}), fresh eyes every round. · Research: ${research}. · Assets: ${assets}.`
 }

@@ -1,6 +1,9 @@
 import type { HarnessKind } from '../shared/harness'
 import type { LoopModels } from '../shared/loop'
-import { harnessFor } from '../shared/models'
+import { DISPATCHER_MODEL_ID, harnessFor } from '../shared/models'
+
+export const DISPATCHER_MODEL = DISPATCHER_MODEL_ID
+import { cliHomeEnv } from './harness-env'
 
 /**
  * How to start each CLI, as data.
@@ -22,9 +25,7 @@ export interface PlanContext {
   codexHome: string
   /** Session/thread to continue, when the app is picking up an interrupted run. */
   resumeId?: string | null
-  /** True when a claude run may continue from its own transcript with no id. */
-  resumeLatest?: boolean
-  /** Where codex writes its final message; only the critique reads it back. */
+  /** Optional Codex compatibility output; machine decisions never trust it. */
   outFile?: string | null
 }
 
@@ -75,14 +76,18 @@ export function claudeArgs(model: string, effort: string, prompt: string): strin
 /**
  * Environment for a run that may shell out to the other CLI mid-flight.
  *
- * A cross-harness run has the orchestrator start the other CLI itself, so both
- * homes are always exported: the child inherits them and reuses the app's
- * logins instead of the user's own.
+ * A cross-harness run has the orchestrator start the other CLI itself. Same-
+ * harness and no-delegation runs receive only their own home, avoiding
+ * needless access to the other CLI's private profile.
  */
-function bothHomes(ctx: PlanContext): Record<string, string> {
+function requiredHomes(ctx: PlanContext, primaryModel: string, delegatedModels: readonly (string | null)[]): Record<string, string> {
+  const primary = harnessFor(primaryModel)
+  const delegated = new Set(delegatedModels.filter((model): model is string => model != null).map(harnessFor))
   return {
-    CLAUDE_CONFIG_DIR: ctx.claudeHome,
-    CODEX_HOME: ctx.codexHome,
+    ...cliHomeEnv(primary, primary === 'claude' ? ctx.claudeHome : ctx.codexHome),
+    ...([...delegated].reduce<Record<string, string>>((env, kind) => (
+      kind === primary ? env : { ...env, ...cliHomeEnv(kind, kind === 'claude' ? ctx.claudeHome : ctx.codexHome) }
+    ), {})),
   }
 }
 
@@ -105,20 +110,20 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
     return {
       bin: 'codex',
       args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, null, ctx.resumeId), ctx.prompt],
-      env: bothHomes(ctx),
+      env: requiredHomes(ctx, models.orchestratorModel, [models.subagentModel, models.assetModel]),
     }
   }
   return {
     bin: 'claude',
     args: [
-      ...(ctx.resumeId ? ['--resume', ctx.resumeId] : ctx.resumeLatest ? ['--continue'] : []),
+      ...(ctx.resumeId ? ['--resume', ctx.resumeId] : []),
       ...claudeArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
       // Subagent output reaches the run log only when it is forwarded; the
       // critique has no subagents, so this is the implement side's flag alone.
       '--forward-subagent-text',
     ],
     env: {
-      ...bothHomes(ctx),
+      ...requiredHomes(ctx, models.orchestratorModel, [models.subagentModel, models.assetModel]),
       ...CLAUDE_RUN_ENV,
       // Binds the subagent model on both delegation paths: it is what a
       // workflow agent falls back to when the script names no model. A codex
@@ -141,7 +146,7 @@ export function assetsPlan(ctx: PlanContext): SpawnPlan {
     return {
       bin: 'codex',
       args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, null, ctx.resumeId), ctx.prompt],
-      env: bothHomes(ctx),
+      env: requiredHomes(ctx, models.orchestratorModel, [models.assetModel]),
     }
   }
   return {
@@ -151,7 +156,7 @@ export function assetsPlan(ctx: PlanContext): SpawnPlan {
       '--forward-subagent-text',
     ],
     env: {
-      ...bothHomes(ctx),
+      ...requiredHomes(ctx, models.orchestratorModel, [models.assetModel]),
       ...CLAUDE_RUN_ENV,
       ...(models.assetModel
         ? { CLAUDE_CODE_SUBAGENT_MODEL: harnessFor(models.assetModel) === 'claude' ? models.assetModel : DISPATCHER_MODEL }
@@ -167,29 +172,29 @@ export function referencePlan(ctx: PlanContext): SpawnPlan {
     return {
       bin: 'codex',
       args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, ctx.outFile), ctx.prompt],
-      env: bothHomes(ctx),
+      env: requiredHomes(ctx, models.orchestratorModel, [models.researchModel]),
     }
   }
   return {
     bin: 'claude',
     args: claudeArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
-    env: { ...bothHomes(ctx), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
+    env: { ...requiredHomes(ctx, models.orchestratorModel, [models.researchModel]), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
   }
 }
 
 export function critiquePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
-  if (models.criticHarness === 'codex') {
+  if (harnessFor(models.criticModel) === 'codex') {
     return {
       bin: 'codex',
       args: [...codexArgs(models.criticModel, models.criticEffort, ctx.outFile), ctx.prompt],
-      env: { CODEX_HOME: ctx.codexHome },
+      env: cliHomeEnv('codex', ctx.codexHome),
     }
   }
   return {
     bin: 'claude',
     args: claudeArgs(models.criticModel, models.criticEffort, ctx.prompt),
-    env: { CLAUDE_CONFIG_DIR: ctx.claudeHome, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
+    env: { ...cliHomeEnv('claude', ctx.claudeHome), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
   }
 }
 
@@ -197,4 +202,3 @@ export function critiquePlan(ctx: PlanContext): SpawnPlan {
  * The claude model that fronts a codex worker. It writes no code — it hands the
  * slice to codex and reports back — so it is the cheapest one on the list.
  */
-export const DISPATCHER_MODEL = 'claude-sonnet-5'

@@ -1,6 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { ENGINE_DEPS, ENGINE_DEV_DEPS, engineContract, SRC_DIRS } from '../shared/engine-stack'
+import {
+  ownedWorkspaceDirectory,
+  writeWorkspaceFileSafely,
+  type OwnedWorkspaceIdentity,
+} from './owned-workspace-write'
 
 /**
  * The parts of the engine stack that touch disk.
@@ -221,27 +226,33 @@ export interface ScaffoldResult {
  * because a contract that drifts is not a contract and a gate a worker can
  * edit to pass is not a gate.
  */
-export function scaffoldEngine(workspaceDir: string): ScaffoldResult {
+export function scaffoldEngine(workspaceDir: string, expectedWorkspace?: OwnedWorkspaceIdentity): ScaffoldResult {
   const created: string[] = []
   const refreshed: string[] = []
+  const root = fs.lstatSync(workspaceDir)
+  const identity = expectedWorkspace ?? { dev: root.dev, ino: root.ino }
+
+  const parts = (rel: string): { directories: string[]; filename: string } => {
+    const segments = rel.split('/')
+    const filename = segments.pop()
+    if (!filename) throw new Error('Engine scaffold path is missing a filename.')
+    return { directories: segments, filename }
+  }
 
   const writeIfAbsent = (rel: string, body: string): void => {
-    const full = path.join(workspaceDir, rel)
-    if (fs.existsSync(full)) return
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    fs.writeFileSync(full, body)
-    created.push(rel)
+    const { directories, filename } = parts(rel)
+    if (writeWorkspaceFileSafely(workspaceDir, identity, directories, filename, body, { replace: false }) === 'created') {
+      created.push(rel)
+    }
   }
   const rewrite = (rel: string, body: string): void => {
-    const full = path.join(workspaceDir, rel)
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    const before = fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null
-    if (before === body) return
-    fs.writeFileSync(full, body)
-    ;(before === null ? created : refreshed).push(rel)
+    const { directories, filename } = parts(rel)
+    const result = writeWorkspaceFileSafely(workspaceDir, identity, directories, filename, body, { replace: true })
+    if (result === 'created') created.push(rel)
+    if (result === 'updated') refreshed.push(rel)
   }
 
-  for (const dir of SRC_DIRS) fs.mkdirSync(path.join(workspaceDir, dir), { recursive: true })
+  for (const dir of SRC_DIRS) ownedWorkspaceDirectory(workspaceDir, identity, dir.split('/'), true)
 
   writeIfAbsent('package.json', starterPackageJson(path.basename(workspaceDir).toLowerCase().replace(/[^a-z0-9-]+/g, '-')))
   writeIfAbsent('tsconfig.json', TSCONFIG)

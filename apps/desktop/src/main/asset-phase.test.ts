@@ -121,6 +121,15 @@ describe('crop tool scaffolding', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe(cropScript(SKILL))
   })
 
+  it('refuses a symlinked tools directory instead of escaping the workspace', () => {
+    const dir = workspace()
+    const outside = workspace()
+    fs.symlinkSync(outside, path.join(dir, 'tools'))
+
+    expect(() => scaffoldAssetTools(dir, SKILL)).toThrow(/real directory/i)
+    expect(fs.readdirSync(outside)).toEqual([])
+  })
+
   it('ships a tool that refuses a crop the object barely fills', () => {
     // The rule probe_image.py cannot make: widening a small box until it clears
     // the 512 px floor passes every technical check and hands the pipeline a
@@ -197,6 +206,26 @@ describe('pass progress', () => {
     expect(assetPassProgress(dir, 'broken')).toBeNull()
     expect(unbuiltCast(dir, [{ name: 'broken' } as never])).toEqual([])
     fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('ignores oversized or symlinked sculpt state and factories', () => {
+    const oversized = workspace()
+    const oversizedDir = path.join(oversized, '.img2threejs', 'samoyed')
+    fs.mkdirSync(oversizedDir, { recursive: true })
+    fs.writeFileSync(path.join(oversizedDir, 'object-sculpt-spec.json'), ' '.repeat(512 * 1024 + 1))
+    expect(assetPassProgress(oversized, 'samoyed')).toBeNull()
+
+    const linked = workspace()
+    const outside = workspace()
+    spec(outside, 'samoyed', PASSES, PASSES, 'material-pass')
+    fs.mkdirSync(path.join(linked, '.img2threejs'))
+    fs.symlinkSync(path.join(outside, '.img2threejs', 'samoyed'), path.join(linked, '.img2threejs', 'samoyed'))
+    fs.mkdirSync(path.join(linked, 'src'))
+    fs.symlinkSync(path.join(outside, 'src/assets'), path.join(linked, 'src/assets'))
+    factory(outside, 'samoyed')
+
+    expect(assetPassProgress(linked, 'samoyed')).toBeNull()
+    expect(unbuiltCast(linked, [{ name: 'samoyed' } as never]).map((entry) => entry.name)).toEqual(['samoyed'])
   })
 
   it('counts only passes the order actually lists', () => {

@@ -21,13 +21,23 @@ describe('implementPlan', () => {
     expect(Number(plan.env.BASH_MAX_TIMEOUT_MS)).toBeGreaterThan(60 * 60_000)
   })
 
-  it('runs codex for a codex orchestrator, with both logins in reach', () => {
-    const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultra' }, null)))
+  it('runs codex with only its own login when no cross-harness worker is configured', () => {
+    const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultra', subagentModel: null }, null, null, { assetModel: null })))
     expect(plan.bin).toBe('codex')
     expect(plan.args).toContain('exec')
     expect(plan.args.join(' ')).toContain('model_reasoning_effort=ultra')
     expect(plan.env.CODEX_HOME).toBe('/homes/codex')
-    expect(plan.env.CLAUDE_CONFIG_DIR).toBe('/homes/claude')
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+  })
+
+  it('exposes the other isolated home only to an actual cross-harness delegation', () => {
+    const sameHarness = implementPlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5' }, null)))
+    expect(sameHarness.env.CLAUDE_CONFIG_DIR).toBe('/homes/claude')
+    expect(sameHarness.env.CODEX_HOME).toBeUndefined()
+
+    const crossHarness = implementPlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'gpt-5.6-sol' }, null)))
+    expect(crossHarness.env.CLAUDE_CONFIG_DIR).toBe('/homes/claude')
+    expect(crossHarness.env.CODEX_HOME).toBe('/homes/codex')
   })
 
   it('resumes each CLI its own way', () => {
@@ -53,14 +63,16 @@ describe('critiquePlan', () => {
 
 describe('referencePlan', () => {
   it('uses the orchestrator model without subagent flags', () => {
-    const claude = referencePlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5' }, null)))
+    const claude = referencePlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5' }, null, { researchModel: null })))
     expect(claude.bin).toBe('claude')
     expect(claude.args.join(' ')).toContain('--model claude-fable-5')
     expect(claude.args).not.toContain('--forward-subagent-text')
     expect(claude.env.CLAUDE_CODE_SUBAGENT_MODEL).toBeUndefined()
+    expect(claude.env.CODEX_HOME).toBeUndefined()
 
-    const codex = referencePlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', subagentModel: 'claude-opus-5' }, null)))
+    const codex = referencePlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', subagentModel: 'claude-opus-5' }, null, { researchModel: null })))
     expect(codex.bin).toBe('codex')
     expect(codex.args.join(' ')).toContain('-m gpt-5.6-sol')
+    expect(codex.env.CLAUDE_CONFIG_DIR).toBeUndefined()
   })
 })

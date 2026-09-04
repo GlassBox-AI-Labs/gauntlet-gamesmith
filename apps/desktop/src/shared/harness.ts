@@ -1,6 +1,11 @@
 export const harnessKinds = ['claude', 'codex'] as const
 
 export type HarnessKind = (typeof harnessKinds)[number]
+
+export const HARNESS_LABELS: Record<HarnessKind, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+}
 export type LoginPhase =
   | 'checking'
   | 'not_found'
@@ -50,6 +55,7 @@ export interface DetectionResult {
 
 export interface ProbeResult {
   loggedIn: boolean
+  billingMode?: 'subscription' | 'api_key' | 'unknown'
   authMethod?: string | null
   details?: HarnessDetail[]
   error?: string | null

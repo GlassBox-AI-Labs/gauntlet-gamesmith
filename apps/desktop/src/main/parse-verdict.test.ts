@@ -1,77 +1,113 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { parseVerdict, readVerdictArtifact } from './loop-runner'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { parseVerdictArtifact, prepareVerdictArtifact, readVerdictArtifact, verdictArtifactRelativePath } from './verdict'
 
-describe('parseVerdict', () => {
-  it('parses a fenced json block', () => {
-    const text = `The lighting is flat and the weapon models are placeholder quality.
+const REVISION = 'a'.repeat(40)
+const dirs: string[] = []
 
-\`\`\`json
-{"score": 0.34, "pass": false, "summary": "Far below AAA.", "findings": [{"severity": "critical", "text": "No PBR materials"}]}
-\`\`\``
-    const verdict = parseVerdict(text)
-    expect(verdict).not.toBeNull()
-    expect(verdict!.score).toBeCloseTo(0.34)
-    expect(verdict!.pass).toBe(false)
-    expect(verdict!.findings).toHaveLength(1)
+function write(round: number, value: unknown): { workspace: string; file: string; runId: string } {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-verdict-'))
+  dirs.push(workspace)
+  const runId = randomUUID()
+  const dir = path.join(workspace, 'critique', `round-${round}`)
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(workspace, verdictArtifactRelativePath(round, runId))
+  fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value))
+  return { workspace, file, runId }
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+describe('parseVerdictArtifact', () => {
+  const valid = {
+    revision: REVISION,
+    score: 0.34,
+    pass: false,
+    summary: 'Far below AAA.',
+    findings: [{ severity: 'critical', text: 'No PBR materials.', target: 'game' }],
+  }
+
+  it('accepts only the strict, revision-bound machine schema', () => {
+    expect(parseVerdictArtifact(valid, REVISION).verdict).toEqual({
+      score: 0.34,
+      pass: false,
+      summary: 'Far below AAA.',
+      findings: [{ severity: 'critical', text: 'No PBR materials.', target: 'game' }],
+    })
+    expect(parseVerdictArtifact({ ...valid, pass: 'false' }, REVISION).verdict).toBeNull()
+    expect(parseVerdictArtifact({ ...valid, score: '0.34' }, REVISION).verdict).toBeNull()
+    expect(parseVerdictArtifact({ ...valid, extra: true }, REVISION).verdict).toBeNull()
+    expect(parseVerdictArtifact({ ...valid, findings: ['too dark'] }, REVISION).verdict).toBeNull()
   })
 
-  it('takes the last fenced block when several exist', () => {
-    const text = '```json\n{"score": 0.1, "pass": false, "summary": "draft"}\n```\nrevised:\n```json\n{"score": 0.55, "pass": false, "summary": "final"}\n```'
-    expect(parseVerdict(text)!.score).toBeCloseTo(0.55)
-  })
-
-  it('parses a bare trailing object', () => {
-    const text = 'Verdict follows.\n{"score": 0.72, "pass": false, "summary": "Getting closer", "findings": []}'
-    expect(parseVerdict(text)!.score).toBeCloseTo(0.72)
-  })
-
-  it('normalizes a 0-10 scale to 0-1', () => {
-    expect(parseVerdict('{"score": 7.5, "pass": false, "summary": "x"}')!.score).toBeCloseTo(0.75)
-  })
-
-  it('only passes on an explicit boolean true', () => {
-    expect(parseVerdict('{"score": 0.95, "pass": "true", "summary": "x"}')!.pass).toBe(false)
-    expect(parseVerdict('{"score": 0.95, "pass": true, "summary": "x"}')!.pass).toBe(true)
-  })
-
-  it('returns null when there is no verdict', () => {
-    expect(parseVerdict('I could not run the project at all.')).toBeNull()
-    expect(parseVerdict('{"pass": true, "summary": "no score"}')).toBeNull()
-  })
-
-  it('coerces string findings and clamps score', () => {
-    const verdict = parseVerdict('{"score": 1.7, "pass": false, "summary": "x", "findings": ["too dark"]}')
-    expect(verdict!.score).toBeLessThanOrEqual(1)
-    expect(verdict!.findings[0]).toEqual({ severity: 'note', text: 'too dark' })
+  it('rejects a mismatched revision and an inconsistent pass', () => {
+    expect(parseVerdictArtifact(valid, 'b'.repeat(40)).error).toContain('revision does not match')
+    expect(parseVerdictArtifact({ ...valid, score: 0.89, pass: true }, REVISION).error).toContain('at least 0.90')
   })
 })
 
 describe('readVerdictArtifact', () => {
-  const write = (round: number, content: string): string => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-verdict-'))
-    fs.mkdirSync(path.join(workspace, 'critique', `round-${round}`), { recursive: true })
-    fs.writeFileSync(path.join(workspace, 'critique', `round-${round}`, 'verdict.json'), content)
-    return workspace
-  }
+  const valid = { revision: REVISION, score: 0.42, pass: false, summary: 'Presentation short.', findings: [] }
 
-  it('recovers a plain-JSON verdict the final message failed to carry', () => {
-    const workspace = write(2, '{"score": 0.42, "pass": false, "summary": "Engine faithful, presentation short.", "findings": [{"severity": "major", "text": "No bloom on maze walls"}]}')
-    const verdict = readVerdictArtifact(workspace, 2, Date.now() - 60_000)
-    expect(verdict!.score).toBeCloseTo(0.42)
-    expect(verdict!.findings).toHaveLength(1)
-    fs.rmSync(workspace, { recursive: true, force: true })
+  it('accepts a fresh regular artifact from this attempt', () => {
+    const startedAt = Date.now() - 1_000
+    const { workspace, runId } = write(2, valid)
+    expect(readVerdictArtifact(workspace, 2, runId, startedAt, REVISION).verdict?.score).toBeCloseTo(0.42)
   })
 
-  it('rejects a file older than the loop, and missing or invalid files', () => {
-    const workspace = write(2, '{"score": 0.9, "pass": true, "summary": "stale"}')
-    expect(readVerdictArtifact(workspace, 2, Date.now() + 60_000)).toBeNull()
-    expect(readVerdictArtifact(workspace, 3, 0)).toBeNull()
-    const invalid = write(1, 'not json at all')
-    expect(readVerdictArtifact(invalid, 1, 0)).toBeNull()
-    fs.rmSync(workspace, { recursive: true, force: true })
-    fs.rmSync(invalid, { recursive: true, force: true })
+  it('rejects an artifact left by a prior attempt', () => {
+    const { workspace, file, runId } = write(2, valid)
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(file, old, old)
+    expect(readVerdictArtifact(workspace, 2, runId, Date.now(), REVISION).error).toContain('predates this critique attempt')
+  })
+
+  it('refuses to remove a prior artifact and rejects a future-dated attempt artifact', () => {
+    const { workspace, file, runId } = write(2, valid)
+    expect(() => prepareVerdictArtifact(workspace, 2, runId)).toThrow(/refusing to replace/)
+    expect(fs.readFileSync(file, 'utf8')).toBe(JSON.stringify(valid))
+    const future = new Date(Date.now() + 60_000)
+    fs.utimesSync(file, future, future)
+    expect(readVerdictArtifact(workspace, 2, runId, Date.now() - 1_000, REVISION, Date.now()).error).toContain('future-dated')
+  })
+
+  it('rejects prose, missing files, symlinks, and hard links', () => {
+    const prose = write(1, '```json\n{"score":0.9}\n```')
+    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('not valid JSON')
+    expect(readVerdictArtifact(prose.workspace, 3, randomUUID(), 0, REVISION).error).toContain('Missing')
+    const target = path.join(prose.workspace, 'target.json')
+    fs.writeFileSync(target, JSON.stringify(valid))
+    fs.unlinkSync(prose.file)
+    fs.symlinkSync(target, prose.file)
+    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('regular file')
+    fs.unlinkSync(prose.file)
+    fs.linkSync(target, prose.file)
+    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('owned regular file')
+  })
+
+  it('rejects a regular-file swap between inspection and open without consuming replacement bytes', () => {
+    const attempt = write(1, valid)
+    const canonicalAttemptFile = path.join(fs.realpathSync(attempt.workspace), verdictArtifactRelativePath(1, attempt.runId))
+    const original = `${attempt.file}.original`
+    const originalOpen = fs.openSync.bind(fs)
+    let swapped = false
+    vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+      if (!swapped && String(target) === canonicalAttemptFile) {
+        swapped = true
+        fs.renameSync(attempt.file, original)
+        fs.writeFileSync(attempt.file, 'operator replacement')
+      }
+      return originalOpen(target, flags, mode)
+    }) as typeof fs.openSync)
+
+    expect(readVerdictArtifact(attempt.workspace, 1, attempt.runId, 0, REVISION).error).toMatch(/changed identity|not valid JSON/)
+    expect(fs.readFileSync(original, 'utf8')).toBe(JSON.stringify(valid))
+    expect(fs.readFileSync(attempt.file, 'utf8')).toBe('operator replacement')
   })
 })

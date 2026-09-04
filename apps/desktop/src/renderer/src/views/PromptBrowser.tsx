@@ -30,7 +30,11 @@ const MarkdownPrompt = memo(function MarkdownPrompt({ value }: { value: string }
           <code className={`${className ?? ''} rounded bg-white/[0.055] px-1 py-0.5 font-mono text-[11px] text-[#e9c9bc]`} {...props}>{children}</code>
         ),
         strong: ({ children }) => <strong className="font-semibold text-[#eeeae7]">{children}</strong>,
-        a: ({ children, href }) => <a href={href} onClick={(event) => event.preventDefault()} title={href} className="text-[#9fc9d7] underline decoration-[#46606a] underline-offset-2">{children}</a>,
+        // Prompt history can come from an imported, untrusted ledger. Keep
+        // Markdown URLs inert so opening a prompt cannot contact loopback or
+        // remote services through the renderer.
+        a: ({ children, href }) => <span title={href} className="text-[#9fc9d7] underline decoration-[#46606a] underline-offset-2">{children}</span>,
+        img: ({ alt }) => <span className="text-[#8f8885]">[image omitted{alt ? `: ${alt}` : ''}]</span>,
       }}
     >
       {value}

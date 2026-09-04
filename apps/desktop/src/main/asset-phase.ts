@@ -1,5 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { writeWorkspaceFileSafely, type OwnedWorkspaceIdentity } from './owned-workspace-write'
+import { captureOwnedDirectory, ownedFileStat, readOwnedFile } from './owned-tree'
 
 /**
  * The parts of the Asset Build that touch disk.
@@ -116,9 +118,13 @@ export interface PassProgress {
  * pipeline recorded passes, or by hand.
  */
 export function assetPassProgress(workspaceDir: string, name: string): PassProgress | null {
+  if (!SLUG.test(name)) return null
   try {
-    const raw = fs.readFileSync(path.join(workspaceDir, '.img2threejs', name, 'object-sculpt-spec.json'), 'utf8')
-    const pipeline = (JSON.parse(raw) as { sculptPipeline?: unknown }).sculptPipeline
+    const boundary = captureOwnedDirectory(workspaceDir, path.join(workspaceDir, '.img2threejs', name))
+    const parsed = JSON.parse(readOwnedFile(boundary, 'object-sculpt-spec.json', 512 * 1024, 'Asset sculpt spec').toString('utf8')) as unknown
+    const pipeline = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).sculptPipeline
+      : null
     if (!pipeline || typeof pipeline !== 'object') return null
     const { passOrder, completedPasses, currentPass } = pipeline as {
       passOrder?: unknown
@@ -151,7 +157,13 @@ export function unbuiltCast(workspaceDir: string, cast: CastEntry[]): CastEntry[
   return cast.filter((entry) => {
     const progress = assetPassProgress(workspaceDir, entry.name)
     if (progress) return progress.completed < progress.total
-    return !fs.existsSync(path.join(workspaceDir, 'src/assets', `${entry.name}.ts`))
+    try {
+      const boundary = captureOwnedDirectory(workspaceDir, path.join(workspaceDir, 'src', 'assets'))
+      ownedFileStat(boundary, `${entry.name}.ts`)
+      return false
+    } catch {
+      return true
+    }
   })
 }
 
@@ -447,12 +459,13 @@ if __name__ == '__main__':
  * Put the crop tool in the workspace. Rewritten every round for the same reason
  * the gate is: a tool a worker can weaken is not a tool.
  */
-export function scaffoldAssetTools(workspaceDir: string, skillDir: string): boolean {
-  const full = path.join(workspaceDir, 'tools/crop.py')
+export function scaffoldAssetTools(workspaceDir: string, skillDir: string, expectedWorkspace?: OwnedWorkspaceIdentity): boolean {
   const script = cropScript(skillDir)
-  fs.mkdirSync(path.dirname(full), { recursive: true })
-  const before = fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null
-  if (before === script) return false
-  fs.writeFileSync(full, script, { mode: 0o755 })
-  return true
+  const root = fs.lstatSync(workspaceDir)
+  const identity = expectedWorkspace ?? { dev: root.dev, ino: root.ino }
+  const result = writeWorkspaceFileSafely(workspaceDir, identity, ['tools'], 'crop.py', script, {
+    replace: true,
+    mode: 0o755,
+  })
+  return result === 'created' || result === 'updated'
 }

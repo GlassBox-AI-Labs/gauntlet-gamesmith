@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { AGENT_MODEL_CHOICES } from '../shared/models'
 import { estimateCostUsd } from './pricing'
 
 describe('estimateCostUsd', () => {
@@ -22,7 +23,10 @@ describe('estimateCostUsd', () => {
 
   it('matches model id variants and rejects unknown models', () => {
     expect(estimateCostUsd('claude-opus-5', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(5)
+    expect(estimateCostUsd('claude-opus-5-20260901', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(5)
     expect(estimateCostUsd('unknown-model', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
+    expect(estimateCostUsd('proxy/gpt-5.6-sol', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
+    expect(estimateCostUsd('gpt-5.6-solar', { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
     expect(estimateCostUsd(null, { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 })).toBeNull()
   })
 
@@ -43,5 +47,11 @@ describe('estimateCostUsd', () => {
 
   it('prices Sonnet 5 at the standard rate the introductory price became', () => {
     expect(estimateCostUsd('claude-sonnet-5', { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(12, 5)
+  })
+
+  it('has a price row for every selectable model', () => {
+    for (const model of AGENT_MODEL_CHOICES) {
+      expect(estimateCostUsd(model.id, { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }), model.id).not.toBeNull()
+    }
   })
 })

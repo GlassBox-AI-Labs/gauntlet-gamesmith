@@ -95,6 +95,28 @@ describe('scaffoldEngine', () => {
     expect(second.refreshed).toContain('tools/engine-gate.mjs')
     expect(fs.readFileSync(gatePath, 'utf8')).toContain('bitecs-0.4-api')
   })
+
+  it('refuses a symlinked scaffold directory instead of writing outside the workspace', () => {
+    const dir = workspace()
+    const outside = workspace()
+    fs.symlinkSync(outside, path.join(dir, 'tools'))
+
+    expect(() => scaffoldEngine(dir)).toThrow(/real directory/i)
+    expect(fs.readdirSync(outside)).toEqual([])
+  })
+
+  it('refuses to refresh a hard-linked gate', () => {
+    const dir = workspace()
+    scaffoldEngine(dir)
+    const gatePath = path.join(dir, 'tools/engine-gate.mjs')
+    const outside = path.join(workspace(), 'outside.mjs')
+    fs.writeFileSync(outside, 'outside bytes\n')
+    fs.unlinkSync(gatePath)
+    fs.linkSync(outside, gatePath)
+
+    expect(() => scaffoldEngine(dir)).toThrow(/unique regular file/i)
+    expect(fs.readFileSync(outside, 'utf8')).toBe('outside bytes\n')
+  })
 })
 
 /** A minimal workspace the gate is happy with, so a test can vary one thing. */

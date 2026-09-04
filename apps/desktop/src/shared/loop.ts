@@ -1,10 +1,19 @@
 import type { HarnessKind } from './harness'
 import type { DeleteRunsResult } from './reports'
+import type { OperationResult } from './result'
 
 export type RunRole = 'reference' | 'assets' | 'implement' | 'critique'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
+
+export function stripResumeMarker(prompt: string): string {
+  return prompt.startsWith(RESUME_PREFIX) ? prompt.slice(RESUME_PREFIX.length) : prompt
+}
+
+export function markResumePrompt(prompt: string): string {
+  return RESUME_PREFIX + stripResumeMarker(prompt)
+}
 
 /** The heading a run's execution prompt is logged (and backfilled) under. */
 export function runPromptLabel(run: { role: RunRole; round: number }): string {
@@ -83,6 +92,15 @@ export interface AgentMetric {
 export interface RunMetrics {
   agents: AgentMetric[]
   perModel: Record<string, { costUsd: number | null; tokens: TokenTotals }>
+  /** Durable transcript cursors committed atomically with projected events. */
+  projection?: {
+    loggedOutLines: number
+    loggedErrLines: number
+    childOffsets: Record<string, number>
+    childIdentities?: Record<string, { dev: number; ino: number }>
+    workflowOffsets: Record<string, number>
+    workflowIdentities?: Record<string, { dev: number; ino: number }>
+  }
 }
 
 export interface LoopModels {
@@ -91,7 +109,6 @@ export interface LoopModels {
   /** null = the orchestrator implements by itself, with no subagents. */
   subagentModel: string | null
   subagentEffort: string
-  criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
   /** null = no deep-research fan-out; the reference agent sweeps by itself. */
@@ -111,6 +128,22 @@ export interface RunRecord {
   status: RunStatus
   prompt: string
   model: string | null
+  /** Requested reasoning effort for this run, when the harness supports it. */
+  effort: string | null
+  /** Exact CLI version reported when this run was launched. */
+  cliVersion: string | null
+  /** Identifier for the price table used to compute equivalent API cost. */
+  priceTableVersion: string | null
+  /** Where the persisted cost figure came from (stream total, usage log, or estimate). */
+  costSource: string | null
+  /** SHA-256 of the exact prompt passed to the harness for this attempt. */
+  promptSha256: string | null
+  /** Non-secret label for the isolated harness profile used by this attempt. */
+  accountLabel: string | null
+  /** Machine attribution captured when this attempt was launched. */
+  machineLabel: string | null
+  /** Authentication policy used by the harness; never contains credential material. */
+  authMode: 'subscription' | 'api_key' | null
   summary: string | null
   verdict: Verdict | null
   metrics: RunMetrics | null
@@ -133,6 +166,8 @@ export interface LoopRecord {
   title: string
   prompt: string
   workspaceDir: string
+  /** Exact canonical root identity captured before this workspace became executable. */
+  workspaceIdentity?: { dev: number; ino: number } | null
   maxRounds: number
   budgetUsd: number | null
   models: LoopModels
@@ -140,6 +175,8 @@ export interface LoopRecord {
   round: number
   totalCostUsd: number
   stopReason: string | null
+  /** False for transferred folders until the operator starts a new trusted run. */
+  playTrusted: boolean
   createdAt: string
   updatedAt: string
 }
@@ -147,6 +184,27 @@ export interface LoopRecord {
 export interface LoopSnapshot {
   loop: LoopRecord
   runs: RunRecord[]
+  /** Total canonical attempts, including rows omitted from this IPC page. */
+  totalRuns?: number
+  /** Number of newer canonical attempts preceding this newest-first page. */
+  runOffset?: number
+  /** True when older attempts or oversized structured fields were omitted. */
+  hasMoreRuns?: boolean
+  /** True when a loaded attempt had an oversized prompt, verdict, or metrics projection. */
+  detailTruncated?: boolean
+  projectionWarning?: string | null
+  aggregate?: {
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
+  }
+}
+
+export interface LoopListPage {
+  snapshots: LoopSnapshot[]
+  total: number
+  offset: number
+  hasMore: boolean
 }
 
 export type LogChannel = 'prompt' | 'thought' | 'tool' | 'output' | 'search' | 'media' | 'usage' | 'error' | 'system'
@@ -164,6 +222,7 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   search: 'search',
   shot: 'media',
   metric: 'usage',
+  'raw-stream': 'system',
   error: 'error',
   stderr: 'error',
   system: 'system',
@@ -222,9 +281,36 @@ export interface RunTransferResult {
   ok: boolean
   canceled?: boolean
   filePath?: string
+  warning?: string
   snapshot?: LoopSnapshot
   snapshots?: LoopSnapshot[]
+  totalSnapshots?: number
+  hasMoreSnapshots?: boolean
   error?: string
+}
+
+export type RawStreamKind = 'stdout' | 'stderr' | 'agent'
+
+export interface RawStreamInput {
+  runId: string
+  stream: RawStreamKind
+  /** Required for `agent`; it is the stable id from that run's AgentMetric. */
+  agentId?: string
+}
+
+export interface ReadRawStreamInput extends RawStreamInput {
+  /** Byte cursor returned by the previous chunk; zero starts a new read. */
+  offset: number
+  /** File identity returned by the previous chunk prevents mixed-file reads. */
+  identity?: string
+}
+
+export interface RawStreamChunk {
+  contentBase64: string
+  nextOffset: number
+  totalBytes: number
+  complete: boolean
+  identity: string
 }
 
 export interface PlayState {
@@ -233,6 +319,10 @@ export interface PlayState {
   error: string | null
   /** null plays the live workspace; a number plays that saved round build. */
   round: number | null
+}
+
+export interface PlayStateEvent extends PlayState {
+  loopId: string
 }
 
 export interface PairComparison {
@@ -253,6 +343,8 @@ export interface CritiqueRound {
   videos: string[]
   pairs: PairComparison[] | null
   pairsMd: string | null
+  /** True when safety limits kept this renderer projection to a bounded subset. */
+  truncated: boolean
 }
 
 export interface ReferencePack {
@@ -260,6 +352,8 @@ export interface ReferencePack {
   root: string
   ready: boolean
   issues: string[]
+  /** Safety/display truncation that does not invalidate the required pack. */
+  warnings?: string[]
   images: string[]
   motion: string[]
   videos: string[]
@@ -284,27 +378,31 @@ export interface ReferencePack {
 export interface ReferenceStudy {
   runId: string
   status: RunStatus
+  /** Exact bounded canonical prompt for the Reference Study attempt. */
+  prompt: string
   logs: LoopLogLine[]
   pack: ReferencePack
 }
 
 export interface LoopApi {
-  list(): Promise<LoopSnapshot[]>
-  get(loopId: string): Promise<LoopSnapshot | null>
-  rename(loopId: string, title: string): Promise<LoopRecord | null>
-  critique(loopId: string): Promise<CritiqueRound[]>
-  reference(loopId: string, runId: string): Promise<ReferenceStudy | null>
-  mediaBase(): Promise<string | null>
+  list(offset?: number): Promise<LoopListPage>
+  get(loopId: string, offset?: number): Promise<LoopSnapshot | null>
+  rename(loopId: string, title: string): Promise<OperationResult<LoopRecord>>
+  critique(loopId: string): Promise<OperationResult<CritiqueRound[]>>
+  reference(loopId: string, runId?: string): Promise<ReferenceStudy | null>
+  mediaBase(): Promise<OperationResult<string>>
   playStart(loopId: string, round?: number | null): Promise<PlayState>
   playStop(loopId: string): Promise<void>
   playState(loopId: string): Promise<PlayState>
-  onPlayState(listener: (state: PlayState & { loopId: string }) => void): () => void
+  onPlayState(listener: (state: PlayStateEvent) => void): () => void
   start(input: StartLoopInput): Promise<StartLoopResult>
   resume(loopId: string): Promise<StartLoopResult>
-  stop(loopId: string): Promise<void>
+  stop(loopId: string): Promise<OperationResult<void>>
   active(): Promise<LoopSnapshot | null>
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
-  report(loopId: string): Promise<string>
+  prompt(loopId: string, role: RunRole, round: number): Promise<OperationResult<{ runId: string; prompt: string }>>
+  readStream(input: ReadRawStreamInput): Promise<OperationResult<RawStreamChunk>>
+  report(loopId: string): Promise<OperationResult<string>>
   exportRun(loopId: string): Promise<RunTransferResult>
   importRun(): Promise<RunTransferResult>
   /** Forget these runs. `deleteFiles` also removes their project folders from disk. */

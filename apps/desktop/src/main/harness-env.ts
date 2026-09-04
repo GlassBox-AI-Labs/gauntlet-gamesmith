@@ -3,8 +3,45 @@ import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
 import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
-import { RUN_METADATA_DIR } from './run-transfer'
 import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
+import { safeWorkspaceMetadataDir } from './workspace-metadata'
+
+export const CLI_HOME_ENV_KEYS: Record<HarnessKind, 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'> = {
+  claude: 'CLAUDE_CONFIG_DIR',
+  codex: 'CODEX_HOME',
+}
+
+export function cliHomeEnv(kind: HarnessKind, home: string): Record<string, string> {
+  return { [CLI_HOME_ENV_KEYS[kind]]: home }
+}
+
+/** Root containing every app-managed CLI home; accepts injected test homes. */
+export function cliPrivateRoot(home: string): string {
+  let current = path.resolve(home)
+  while (path.dirname(current) !== current) {
+    if (path.basename(current) === 'harnesses') return path.dirname(current)
+    current = path.dirname(current)
+  }
+  return path.resolve(home)
+}
+
+export function safeCliHome(userDataDir: string, kind: HarnessKind): string {
+  const root = fs.realpathSync(userDataDir)
+  let current = root
+  for (const segment of ['harnesses', kind]) {
+    current = path.join(current, segment)
+    try {
+      const stat = fs.lstatSync(current)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`CLI home component ${segment} must be a real directory.`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      fs.mkdirSync(current, { mode: 0o700 })
+    }
+    if (fs.realpathSync(current) !== current) throw new Error(`CLI home component ${segment} resolves outside its canonical path.`)
+    fs.chmodSync(current, 0o700)
+  }
+  return current
+}
 
 export function harnessesRoot(): string {
   return path.join(app.getPath('userData'), 'harnesses')
@@ -24,10 +61,9 @@ export function cliHome(kind: HarnessKind): string {
  * switch accounts between rounds and still `--continue` the same session.
  */
 export function sharedHome(kind: HarnessKind): string {
-  const shared = sharedDir(harnessesRoot(), kind)
-  fs.mkdirSync(shared, { recursive: true, mode: 0o700 })
-  fs.chmodSync(shared, 0o700)
-  return shared
+  const root = harnessesRoot()
+  prepareAccountDir(root, kind, readAccounts(root, kind).activeId)
+  return sharedDir(root, kind)
 }
 
 /**
@@ -49,18 +85,89 @@ export function ensureSkill(): SkillInstall {
 }
 
 /** Run transcripts live with the project so a folder transfer is complete. */
-export function runsDir(workspaceDir: string): string {
-  const dir = path.join(workspaceDir, RUN_METADATA_DIR, 'runs')
-  fs.mkdirSync(dir, { recursive: true })
-  return dir
+export function runsDir(workspaceDir: string, create = true): string {
+  return safeWorkspaceMetadataDir(workspaceDir, ['runs'], create)
 }
 
-export function subscriptionEnv(overrides: Record<string, string>): Record<string, string> {
+/** Non-secret process basics required to find binaries and run terminal tools. */
+const INHERITED_CLI_ENV = new Set([
+  'PATH',
+  'SYSTEMROOT',
+  'COMSPEC',
+  'PATHEXT',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'COLORTERM',
+  'SHELL',
+  'TZ',
+])
+
+/** Explicit plan fields reviewed as safe for subscription-authenticated runs. */
+const PLAN_CLI_ENV = new Set([
+  ...Object.values(CLI_HOME_ENV_KEYS),
+  'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
+  'BASH_MAX_TIMEOUT_MS',
+  'BASH_DEFAULT_TIMEOUT_MS',
+])
+
+function canonicalIfPresent(value: string): string {
+  try {
+    return fs.realpathSync(value)
+  } catch {
+    return path.resolve(value)
+  }
+}
+
+function inside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+export function sanitizedExecutablePath(value: string | undefined, unsafeRoots: readonly string[] = []): string | undefined {
+  if (value === undefined) return undefined
+  const roots = unsafeRoots.map(canonicalIfPresent)
+  const safe = [...new Set(value.split(path.delimiter).filter((entry) => {
+    if (entry.length === 0 || !path.isAbsolute(entry)) return false
+    const candidate = canonicalIfPresent(entry)
+    return roots.every((root) => !inside(root, candidate))
+  }))]
+  return safe.length > 0 ? safe.join(path.delimiter) : undefined
+}
+
+export function subscriptionEnv(
+  overrides: Record<string, string>,
+  source: NodeJS.ProcessEnv = process.env,
+  selectedHarness?: HarnessKind,
+  unsafeExecutableRoots: readonly string[] = [],
+): Record<string, string> {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    Object.entries(source).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined && INHERITED_CLI_ENV.has(entry[0].toUpperCase()),
+    ),
   )
-  delete env.ANTHROPIC_API_KEY
-  delete env.OPENAI_API_KEY
-  delete env.CODEX_API_KEY
-  return { ...env, ...overrides, NO_COLOR: '1' }
+  const candidateHomes = selectedHarness
+    ? [overrides[CLI_HOME_ENV_KEYS[selectedHarness]]]
+    : Object.values(CLI_HOME_ENV_KEYS).map((key) => overrides[key]).filter(Boolean)
+  const isolatedHome = candidateHomes.length === 1 ? candidateHomes[0] : undefined
+  const safePath = sanitizedExecutablePath(env.PATH, [
+    ...unsafeExecutableRoots,
+    ...candidateHomes.filter((home): home is string => home !== undefined),
+  ])
+  if (safePath) env.PATH = safePath
+  else delete env.PATH
+  for (const [key, value] of Object.entries(overrides)) {
+    if (PLAN_CLI_ENV.has(key)) env[key] = value
+  }
+  if (isolatedHome) {
+    env.HOME = isolatedHome
+    env.USERPROFILE = isolatedHome
+  }
+  return { ...env, NO_COLOR: '1' }
 }

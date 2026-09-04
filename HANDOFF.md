@@ -1,5 +1,10 @@
 # Gauntlet Loop — Handoff for local Claude Code (v2, solo mode)
 
+> **Historical design brief.** This document records the original implementation direction. The
+> shipped layout, contracts, SQLite implementation, and migrations differ; `docs/DECISIONS.md`
+> ADR-004 and the current code are authoritative for those implementation details. Use
+> `AGENTS.md`, `docs/STANDARDS.md`, and `apps/desktop/README.md` for current instructions.
+
 This file is the brief for the first implementation session. Read it fully before writing code. The first milestone is **contracts only**: types, schemas, interfaces, and IPC/channel definitions that compile and are reviewed, with stub implementations. No UI polish, no real loop execution until the contracts are agreed.
 
 > **v2 changes (2026-08-30).** Team mode is **deferred** (not dead — see ADR-003 in `docs/DECISIONS.md`). Supabase (Postgres + Auth + Realtime) is replaced by local SQLite; app-level auth is removed entirely — the only sign-ins are the harness CLIs themselves. The original multi-team design is preserved in git history (`eb39c79`).
