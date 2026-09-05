@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import type { StreamEvent } from './claude-stream'
 import { normalizeStreamUsage, translateClaudeLine } from './claude-stream'
 
 // Captured from a real `claude -p --output-format stream-json` run.
@@ -38,6 +39,7 @@ describe('translateClaudeLine', () => {
     expect(translated.every((result) => result.events.length > 0)).toBe(true)
     expect(translated.flatMap((result) => result.events).map((event) => event.kind)).toEqual([
       'system', 'system', 'system', 'system', 'tool', 'tool', 'search', 'tool',
+      'metric', 'tool', 'tool', 'system', 'tool', 'error', 'tool', 'thought',
     ])
   })
 
@@ -120,6 +122,74 @@ describe('translateClaudeLine', () => {
       { channel: 'tool', kind: 'tool', text: '← tool result: "ok"' },
       { channel: 'error', kind: 'error', text: '✗ tool error: [{"type":"text","text":"command not found: pnpm"}]' },
     ])
+  })
+
+  it('reads the usage heartbeat in both the current and legacy shapes', () => {
+    const current = translateClaudeLine(JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'allowed',
+        unifiedWindows: {
+          five_hour: { utilization: 0.76, resetsAt: 1788573600 },
+          seven_day: { utilization: 0.06, resetsAt: 1789095600 },
+        },
+      },
+    }))
+    expect(current?.events).toEqual([{
+      channel: 'system',
+      kind: 'system',
+      text: 'Claude usage: five_hour 76% · seven_day 6%; five_hour resets 2026-09-05T02:00:00.000Z',
+    }])
+
+    // A blocked heartbeat leads with the status the CLI reported.
+    const blocked = translateClaudeLine(JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'blocked', unifiedWindows: { five_hour: { utilization: 1 } } },
+    }))
+    expect(blocked?.events[0].text).toBe('Claude usage [blocked]: five_hour 100%')
+
+    expect(translateClaudeLine(JSON.stringify({ type: 'rate_limit_event', reset_at: '2026-09-05T04:00:00.000Z' }))?.events).toEqual([
+      { channel: 'system', kind: 'system', text: 'Claude rate limit; reset at: 2026-09-05T04:00:00.000Z' },
+    ])
+  })
+
+  it('reads background-task and heartbeat events as agent progress, not unknown noise', () => {
+    const line = (event: Record<string, unknown>): StreamEvent => translateClaudeLine(JSON.stringify(event))!.events[0]
+
+    // A thinking-token estimate is a counter, so it files with the other token counters.
+    expect(line({ type: 'system', subtype: 'thinking_tokens', estimated_tokens: 2_000, estimated_tokens_delta: 100 }))
+      .toEqual({ channel: 'usage', kind: 'metric', text: '𝜓 thinking ≈2000 tokens' })
+
+    // Task events carry the spawning tool-use id, so they land under that agent.
+    expect(line({ type: 'system', subtype: 'task_started', task_type: 'local_bash', tool_use_id: 'toolu_a', description: 'Install deps' }))
+      .toEqual({ agentId: 'toolu_a', channel: 'tool', kind: 'tool', text: '▶ local_bash started "Install deps"' })
+    expect(line({
+      type: 'system',
+      subtype: 'task_progress',
+      tool_use_id: 'toolu_a',
+      description: 'Physics slice',
+      usage: { total_tokens: 15_161, tool_uses: 1, duration_ms: 3_037 },
+      last_tool_name: 'Bash',
+    })).toEqual({ agentId: 'toolu_a', channel: 'tool', kind: 'tool', text: '⋯ Physics slice (15161 tokens · 1 tools · 3s · Bash)' })
+
+    // A failed background task is an error, not a system aside.
+    expect(line({ type: 'system', subtype: 'task_notification', tool_use_id: 'toolu_a', status: 'failed', summary: 'build broke' }))
+      .toEqual({ agentId: 'toolu_a', channel: 'error', kind: 'error', text: '✗ task failed: build broke' })
+    expect(line({ type: 'system', subtype: 'task_notification', tool_use_id: 'toolu_a', status: 'completed', summary: 'done' }))
+      .toEqual({ agentId: 'toolu_a', channel: 'tool', kind: 'tool', text: '✓ task completed: done' })
+
+    expect(line({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ description: 'Feel pass' }, { description: 'Audio pass' }] }))
+      .toEqual({ channel: 'system', kind: 'system', text: 'background tasks: Feel pass · Audio pass' })
+    expect(line({ type: 'system', subtype: 'background_tasks_changed', tasks: [] }))
+      .toEqual({ channel: 'system', kind: 'system', text: 'background tasks: none' })
+
+    // A tool heartbeat is attributed to the agent running the tool.
+    expect(line({ type: 'tool_progress', tool_name: 'Bash', parent_tool_use_id: 'toolu_a', elapsed_time_seconds: 30, heartbeat: true }))
+      .toEqual({ agentId: 'toolu_a', channel: 'tool', kind: 'tool', text: '⋯ Bash still running (30s)' })
+
+    // Interleaved thinking sends signature-only blocks; the turn still shows.
+    expect(translateClaudeLine(assistantLine([{ type: 'thinking', thinking: '', signature: 'sig' }]))?.events)
+      .toEqual([{ channel: 'thought', kind: 'thought', text: '𝜓 (thinking withheld)' }])
   })
 
   it('surfaces unfamiliar top-level events and assistant blocks with their raw kind', () => {
