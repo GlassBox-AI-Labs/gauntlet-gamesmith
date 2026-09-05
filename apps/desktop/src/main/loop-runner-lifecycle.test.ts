@@ -1612,6 +1612,35 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(ledger.getLoop(loop.id)?.status).toBe('stopped')
   })
 
+  it('resumes explicitly trusted imported queued work with a fresh attempt and no portable session ID', async () => {
+    let spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => { spawnedArgs = args; throw new Error('stop after inspecting trusted Resume') },
+    })
+    const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
+    const loop = ledger.createLoop({ prompt: 'Imported game', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const referenceRoot = writeReadyReferencePack(workspaceDir, loop.id)
+    const reference = ledger.createRun({ loopId: loop.id, round: 0, role: 'reference', harness: 'codex', prompt: 'research' })
+    ledger.patchRun(reference.id, { status: 'succeeded', finishedAt: new Date().toISOString() })
+    ledger.appendEvent({ loopId: loop.id, runId: reference.id, ts: new Date().toISOString(), kind: 'artifact', channel: 'system',
+      text: `Reference Pack frozen at sha256:${referencePackFingerprint(workspaceDir, path.relative(workspaceDir, referenceRoot))}` })
+    const prior = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'Build the game.' })
+    ledger.patchRun(prior.id, { status: 'cancelled', sessionId: 'unowned-portable-session' })
+    const queued = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: '[[gauntlet:resume]]\nBuild the game.' })
+    ledger.patchRun(queued.id, { sessionId: 'unowned-queued-session' })
+    ledger.patchLoop(loop.id, { status: 'stopped', round: 1, playTrusted: false })
+    expect(runner.resumeLoop(loop.id).ok).toBe(false)
+    expect(spawnedArgs).toBeNull()
+    await ledger.trustExistingLoop(loop.id, async () => true)
+    expect(runner.resumeLoop(loop.id)).toEqual({ ok: true, loopId: loop.id })
+    expect(spawnedArgs, JSON.stringify(ledger.eventsForLoop(loop.id))).not.toBeNull()
+    expect(spawnedArgs).not.toContain('unowned-portable-session')
+    expect(spawnedArgs).not.toContain('unowned-queued-session')
+    expect(spawnedArgs).not.toContain('resume')
+    expect(ledger.getRun(queued.id)?.status).toBe('interrupted')
+    expect(ledger.latestRunForLoop(loop.id)?.id).not.toBe(queued.id)
+  })
+
   it('refuses Resume before changing history when the selected profile is no longer subscription-ready', () => {
     let spawned = false
     const { ledger, runner, workspaceDir } = setup({

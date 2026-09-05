@@ -311,3 +311,35 @@ or authorize similarly broad follow-up changes.
 
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
+
+
+## ADR-014 — Explicit execution trust for existing run folders (2026-09-05)
+
+**Status:** accepted. Supersedes ADR-005's lack of an existing-history execution trust control;
+its credential, ownership, raw-stream, import, and revision protections remain in force.
+
+**Decision.** Play and Resume offer a native main-process warning at the privileged action boundary.
+It names the registered run and exact folder, explains local-user execution permissions, and uses
+Cancel as both default and escape action. Confirmation is bound to the captured registry row,
+workspace device/inode, matching inert portable history, and a bounded metadata fingerprint of the
+folder. Main checks these before and after the dialog and rejects retained/unknown process ownership,
+quarantine, protected roots, escaping/broken links, special files, or concurrent changes. Browsing
+history never grants trust. The renderer captures the action's run ID and selection generation;
+changing selection prevents continuation, including changing away and back.
+
+An additive `execution_trusted` column defaults to false in both ledgers, and import always clears it.
+Only explicit consent sets it through the canonical mirrored transaction and records a visible trust
+event. Play and Resume accept local creation provenance or this local execution consent. The existing
+`play_trusted` provenance stays unchanged, so consent does not unlock private transcript access or
+rename, adopt portable CLI session IDs, or promote workspace Git objects into app-private revision
+authority. Resume of an imported queued attempt creates a new attempt, and imported histories use
+fresh CLI sessions. New local runs retain their behavior.
+
+**Consequences.** Existing teammates' games can Play without creating another run or clicking twice.
+Resume and historical-round Play still fail closed if an app-private revision or validated phase
+artifact is unavailable. Trees above 200,000 entries require reducing the tree before consent. The
+metadata fingerprint does not read project file contents or follow external links. This is explicit
+folder trust, not an OS sandbox or a permanent content signature: later edits are permitted, and
+same-user concurrent filesystem mutation cannot be made atomic with SQLite and process launch.
+Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
+canonical execution consent, records the failure, and attempts mirror repair before returning.
