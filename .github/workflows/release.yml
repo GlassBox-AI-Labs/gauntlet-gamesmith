@@ -1,58 +1,63 @@
 name: Release
 
-# Publishes a downloadable build when the version in apps/desktop/package.json
-# reaches main with no release for it yet. Merging ordinary changes publishes
-# nothing; bumping the version is what ships.
+# Pushing a v* tag publishes a downloadable build for it.
+#
+# The tag is the version. Nothing reads apps/desktop/package.json, whose version
+# is only a placeholder for local builds, so there is no bump to remember and no
+# way to ship a number that disagrees with the tag.
+#
+#   gh release create v0.1.1 --generate-notes   # creates the tag and this runs
 on:
   push:
-    branches: [main]
-    paths: ['apps/desktop/package.json']
+    tags: ['v*']
   workflow_dispatch:
     inputs:
-      force:
-        description: 'Rebuild and replace the release for the current version'
-        type: boolean
-        default: false
+      tag:
+        description: 'Existing tag to rebuild, such as v0.1.1'
+        required: true
 
 permissions:
   contents: write
 
-jobs:
-  check:
-    if: github.repository == 'GlassBox-AI-Labs/gauntlet-gamesmith'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      version: ${{ steps.read.outputs.version }}
-      needed: ${{ steps.decide.outputs.needed }}
-    steps:
-      - uses: actions/checkout@v4
-      - id: read
-        run: echo "version=$(node -p "require('./apps/desktop/package.json').version")" >> "$GITHUB_OUTPUT"
-      - id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.read.outputs.version }}
-          FORCE: ${{ inputs.force }}
-        run: |
-          if [ "$FORCE" = "true" ]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          elif gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "v$VERSION is already released; nothing to publish." >> "$GITHUB_STEP_SUMMARY"
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-          fi
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
+jobs:
   release:
-    needs: check
-    if: needs.check.outputs.needed == 'true'
+    if: github.repository == 'GlassBox-AI-Labs/gauntlet-gamesmith'
     runs-on: macos-latest
     timeout-minutes: 60
-    env:
-      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          # The tag has to be checked against main's history below.
+          fetch-depth: 0
+
+      - name: Read the version from the tag
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::$TAG is not a version tag. Use vMAJOR.MINOR.PATCH, such as v0.1.1." >&2; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # A download must come from reviewed history, not from whatever branch the
+      # tag happened to be cut on.
+      - name: Require the tag to be on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::${{ steps.version.outputs.tag }} does not point at a commit on main." >&2
+            exit 1
+          fi
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.15.0
@@ -85,6 +90,7 @@ jobs:
       - name: Build signed and notarized macOS downloads
         if: steps.signing.outputs.trusted == 'true'
         env:
+          VERSION: ${{ steps.version.outputs.version }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -95,17 +101,34 @@ jobs:
           key_file="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
           printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_file"
           export APPLE_API_KEY="$key_file"
-          pnpm package:mac:release
+          pnpm package:mac:release -c.extraMetadata.version="$VERSION"
           rm -f "$key_file"
 
       - name: Build ad hoc signed macOS downloads
         if: steps.signing.outputs.trusted != 'true'
-        run: pnpm package:mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm package:mac -c.extraMetadata.version="$VERSION"
 
       - name: Launch the packaged app before publishing it
         run: pnpm --filter @gauntlet/desktop smoke:mac
 
+      # The tag is the version, so the built app must actually carry it.
+      - name: Check the built app carries the tagged version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          built=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "dist/mac-arm64/Gauntlet Gamesmith.app/Contents/Info.plist")
+          if [ "$built" != "$VERSION" ]; then
+            echo "::error::The packaged app reports $built but the tag says $VERSION." >&2
+            exit 1
+          fi
+
       - name: Compose the release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           if [ "${{ steps.signing.outputs.trusted }}" = "true" ]; then
             signing_section=$'## Opening it\n\nThis build is signed and notarized by Apple, so it opens normally.'
@@ -119,13 +142,23 @@ jobs:
           print(body.replace('__VERSION__', version).replace('__SIGNING_SECTION__', signing))
           PY
 
+      # A release created by `gh release create` before this run keeps its notes;
+      # the assets are added to it. Otherwise the release is created here, so a
+      # tag pushed with plain git still produces a complete page.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release delete "v$VERSION" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "v$VERSION" \
-            --title "Gauntlet Gamesmith $VERSION (macOS)" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            --target "$GITHUB_SHA" \
-            dist/*.dmg dist/*.zip
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.dmg dist/*.zip --clobber
+          else
+            gh release create "$TAG" \
+              --title "Gauntlet Gamesmith $VERSION (macOS)" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --generate-notes \
+              --target "$GITHUB_SHA" \
+              dist/*.dmg dist/*.zip
+          fi

@@ -88,13 +88,34 @@ pnpm package:dir    # unpacked current-platform app for a quick smoke test
 
 ### Automated releases
 
-`.github/workflows/release.yml` publishes a downloadable build when a change to
-`apps/desktop/package.json` lands on `main` and no release exists for the version
-in it. Merging ordinary changes publishes nothing; **bumping the version is what
-ships**. The workflow runs `pnpm typecheck`, `pnpm test`, and the packaged-app
-smoke test before it creates the release, so a broken build cannot reach a
-download page. `workflow_dispatch` with `force` rebuilds and replaces the release
-for the current version.
+`.github/workflows/release.yml` publishes a downloadable build when a `v*` tag is
+pushed. **The tag is the version.** Cutting a release is one command:
+
+```sh
+gh release create v0.1.1 --generate-notes
+```
+
+That creates the tag, which starts the run. The workflow reads the version from
+the tag name and passes it to electron-builder as
+`-c.extraMetadata.version`, so the packaged app carries the tagged version and
+then checks its own `CFBundleShortVersionString` against the tag before
+publishing. A tag that does not point at a commit on `main` is refused, as is one
+that is not `vMAJOR.MINOR.PATCH`.
+
+Nothing reads the `version` field in `package.json`. It stays at the `0.0.0`
+placeholder, so a local `pnpm package:mac` produces obviously-unreleased
+`0.0.0` artifacts and there is no bump to remember, and no way to ship a number
+that disagrees with the tag.
+
+If a release for the tag already exists — as it does when `gh release create`
+made it — the assets are uploaded to it and its notes are left alone. A tag
+pushed with plain `git push --tags` gets a release created here instead, with the
+download and Gatekeeper instructions from
+`.github/release-notes-template.md` above GitHub's generated changelog.
+
+Before publishing, the workflow runs `pnpm typecheck`, `pnpm test`, and the
+packaged-app smoke test, so a broken build cannot reach a download page. To
+rebuild an existing tag, run the workflow manually and give it the tag name.
 
 It builds an Apple-signed and notarized release when these repository secrets are
 set, and an ad hoc signed one otherwise — the release notes say which:
