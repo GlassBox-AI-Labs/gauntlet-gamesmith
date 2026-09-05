@@ -92,6 +92,13 @@ export function runsDir(workspaceDir: string, create = true): string {
 /** Non-secret process basics required to find binaries and run terminal tools. */
 const INHERITED_CLI_ENV = new Set([
   'PATH',
+  // macOS resolves the login keychain through HOME. Claude Code keeps its
+  // subscription credentials there, so a rewritten HOME made the CLI ask for a
+  // keychain that does not exist and macOS offered to reset the user's real
+  // one. Isolation comes from CLAUDE_CONFIG_DIR and CODEX_HOME instead, which
+  // is what each CLI documents for exactly this purpose.
+  'HOME',
+  'USERPROFILE',
   'SYSTEMROOT',
   'COMSPEC',
   'PATHEXT',
@@ -155,7 +162,6 @@ export function subscriptionEnv(
   const candidateHomes = selectedHarness
     ? [overrides[CLI_HOME_ENV_KEYS[selectedHarness]]]
     : Object.values(CLI_HOME_ENV_KEYS).map((key) => overrides[key]).filter(Boolean)
-  const isolatedHome = candidateHomes.length === 1 ? candidateHomes[0] : undefined
   const safePath = sanitizedExecutablePath(env.PATH, [
     ...unsafeExecutableRoots,
     ...candidateHomes.filter((home): home is string => home !== undefined),
@@ -164,10 +170,6 @@ export function subscriptionEnv(
   else delete env.PATH
   for (const [key, value] of Object.entries(overrides)) {
     if (PLAN_CLI_ENV.has(key)) env[key] = value
-  }
-  if (isolatedHome) {
-    env.HOME = isolatedHome
-    env.USERPROFILE = isolatedHome
   }
   return { ...env, NO_COLOR: '1' }
 }

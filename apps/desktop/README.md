@@ -2,6 +2,24 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
+On first launch the app shows a setup flow instead of the Runs view: a welcome
+step, a connect step that detects each CLI and drives its login, and a four-card
+tour of the loop.
+
+When a CLI is missing, the connect step offers to install it. On macOS and Linux
+**Install** runs the vendor's own native installer — `https://claude.ai/install.sh`
+piped to `bash`, `https://chatgpt.com/codex/install.sh` piped to `sh` — in the
+login terminal, so every line is visible; the exact command stays available to
+copy. Neither installer needs Node. The installer runs with a plain environment
+and the real home rather than the harness environment, which rewrites `HOME` and
+sets `CODEX_HOME`/`CODEX_INSTALL_DIR` and would otherwise redirect the install
+into app-private state. Both land in `~/.local/bin` and edit a shell profile that
+the running app never re-reads, so `cli-executable.ts` searches that directory
+after `PATH`. Windows has no plan and shows the command instead. Completion is stored in `onboarding.json` under the Electron user-data
+directory, read over `onboarding:get` before the first render; a missing or
+unreadable file simply means the flow runs again. The flow is skippable, and
+**Show the tour again** on the Agents tab resets it.
+
 Two tabs:
 
 - **Agents** — CLI detection, login-status probing, and an interactive PTY for signing in to Claude Code and Codex. It does not read credential files.
@@ -9,7 +27,9 @@ Two tabs:
 
 **Play** may launch a trusted local run while its agents are still working. With no completed round selected, it previews the live project folder, so reloads can reflect work-in-progress edits or temporary build errors. Selecting a completed round instead launches that round's immutable Git revision.
 
-Run folders can be shared with **Export** and **Import**. Stop a run first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, build files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local runs, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained run without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history is deliberately read-only: **Play**, raw private-profile reading, loop resume, and rename remain blocked because this version has no re-trust control. Histories created before trust provenance was recorded are also treated as untrusted on upgrade—the app cannot safely distinguish an old local loop from an old import—so start a new local loop to regain execution features.
+Run folders can be shared with **Export** and **Import**. Stop a run first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, build files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local runs, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained run without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history and histories created before trust provenance was recorded start untrusted. Clicking **Play** or **Resume** shows a native warning naming the run and exact folder, with **Cancel** selected by default. **Trust run & folder** permits Gauntlet Gamesmith, its agents, and project scripts to execute with your local permissions. Main rechecks the registered folder identity, matching portable history, process ownership, and folder metadata after confirmation, then records consent and a visible event in both ledgers before continuing the original action. Browsing history never prompts. Changing selection during confirmation cancels the pending launch; consent can only apply to the run named in the dialog.
+
+Existing-folder execution consent does not grant private CLI transcript access or rename privileges, and does not adopt portable CLI session IDs or Git objects as local authority. Imported Resume uses fresh attempts/sessions; missing app-private revisions can still block a historical round or critique. Play the live folder when a transferred round has no local revision. Trust is denied for active or quarantined workspaces, changed or mismatched history, protected directories, external/broken links, special files, and trees exceeding 200,000 entries. A fresh import on another machine requires its own consent.
 
 Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<loop-id>/` and their exact relative path is recorded in the loop log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
@@ -20,6 +40,21 @@ pnpm dev
 ```
 
 Use Node 22 (`nvm use` will read the checked-in `.nvmrc`).
+
+### Running a second instance
+
+Everything the app owns — run history, harness logins, round revisions, and the
+single-instance lock — lives under the Electron user-data directory, so a second
+launch is normally refused while one is already running. Pass an absolute
+`--gauntlet-user-data` path to get a separate profile that runs beside it:
+
+```sh
+pnpm --filter @gauntlet/desktop exec electron . --gauntlet-user-data=/tmp/gg-test-profile
+```
+
+That profile starts empty: no runs, no signed-in CLIs, and the first-run setup
+flow. Delete the directory to discard it. A missing or relative path fails at
+startup rather than falling back to the real profile.
 
 Useful commands:
 
@@ -50,6 +85,48 @@ pnpm package:win    # Windows x64 portable EXE (run on Windows)
 pnpm package:linux  # Linux x64 AppImage (run on Linux)
 pnpm package:dir    # unpacked current-platform app for a quick smoke test
 ```
+
+### Automated releases
+
+`.github/workflows/release.yml` publishes a downloadable build when a `v*` tag is
+pushed. **The tag is the version.** Cutting a release is one command:
+
+```sh
+gh release create v0.1.1 --generate-notes
+```
+
+That creates the tag, which starts the run. The workflow reads the version from
+the tag name and passes it to electron-builder as
+`-c.extraMetadata.version`, so the packaged app carries the tagged version and
+then checks its own `CFBundleShortVersionString` against the tag before
+publishing. A tag that does not point at a commit on `main` is refused, as is one
+that is not `vMAJOR.MINOR.PATCH`.
+
+Nothing reads the `version` field in `package.json`. It stays at the `0.0.0`
+placeholder, so a local `pnpm package:mac` produces obviously-unreleased
+`0.0.0` artifacts and there is no bump to remember, and no way to ship a number
+that disagrees with the tag.
+
+If a release for the tag already exists — as it does when `gh release create`
+made it — the assets are uploaded to it and its notes are left alone. A tag
+pushed with plain `git push --tags` gets a release created here instead, with the
+download and Gatekeeper instructions from
+`.github/release-notes-template.md` above GitHub's generated changelog.
+
+Before publishing, the workflow runs `pnpm typecheck`, `pnpm test`, and the
+packaged-app smoke test, so a broken build cannot reach a download page. To
+rebuild an existing tag, run the workflow manually and give it the tag name.
+
+It builds an Apple-signed and notarized release when these repository secrets are
+set, and an ad hoc signed one otherwise — the release notes say which:
+
+| Secret | Holds |
+| --- | --- |
+| `MAC_CSC_LINK` | base64 of the Developer ID Application `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | password for that `.p12` |
+| `APPLE_API_KEY_CONTENT` | contents of the App Store Connect `.p8` key |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER` | the issuer UUID |
 
 ### Trusted macOS release
 
@@ -109,3 +186,39 @@ The app creates isolated CLI homes inside its user-data directory:
 - `harnesses/codex`
 
 The CLIs own everything stored in those directories. The Electron app only starts their commands and reads their documented status output.
+
+
+## Run composer and supplied context
+
+The compact run composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
+fields; fine-tuning models locks pace until Reset. Connection pills reflect CLI subscription
+status and open the real Agents sign-in UI without discarding the form.
+
+Drop files or folders onto the description, or use Attach files / Add folder. Images open a
+lightbox; folder chips open the original folder in Finder. Main snapshots supported reference,
+media, and source files, excluding hidden, credential, generated, and linked entries. The form
+reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
+
+At Create, copies and a provenance manifest are saved to `reference/<loop-id>/supplied/` in the
+new project. They are used as untrusted reference evidence, remain available to implementation
+and critique, and travel with Export. Draft attachments are in memory until Create; reload
+before Create discards the draft. Original files are never modified.
+
+- **Web + files:** the existing web Reference Study plus supplied evidence.
+- **Files only:** one reference agent studies supplied evidence; web research and researcher
+  fan-out are disabled. No downloaded-image/video quotas are required.
+- **Skip:** starts implementation directly, with no reference agent. Later critique evaluates
+  the goal and supplied context without requiring a Reference Pack. 3D sculptors require a
+  reference cast and are unavailable in this mode; implementation builds assets itself.
+
+`pnpm dev:run-form` launches the real app alongside another instance, using a separate profile
+(`Gauntlet Gamesmith Dev run-form`), separate build outputs, and port 5177 or `CONDUCTOR_PORT`.
+This profile needs its own CLI logins; no credentials or production ledger are copied.
+
+New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
+Ultracode are retained only for historical run replay/resume; they must not be added to new-run
+presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
+
+CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
+and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
+project roots, links into those roots, and private app directories remain excluded (ADR-015).

@@ -32,8 +32,7 @@ describe('subscriptionEnv', () => {
       PATH: '/usr/bin',
       LANG: 'en_US.UTF-8',
       CLAUDE_CONFIG_DIR: '/private/claude',
-      HOME: '/private/claude',
-      USERPROFILE: '/private/claude',
+      HOME: '/Users/operator',
       NO_COLOR: '1',
     })
   })
@@ -56,10 +55,31 @@ describe('subscriptionEnv', () => {
       PATH: '/bin',
       CODEX_HOME: '/private/codex',
       BASH_MAX_TIMEOUT_MS: '1000',
-      HOME: '/private/codex',
-      USERPROFILE: '/private/codex',
       NO_COLOR: '1',
     })
+  })
+
+  it('keeps the real home so macOS can find the login keychain', () => {
+    // Claude Code stores subscription credentials in the macOS login keychain,
+    // which the Security framework locates through HOME. Pointing HOME at the
+    // app's private CLI home made macOS report "a default keychain could not
+    // be found" and offer to reset the user's real keychain.
+    const env = subscriptionEnv(
+      { CLAUDE_CONFIG_DIR: '/private/claude' },
+      { HOME: '/Users/operator', USERPROFILE: '/Users/operator', PATH: '/usr/bin' },
+      'claude',
+    )
+
+    expect(env.HOME).toBe('/Users/operator')
+    expect(env.USERPROFILE).toBe('/Users/operator')
+    // Isolation still comes from the documented config-dir variable.
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/private/claude')
+  })
+
+  it('leaves the home unset when the parent process has none, rather than inventing one', () => {
+    const env = subscriptionEnv({ CODEX_HOME: '/private/codex' }, { PATH: '/usr/bin' }, 'codex')
+    expect(env).not.toHaveProperty('HOME')
+    expect(env.CODEX_HOME).toBe('/private/codex')
   })
 
   it('removes empty and relative PATH entries that could resolve a workspace-planted CLI', () => {

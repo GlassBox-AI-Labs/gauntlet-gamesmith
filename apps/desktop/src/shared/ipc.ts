@@ -3,6 +3,8 @@ export const IPC = {
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',
+    installOffer: 'harness:install-offer',
+    startInstall: 'harness:start-install',
     startLogin: 'harness:start-login',
     cancelLogin: 'harness:cancel-login',
     logout: 'harness:logout',
@@ -24,6 +26,7 @@ export const IPC = {
     reference: 'loop:reference',
     start: 'loop:start',
     resume: 'loop:resume',
+    trust: 'loop:trust',
     stop: 'loop:stop',
     active: 'loop:active',
     log: 'loop:log',
@@ -37,7 +40,14 @@ export const IPC = {
     readStream: 'loop:read-stream',
     update: 'loop:update',
   },
+  attachment: { add: 'attachment:add', pick: 'attachment:pick', preview: 'attachment:preview', remove: 'attachment:remove', openFolder: 'attachment:open-folder' },
+  context: { droppedFolder: 'context:dropped-folder', pickFolder: 'context:pick-folder', openFolder: 'context:open-folder' },
   media: { base: 'media:base' },
+  onboarding: {
+    get: 'onboarding:get',
+    complete: 'onboarding:complete',
+    reset: 'onboarding:reset',
+  },
   play: { start: 'play:start', stop: 'play:stop', state: 'play:state' },
   report: {
     list: 'report:list',

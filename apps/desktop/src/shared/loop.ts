@@ -103,7 +103,11 @@ export interface RunMetrics {
   }
 }
 
+export type ReferenceMode = 'web' | 'files' | 'skip'
+
 export interface LoopModels {
+  /** Missing in older histories means the original web Reference Study. */
+  referenceMode?: ReferenceMode
   orchestratorModel: string
   orchestratorEffort: string
   /** null = the orchestrator implements by itself, with no subagents. */
@@ -175,8 +179,10 @@ export interface LoopRecord {
   round: number
   totalCostUsd: number
   stopReason: string | null
-  /** False for transferred folders until the operator starts a new trusted run. */
+  /** Local creation provenance; never granted by existing-folder execution consent. */
   playTrusted: boolean
+  /** Explicit local consent for existing-folder Play/Resume; does not grant private raw access. */
+  executionTrusted?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -226,6 +232,7 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   error: 'error',
   stderr: 'error',
   system: 'system',
+  trust: 'system',
   done: 'system',
 }
 
@@ -252,6 +259,9 @@ export interface LoopLogLine {
 }
 
 export interface StartLoopInput {
+  referenceMode?: ReferenceMode
+  /** Opaque IDs for bounded, main-process attachment snapshots. */
+  attachmentIds?: string[]
   prompt: string
   workspaceDir: string
   maxRounds: number
@@ -396,6 +406,7 @@ export interface LoopApi {
   playState(loopId: string): Promise<PlayState>
   onPlayState(listener: (state: PlayStateEvent) => void): () => void
   start(input: StartLoopInput): Promise<StartLoopResult>
+  trust(loopId: string): Promise<OperationResult<LoopRecord | null>>
   resume(loopId: string): Promise<StartLoopResult>
   stop(loopId: string): Promise<OperationResult<void>>
   active(): Promise<LoopSnapshot | null>

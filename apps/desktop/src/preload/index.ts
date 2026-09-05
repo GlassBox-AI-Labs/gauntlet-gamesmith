@@ -1,12 +1,16 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
 import type { LoopApi, LoopLogLine, LoopSnapshot, PlayStateEvent } from '../shared/loop'
+import type { AttachmentApi } from '../shared/attachments'
+import type { OnboardingApi } from '../shared/onboarding'
 import type { ReportApi } from '../shared/reports'
 
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke(IPC.harness.detect, kind),
   probe: (kind) => ipcRenderer.invoke(IPC.harness.probe, kind),
+  installOffer: (kind) => ipcRenderer.invoke(IPC.harness.installOffer, kind),
+  startInstall: (kind) => ipcRenderer.invoke(IPC.harness.startInstall, kind),
   startLogin: (kind) => ipcRenderer.invoke(IPC.harness.startLogin, kind),
   cancelLogin: (kind) => ipcRenderer.invoke(IPC.harness.cancelLogin, kind),
   logout: (kind) => ipcRenderer.invoke(IPC.harness.logout, kind),
@@ -50,6 +54,7 @@ const loops: LoopApi = {
     return () => ipcRenderer.removeListener(IPC.play.state, wrapped)
   },
   start: (input) => ipcRenderer.invoke(IPC.loop.start, input),
+  trust: (loopId) => ipcRenderer.invoke(IPC.loop.trust, loopId),
   resume: (loopId) => ipcRenderer.invoke(IPC.loop.resume, loopId),
   stop: (loopId) => ipcRenderer.invoke(IPC.loop.stop, loopId),
   active: () => ipcRenderer.invoke(IPC.loop.active),
@@ -74,6 +79,12 @@ const loops: LoopApi = {
   },
 }
 
+const onboarding: OnboardingApi = {
+  get: () => ipcRenderer.invoke(IPC.onboarding.get),
+  complete: (harness) => ipcRenderer.invoke(IPC.onboarding.complete, harness),
+  reset: () => ipcRenderer.invoke(IPC.onboarding.reset),
+}
+
 const reports: ReportApi = {
   list: () => ipcRenderer.invoke(IPC.report.list),
   get: (reportId) => ipcRenderer.invoke(IPC.report.get, reportId),
@@ -92,3 +103,13 @@ const reports: ReportApi = {
 contextBridge.exposeInMainWorld('harnesses', harnesses)
 contextBridge.exposeInMainWorld('loops', loops)
 contextBridge.exposeInMainWorld('reports', reports)
+
+const attachments: AttachmentApi = {
+  addFiles: (files) => ipcRenderer.invoke(IPC.attachment.add, files.map((file) => webUtils.getPathForFile(file))),
+  pick: () => ipcRenderer.invoke(IPC.attachment.pick),
+  preview: (id) => ipcRenderer.invoke(IPC.attachment.preview, id),
+  remove: (id) => ipcRenderer.invoke(IPC.attachment.remove, id),
+  openFolder: (id) => ipcRenderer.invoke(IPC.attachment.openFolder, id),
+}
+contextBridge.exposeInMainWorld('attachments', attachments)
+contextBridge.exposeInMainWorld('onboarding', onboarding)

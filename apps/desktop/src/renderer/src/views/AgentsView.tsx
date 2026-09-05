@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Check,
   KeyRound,
@@ -6,6 +6,7 @@ import {
   LogOut,
   Play,
   RefreshCw,
+  Route,
   Sparkles,
   SquareTerminal,
   Trash2,
@@ -18,22 +19,18 @@ import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { initialHarnessState, reduceHarness } from '@/lib/login-state'
+import { useHarnessConnections } from '@/lib/use-harness-connections'
 import {
   HARNESS_LABELS,
   PRIMARY_ACCOUNT_ID,
   type AccountsResult,
   type AccountsState,
   type HarnessAccount,
-  type HarnessAction,
   type HarnessKind,
-  type HarnessState,
   type LoginPhase,
 } from '../../../shared/harness'
 
-type HarnessMap = Record<HarnessKind, HarnessState>
 type AccountMap = Record<HarnessKind, AccountsState>
-type StateEvent = { kind: HarnessKind; action: HarnessAction }
 
 const noAccounts: AccountsState = { activeId: PRIMARY_ACCOUNT_ID, accounts: [] }
 
@@ -47,6 +44,7 @@ function accountLabel(account: HarnessAccount): string {
 const phaseLabels: Record<LoginPhase, string> = {
   checking: 'Checking…',
   not_found: 'CLI not found',
+  installing: 'Installing the CLI',
   logged_out: 'Not connected',
   signing_in: 'Running login',
   awaiting_browser: 'Finish in browser',
@@ -55,17 +53,14 @@ const phaseLabels: Record<LoginPhase, string> = {
   error: 'Login failed',
 }
 
-const initialState: HarnessMap = {
-  claude: initialHarnessState('claude', HARNESS_LABELS.claude),
-  codex: initialHarnessState('codex', HARNESS_LABELS.codex),
-}
-
-function stateReducer(state: HarnessMap, event: StateEvent): HarnessMap {
-  return { ...state, [event.kind]: reduceHarness(state[event.kind], event.action) }
-}
-
 function StatusDot({ phase }: { phase: LoginPhase }): React.JSX.Element {
-  if (phase === 'checking' || phase === 'signing_in' || phase === 'awaiting_browser' || phase === 'signing_out') {
+  if (
+    phase === 'checking'
+    || phase === 'installing'
+    || phase === 'signing_in'
+    || phase === 'awaiting_browser'
+    || phase === 'signing_out'
+  ) {
     return <LoaderCircle className="size-3.5 animate-spin text-[#b5afac]" />
   }
   return (
@@ -77,8 +72,8 @@ function StatusDot({ phase }: { phase: LoginPhase }): React.JSX.Element {
   )
 }
 
-export function AgentsView(): React.JSX.Element {
-  const [state, dispatch] = useReducer(stateReducer, initialState)
+export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): React.JSX.Element {
+  const { states: state, dispatch, transcripts, registerWriter, clearTranscript, probe } = useHarnessConnections()
   const [activeKind, setActiveKind] = useState<HarnessKind>('claude')
   const [actionBusy, setActionBusy] = useState(false)
   const [terminalStarted, setTerminalStarted] = useState<Record<HarnessKind, boolean>>({
@@ -87,49 +82,32 @@ export function AgentsView(): React.JSX.Element {
   })
   const [accounts, setAccounts] = useState<AccountMap>({ claude: noAccounts, codex: noAccounts })
   const [accountError, setAccountError] = useState<Record<HarnessKind, string | null>>({ claude: null, codex: null })
-  const transcripts = useRef<Record<HarnessKind, string>>({ claude: '', codex: '' })
-  const terminalWriters = useRef<Partial<Record<HarnessKind, (data: string) => void>>>({})
+  const [replaying, setReplaying] = useState(false)
 
   useEffect(() => {
-    const removeLoginListener = window.harnesses.onLoginEvent((event) => dispatch(event))
     const removeAccountListener = window.harnesses.onAccountsChanged((kind) => {
       void window.harnesses.accounts(kind)
         .then((list) => setAccounts((current) => ({ ...current, [kind]: list })))
         .catch(() => undefined)
       void window.harnesses.probe(kind)
-        .then((probe) => dispatch({ kind, action: { type: 'probe_finished', ...probe } }))
+        .then((result) => dispatch({ kind, action: { type: 'probe_finished', ...result } }))
         .catch(() => undefined)
     })
-    const removeTerminalListener = window.harnesses.onTerminalData(({ kind, data }) => {
-      transcripts.current[kind] = `${transcripts.current[kind]}${data}`.slice(-32_000)
-      terminalWriters.current[kind]?.(data)
-    })
-
     void Promise.all(
       (['claude', 'codex'] as const).map(async (kind) => {
         try {
-          const detection = await window.harnesses.detect(kind)
-          dispatch({ kind, action: { type: 'detected', ...detection } })
-          if (!detection.found) return
-          const probe = await window.harnesses.probe(kind)
-          dispatch({ kind, action: { type: 'probe_finished', ...probe } })
           const list = await window.harnesses.accounts(kind)
           setAccounts((current) => ({ ...current, [kind]: list }))
-        } catch (error) {
-          dispatch({
-            kind,
-            action: { type: 'login_failed', error: error instanceof Error ? error.message : 'Unable to check login status.' },
-          })
+        } catch {
+          // The harness hook already surfaces detection and login failures.
         }
       }),
     )
 
     return () => {
-      removeLoginListener()
       removeAccountListener()
-      removeTerminalListener()
     }
-  }, [])
+  }, [dispatch])
 
   const harness = state[activeKind]
   const running = harness.phase === 'signing_in' || harness.phase === 'awaiting_browser'
@@ -142,7 +120,7 @@ export function AgentsView(): React.JSX.Element {
   const startLogin = async (): Promise<void> => {
     if (actionBusy) return
     setActionBusy(true)
-    transcripts.current[activeKind] = ''
+    clearTranscript(activeKind)
     setTerminalStarted((current) => ({ ...current, [activeKind]: true }))
     try {
       await window.harnesses.startLogin(activeKind)
@@ -159,10 +137,8 @@ export function AgentsView(): React.JSX.Element {
   const refresh = async (): Promise<void> => {
     if (actionBusy) return
     setActionBusy(true)
-    dispatch({ kind: activeKind, action: { type: 'probe_started' } })
     try {
-      const probe = await window.harnesses.probe(activeKind)
-      dispatch({ kind: activeKind, action: { type: 'probe_finished', ...probe } })
+      await probe(activeKind)
     } catch (error) {
       dispatch({
         kind: activeKind,
@@ -179,11 +155,9 @@ export function AgentsView(): React.JSX.Element {
   }
 
   const reprobe = async (): Promise<void> => {
-    transcripts.current[activeKind] = ''
+    clearTranscript(activeKind)
     setTerminalStarted((current) => ({ ...current, [activeKind]: false }))
-    dispatch({ kind: activeKind, action: { type: 'probe_started' } })
-    const probe = await window.harnesses.probe(activeKind)
-    dispatch({ kind: activeKind, action: { type: 'probe_finished', ...probe } })
+    await probe(activeKind)
     await loadAccounts(activeKind)
   }
 
@@ -226,6 +200,21 @@ export function AgentsView(): React.JSX.Element {
       })
     } finally {
       setActionBusy(false)
+    }
+  }
+
+  /** Puts the first-run flow back and hands the screen over to it. */
+  const replayTour = async (): Promise<void> => {
+    if (replaying) return
+    setReplaying(true)
+    try {
+      await window.onboarding.reset()
+    } catch {
+      // The flow is still worth showing even if the flag could not be cleared;
+      // it will simply not persist as unfinished.
+    } finally {
+      setReplaying(false)
+      onReplayTour?.()
     }
   }
 
@@ -309,6 +298,14 @@ export function AgentsView(): React.JSX.Element {
       <p className="mt-2.5 text-xs text-[#7d7772]">
         Accounts share run history. A usage-limited run rotates to the next available account and retries automatically.
       </p>
+      {onReplayTour && <Button
+        variant="ghost"
+        className="mt-3 text-[#b5afac] hover:bg-white/5 hover:text-white"
+        disabled={replaying}
+        onClick={() => void replayTour()}
+      >
+        {replaying ? <LoaderCircle className="animate-spin" /> : <Route />} Show the tour again
+      </Button>}
       {accountError[activeKind] && <p className="mt-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{accountError[activeKind]}</p>}
 
       <div className="my-7 flex items-center gap-2.5">
@@ -366,10 +363,7 @@ export function AgentsView(): React.JSX.Element {
           transcript={transcripts.current[activeKind]}
           onCancel={() => void cancelLogin()}
           onClose={() => setTerminalStarted((current) => ({ ...current, [activeKind]: false }))}
-          registerWriter={(kind, writer) => {
-            if (writer) terminalWriters.current[kind] = writer
-            else delete terminalWriters.current[kind]
-          }}
+          registerWriter={registerWriter}
         />
       )}
     </main>

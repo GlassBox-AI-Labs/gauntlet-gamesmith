@@ -1,3 +1,4 @@
+import { captureExistingRunTrust } from './existing-run-trust'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -46,7 +47,8 @@ CREATE TABLE IF NOT EXISTS loops (
   stop_reason TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  play_trusted INTEGER NOT NULL DEFAULT 0
+  play_trusted INTEGER NOT NULL DEFAULT 0,
+  execution_trusted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,
@@ -140,6 +142,7 @@ interface LoopRow {
   created_at: string
   updated_at: string
   play_trusted: number
+  execution_trusted: number
 }
 
 const LOOP_LIST_PROJECTION_COLUMNS = `
@@ -148,7 +151,7 @@ const LOOP_LIST_PROJECTION_COLUMNS = `
   max_rounds, budget_usd,
   CASE WHEN length(models_json) <= 4096 THEN models_json ELSE '{}' END AS models_json,
   status, round, total_cost_usd, substr(stop_reason, 1, 4096) AS stop_reason,
-  created_at, updated_at, play_trusted`
+  created_at, updated_at, play_trusted, execution_trusted`
 
 interface RunRow {
   id: string
@@ -322,6 +325,7 @@ function normalizeLoopRow(value: unknown): LoopRow {
     created_at: timestampField(row, 'created_at')!,
     updated_at: timestampField(row, 'updated_at')!,
     play_trusted: playTrusted,
+    execution_trusted: 0, // Portable consent is never authority on this machine.
   }
   // Validate and normalize historical model JSON without replacing old names.
   normalized.models_json = JSON.stringify(toLoop(normalized).models)
@@ -431,6 +435,7 @@ function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void
   const additions = {
     loops: [
       ['title', 'ALTER TABLE loops ADD COLUMN title TEXT'],
+      ['execution_trusted', 'ALTER TABLE loops ADD COLUMN execution_trusted INTEGER NOT NULL DEFAULT 0'],
       ['play_trusted', 'ALTER TABLE loops ADD COLUMN play_trusted INTEGER NOT NULL DEFAULT 0'],
       ['workspace_dev', 'ALTER TABLE loops ADD COLUMN workspace_dev INTEGER'],
       ['workspace_ino', 'ALTER TABLE loops ADD COLUMN workspace_ino INTEGER'],
@@ -478,7 +483,7 @@ interface ImportedRows {
 const IMPORT_COLUMNS = {
   loops: {
     required: ['id', 'prompt', 'workspace_dir', 'max_rounds', 'budget_usd', 'models_json', 'status', 'round', 'total_cost_usd', 'stop_reason', 'created_at', 'updated_at'],
-    allowed: ['id', 'title', 'prompt', 'workspace_dir', 'workspace_dev', 'workspace_ino', 'max_rounds', 'budget_usd', 'models_json', 'status', 'round', 'total_cost_usd', 'stop_reason', 'created_at', 'updated_at', 'play_trusted'],
+    allowed: ['id', 'title', 'prompt', 'workspace_dir', 'workspace_dev', 'workspace_ino', 'max_rounds', 'budget_usd', 'models_json', 'status', 'round', 'total_cost_usd', 'stop_reason', 'created_at', 'updated_at', 'play_trusted', 'execution_trusted'],
   },
   runs: {
     required: ['id', 'loop_id', 'round', 'role', 'harness', 'status', 'prompt', 'model', 'summary', 'verdict_json', 'metrics_json', 'cost_usd', 'input_tokens', 'output_tokens', 'num_turns', 'duration_ms', 'session_id', 'error', 'created_at', 'started_at', 'finished_at'],
@@ -655,8 +660,8 @@ function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: st
 function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
   db.prepare(
     `INSERT OR REPLACE INTO loops
-      (id, title, prompt, workspace_dir, workspace_dev, workspace_ino, max_rounds, budget_usd, models_json, status, round, total_cost_usd, stop_reason, created_at, updated_at, play_trusted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, title, prompt, workspace_dir, workspace_dev, workspace_ino, max_rounds, budget_usd, models_json, status, round, total_cost_usd, stop_reason, created_at, updated_at, play_trusted, execution_trusted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
     row.title,
@@ -674,6 +679,7 @@ function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace
     row.created_at,
     row.updated_at,
     row.play_trusted,
+    row.execution_trusted,
   )
 }
 
@@ -781,6 +787,7 @@ function toLoop(row: LoopRow): LoopRecord {
     totalCostUsd: row.total_cost_usd,
     stopReason: row.stop_reason == null ? null : redactLogText(row.stop_reason),
     playTrusted: row.play_trusted === 1,
+    executionTrusted: row.execution_trusted === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -1599,6 +1606,38 @@ export class Ledger {
     }, this.protectedRoots())
   }
 
+  /** Consent and all revalidation stay in main; the callback only displays native UI. */
+  async trustExistingLoop(id: string, confirm: (loop: LoopRecord) => Promise<boolean>, assertIdle: () => void = () => {}): Promise<LoopRecord | null> {
+    const loop = this.getLoop(id)
+    if (!loop) throw new Error('Run not found.')
+    if (loop.playTrusted || loop.executionTrusted) return loop
+    const capture = () => captureExistingRunTrust(this.db, loop, this.protectedRoots(), assertLegacyWorkspaceMatchesRegistry)
+    assertIdle()
+    const before = capture()
+    if (!await confirm(loop)) return null
+    assertIdle()
+    if (capture() !== before) throw new Error('The run, folder, or history changed while confirmation was open. Try again.')
+    try {
+      this.transaction(() => {
+        this.assertLoopWorkspaceIdentity(id)
+        this.db.prepare('UPDATE loops SET execution_trusted = 1, updated_at = ? WHERE id = ?').run(now(), id)
+        const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as unknown as LoopRow
+        this.mirrorLoop(id, (folderDb) => putLoopRow(folderDb, row))
+        this.appendEvent({ loopId: id, runId: null, ts: now(), kind: 'trust', channel: 'system',
+          text: `Operator explicitly trusted this existing run and folder for Play and Resume with local user permissions: ${redactLogText(loop.workspaceDir)}` })
+      })
+      this.assertLoopWorkspaceIdentity(id)
+    } catch (error) {
+      // A post-canonical mirror failure must not leave execution enabled.
+      this.db.prepare('UPDATE loops SET execution_trusted = 0 WHERE id = ?').run(id)
+      this.insertCanonicalEvent({ loopId: id, runId: null, ts: now(), kind: 'error', channel: 'error',
+        text: 'Existing-run trust could not be persisted safely; execution trust was revoked. Retry after repairing the folder ledger.' })
+      try { this.syncWorkspaceFolder(loop.workspaceDir) } catch { /* canonical denial wins; existing repair event remains visible */ }
+      throw error
+    }
+    return this.getLoop(id)!
+  }
+
   latestLoop(): LoopRecord | null {
     const row = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC LIMIT 1').get() as LoopRow | undefined
     return row ? toLoop(row) : null
@@ -1610,6 +1649,15 @@ export class Ledger {
       throw new Error(`Full loop history exceeds the administrative materialization limit of ${MAX_MATERIALIZED_LOOP_HISTORY}; use recentLoops() paging.`)
     }
     return rows.map(toLoop)
+  }
+
+  /**
+   * Every project folder this app has ever run in. Executable resolution treats
+   * these as agent-writable, so a binary planted in one is never spawned.
+   */
+  workspaceRoots(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT workspace_dir FROM loops').all() as unknown as Array<{ workspace_dir: string }>
+    return rows.map((row) => row.workspace_dir).filter((dir) => typeof dir === 'string' && dir.length > 0)
   }
 
   loopsInWorkspace(workspaceDir: string): LoopRecord[] {
@@ -2089,6 +2137,11 @@ export class Ledger {
     return Number.isFinite(row.score) && row.score >= 0 && row.score <= 1 ? row.score : 0
   }
 
+  eventTextForLoopWithPrefix(loopId: string, prefix: string): string | null {
+    const row = this.db.prepare("SELECT substr(text, 1, 4096) AS text FROM events WHERE loop_id = ? AND kind = 'artifact' AND substr(text, 1, ?) = ? ORDER BY seq LIMIT 1").get(loopId, prefix.length, prefix) as { text: string } | undefined
+    return row?.text ?? null
+  }
+
   eventTextForRunWithPrefix(runId: string, prefix: string): string | null {
     if (prefix.length === 0 || prefix.length > 1_024) throw new Error('Event prefix must be bounded.')
     const row = this.db.prepare(
@@ -2427,8 +2480,8 @@ export class Ledger {
     // already registered to any other workspace is a collision, not consent
     // to delete and replace that project's history.
     for (const loop of importedRows.loops) {
-      const existing = this.db.prepare('SELECT workspace_dir, status, play_trusted FROM loops WHERE id = ?').get(loop.id) as
-        | { workspace_dir: string; status: string; play_trusted: number }
+      const existing = this.db.prepare('SELECT workspace_dir, status, play_trusted, execution_trusted FROM loops WHERE id = ?').get(loop.id) as
+        | { workspace_dir: string; status: string; play_trusted: number; execution_trusted: number }
         | undefined
       if (existing && canonicalizePath(existing.workspace_dir) !== workspaceDir) {
         throw new Error(`Imported loop ${loop.id} collides with history owned by another workspace.`)
@@ -2437,7 +2490,7 @@ export class Ledger {
       // A trusted local registry is authoritative. Its agent-writable portable
       // mirror must never be able to replace executable prompts, revisions, or
       // private-home session identifiers under the registry's trust decision.
-      if (existing?.play_trusted === 1) {
+      if (existing?.play_trusted === 1 || existing?.execution_trusted === 1) {
         throw new Error(`Loop ${loop.id} is already registered as trusted local history; no import is needed.`)
       }
       for (const run of importedRows.runsByLoop.get(loop.id) ?? []) {
@@ -2487,6 +2540,7 @@ export class Ledger {
           // First-time and idempotently refreshed transferred histories are
           // untrusted. Trusted local histories are rejected above.
           play_trusted: 0,
+          execution_trusted: 0,
         }
         const runs = importedRows.runsByLoop.get(loop.id)!.map((run): RunRow => {
           if (run.status !== 'running' && run.status !== 'queued') return run

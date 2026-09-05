@@ -1,3 +1,6 @@
+import { trustExistingRun } from './trust-ipc'
+import { createRunAttachments } from './run-attachments'
+import { registerAttachmentIpc } from './attachment-ipc'
 import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
@@ -36,6 +39,7 @@ import {
   parseLogLimit,
   parseDeleteRunsInput,
   parseLoopListOffset,
+  parseOnboardingHarness,
   parseOptionalRound,
   parseRunPageOffset,
   parseRunPromptRequest,
@@ -46,6 +50,7 @@ import {
   renameTrustError,
 } from './ipc-input'
 import { Ledger } from './ledger'
+import { OnboardingStore } from './onboarding'
 import { LoopRunner } from './loop-runner'
 import { stopExistingLoop } from './loop-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
@@ -72,6 +77,8 @@ import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
 import { withPromptLogs, type PromptLogRun } from './prompt-logs'
 import { settleQuitSupervisors } from './quit-settlement'
 import { readExactFileDescriptor } from './bounded-fd'
+import { resolveUserDataOverride } from './user-data-dir'
+import { configureAgentWritableRoots } from './cli-executable'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
@@ -79,6 +86,7 @@ let loopRunner: LoopRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
 const APP_NAME = 'Gauntlet Gamesmith'
+const developmentInstance = !app.isPackaged && /^[a-z0-9-]{1,40}$/.test(process.env.GAUNTLET_INSTANCE_ID ?? '') ? process.env.GAUNTLET_INSTANCE_ID : null
 const LEGACY_APP_NAME = 'Gauntlet Loop'
 const smokeTestMode = process.argv.includes('--gauntlet-smoke-test')
 const MAX_REPORT_IMPORT_BYTES = 8 * 1024 * 1024
@@ -125,10 +133,27 @@ function protectedWorkspaceRoots(): string[] {
   return [app.getPath('userData'), cliHome('claude'), cliHome('codex')]
 }
 
+/** Where new runs are created when the user has not chosen a folder. */
+function defaultWorkspaceParent(): string {
+  return path.join(app.getPath('home'), 'GauntletGames')
+}
+
+/**
+ * Directories an agent can write into: the app's own private state, the folder
+ * new runs are created in, and every project folder a run has used. Executable
+ * resolution refuses to spawn anything found inside them.
+ */
+configureAgentWritableRoots(() => [
+  ...protectedWorkspaceRoots(),
+  defaultWorkspaceParent(),
+  ...(ledger?.workspaceRoots() ?? []),
+])
+
 app.setName(APP_NAME)
 app.setPath('userData', smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
   ? process.env.GAUNTLET_SMOKE_USER_DATA
-  : resolveUserData())
+  : resolveUserDataOverride(process.argv) ?? (developmentInstance ? path.join(app.getPath('appData'), `${APP_NAME} Dev ${developmentInstance}`) : resolveUserData()))
+if (developmentInstance) fsSync.mkdirSync(app.getPath('userData'), { recursive: true, mode: 0o700 })
 fixPath()
 configureRoundRevisionStorage(path.join(app.getPath('userData'), 'round-revisions'))
 
@@ -139,6 +164,13 @@ const harnessLogins = new HarnessLoginManager(app.getPath('home'), {
   },
   terminal: (kind, data) => mainWindow?.webContents.send(IPC.harness.terminalData, { kind, data }),
 })
+
+let onboardingStore: OnboardingStore | null = null
+
+function onboarding(): OnboardingStore {
+  onboardingStore ??= new OnboardingStore(app.getPath('userData'))
+  return onboardingStore
+}
 
 function recordSuccessfulLogin(kind: HarnessKind, action: HarnessAction): void {
   if (action.type !== 'probe_finished' || !action.loggedIn) return
@@ -222,6 +254,16 @@ function registerLoopIpc(): void {
     } catch (error) {
       return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
     }
+  })
+  ipcMain.handle(IPC.loop.trust, (_event, value: unknown) => {
+    if (!ledger) return failure('Run history is not ready.')
+    return trustExistingRun(ledger, value,
+      (options) => mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options),
+      (loop, line) => {
+        mainWindow?.webContents.send(IPC.loop.log, line)
+        const projection = ledger?.recentRunProjectionForLoop(loop.id, 200)
+        if (projection) mainWindow?.webContents.send(IPC.loop.update, boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger!.runCount(loop.id), detailTruncated: projection.truncatedFields, aggregate: ledger!.runAggregate(loop.id) }))
+      }, hasActivePlay)
   })
   ipcMain.handle(IPC.loop.resume, (_event, value: unknown) => {
     try {
@@ -572,12 +614,18 @@ function registerLoopIpc(): void {
     })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
-  ipcMain.handle(IPC.loop.defaultWorkspace, () => path.join(app.getPath('home'), 'GauntletGames'))
+  ipcMain.handle(IPC.loop.defaultWorkspace, () => defaultWorkspaceParent())
 }
 
 function registerIpc(): void {
+  ipcMain.handle(IPC.onboarding.get, () => onboarding().read())
+  ipcMain.handle(IPC.onboarding.complete, (_event, value: unknown) =>
+    onboarding().complete(parseOnboardingHarness(value)))
+  ipcMain.handle(IPC.onboarding.reset, () => onboarding().reset())
   ipcMain.handle(IPC.harness.detect, (_event, value: unknown) => harnessLogins.detect(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.probe, (_event, value: unknown) => harnessLogins.probe(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.installOffer, (_event, value: unknown) => harnessLogins.offerInstall(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.startInstall, (_event, value: unknown) => harnessLogins.install(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.startLogin, (_event, value: unknown) => harnessLogins.start(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.cancelLogin, (_event, value: unknown) => harnessLogins.cancel(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.logout, async (_event, value: unknown) => {
@@ -626,7 +674,7 @@ function createWindow(): BrowserWindow {
     height: 820,
     minWidth: 760,
     minHeight: 560,
-    title: APP_NAME,
+    title: developmentInstance ? `${APP_NAME} — ${developmentInstance}` : APP_NAME,
     backgroundColor: '#100d0e',
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
@@ -786,9 +834,12 @@ if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
+    const attachments = createRunAttachments(protectedWorkspaceRoots)
+    registerAttachmentIpc(attachments, () => mainWindow)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
       protectedRoots: protectedWorkspaceRoots,
+      prepareContext: (ids) => attachments.prepare(ids),
       rotateAccount,
     })
     mediaGate = new MediaBaseGate(() => startMediaServer((loopId) => {

@@ -311,3 +311,194 @@ or authorize similarly broad follow-up changes.
 
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
+
+## ADR-013 — First-run setup flow gates the app on connecting an agent (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The app cannot run a single round without a signed-in Claude Code or Codex CLI, but
+nothing said so before the Run tab failed. A new user landed on a run form whose start button could
+not work, with the sign-in buried behind an Agents tab they had no reason to visit. The packaged
+0.1.0 download made this worse: recipients have neither the repository nor its README.
+
+**Decision.** First launch renders a four-step flow — welcome, connect, tour, ready — instead of the
+Runs view. The connect step detects each CLI, drives its existing PTY login, and shows the
+`npm install -g` command when a CLI is missing. The flow is skippable and never blocks: someone
+without an agent may continue, and the step says plainly that runs cannot start until one is
+connected. Completion is a flag in `onboarding.json` under the Electron user-data directory, read
+over typed IPC (`onboarding:get`) before the first render. A missing, corrupt, or unwritable file
+means the flow runs again, which is the safe direction to fail. **Show the tour again** on the
+Agents tab resets it.
+
+**Consequences.** The prerequisite is stated where it is discovered rather than in a README the
+downloader never sees. Onboarding state is one boolean outside SQLite, so it stays readable before
+the ledger opens and cannot corrupt run history. Detection, probing, and login-phase reduction now
+live in one renderer hook shared by the setup flow and the Agents tab, so login states cannot drift
+between them.
+
+## ADR-014 — The app installs the harness CLIs with the vendors' native installers (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The first-run connect step told a new user to open a terminal and paste
+`npm install -g …`, which is the exact task the flow exists to remove. It also required Node.js,
+which the non-technical downloader of the packaged build is least likely to have, and a global npm
+install fails with EACCES on system Node without sudo the app must never take.
+
+**Decision.** On macOS and Linux the connect step runs each vendor's own native installer
+(`https://claude.ai/install.sh | bash`, `https://chatgpt.com/codex/install.sh | sh`) in the same PTY
+panel the login uses, with the exact command shown before and during the run. Neither installer
+needs Node; both download a platform binary. The installer runs in a plain environment with the real
+home — not the harness environment, which rewrites `HOME` and sets `CODEX_HOME` and
+`CODEX_INSTALL_DIR`, and would install the CLI into app-private state. Windows offers no plan and
+shows its documented PowerShell/CMD command to copy.
+
+**Consequences.** A user with neither CLI can reach a working run without leaving the app or knowing
+what a terminal is, and Node stops being a prerequisite for the agents (it is still needed to preview
+a built game). Both installers place their launcher in `~/.local/bin` and append it to a shell
+profile that an already-running GUI process never re-reads, so `resolveCliExecutable` now searches
+that directory after `PATH`, under the same validation as every other candidate. The app executes
+vendor-published scripts fetched at run time: the URLs are pinned constants, no user input reaches
+the command line, and the output is shown in full rather than hidden.
+## ADR-015 — Executable resolution guards agent-writable roots, not git checkouts (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `resolveCliExecutable` rejected any candidate whose directory sat under a `.git` marker,
+to stop an agent that had planted an executable in the project it was building from being spawned as
+the CLI. Homebrew's prefix is itself a git repository, so `/opt/homebrew/bin/claude` — installed by
+the documented `brew install --cask claude-code` — was rejected, and the app reported Claude Code as
+not installed on a machine where it was installed and working.
+
+**Decision.** The guard now names the directories agents can actually write into: the app's private
+roots, the folder new runs are created in, and every project folder in the ledger. A `.git` marker
+says nothing about who can write to a directory, so it is no longer consulted. The run path already
+passed `loop.workspaceDir` explicitly; a process-wide provider adds the rest so the protection holds
+for resolutions that happen outside a run, such as detection during setup.
+
+**Consequences.** CLIs installed by Homebrew, or by any other tool that ships its prefix as a git
+checkout, are usable. A binary planted inside any run folder the app knows about is still refused,
+and a provider failure falls back to the caller's own roots rather than making every CLI
+unresolvable. Detection stops depending on how the user chose to install the CLI.
+## ADR-016 — The CLI child keeps the user's real HOME (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `subscriptionEnv` rewrote `HOME` and `USERPROFILE` to the app-managed harness home
+whenever one harness was selected. On macOS the Security framework locates the login keychain
+through `HOME`, and Claude Code keeps its subscription credentials there. The rewritten home
+contained no `Library/Keychains`, so signing in raised the macOS dialog "a default keychain could not
+be found", whose primary button offers to reset the user's real login keychain — a destructive action
+presented to a user who has done nothing wrong. Verified directly: `security default-keychain`
+resolves under the real home and fails with `SecKeychainCopyDefault` under the rewritten one.
+
+**Decision.** `HOME` and `USERPROFILE` are inherited from the parent process like the other
+environment values the CLI needs. Account and app isolation comes from `CLAUDE_CONFIG_DIR` and
+`CODEX_HOME`, which each CLI documents for exactly this purpose and which the app already sets.
+Nothing else about the sanitized environment changes: billing and credential-routing variables are
+still stripped, and `PATH` is still filtered against agent-writable roots.
+
+**Consequences.** Sign-in can reach the credential store the CLI actually uses, and the app never
+puts a keychain-reset prompt in front of a user. Isolation is unchanged in practice — Claude Code
+namespaces its keychain entries per config directory, and a run with the app's config dir still
+reports itself signed out while the user's own CLI login is untouched. The app continues never to
+read, copy, or inspect any credential store (PROC-001). The harness home is no longer a boundary
+against the CLI reading the real home; it never was one on macOS, where the credential store sits
+outside `HOME` regardless.
+
+## ADR-017 — Explicit execution trust for existing run folders (2026-09-05)
+
+**Status:** accepted. Supersedes ADR-005's lack of an existing-history execution trust control;
+its credential, ownership, raw-stream, import, and revision protections remain in force.
+
+**Decision.** Play and Resume offer a native main-process warning at the privileged action boundary.
+It names the registered run and exact folder, explains local-user execution permissions, and uses
+Cancel as both default and escape action. Confirmation is bound to the captured registry row,
+workspace device/inode, matching inert portable history, and a bounded metadata fingerprint of the
+folder. Main checks these before and after the dialog and rejects retained/unknown process ownership,
+quarantine, protected roots, escaping/broken links, special files, or concurrent changes. Browsing
+history never grants trust. The renderer captures the action's run ID and selection generation;
+changing selection prevents continuation, including changing away and back.
+
+An additive `execution_trusted` column defaults to false in both ledgers, and import always clears it.
+Only explicit consent sets it through the canonical mirrored transaction and records a visible trust
+event. Play and Resume accept local creation provenance or this local execution consent. The existing
+`play_trusted` provenance stays unchanged, so consent does not unlock private transcript access or
+rename, adopt portable CLI session IDs, or promote workspace Git objects into app-private revision
+authority. Resume of an imported queued attempt creates a new attempt, and imported histories use
+fresh CLI sessions. New local runs retain their behavior.
+
+**Consequences.** Existing teammates' games can Play without creating another run or clicking twice.
+Resume and historical-round Play still fail closed if an app-private revision or validated phase
+artifact is unavailable. Trees above 200,000 entries require reducing the tree before consent. The
+metadata fingerprint does not read project file contents or follow external links. This is explicit
+folder trust, not an OS sandbox or a permanent content signature: later edits are permitted, and
+same-user concurrent filesystem mutation cannot be made atomic with SQLite and process launch.
+Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
+canonical execution consent, records the failure, and attempts mirror repair before returning.
+
+## ADR-018 — Supplied context and explicit Reference Study modes (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The selected run composer must reflect real execution. User-supplied files belong to
+the run's reference evidence, and skipping Reference Study must not launch a research agent.
+
+**Decision.** Persist `referenceMode` in the existing models/configuration JSON. Missing values in
+historical records retain the original web Reference Study. `web` studies the web and supplied
+files; `files` queues one study of supplied evidence without researcher fan-out or web research;
+`skip` queues implementation directly, including after recovery or an empty-history Resume.
+Files-only study has a local-source artifact contract without downloaded-media quotas. Skip-mode
+implementation and critique use the goal and supplied context without requiring an AAA pack.
+Sculptor configuration is disabled in skip mode because it requires a studied reference cast.
+
+Main snapshots selected files into bounded in-memory drafts, returning opaque IDs. At Create,
+the snapshot is published under `reference/<loop-id>/supplied/` before queueing any agent. Its
+manifest records original relative names, sizes, and SHA-256 hashes; its fingerprint is recorded
+in both ledgers' event history and checked at phase boundaries, including Reference Study retries.
+Supplied files remain untrusted evidence, not instructions or automatic redistribution permission.
+The existing whole-project export includes them; no original machine path is needed for replay.
+Folders are flattened into uniquely numbered files with original relative paths in the manifest.
+No symlinks, hidden/credential files, generated dependency trees, or private app/CLI roots are read.
+Limits are 100 files, 20 MB per file, 100 MB total, and 2,000 scanned entries per selected tree.
+
+**Consequences.** Reloading before Create discards draft attachments; created runs retain their
+copies even if originals move or change. Folder chips open the original selected directory in
+Finder through an identity-checked main-process capability. No SQLite schema migration is needed:
+the additive JSON policy field normalizes with the historical default. The reference mode is an
+execution/prompt policy; it does not introduce an OS network sandbox around implementation tools.
+
+
+
+## ADR-019 — Explicit delegation instead of Ultra for new runs (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** Gauntlet prescribes phase execution, agent roles, worker models, and delegation.
+The harness-specific `ultra` (Codex) and `ultracode` (Claude) efforts additionally enable
+harness-managed automatic delegation/workflows. Offering them as simply higher reasoning
+levels overlaps our orchestration policy and makes solo behavior harder to explain and control.
+
+**Decision.** New runs offer only `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts.
+Remove Ultra/Ultracode from the run composer and reject those values at the new-run IPC boundary.
+Defaults and presets must never enable them; the Maximum preset uses `max`. Delegation remains
+explicitly configured by the app. Solo means the orchestrator implements the code itself without
+implementation subagents; reference researchers, critics, and sculptors have separate controls.
+
+**Compatibility.** Preserve stored Ultra/Ultracode settings and their execution support when
+reading or resuming existing runs. Do not migrate their historical configuration or reinterpret
+past logs. When copying historical settings into a new-run draft, map `ultra` to `max` and
+`ultracode` to `xhigh`, keeping reasoning effort without the automatic delegation mode.
+
+**Visibility remains mandatory.** This decision removes a new-run configuration option; it does
+not disable Workflow tools or remove their observability. Retain workflow transcript tailing,
+progress and agent metrics, token/cost accounting, raw event visibility, and persisted offsets
+and file identities for recovery. Observe workflows whenever they occur, regardless of the
+selected effort. `roles/implement-claude.ts`, `workflow-tail.ts`, and `workflow-progress.ts`
+remain necessary for historical runs and any workflow activity in ordinary-effort sessions.
+Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
+
+**Consequences.** Keep legacy normalization separate from new-run validation and picker choices.
+Teammates must not reintroduce these modes through defaults, presets, or new model support.
+Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
+automatic harness orchestration requires a new product decision with explicit UI semantics.

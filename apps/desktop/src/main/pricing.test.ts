@@ -49,9 +49,15 @@ describe('estimateCostUsd', () => {
     expect(estimateCostUsd('claude-sonnet-5', { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 })).toBeCloseTo(12, 5)
   })
 
-  it('has a price row for every selectable model', () => {
+  it('has a price row for every selectable model except Astra pending verified rates', () => {
     for (const model of AGENT_MODEL_CHOICES) {
+      if (model.id === 'gpt-6-astra') continue
       expect(estimateCostUsd(model.id, { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }), model.id).not.toBeNull()
     }
   })
+})
+
+
+it('leaves Astra cost unavailable until its rate is verified', () => {
+  expect(estimateCostUsd('gpt-6-astra', { input: 100, output: 100, cacheRead: 0, cacheWrite: 0 })).toBeNull()
 })
