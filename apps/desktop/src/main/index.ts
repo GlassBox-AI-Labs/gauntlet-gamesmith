@@ -72,6 +72,7 @@ import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
 import { withPromptLogs, type PromptLogRun } from './prompt-logs'
 import { settleQuitSupervisors } from './quit-settlement'
 import { readExactFileDescriptor } from './bounded-fd'
+import { resolveUserDataOverride } from './user-data-dir'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
@@ -128,7 +129,7 @@ function protectedWorkspaceRoots(): string[] {
 app.setName(APP_NAME)
 app.setPath('userData', smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
   ? process.env.GAUNTLET_SMOKE_USER_DATA
-  : resolveUserData())
+  : resolveUserDataOverride(process.argv) ?? resolveUserData())
 fixPath()
 configureRoundRevisionStorage(path.join(app.getPath('userData'), 'round-revisions'))
 
