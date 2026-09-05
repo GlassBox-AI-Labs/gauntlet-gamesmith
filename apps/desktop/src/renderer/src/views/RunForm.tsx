@@ -354,7 +354,6 @@ export function RunForm({
             </SelectContent>
           </Select>
         </div>
-        {referenceMode === 'web' && <>
         <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
           <span className="text-xs text-[#7d7772]">Critic</span>
           <Select value={critic.criticModel} onValueChange={(value) => changeCritic({ ...critic, criticModel: value })}>
@@ -370,7 +369,6 @@ export function RunForm({
             </SelectContent>
           </Select>
         </div>
-        </>}
         <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
           <span className="text-xs text-[#7d7772]">Asset sculptors</span>
           <Select
