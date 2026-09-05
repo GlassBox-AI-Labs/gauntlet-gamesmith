@@ -1,3 +1,4 @@
+import { createRunAttachments } from './run-attachments'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -135,6 +136,37 @@ afterEach(async () => {
 })
 
 describe('LoopRunner lifecycle boundary', () => {
+  it('starts skipped study directly at implementation and preserves that policy across reload and Resume', async () => {
+    const spawnChild = vi.fn(() => { throw new Error('fixture launch stopped') })
+    const { ledger, runner, workspaceDir, deps } = setup({ spawnChild })
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'skip' })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.runsForLoop(result.loopId!).every((run) => run.role === 'implement')).toBe(true)
+    expect(ledger.getLoop(result.loopId!)?.models.referenceMode).toBe('skip')
+    expect(spawnChild).toHaveBeenCalled()
+    const reloaded = new LoopRunner(ledger, () => {}, deps)
+    reloaded.resumeLoop(result.loopId!)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.hasRunRole(result.loopId!, 'reference')).toBe(false)
+  })
+
+  it('publishes supplied files before a files-only reference attempt and disables researchers', async () => {
+    const store = createRunAttachments(() => [])
+    const { ledger, runner, workspaceDir } = setup({ prepareContext: (ids) => store.prepare(ids), spawnChild: () => { throw new Error('fixture launch stopped') } })
+    const source = path.join(path.dirname(workspaceDir), 'brief.txt'); fs.writeFileSync(source, 'Design brief')
+    const [item] = store.add([source])
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'files', researchModel: 'gpt-5.6-luna', attachmentIds: [item.id] })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.getLoop(result.loopId!)?.models.researchModel).toBeNull()
+    const runs = ledger.runsForLoop(result.loopId!)
+    expect(runs[0].role).toBe('reference')
+    expect(runs[0].prompt).toContain('Do not browse the web')
+    expect(fs.existsSync(path.join(workspaceDir, 'reference', result.loopId!, 'supplied/manifest.json'))).toBe(true)
+    expect(ledger.eventTextForLoopWithPrefix(result.loopId!, 'Supplied context frozen at sha256:')).toBeTruthy()
+  })
+
   it('treats Stop for an unknown loop id as a no-op', () => {
     const { ledger, runner } = setup()
     runner.stop('00000000-0000-4000-8000-000000000000')

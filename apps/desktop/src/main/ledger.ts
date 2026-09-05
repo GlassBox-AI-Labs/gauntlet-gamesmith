@@ -2137,6 +2137,11 @@ export class Ledger {
     return Number.isFinite(row.score) && row.score >= 0 && row.score <= 1 ? row.score : 0
   }
 
+  eventTextForLoopWithPrefix(loopId: string, prefix: string): string | null {
+    const row = this.db.prepare("SELECT substr(text, 1, 4096) AS text FROM events WHERE loop_id = ? AND kind = 'artifact' AND substr(text, 1, ?) = ? ORDER BY seq LIMIT 1").get(loopId, prefix.length, prefix) as { text: string } | undefined
+    return row?.text ?? null
+  }
+
   eventTextForRunWithPrefix(runId: string, prefix: string): string | null {
     if (prefix.length === 0 || prefix.length > 1_024) throw new Error('Event prefix must be bounded.')
     const row = this.db.prepare(

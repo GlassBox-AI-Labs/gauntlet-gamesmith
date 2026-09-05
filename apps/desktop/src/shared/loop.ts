@@ -103,7 +103,11 @@ export interface RunMetrics {
   }
 }
 
+export type ReferenceMode = 'web' | 'files' | 'skip'
+
 export interface LoopModels {
+  /** Missing in older histories means the original web Reference Study. */
+  referenceMode?: ReferenceMode
   orchestratorModel: string
   orchestratorEffort: string
   /** null = the orchestrator implements by itself, with no subagents. */
@@ -255,6 +259,9 @@ export interface LoopLogLine {
 }
 
 export interface StartLoopInput {
+  referenceMode?: ReferenceMode
+  /** Opaque IDs for bounded, main-process attachment snapshots. */
+  attachmentIds?: string[]
   prompt: string
   workspaceDir: string
   maxRounds: number

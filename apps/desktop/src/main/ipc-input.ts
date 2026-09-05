@@ -4,17 +4,12 @@ import { isRecordId } from '../shared/record-id'
 import {
   AGENT_EFFORTS,
   AGENT_MODEL_CHOICES,
-  CODEX_ORCHESTRATOR_EFFORTS,
-  CLAUDE_ORCHESTRATOR_EFFORTS,
   SOLO_SUBAGENT,
 } from '../shared/models'
 
 const modelIds = new Set(AGENT_MODEL_CHOICES.map(({ id }) => id))
 const agentEfforts = new Set<string>(AGENT_EFFORTS)
-const orchestratorEfforts = new Set<string>([
-  ...CLAUDE_ORCHESTRATOR_EFFORTS,
-  ...CODEX_ORCHESTRATOR_EFFORTS,
-])
+
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object.`)
@@ -80,13 +75,19 @@ export function parseStartLoopInput(value: unknown): StartLoopInput {
   if (budgetUsd !== null && (typeof budgetUsd !== 'number' || !Number.isFinite(budgetUsd) || budgetUsd <= 0)) {
     throw new Error('Budget must be null or a positive finite number.')
   }
+  if (input.referenceMode !== undefined && !['web', 'files', 'skip'].includes(input.referenceMode as string)) throw new Error('Invalid reference mode.')
+  const attachmentIds = input.attachmentIds
+  if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || attachmentIds.length > 100 || attachmentIds.some((id) => typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)))) throw new Error('Invalid attachment selection.')
+  if (input.referenceMode === 'files' && (!Array.isArray(attachmentIds) || attachmentIds.length === 0)) throw new Error('Files-only Reference Study requires attachments.')
   return {
+    ...(input.referenceMode !== undefined ? { referenceMode: input.referenceMode as StartLoopInput['referenceMode'] } : {}),
+    ...(attachmentIds !== undefined ? { attachmentIds: [...new Set(attachmentIds as string[])] } : {}),
     prompt: goalString(input.prompt),
     workspaceDir: boundedString(input.workspaceDir, 'Workspace path', 8_192),
     maxRounds,
     budgetUsd,
     orchestratorModel: model(input.orchestratorModel, 'Orchestrator model')!,
-    orchestratorEffort: effort(input.orchestratorEffort, 'Orchestrator effort', orchestratorEfforts),
+    orchestratorEffort: effort(input.orchestratorEffort, 'Orchestrator effort', agentEfforts),
     subagentModel: model(input.subagentModel, 'Subagent model', true),
     subagentEffort: effort(input.subagentEffort, 'Subagent effort', agentEfforts),
     criticModel: model(input.criticModel, 'Critic model')!,

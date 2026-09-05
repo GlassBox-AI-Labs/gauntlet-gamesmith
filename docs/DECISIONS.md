@@ -436,3 +436,69 @@ folder trust, not an OS sandbox or a permanent content signature: later edits ar
 same-user concurrent filesystem mutation cannot be made atomic with SQLite and process launch.
 Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
 canonical execution consent, records the failure, and attempts mirror repair before returning.
+
+## ADR-018 — Supplied context and explicit Reference Study modes (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The selected run composer must reflect real execution. User-supplied files belong to
+the run's reference evidence, and skipping Reference Study must not launch a research agent.
+
+**Decision.** Persist `referenceMode` in the existing models/configuration JSON. Missing values in
+historical records retain the original web Reference Study. `web` studies the web and supplied
+files; `files` queues one study of supplied evidence without researcher fan-out or web research;
+`skip` queues implementation directly, including after recovery or an empty-history Resume.
+Files-only study has a local-source artifact contract without downloaded-media quotas. Skip-mode
+implementation and critique use the goal and supplied context without requiring an AAA pack.
+Sculptor configuration is disabled in skip mode because it requires a studied reference cast.
+
+Main snapshots selected files into bounded in-memory drafts, returning opaque IDs. At Create,
+the snapshot is published under `reference/<loop-id>/supplied/` before queueing any agent. Its
+manifest records original relative names, sizes, and SHA-256 hashes; its fingerprint is recorded
+in both ledgers' event history and checked at phase boundaries, including Reference Study retries.
+Supplied files remain untrusted evidence, not instructions or automatic redistribution permission.
+The existing whole-project export includes them; no original machine path is needed for replay.
+Folders are flattened into uniquely numbered files with original relative paths in the manifest.
+No symlinks, hidden/credential files, generated dependency trees, or private app/CLI roots are read.
+Limits are 100 files, 20 MB per file, 100 MB total, and 2,000 scanned entries per selected tree.
+
+**Consequences.** Reloading before Create discards draft attachments; created runs retain their
+copies even if originals move or change. Folder chips open the original selected directory in
+Finder through an identity-checked main-process capability. No SQLite schema migration is needed:
+the additive JSON policy field normalizes with the historical default. The reference mode is an
+execution/prompt policy; it does not introduce an OS network sandbox around implementation tools.
+
+
+
+## ADR-019 — Explicit delegation instead of Ultra for new runs (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** Gauntlet prescribes phase execution, agent roles, worker models, and delegation.
+The harness-specific `ultra` (Codex) and `ultracode` (Claude) efforts additionally enable
+harness-managed automatic delegation/workflows. Offering them as simply higher reasoning
+levels overlaps our orchestration policy and makes solo behavior harder to explain and control.
+
+**Decision.** New runs offer only `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts.
+Remove Ultra/Ultracode from the run composer and reject those values at the new-run IPC boundary.
+Defaults and presets must never enable them; the Maximum preset uses `max`. Delegation remains
+explicitly configured by the app. Solo means the orchestrator implements the code itself without
+implementation subagents; reference researchers, critics, and sculptors have separate controls.
+
+**Compatibility.** Preserve stored Ultra/Ultracode settings and their execution support when
+reading or resuming existing runs. Do not migrate their historical configuration or reinterpret
+past logs. When copying historical settings into a new-run draft, map `ultra` to `max` and
+`ultracode` to `xhigh`, keeping reasoning effort without the automatic delegation mode.
+
+**Visibility remains mandatory.** This decision removes a new-run configuration option; it does
+not disable Workflow tools or remove their observability. Retain workflow transcript tailing,
+progress and agent metrics, token/cost accounting, raw event visibility, and persisted offsets
+and file identities for recovery. Observe workflows whenever they occur, regardless of the
+selected effort. `roles/implement-claude.ts`, `workflow-tail.ts`, and `workflow-progress.ts`
+remain necessary for historical runs and any workflow activity in ordinary-effort sessions.
+Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
+
+**Consequences.** Keep legacy normalization separate from new-run validation and picker choices.
+Teammates must not reintroduce these modes through defaults, presets, or new model support.
+Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
+automatic harness orchestration requires a new product decision with explicit UI semantics.

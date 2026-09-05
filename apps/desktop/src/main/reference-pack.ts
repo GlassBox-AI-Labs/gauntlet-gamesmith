@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ReferencePack } from '../shared/loop'
+import type { LoopModels, ReferencePack } from '../shared/loop'
 import { parseCast } from './asset-phase'
 import { redactLogText } from '../shared/redact-log'
 import { referencePackDir } from '../shared/reference-path'
@@ -135,7 +135,8 @@ function declaresNoCast(castMd: string): boolean {
 }
 
 /** The sole filesystem seam for Reference Pack discovery and validation. */
-export function scanReferencePack(workspaceDir: string, root: string, expectedWorkspace?: WorkspaceRootIdentity): ReferencePack {
+export function scanReferencePack(workspaceDir: string, root: string, expectedWorkspace?: WorkspaceRootIdentity & { models?: Pick<LoopModels, 'referenceMode'> }): ReferencePack {
+  const filesOnly = expectedWorkspace?.models?.referenceMode === 'files'
   const inventory = filesBelow(workspaceDir, root, expectedWorkspace)
   const { files, sizes, truncated, unsafePaths } = inventory
   const absoluteRoot = inventory.root
@@ -209,10 +210,10 @@ export function scanReferencePack(workspaceDir: string, root: string, expectedWo
   if (truncated) issues.push(`inventory exceeds ${MAX_FILES} files or ${MAX_ENTRIES} entries and was truncated`)
   if (unsafePaths) warnings.push('credential-shaped artifact paths were omitted from the display projection')
   if (projectionTruncated && !truncated) warnings.push('projected media exceeds its byte or display-count safety limit and was truncated')
-  if (images.length < 8) issues.push(`needs at least 8 stills (${images.length} found)`)
-  if (motion.length < 8) issues.push(`needs at least 8 motion frames (${motion.length} found)`)
-  if (videos.length < 1) issues.push('needs a gameplay video')
-  if (journey.length < 4) issues.push(`needs at least 4 ordered journey shots (${journey.length} found)`)
+  if (!filesOnly && images.length < 8) issues.push(`needs at least 8 stills (${images.length} found)`)
+  if (!filesOnly && motion.length < 8) issues.push(`needs at least 8 motion frames (${motion.length} found)`)
+  if (!filesOnly && videos.length < 1) issues.push('needs a gameplay video')
+  if (!filesOnly && journey.length < 4) issues.push(`needs at least 4 ordered journey shots (${journey.length} found)`)
   if (!researchMd?.trim()) issues.push('needs research.md with the deep-research findings')
   else if (!/expert gameplay dossier/i.test(researchMd)) {
     issues.push('research.md needs an Expert gameplay dossier for the critic')
@@ -248,7 +249,9 @@ export function scanReferencePack(workspaceDir: string, root: string, expectedWo
             const entry = source as Record<string, unknown>
             try {
               const url = typeof entry.url === 'string' && entry.url.length <= 4_096 ? new URL(entry.url) : null
-              if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) invalid = true
+              if (filesOnly) {
+                if (entry.url !== undefined || typeof entry.file !== 'string' || !entry.file.startsWith('supplied/') || !safeManifestFile(entry.file, root, knownFiles)) invalid = true
+              } else if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) invalid = true
             } catch {
               invalid = true
             }

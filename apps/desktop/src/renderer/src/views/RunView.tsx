@@ -1,8 +1,13 @@
+import { newRunOrchestratorEffort } from '../../../shared/models'
 import { withExistingRunTrust } from '@/lib/trusted-action'
+import { DEFAULT_RUN_PACE } from '../../../shared/run-presets'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { RunAttachment } from '../../../shared/attachments'
+import type { ReferenceMode } from '../../../shared/loop'
 import { LoaderCircle } from 'lucide-react'
 import { RunDetail } from '@/views/RunDetail'
-import { RunForm } from '@/views/RunForm'
+import { RunComposerDialog } from '@/components/RunComposerDialog'
+import { RunForm, type RunFormSettings } from '@/views/RunForm'
 import { RunSidebar, RUN_ROUNDS_PAGE_SIZE } from '@/views/RunSidebar'
 import { DeleteRunsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
 import { applySnapshotUpdate, olderRunPageOffset, pruneExpandedLoops, pruneVisibleRoundCounts, selectSnapshotInList } from '@/lib/run-pages'
@@ -31,8 +36,12 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [snapshot, setSnapshot] = useState<LoopSnapshot | null>(null)
   const [lines, setLines] = useState<LoopLogLine[]>([])
   const [composing, setComposing] = useState(false)
+  const [attachmentBusy, setAttachmentBusy] = useState(false)
+  const [formSettings, setFormSettings] = useState<RunFormSettings>({ pace: DEFAULT_RUN_PACE, custom: false, initialized: false })
   const [loaded, setLoaded] = useState(false)
   const [prompt, setPrompt] = useState('')
+  const [attachments, setAttachments] = useState<RunAttachment[]>([])
+  const [referenceMode, setReferenceMode] = useState<ReferenceMode>('web')
   const [workspaceDir, setWorkspaceDir] = useState('')
   const [projectOpen, setProjectOpen] = useState(false)
   const [maxRounds, setMaxRounds] = useState('10')
@@ -126,7 +135,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         if (initial) {
           loopIdRef.current = initial.loop.id
           setSnapshot(initial)
-          setImpl({ orchestratorModel: initial.loop.models.orchestratorModel, orchestratorEffort: initial.loop.models.orchestratorEffort, subagentModel: initial.loop.models.subagentModel, subagentEffort: initial.loop.models.subagentEffort })
+          setImpl({ orchestratorModel: initial.loop.models.orchestratorModel, orchestratorEffort: newRunOrchestratorEffort(initial.loop.models.orchestratorEffort), subagentModel: initial.loop.models.subagentModel, subagentEffort: initial.loop.models.subagentEffort })
           setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
           setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
           setAssets({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
@@ -215,7 +224,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setError(null)
     setNotice(null)
     try {
-      const result = await window.loops.start({ prompt, workspaceDir, maxRounds: Number(maxRounds) || 10, budgetUsd: budget.trim() ? Number(budget) : null, ...impl, ...critic, ...research, ...assets })
+      const result = await window.loops.start({ prompt, workspaceDir, referenceMode, attachmentIds: attachments.map((item) => item.id), maxRounds: Number(maxRounds) || 10, budgetUsd: budget.trim() ? Number(budget) : null, ...impl, ...critic, ...research, ...assets })
       if (!result.ok) { setError(result.error ?? 'Failed to start.'); return }
       loopIdRef.current = result.loopId ?? null
       setLines([])
@@ -230,6 +239,8 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
         setExpandedRuns((current) => new Set(current).add(nextSnapshot.loop.id))
       }
       setPrompt('')
+      for (const item of attachments) void window.attachments.remove(item.id)
+      setAttachments([])
     } catch (cause) {
       setError(`Could not start run: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
@@ -246,7 +257,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       loopIdRef.current = detail.loop.id
       setSnapshot(detail)
       setSnapshots((current) => selectSnapshotInList(current, detail))
-      setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: detail.loop.models.orchestratorEffort, subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
+      setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: newRunOrchestratorEffort(detail.loop.models.orchestratorEffort), subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
       setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
       setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
       setSelectedRound(round)
@@ -265,7 +276,6 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
     setComposing(true)
     setSelectedReportId(null)
     setSelectedRound(null)
-    setPrompt('')
     setError(null)
     setNotice(null)
     setProjectOpen(false)
@@ -581,32 +591,11 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
               onNotice={(text) => { setNotice(text); setError(null) }}
               onError={(text) => { setError(text); setNotice(null) }}
             />
-          ) : composing || !snapshot || !loop ? (
-            <RunForm
-              workspaceDir={workspaceDir}
-              projects={projects}
-              projectOpen={projectOpen}
-              prompt={prompt}
-              maxRounds={maxRounds}
-              budget={budget}
-              impl={impl}
-              critic={critic}
-              research={research}
-              assets={assets}
-              error={error}
-              busy={busy}
-              onProjectOpenChange={setProjectOpen}
-              onWorkspaceChange={setWorkspaceDir}
-              onAddProject={() => void pickWorkspace()}
-              onPromptChange={setPrompt}
-              onMaxRoundsChange={setMaxRounds}
-              onBudgetChange={setBudget}
-              onImplChange={setImpl}
-              onCriticChange={setCritic}
-              onResearchChange={setResearch}
-              onAssetsChange={setAssets}
-              onCreate={() => void start()}
-            />
+          ) : !snapshot || !loop ? (
+            <div className="grid min-h-[60vh] place-content-center gap-3 text-center">
+              <p className="text-sm text-[#a89b94]">Create a run to start building.</p>
+              <button type="button" onClick={() => setComposing(true)} className="rounded-lg border border-[#49403c] px-5 py-2 text-sm text-[#e5dcd6] hover:bg-white/5">New run</button>
+            </div>
           ) : (
             <RunDetail
               key={`${loop.id}:${selectedRound ?? 'all'}`}
@@ -641,6 +630,40 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           )}
         </div>
       </main>
+      <RunComposerDialog open={composing} busy={busy || attachmentBusy} onOpenChange={setComposing}>
+            <RunForm
+              settings={formSettings}
+              onSettingsChange={setFormSettings}
+              onAttachmentBusyChange={setAttachmentBusy}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              referenceMode={referenceMode}
+              onReferenceModeChange={setReferenceMode}
+              workspaceDir={workspaceDir}
+              projects={projects}
+              projectOpen={projectOpen}
+              prompt={prompt}
+              maxRounds={maxRounds}
+              budget={budget}
+              impl={impl}
+              critic={critic}
+              research={research}
+              assets={assets}
+              error={error}
+              busy={busy}
+              onProjectOpenChange={setProjectOpen}
+              onWorkspaceChange={setWorkspaceDir}
+              onAddProject={() => void pickWorkspace()}
+              onPromptChange={setPrompt}
+              onMaxRoundsChange={setMaxRounds}
+              onBudgetChange={setBudget}
+              onImplChange={setImpl}
+              onCriticChange={setCritic}
+              onResearchChange={setResearch}
+              onAssetsChange={setAssets}
+              onCreate={() => void start()}
+            />
+      </RunComposerDialog>
       {deleteOpen && (
         <DeleteRunsDialog
           count={checkedRuns.size}

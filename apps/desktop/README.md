@@ -186,3 +186,39 @@ The app creates isolated CLI homes inside its user-data directory:
 - `harnesses/codex`
 
 The CLIs own everything stored in those directories. The Electron app only starts their commands and reads their documented status output.
+
+
+## Run composer and supplied context
+
+The compact run composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
+fields; fine-tuning models locks pace until Reset. Connection pills reflect CLI subscription
+status and open the real Agents sign-in UI without discarding the form.
+
+Drop files or folders onto the description, or use Attach files / Add folder. Images open a
+lightbox; folder chips open the original folder in Finder. Main snapshots supported reference,
+media, and source files, excluding hidden, credential, generated, and linked entries. The form
+reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
+
+At Create, copies and a provenance manifest are saved to `reference/<loop-id>/supplied/` in the
+new project. They are used as untrusted reference evidence, remain available to implementation
+and critique, and travel with Export. Draft attachments are in memory until Create; reload
+before Create discards the draft. Original files are never modified.
+
+- **Web + files:** the existing web Reference Study plus supplied evidence.
+- **Files only:** one reference agent studies supplied evidence; web research and researcher
+  fan-out are disabled. No downloaded-image/video quotas are required.
+- **Skip:** starts implementation directly, with no reference agent. Later critique evaluates
+  the goal and supplied context without requiring a Reference Pack. 3D sculptors require a
+  reference cast and are unavailable in this mode; implementation builds assets itself.
+
+`pnpm dev:run-form` launches the real app alongside another instance, using a separate profile
+(`Gauntlet Gamesmith Dev run-form`), separate build outputs, and port 5177 or `CONDUCTOR_PORT`.
+This profile needs its own CLI logins; no credentials or production ledger are copied.
+
+New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
+Ultracode are retained only for historical run replay/resume; they must not be added to new-run
+presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
+
+CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
+and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
+project roots, links into those roots, and private app directories remain excluded (ADR-015).

@@ -18,8 +18,11 @@
     "package:mac": "pnpm --filter @gauntlet/desktop package:mac",
     "package:mac:release": "pnpm --filter @gauntlet/desktop package:mac:release",
     "package:win": "pnpm --filter @gauntlet/desktop package:win",
+    "prototype:run-form": "pnpm --filter @gauntlet/desktop prototype:run-form",
     "start": "pnpm --filter @gauntlet/desktop start",
     "test": "pnpm --filter @gauntlet/desktop test",
-    "typecheck": "pnpm --filter @gauntlet/desktop typecheck"
+    "typecheck": "pnpm --filter @gauntlet/desktop typecheck",
+    "prototype:app": "pnpm --filter @gauntlet/desktop prototype:app",
+    "dev:run-form": "pnpm --filter @gauntlet/desktop dev:run-form"
   }
 }

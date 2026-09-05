@@ -72,7 +72,7 @@ function StatusDot({ phase }: { phase: LoginPhase }): React.JSX.Element {
   )
 }
 
-export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): React.JSX.Element {
+export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): React.JSX.Element {
   const { states: state, dispatch, transcripts, registerWriter, clearTranscript, probe } = useHarnessConnections()
   const [activeKind, setActiveKind] = useState<HarnessKind>('claude')
   const [actionBusy, setActionBusy] = useState(false)
@@ -214,7 +214,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
       // it will simply not persist as unfinished.
     } finally {
       setReplaying(false)
-      onReplayTour()
+      onReplayTour?.()
     }
   }
 
@@ -298,14 +298,14 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
       <p className="mt-2.5 text-xs text-[#7d7772]">
         Accounts share run history. A usage-limited run rotates to the next available account and retries automatically.
       </p>
-      <Button
+      {onReplayTour && <Button
         variant="ghost"
         className="mt-3 text-[#b5afac] hover:bg-white/5 hover:text-white"
         disabled={replaying}
         onClick={() => void replayTour()}
       >
         {replaying ? <LoaderCircle className="animate-spin" /> : <Route />} Show the tour again
-      </Button>
+      </Button>}
       {accountError[activeKind] && <p className="mt-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{accountError[activeKind]}</p>}
 
       <div className="my-7 flex items-center gap-2.5">

@@ -1,4 +1,6 @@
 import { trustExistingRun } from './trust-ipc'
+import { createRunAttachments } from './run-attachments'
+import { registerAttachmentIpc } from './attachment-ipc'
 import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
@@ -84,6 +86,7 @@ let loopRunner: LoopRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
 const APP_NAME = 'Gauntlet Gamesmith'
+const developmentInstance = !app.isPackaged && /^[a-z0-9-]{1,40}$/.test(process.env.GAUNTLET_INSTANCE_ID ?? '') ? process.env.GAUNTLET_INSTANCE_ID : null
 const LEGACY_APP_NAME = 'Gauntlet Loop'
 const smokeTestMode = process.argv.includes('--gauntlet-smoke-test')
 const MAX_REPORT_IMPORT_BYTES = 8 * 1024 * 1024
@@ -149,7 +152,8 @@ configureAgentWritableRoots(() => [
 app.setName(APP_NAME)
 app.setPath('userData', smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
   ? process.env.GAUNTLET_SMOKE_USER_DATA
-  : resolveUserDataOverride(process.argv) ?? resolveUserData())
+  : resolveUserDataOverride(process.argv) ?? (developmentInstance ? path.join(app.getPath('appData'), `${APP_NAME} Dev ${developmentInstance}`) : resolveUserData()))
+if (developmentInstance) fsSync.mkdirSync(app.getPath('userData'), { recursive: true, mode: 0o700 })
 fixPath()
 configureRoundRevisionStorage(path.join(app.getPath('userData'), 'round-revisions'))
 
@@ -670,7 +674,7 @@ function createWindow(): BrowserWindow {
     height: 820,
     minWidth: 760,
     minHeight: 560,
-    title: APP_NAME,
+    title: developmentInstance ? `${APP_NAME} — ${developmentInstance}` : APP_NAME,
     backgroundColor: '#100d0e',
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
@@ -830,9 +834,12 @@ if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
+    const attachments = createRunAttachments(protectedWorkspaceRoots)
+    registerAttachmentIpc(attachments, () => mainWindow)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
     loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
       protectedRoots: protectedWorkspaceRoots,
+      prepareContext: (ids) => attachments.prepare(ids),
       rotateAccount,
     })
     mediaGate = new MediaBaseGate(() => startMediaServer((loopId) => {

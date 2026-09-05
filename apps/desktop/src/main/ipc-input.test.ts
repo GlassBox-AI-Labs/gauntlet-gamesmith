@@ -21,7 +21,7 @@ const validStart = {
   maxRounds: 5,
   budgetUsd: 10,
   orchestratorModel: 'claude-opus-5',
-  orchestratorEffort: 'ultracode',
+  orchestratorEffort: 'high',
   subagentModel: 'gpt-5.6-sol',
   subagentEffort: 'high',
   criticModel: 'gpt-5.6-sol',
@@ -83,4 +83,9 @@ describe('IPC input validation', () => {
     expect(() => parseTerminalInput({ kind: 'codex', data: 1 })).toThrow('Invalid terminal input')
     expect(() => parseTerminalResize({ kind: 'claude', cols: '80', rows: 24 })).toThrow('Invalid terminal size')
   })
+})
+
+
+it.each(['ultra', 'ultracode'])('rejects %s for new runs', (orchestratorEffort) => {
+  expect(() => parseStartLoopInput({ ...validStart, orchestratorEffort })).toThrow()
 })

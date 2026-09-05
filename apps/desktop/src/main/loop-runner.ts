@@ -42,6 +42,7 @@ import { subscriptionReadiness, type SubscriptionReadiness } from './harness-sub
 import { defaultLoopTitle, type Ledger, type RunProcessOwnership } from './ledger'
 import { createNewRunWorkspace } from './new-run-workspace'
 import { publishOwnedWorkspaceFile, publishOwnedWorkspaceSnapshot, writeWorkspaceFileSafely } from './owned-workspace-write'
+import type { PreparedContext } from './run-attachments'
 import { phaseTreeFingerprint, referencePackFingerprint } from './phase-contracts'
 import { PRICE_TABLE_VERSION } from './pricing'
 import { isRateLimitError, MAX_RATE_LIMIT_PAUSES, rateLimitPause, retryAtFromError } from './rate-limit'
@@ -54,7 +55,7 @@ import { createCodexImplementProtocol } from './roles/implement-codex'
 import { finalizeImplement, type ImplementOutcome } from './roles/implement-finalize'
 import { createReferenceProtocol } from './roles/reference'
 import type { ExitInfo, LogGate, StreamParser } from './roles/types'
-import { planCompletion, planResume } from './round-planner'
+import { planCompletion, planResume, planStart } from './round-planner'
 import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
 import {
   completeProcessMeta,
@@ -168,6 +169,7 @@ export interface LoopRunnerDeps {
   subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
   cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
   validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
+  prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
 }
 
@@ -212,7 +214,7 @@ function buildImplementPrompt(
   const rules = [delegationRules(models, referenceDir), wanted.length > 0 ? sculptorRules(models, referenceDir) : '']
     .filter(Boolean)
     .join(' ')
-  return composeImplementPrompt(userPrompt, round, verdict, rules, referenceDir, engineContract(), wanted)
+  return composeImplementPrompt(userPrompt, round, verdict, rules, referenceDir, engineContract(), wanted, models.referenceMode)
 }
 
 interface ExitHolder {
@@ -277,6 +279,7 @@ export class LoopRunner {
 
   /** New loops own a scoped pack; pre-v1 loops keep using their legacy root. */
   private referenceDir(loopId: string): string {
+    if (this.ledger.getLoop(loopId)?.models.referenceMode === 'skip') return referencePackDir(loopId)
     return referenceRootForLoop(
       loopId,
       this.ledger.hasRunRole(loopId, 'reference'),
@@ -293,6 +296,8 @@ export class LoopRunner {
 
   /** Fail closed when a later phase sees a changed frozen Reference Pack. */
   private verifyReferenceBoundary(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    if (!this.verifySuppliedContext(loop, run, terminalLog)) return false
+    if (loop.models.referenceMode === 'skip') return true
     const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop)
     if (!pack.ready) {
       const message = pack.issues.join('; ')
@@ -340,7 +345,19 @@ export class LoopRunner {
   }
 
   /** Bind the research phase to the source tree that existed before it ran. */
+  private verifySuppliedContext(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    const prefix = 'Supplied context frozen at sha256:'
+    const expected = this.ledger.eventTextForLoopWithPrefix(loop.id, prefix)?.slice(prefix.length)
+    if (!expected) return true
+    try {
+      if (referencePackFingerprint(loop.workspaceDir, `${this.referenceDir(loop.id)}/supplied`) === expected) return true
+    } catch { /* A missing or unsafe supplied tree fails closed as well. */ }
+    this.failAttemptAndLoop(loop, run, 'Supplied reference files changed.', 'Supplied reference files failed their immutable snapshot check.', terminalLog)
+    return false
+  }
+
   private ensureReferenceSourceBaseline(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    if (!this.verifySuppliedContext(loop, run, terminalLog)) return false
     try {
       if (run.revision) {
         if (workspaceMatchesRevision(loop.workspaceDir, loop.id, run.revision)) return true
@@ -808,6 +825,13 @@ export class LoopRunner {
     if (!requestedWorkspace || !path.isAbsolute(requestedWorkspace)) return { ok: false, error: 'Workspace must be an absolute path.' }
     const maxRounds = Math.max(1, Math.min(100, Math.floor(input.maxRounds) || 10))
     const budgetUsd = input.budgetUsd && input.budgetUsd > 0 ? input.budgetUsd : null
+    let context: PreparedContext | null = null
+    try {
+      if (input.attachmentIds?.length) {
+        if (!this.deps.prepareContext) throw new Error('Attachment storage is unavailable.')
+        context = this.deps.prepareContext(input.attachmentIds)
+      }
+    } catch (error) { return { ok: false, error: redactedErrorMessage(error, 'Could not prepare attachments.') } }
     let workspaceDir: string
     let scaffold: ReturnType<typeof scaffoldEngine>
     try {
@@ -828,6 +852,8 @@ export class LoopRunner {
     }
 
     const models = resolveModels(input, input, input, input)
+    if (models.referenceMode === 'files' && !context) return { ok: false, error: 'Files-only Reference Study requires attachments.' }
+    const initialPhase = planStart(models.referenceMode)
     let loop: LoopRecord
     try {
       loop = this.atomicLogs(() => {
@@ -838,13 +864,21 @@ export class LoopRunner {
           : 'Engine contract refreshed; workspace already scaffolded.')
         this.log(created.id, null, 'system', describeModels(models))
         const referenceDir = referencePackDir(created.id)
+        if (context) {
+          const supplied = context.publish(workspaceDir, referenceDir)
+          this.log(created.id, null, 'artifact', `Supplied context frozen at sha256:${supplied.fingerprint}`)
+          this.log(created.id, null, 'artifact', `Copied ${supplied.files} supplied reference files (${supplied.bytes} bytes) to ${referenceDir}/supplied/manifest.json.`)
+          for (const file of supplied.paths) this.log(created.id, null, 'artifact', `Supplied reference file: ${file}`)
+        }
         this.ledger.createRun({
           loopId: created.id,
-          round: 0,
-          role: 'reference',
+          round: initialPhase.round,
+          role: initialPhase.role,
           harness: harnessFor(models.orchestratorModel),
-          prompt: buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir)),
+          prompt: initialPhase.role === 'reference' ? buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir), models.referenceMode) : buildImplementPrompt(models, prompt, 1, null, referenceDir),
         })
+        if (initialPhase.role === 'implement') this.ledger.patchLoop(created.id, { round: 1 })
+        this.log(created.id, null, 'system', models.referenceMode === 'skip' ? 'Reference Study skipped by operator; no reference agent is queued.' : models.referenceMode === 'files' ? 'Reference Study uses supplied files only; web research and research fan-out are disabled.' : 'Reference Study uses web research and supplied files.')
         return created
       })
     } catch (error) {
@@ -1163,7 +1197,7 @@ export class LoopRunner {
       return { ok: false, error: redactedErrorMessage(error, 'Retained process ownership could not be verified.') }
     }
     const last = this.ledger.latestRunForLoop(loopId)
-    const plannedResume = planResume(last, loop.maxRounds)
+    const plannedResume = planResume(last, loop.maxRounds, loop.models.referenceMode)
     // Imported queued attempts carry no local process/session authority. Start a fresh attempt.
     const resume = !loop.playTrusted && plannedResume.kind === 'continue-queued'
       ? { ...plannedResume, kind: 'retry' as const }
@@ -1218,7 +1252,7 @@ export class LoopRunner {
           round: resume.round,
           role: 'critique',
           harness: harnessFor(loop.models.criticModel),
-          prompt: buildCriticPrompt(loop.prompt, resume.round, this.referenceDir(loopId), prior.revision ?? '<missing-revision>'),
+          prompt: buildCriticPrompt(loop.prompt, resume.round, this.referenceDir(loopId), prior.revision ?? '<missing-revision>', 'verdict.json', '', loop.models.referenceMode),
         })
         this.ledger.patchRun(critique.id, { revision: prior.revision })
         this.log(loopId, null, 'system', `Loop resumed by user — judging round ${resume.round}.`)
@@ -1236,7 +1270,7 @@ export class LoopRunner {
           round: 0,
           role: 'reference',
           harness: harnessFor(loop.models.orchestratorModel),
-          prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir)),
+          prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir), loop.models.referenceMode),
         })
         this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
       }
@@ -2293,6 +2327,7 @@ export class LoopRunner {
   }
 
   private castFor(loop: LoopRecord): CastEntry[] {
+    if (loop.models.referenceMode === 'skip') return []
     return parseCast(scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop).manifest)
   }
 
@@ -2627,6 +2662,7 @@ export class LoopRunner {
       run.revision,
       path.basename(verdictPath),
       engineGateRules(),
+      models.referenceMode,
     )
     const plan = critiquePlan({
       models,

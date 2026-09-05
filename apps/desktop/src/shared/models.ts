@@ -1,11 +1,12 @@
 import type { HarnessKind } from './harness'
-import type { LoopModels } from './loop'
+import type { LoopModels, ReferenceMode } from './loop'
 import { redactLogText } from './redact-log'
 
 /** Per-agent effort. Both CLIs accept these five for any agent. */
 export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
+ * Legacy persisted session-level efforts (ADR-019); never offer these for new runs.
  * Session-level efforts that also switch on the CLI's own fan-out.
  *
  * `ultracode` is not in claude's `--help` and not in its "valid values"
@@ -29,6 +30,7 @@ export const MODEL_IDS = {
   claudeFable: 'claude-fable-5',
   claudeSonnet: 'claude-sonnet-5',
   claudeHaiku: 'claude-haiku-4-5',
+  codexAstra: 'gpt-6-astra',
   codexSol: 'gpt-5.6-sol',
   codexTerra: 'gpt-5.6-terra',
   codexLuna: 'gpt-5.6-luna',
@@ -37,12 +39,12 @@ export const MODEL_IDS = {
 export const DISPATCHER_MODEL_ID = MODEL_IDS.claudeSonnet
 
 const CLAUDE_MODELS: readonly ModelChoice[] = [
-  { id: MODEL_IDS.claudeOpus, label: 'Opus 5' },
   // Fable 5.1 needs Claude Code 2.1.251+. An older CLI fails the run with
   // `400 ... does not support this model`, so a loop picking it on a stale
   // binary dies on its first call rather than degrading.
   { id: MODEL_IDS.claudeFable51, label: 'Fable 5.1' },
   { id: MODEL_IDS.claudeFable, label: 'Fable 5' },
+  { id: MODEL_IDS.claudeOpus, label: 'Opus 5' },
   { id: MODEL_IDS.claudeSonnet, label: 'Sonnet 5' },
 ]
 
@@ -50,13 +52,15 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
  * Every model any role can be given. The harness follows from the model name,
  * so a run never stores it separately.
  *
- * The codex entries are the gpt-5.6 models it offers, in its own words: sol is
+ * The Codex entries are ordered with Astra first, followed by the gpt-5.6
+ * models: sol is
  * the frontier coder, terra is balanced for everyday work, luna is fast and
  * cheap. The list comes from `$CODEX_HOME/models_cache.json`; plain `gpt-5.6`
  * and `gpt-5.6-codex` are not in it and are refused with a 400.
  */
 export const AGENT_MODEL_CHOICES: readonly ModelChoice[] = [
   ...CLAUDE_MODELS,
+  { id: MODEL_IDS.codexAstra, label: 'Codex · gpt-6-astra' },
   { id: MODEL_IDS.codexSol, label: 'Codex · gpt-5.6-sol' },
   { id: MODEL_IDS.codexTerra, label: 'Codex · gpt-5.6-terra' },
   { id: MODEL_IDS.codexLuna, label: 'Codex · gpt-5.6-luna' },
@@ -77,6 +81,14 @@ export function canonicalModelId(model: string | null | undefined): string | nul
   return Object.values(MODEL_IDS).find((id) => model === id || model.startsWith(`${id}-`)) ?? null
 }
 
+/** Translate a historical effort when copying settings into a new-run draft. */
+export function newRunOrchestratorEffort(effort: string): string {
+  if (effort === 'ultra') return 'max'
+  if (effort === 'ultracode') return 'xhigh'
+  return (AGENT_EFFORTS as readonly string[]).includes(effort) ? effort : 'high'
+}
+
+/** Historical normalization and replay only; new-run controls use AGENT_EFFORTS. */
 export function orchestratorEfforts(model: string): readonly string[] {
   return isCodexModel(model) ? CODEX_ORCHESTRATOR_EFFORTS : CLAUDE_ORCHESTRATOR_EFFORTS
 }
@@ -103,7 +115,7 @@ export interface ImplementerFields {
 /** Where the run form starts: the combination worth reaching for by default. */
 export const DEFAULT_IMPLEMENTER: ImplementerFields = {
   orchestratorModel: MODEL_IDS.claudeOpus,
-  orchestratorEffort: 'ultracode',
+  orchestratorEffort: 'high',
   subagentModel: MODEL_IDS.claudeOpus,
   subagentEffort: 'high',
 }
@@ -173,7 +185,7 @@ function storedOptionalModel(value: unknown, fallback: string | null): string | 
 
 /** Clamp whatever the form sent to values the CLIs actually accept. */
 export function resolveModels(
-  fields: Partial<ImplementerFields> | null | undefined,
+  fields: (Partial<ImplementerFields> & { referenceMode?: ReferenceMode }) | null | undefined,
   critic: Partial<CriticFields> | null | undefined,
   research?: Partial<ResearchFields> | null,
   asset?: Partial<AssetFields> | null,
@@ -217,11 +229,12 @@ export function resolveModels(
         : DEFAULT_ASSET.assetModel
   return {
     ...resolved,
+    ...(fields?.referenceMode ? { referenceMode: fields.referenceMode } : {}),
     criticModel,
     criticEffort: pick(AGENT_EFFORTS, critic?.criticEffort, DEFAULT_CRITIC.criticEffort as 'medium'),
-    researchModel,
+    researchModel: fields?.referenceMode && fields.referenceMode !== 'web' ? null : researchModel,
     researchEffort: pick(AGENT_EFFORTS, research?.researchEffort, DEFAULT_RESEARCH.researchEffort as 'medium'),
-    assetModel,
+    assetModel: fields?.referenceMode === 'skip' ? null : assetModel,
     assetEffort: pick(AGENT_EFFORTS, asset?.assetEffort, DEFAULT_ASSET.assetEffort as 'high'),
   }
 }
@@ -239,6 +252,7 @@ export function normalizeModels(
   if (!raw) return resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
   const models = resolveModels(
     {
+      referenceMode: raw.referenceMode === 'files' || raw.referenceMode === 'skip' ? raw.referenceMode : raw.referenceMode === 'web' ? 'web' : undefined,
       orchestratorModel: raw.orchestratorModel,
       orchestratorEffort: raw.ultracode && !raw.orchestratorEffort ? 'ultracode' : raw.orchestratorEffort,
       subagentModel: raw.subagentModel,
@@ -265,7 +279,7 @@ export function normalizeModels(
     ...models,
     orchestratorModel,
     subagentModel,
-    researchModel,
+    researchModel: models.referenceMode && models.referenceMode !== 'web' ? null : researchModel,
     orchestratorEffort: pick(
       allowedOrchestratorEfforts,
       typeof raw.orchestratorEffort === 'string' ? raw.orchestratorEffort : undefined,
