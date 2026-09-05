@@ -2,6 +2,14 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
+On first launch the app shows a setup flow instead of the Runs view: a welcome
+step, a connect step that detects each CLI and drives its login (showing the
+`npm install -g` command when a CLI is missing), and a four-card tour of the
+loop. Completion is stored in `onboarding.json` under the Electron user-data
+directory, read over `onboarding:get` before the first render; a missing or
+unreadable file simply means the flow runs again. The flow is skippable, and
+**Show the tour again** on the Agents tab resets it.
+
 Two tabs:
 
 - **Agents** — CLI detection, login-status probing, and an interactive PTY for signing in to Claude Code and Codex. It does not read credential files.

@@ -311,3 +311,27 @@ or authorize similarly broad follow-up changes.
 
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
+
+## ADR-013 — First-run setup flow gates the app on connecting an agent (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The app cannot run a single round without a signed-in Claude Code or Codex CLI, but
+nothing said so before the Run tab failed. A new user landed on a run form whose start button could
+not work, with the sign-in buried behind an Agents tab they had no reason to visit. The packaged
+0.1.0 download made this worse: recipients have neither the repository nor its README.
+
+**Decision.** First launch renders a four-step flow — welcome, connect, tour, ready — instead of the
+Runs view. The connect step detects each CLI, drives its existing PTY login, and shows the
+`npm install -g` command when a CLI is missing. The flow is skippable and never blocks: someone
+without an agent may continue, and the step says plainly that runs cannot start until one is
+connected. Completion is a flag in `onboarding.json` under the Electron user-data directory, read
+over typed IPC (`onboarding:get`) before the first render. A missing, corrupt, or unwritable file
+means the flow runs again, which is the safe direction to fail. **Show the tour again** on the
+Agents tab resets it.
+
+**Consequences.** The prerequisite is stated where it is discovered rather than in a README the
+downloader never sees. Onboarding state is one boolean outside SQLite, so it stays readable before
+the ledger opens and cannot corrupt run history. Detection, probing, and login-phase reduction now
+live in one renderer hook shared by the setup flow and the Agents tab, so login states cannot drift
+between them.
