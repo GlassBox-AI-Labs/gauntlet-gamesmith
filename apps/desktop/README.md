@@ -86,6 +86,27 @@ pnpm package:linux  # Linux x64 AppImage (run on Linux)
 pnpm package:dir    # unpacked current-platform app for a quick smoke test
 ```
 
+### Automated releases
+
+`.github/workflows/release.yml` publishes a downloadable build when a change to
+`apps/desktop/package.json` lands on `main` and no release exists for the version
+in it. Merging ordinary changes publishes nothing; **bumping the version is what
+ships**. The workflow runs `pnpm typecheck`, `pnpm test`, and the packaged-app
+smoke test before it creates the release, so a broken build cannot reach a
+download page. `workflow_dispatch` with `force` rebuilds and replaces the release
+for the current version.
+
+It builds an Apple-signed and notarized release when these repository secrets are
+set, and an ad hoc signed one otherwise — the release notes say which:
+
+| Secret | Holds |
+| --- | --- |
+| `MAC_CSC_LINK` | base64 of the Developer ID Application `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | password for that `.p12` |
+| `APPLE_API_KEY_CONTENT` | contents of the App Store Connect `.p8` key |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER` | the issuer UUID |
+
 ### Trusted macOS release
 
 Apple-trusted downloads require an active Apple Developer Program membership and
