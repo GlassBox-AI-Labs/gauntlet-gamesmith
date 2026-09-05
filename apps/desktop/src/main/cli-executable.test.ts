@@ -110,20 +110,46 @@ describe('CLI executable resolution', () => {
     expect(resolved.path).toBe(fs.realpathSync(path.join(installed, 'claude')))
   })
 
-  it('rejects protected paths and detects replacement after pinning', () => {
+  it('spawns a launcher that dispatches on its own name', () => {
+    // A Volta-managed CLI is a symlink to `volta-shim`, which decides what to
+    // run from the name it was called as. Spawning the real path made it exit
+    // with "volta-shim should not be called directly" and the CLI looked missing.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-shim-'))
+    roots.push(root)
+    const shims = path.join(root, 'volta', 'bin')
+    executable(path.join(root, 'volta', 'volta-shim'))
+    fs.mkdirSync(shims, { recursive: true })
+    fs.symlinkSync(path.join(root, 'volta', 'volta-shim'), path.join(shims, 'codex'))
+
+    expect(cliExecutable('codex', [], { PATH: shims })).toBe(path.join(shims, 'codex'))
+  })
+
+  it('rejects protected paths and follows the launcher across an update', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-identity-'))
     roots.push(root)
     const protectedDir = path.join(root, 'workspace', 'bin')
     const installed = path.join(root, 'installed')
     executable(path.join(protectedDir, 'codex'))
-    executable(path.join(installed, 'codex'))
+    // The real installation shape: a launcher symlink pointing at a version file.
+    executable(path.join(installed, 'versions', '1.0.0'))
+    fs.symlinkSync(path.join(installed, 'versions', '1.0.0'), path.join(installed, 'codex'))
     const source = { PATH: `${protectedDir}:${installed}` }
+    const unsafe = [path.join(root, 'workspace')]
 
-    const pinned = cliExecutable('codex', [path.join(root, 'workspace')], source)
-    expect(pinned).toBe(fs.realpathSync(path.join(installed, 'codex')))
-    fs.renameSync(pinned, `${pinned}.old`)
-    executable(pinned)
-    expect(() => cliExecutable('codex', [path.join(root, 'workspace')], source)).toThrow(/changed identity/)
+    // The launcher is what gets spawned, and it skips the planted binary.
+    expect(cliExecutable('codex', unsafe, source)).toBe(path.join(installed, 'codex'))
+    expect(fs.realpathSync(path.join(installed, 'codex'))).toBe(fs.realpathSync(path.join(installed, 'versions', '1.0.0')))
+
+    // `codex update` writes a new version file and repoints the launcher.
+    executable(path.join(installed, 'versions', '2.0.0'))
+    fs.rmSync(path.join(installed, 'codex'))
+    fs.symlinkSync(path.join(installed, 'versions', '2.0.0'), path.join(installed, 'codex'))
+    expect(cliExecutable('codex', unsafe, source)).toBe(path.join(installed, 'codex'))
+    expect(fs.realpathSync(path.join(installed, 'codex'))).toBe(fs.realpathSync(path.join(installed, 'versions', '2.0.0')))
+
+    // A launcher that stops resolving to an installed executable still fails closed.
+    fs.rmSync(path.join(installed, 'codex'))
+    expect(() => cliExecutable('codex', unsafe, source)).toThrow(/no longer a safe installed executable/)
   })
 
   it('constructs delegated binary variables only from canonical safe executables', () => {
@@ -159,8 +185,10 @@ describe('NVM global CLI installations', () => {
     fs.mkdirSync(path.join(version, 'bin'), { recursive: true })
     fs.symlinkSync(installed, path.join(version, 'bin/claude'))
     const env = { PATH: path.join(version, 'bin') }
-    expect(cliExecutable('claude', [], env)).toBe(fs.realpathSync(installed))
-    expect(cliExecutable('claude', [], env)).toBe(fs.realpathSync(installed))
+    const launcher = path.join(version, 'bin/claude')
+    expect(cliExecutable('claude', [], env)).toBe(launcher)
+    expect(cliExecutable('claude', [], env)).toBe(launcher)
+    expect(fs.realpathSync(launcher)).toBe(fs.realpathSync(installed))
     expect(() => resolveCliExecutable('claude', env, [version])).toThrow(/not found/)
     configureAgentWritableRoots(() => [path.join(version, 'lib/node_modules/@anthropic-ai/claude-code')])
     expect(() => resolveCliExecutable('claude', env)).toThrow(/not found/)
