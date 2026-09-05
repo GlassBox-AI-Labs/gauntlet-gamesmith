@@ -3,9 +3,19 @@
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
 On first launch the app shows a setup flow instead of the Runs view: a welcome
-step, a connect step that detects each CLI and drives its login (showing the
-`npm install -g` command when a CLI is missing), and a four-card tour of the
-loop. Completion is stored in `onboarding.json` under the Electron user-data
+step, a connect step that detects each CLI and drives its login, and a four-card
+tour of the loop.
+
+When a CLI is missing, the connect step offers to install it. On macOS and Linux
+**Install** runs the vendor's own native installer — `https://claude.ai/install.sh`
+piped to `bash`, `https://chatgpt.com/codex/install.sh` piped to `sh` — in the
+login terminal, so every line is visible; the exact command stays available to
+copy. Neither installer needs Node. The installer runs with a plain environment
+and the real home rather than the harness environment, which rewrites `HOME` and
+sets `CODEX_HOME`/`CODEX_INSTALL_DIR` and would otherwise redirect the install
+into app-private state. Both land in `~/.local/bin` and edit a shell profile that
+the running app never re-reads, so `cli-executable.ts` searches that directory
+after `PATH`. Windows has no plan and shows the command instead. Completion is stored in `onboarding.json` under the Electron user-data
 directory, read over `onboarding:get` before the first render; a missing or
 unreadable file simply means the flow runs again. The flow is skippable, and
 **Show the tour again** on the Agents tab resets it.

@@ -335,3 +335,28 @@ downloader never sees. Onboarding state is one boolean outside SQLite, so it sta
 the ledger opens and cannot corrupt run history. Detection, probing, and login-phase reduction now
 live in one renderer hook shared by the setup flow and the Agents tab, so login states cannot drift
 between them.
+
+## ADR-014 — The app installs the harness CLIs with the vendors' native installers (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The first-run connect step told a new user to open a terminal and paste
+`npm install -g …`, which is the exact task the flow exists to remove. It also required Node.js,
+which the non-technical downloader of the packaged build is least likely to have, and a global npm
+install fails with EACCES on system Node without sudo the app must never take.
+
+**Decision.** On macOS and Linux the connect step runs each vendor's own native installer
+(`https://claude.ai/install.sh | bash`, `https://chatgpt.com/codex/install.sh | sh`) in the same PTY
+panel the login uses, with the exact command shown before and during the run. Neither installer
+needs Node; both download a platform binary. The installer runs in a plain environment with the real
+home — not the harness environment, which rewrites `HOME` and sets `CODEX_HOME` and
+`CODEX_INSTALL_DIR`, and would install the CLI into app-private state. Windows offers no plan and
+shows its documented PowerShell/CMD command to copy.
+
+**Consequences.** A user with neither CLI can reach a working run without leaving the app or knowing
+what a terminal is, and Node stops being a prerequisite for the agents (it is still needed to preview
+a built game). Both installers place their launcher in `~/.local/bin` and append it to a shell
+profile that an already-running GUI process never re-reads, so `resolveCliExecutable` now searches
+that directory after `PATH`, under the same validation as every other candidate. The app executes
+vendor-published scripts fetched at run time: the URLs are pinned constants, no user input reaches
+the command line, and the output is shown in full rather than hidden.
