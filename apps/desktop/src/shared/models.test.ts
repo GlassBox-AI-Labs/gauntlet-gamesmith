@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, resolveModels } from './models'
+import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, newRunOrchestratorEffort, resolveModels } from './models'
 
 describe('defaults', () => {
-  it('starts on Opus 5 at ultracode over Opus 5 subagents', () => {
+  it('starts on Opus 5 at high over Opus 5 subagents', () => {
     const models = resolveModels(DEFAULT_IMPLEMENTER, { criticModel: 'claude-opus-5', criticEffort: 'high' })
     expect(models.orchestratorModel).toBe('claude-opus-5')
-    expect(models.orchestratorEffort).toBe('ultracode')
+    expect(models.orchestratorEffort).toBe('high')
     expect(harnessFor(models.criticModel)).toBe('claude')
   })
 
@@ -47,12 +47,12 @@ describe('resolveModels', () => {
     expect(models.orchestratorEffort).toBe('ultra')
     // `ultracode` is claude's fan-out level; codex would reject it.
     expect(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultracode' }, DEFAULT_CRITIC).orchestratorEffort).toBe('high')
-    expect(resolveModels({ orchestratorModel: 'claude-opus-5', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC).orchestratorEffort).toBe('ultracode')
+    expect(resolveModels({ orchestratorModel: 'claude-opus-5', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC).orchestratorEffort).toBe('high')
   })
 
   it('rejects effort levels the CLI would not accept', () => {
     const models = resolveModels({ orchestratorEffort: 'bogus', subagentEffort: 'ultracode' }, DEFAULT_CRITIC)
-    expect(models.orchestratorEffort).toBe('ultracode')
+    expect(models.orchestratorEffort).toBe('high')
     expect(models.subagentEffort).toBe('high')
   })
 
@@ -182,4 +182,28 @@ describe('normalizeModels critic harness', () => {
     expect(models.subagentModel).toBe(DEFAULT_IMPLEMENTER.subagentModel)
     expect(JSON.stringify(models)).not.toContain(token)
   })
+})
+
+
+describe('Astra', () => {
+  it('preserves Astra in every role through resolution and persistence', () => {
+    const models = resolveModels(
+      { orchestratorModel: 'gpt-6-astra', orchestratorEffort: 'ultra', subagentModel: 'gpt-6-astra', subagentEffort: 'max' },
+      { criticModel: 'gpt-6-astra', criticEffort: 'high' },
+      { researchModel: 'gpt-6-astra', researchEffort: 'medium' },
+      { assetModel: 'gpt-6-astra', assetEffort: 'high' },
+    )
+    for (const role of ['orchestratorModel', 'subagentModel', 'criticModel', 'researchModel', 'assetModel'] as const) {
+      expect(models[role]).toBe('gpt-6-astra')
+      expect(normalizeModels(models)[role]).toBe('gpt-6-astra')
+    }
+    expect(harnessFor(models.orchestratorModel)).toBe('codex')
+    expect(models.orchestratorEffort).toBe('ultra')
+  })
+})
+
+
+it.each([['ultra', 'gpt-6-astra', 'max'], ['ultracode', 'claude-opus-5', 'xhigh']])('preserves historical %s but removes automatic delegation from copied drafts', (effort, model, copied) => {
+  expect(normalizeModels({ orchestratorModel: model, orchestratorEffort: effort }).orchestratorEffort).toBe(effort)
+  expect(newRunOrchestratorEffort(effort)).toBe(copied)
 })

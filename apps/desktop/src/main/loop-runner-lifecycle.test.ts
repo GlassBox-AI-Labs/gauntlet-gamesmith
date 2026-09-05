@@ -1,3 +1,4 @@
+import { createRunAttachments } from './run-attachments'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -135,6 +136,37 @@ afterEach(async () => {
 })
 
 describe('LoopRunner lifecycle boundary', () => {
+  it('starts skipped study directly at implementation and preserves that policy across reload and Resume', async () => {
+    const spawnChild = vi.fn(() => { throw new Error('fixture launch stopped') })
+    const { ledger, runner, workspaceDir, deps } = setup({ spawnChild })
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'skip' })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.runsForLoop(result.loopId!).every((run) => run.role === 'implement')).toBe(true)
+    expect(ledger.getLoop(result.loopId!)?.models.referenceMode).toBe('skip')
+    expect(spawnChild).toHaveBeenCalled()
+    const reloaded = new LoopRunner(ledger, () => {}, deps)
+    reloaded.resumeLoop(result.loopId!)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.hasRunRole(result.loopId!, 'reference')).toBe(false)
+  })
+
+  it('publishes supplied files before a files-only reference attempt and disables researchers', async () => {
+    const store = createRunAttachments(() => [])
+    const { ledger, runner, workspaceDir } = setup({ prepareContext: (ids) => store.prepare(ids), spawnChild: () => { throw new Error('fixture launch stopped') } })
+    const source = path.join(path.dirname(workspaceDir), 'brief.txt'); fs.writeFileSync(source, 'Design brief')
+    const [item] = store.add([source])
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'files', researchModel: 'gpt-5.6-luna', attachmentIds: [item.id] })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.getLoop(result.loopId!)?.models.researchModel).toBeNull()
+    const runs = ledger.runsForLoop(result.loopId!)
+    expect(runs[0].role).toBe('reference')
+    expect(runs[0].prompt).toContain('Do not browse the web')
+    expect(fs.existsSync(path.join(workspaceDir, 'reference', result.loopId!, 'supplied/manifest.json'))).toBe(true)
+    expect(ledger.eventTextForLoopWithPrefix(result.loopId!, 'Supplied context frozen at sha256:')).toBeTruthy()
+  })
+
   it('treats Stop for an unknown loop id as a no-op', () => {
     const { ledger, runner } = setup()
     runner.stop('00000000-0000-4000-8000-000000000000')
@@ -1610,6 +1642,31 @@ describe('LoopRunner lifecycle boundary', () => {
     })
     expect(spawned).toBe(false)
     expect(ledger.getLoop(loop.id)?.status).toBe('stopped')
+  })
+
+  it('resumes explicitly trusted imported queued work with a fresh attempt and no portable session ID', async () => {
+    let spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => { spawnedArgs = args; throw new Error('stop after inspecting trusted Resume') },
+    })
+    const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
+    models.referenceMode = 'skip'
+    const loop = ledger.createLoop({ prompt: 'Imported game', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const prior = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'Build the game.' })
+    ledger.patchRun(prior.id, { status: 'cancelled', sessionId: 'unowned-portable-session' })
+    const queued = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: '[[gauntlet:resume]]\nBuild the game.' })
+    ledger.patchRun(queued.id, { sessionId: 'unowned-queued-session' })
+    ledger.patchLoop(loop.id, { status: 'stopped', round: 1, playTrusted: false })
+    expect(runner.resumeLoop(loop.id).ok).toBe(false)
+    expect(spawnedArgs).toBeNull()
+    await ledger.trustExistingLoop(loop.id, async () => true)
+    expect(runner.resumeLoop(loop.id)).toEqual({ ok: true, loopId: loop.id })
+    expect(spawnedArgs, JSON.stringify(ledger.eventsForLoop(loop.id))).not.toBeNull()
+    expect(spawnedArgs).not.toContain('unowned-portable-session')
+    expect(spawnedArgs).not.toContain('unowned-queued-session')
+    expect(spawnedArgs).not.toContain('resume')
+    expect(ledger.getRun(queued.id)?.status).toBe('interrupted')
+    expect(ledger.latestRunForLoop(loop.id)?.id).not.toBe(queued.id)
   })
 
   it('refuses Resume before changing history when the selected profile is no longer subscription-ready', () => {

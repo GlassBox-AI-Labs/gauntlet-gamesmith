@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
 import type { LoopApi, LoopLogLine, LoopSnapshot, PlayStateEvent } from '../shared/loop'
+import type { AttachmentApi } from '../shared/attachments'
 import type { ReportApi } from '../shared/reports'
 
 const harnesses: HarnessApi = {
@@ -50,6 +51,7 @@ const loops: LoopApi = {
     return () => ipcRenderer.removeListener(IPC.play.state, wrapped)
   },
   start: (input) => ipcRenderer.invoke(IPC.loop.start, input),
+  trust: (loopId) => ipcRenderer.invoke(IPC.loop.trust, loopId),
   resume: (loopId) => ipcRenderer.invoke(IPC.loop.resume, loopId),
   stop: (loopId) => ipcRenderer.invoke(IPC.loop.stop, loopId),
   active: () => ipcRenderer.invoke(IPC.loop.active),
@@ -92,3 +94,12 @@ const reports: ReportApi = {
 contextBridge.exposeInMainWorld('harnesses', harnesses)
 contextBridge.exposeInMainWorld('loops', loops)
 contextBridge.exposeInMainWorld('reports', reports)
+
+const attachments: AttachmentApi = {
+  addFiles: (files) => ipcRenderer.invoke(IPC.attachment.add, files.map((file) => webUtils.getPathForFile(file))),
+  pick: () => ipcRenderer.invoke(IPC.attachment.pick),
+  preview: (id) => ipcRenderer.invoke(IPC.attachment.preview, id),
+  remove: (id) => ipcRenderer.invoke(IPC.attachment.remove, id),
+  openFolder: (id) => ipcRenderer.invoke(IPC.attachment.openFolder, id),
+}
+contextBridge.exposeInMainWorld('attachments', attachments)

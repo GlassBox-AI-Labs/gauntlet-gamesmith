@@ -9,7 +9,9 @@ Two tabs:
 
 **Play** may launch a trusted local run while its agents are still working. With no completed round selected, it previews the live project folder, so reloads can reflect work-in-progress edits or temporary build errors. Selecting a completed round instead launches that round's immutable Git revision.
 
-Run folders can be shared with **Export** and **Import**. Stop a run first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, build files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local runs, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained run without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history is deliberately read-only: **Play**, raw private-profile reading, loop resume, and rename remain blocked because this version has no re-trust control. Histories created before trust provenance was recorded are also treated as untrusted on upgrade—the app cannot safely distinguish an old local loop from an old import—so start a new local loop to regain execution features.
+Run folders can be shared with **Export** and **Import**. Stop a run first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, build files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local runs, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained run without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history and histories created before trust provenance was recorded start untrusted. Clicking **Play** or **Resume** shows a native warning naming the run and exact folder, with **Cancel** selected by default. **Trust run & folder** permits Gauntlet Gamesmith, its agents, and project scripts to execute with your local permissions. Main rechecks the registered folder identity, matching portable history, process ownership, and folder metadata after confirmation, then records consent and a visible event in both ledgers before continuing the original action. Browsing history never prompts. Changing selection during confirmation cancels the pending launch; consent can only apply to the run named in the dialog.
+
+Existing-folder execution consent does not grant private CLI transcript access or rename privileges, and does not adopt portable CLI session IDs or Git objects as local authority. Imported Resume uses fresh attempts/sessions; missing app-private revisions can still block a historical round or critique. Play the live folder when a transferred round has no local revision. Trust is denied for active or quarantined workspaces, changed or mismatched history, protected directories, external/broken links, special files, and trees exceeding 200,000 entries. A fresh import on another machine requires its own consent.
 
 Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<loop-id>/` and their exact relative path is recorded in the loop log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
@@ -109,3 +111,39 @@ The app creates isolated CLI homes inside its user-data directory:
 - `harnesses/codex`
 
 The CLIs own everything stored in those directories. The Electron app only starts their commands and reads their documented status output.
+
+
+## Run composer and supplied context
+
+The compact run composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
+fields; fine-tuning models locks pace until Reset. Connection pills reflect CLI subscription
+status and open the real Agents sign-in UI without discarding the form.
+
+Drop files or folders onto the description, or use Attach files / Add folder. Images open a
+lightbox; folder chips open the original folder in Finder. Main snapshots supported reference,
+media, and source files, excluding hidden, credential, generated, and linked entries. The form
+reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
+
+At Create, copies and a provenance manifest are saved to `reference/<loop-id>/supplied/` in the
+new project. They are used as untrusted reference evidence, remain available to implementation
+and critique, and travel with Export. Draft attachments are in memory until Create; reload
+before Create discards the draft. Original files are never modified.
+
+- **Web + files:** the existing web Reference Study plus supplied evidence.
+- **Files only:** one reference agent studies supplied evidence; web research and researcher
+  fan-out are disabled. No downloaded-image/video quotas are required.
+- **Skip:** starts implementation directly, with no reference agent. Later critique evaluates
+  the goal and supplied context without requiring a Reference Pack. 3D sculptors require a
+  reference cast and are unavailable in this mode; implementation builds assets itself.
+
+`pnpm dev:run-form` launches the real app alongside another instance, using a separate profile
+(`Gauntlet Gamesmith Dev run-form`), separate build outputs, and port 5177 or `CONDUCTOR_PORT`.
+This profile needs its own CLI logins; no credentials or production ledger are copied.
+
+New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
+Ultracode are retained only for historical run replay/resume; they must not be added to new-run
+presets or pickers. See [ADR-015](../../docs/DECISIONS.md#adr-015--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
+
+CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
+and their global package targets even when NVM itself is a Git checkout. Nested project
+repositories, links into projects, and private app directories remain excluded.

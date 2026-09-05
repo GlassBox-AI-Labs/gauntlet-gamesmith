@@ -336,3 +336,19 @@ describe('the engine contract inside the reference-study prompts', () => {
     expect(prompt).toContain('`node tools/engine-gate.mjs` exited 0')
   })
 })
+
+it('uses a files-only reference contract and cannot build a skipped reference prompt', () => {
+  expect(() => buildReferencePrompt('goal', 'reference/id', '', 'skip')).toThrow('skipped')
+  const local = buildReferencePrompt('goal', 'reference/id', 'FANOUT-SENTINEL', 'files')
+  expect(local).toContain('Do not browse the web')
+  expect(local).not.toContain('FANOUT-SENTINEL')
+  expect(local).toContain('supplied/manifest.json')
+})
+it('does not demand a missing AAA pack after reference was skipped', () => {
+  const implement = composeImplementPrompt('goal', 1, null, '', 'reference/id', '', [], 'skip')
+  const critic = buildCriticPrompt('goal', 1, 'reference/id', 'revision', 'verdict.json', '', 'skip')
+  expect(implement).toContain('Reference Study was skipped')
+  expect(critic).toContain('Reference Study was skipped')
+  expect(critic).not.toContain('If the dossier or pack is missing')
+  expect(critic).toContain('pairs.json as []')
+})

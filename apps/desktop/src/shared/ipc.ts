@@ -24,6 +24,7 @@ export const IPC = {
     reference: 'loop:reference',
     start: 'loop:start',
     resume: 'loop:resume',
+    trust: 'loop:trust',
     stop: 'loop:stop',
     active: 'loop:active',
     log: 'loop:log',
@@ -37,6 +38,8 @@ export const IPC = {
     readStream: 'loop:read-stream',
     update: 'loop:update',
   },
+  attachment: { add: 'attachment:add', pick: 'attachment:pick', preview: 'attachment:preview', remove: 'attachment:remove', openFolder: 'attachment:open-folder' },
+  context: { droppedFolder: 'context:dropped-folder', pickFolder: 'context:pick-folder', openFolder: 'context:open-folder' },
   media: { base: 'media:base' },
   play: { start: 'play:start', stop: 'play:stop', state: 'play:state' },
   report: {

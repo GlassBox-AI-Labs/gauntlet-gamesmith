@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import type { HarnessKind } from '../shared/harness'
 import { sanitizedExecutablePath } from './harness-env'
 
@@ -30,11 +31,17 @@ function canonical(value: string): string {
 }
 
 function insideRepository(directory: string): boolean {
-  let current = canonical(directory)
+  const installedDirectory = canonical(directory)
+  const nvmRoot = canonical(path.join(os.homedir(), '.nvm'))
+  const nvmRelative = path.relative(nvmRoot, installedDirectory).split(path.sep).join('/')
+  // NVM itself is a Git checkout. Its versioned global installation trees
+  // are not projects; ignore only that marker, never a nested/parent repo.
+  const nvmInstallation = /^versions\/node\/v\d+\.\d+\.\d+\/(?:bin|lib\/node_modules)(?:\/|$)/.test(nvmRelative)
+  let current = installedDirectory
   while (true) {
     try {
       const marker = fs.lstatSync(path.join(current, '.git'))
-      if (marker.isDirectory() || marker.isFile()) return true
+      if ((marker.isDirectory() || marker.isFile()) && !(current === nvmRoot && nvmInstallation)) return true
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
     }
@@ -58,7 +65,7 @@ function validateCandidate(candidate: string, unsafeRoots: readonly string[]): E
   if (roots.some((root) => inside(root, real) || inside(root, canonical(candidate)))) return null
   // PATH entries inside a checked-out repository are agent-writable project
   // content, not installed CLIs. Continue to the next installed candidate.
-  if (insideRepository(path.dirname(candidate))) return null
+  if (insideRepository(path.dirname(candidate)) || insideRepository(path.dirname(real))) return null
   return { path: real, dev: stat.dev, ino: stat.ino }
 }
 
