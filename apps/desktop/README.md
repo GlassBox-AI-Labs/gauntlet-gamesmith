@@ -29,6 +29,21 @@ pnpm dev
 
 Use Node 22 (`nvm use` will read the checked-in `.nvmrc`).
 
+### Running a second instance
+
+Everything the app owns — run history, harness logins, round revisions, and the
+single-instance lock — lives under the Electron user-data directory, so a second
+launch is normally refused while one is already running. Pass an absolute
+`--gauntlet-user-data` path to get a separate profile that runs beside it:
+
+```sh
+pnpm --filter @gauntlet/desktop exec electron . --gauntlet-user-data=/tmp/gg-test-profile
+```
+
+That profile starts empty: no runs, no signed-in CLIs, and the first-run setup
+flow. Delete the directory to discard it. A missing or relative path fails at
+startup rather than falling back to the real profile.
+
 Useful commands:
 
 ```sh
