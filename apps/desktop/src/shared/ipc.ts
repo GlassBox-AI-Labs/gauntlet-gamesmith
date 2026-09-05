@@ -3,6 +3,8 @@ export const IPC = {
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',
+    installOffer: 'harness:install-offer',
+    startInstall: 'harness:start-install',
     startLogin: 'harness:start-login',
     cancelLogin: 'harness:cancel-login',
     logout: 'harness:logout',
@@ -39,6 +41,11 @@ export const IPC = {
     update: 'loop:update',
   },
   media: { base: 'media:base' },
+  onboarding: {
+    get: 'onboarding:get',
+    complete: 'onboarding:complete',
+    reset: 'onboarding:reset',
+  },
   play: { start: 'play:start', stop: 'play:stop', state: 'play:state' },
   report: {
     list: 'report:list',

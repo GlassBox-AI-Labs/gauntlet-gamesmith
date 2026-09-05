@@ -37,6 +37,7 @@ import {
   parseLogLimit,
   parseDeleteRunsInput,
   parseLoopListOffset,
+  parseOnboardingHarness,
   parseOptionalRound,
   parseRunPageOffset,
   parseRunPromptRequest,
@@ -47,6 +48,7 @@ import {
   renameTrustError,
 } from './ipc-input'
 import { Ledger } from './ledger'
+import { OnboardingStore } from './onboarding'
 import { LoopRunner } from './loop-runner'
 import { stopExistingLoop } from './loop-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
@@ -73,6 +75,8 @@ import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
 import { withPromptLogs, type PromptLogRun } from './prompt-logs'
 import { settleQuitSupervisors } from './quit-settlement'
 import { readExactFileDescriptor } from './bounded-fd'
+import { resolveUserDataOverride } from './user-data-dir'
+import { configureAgentWritableRoots } from './cli-executable'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
@@ -126,10 +130,26 @@ function protectedWorkspaceRoots(): string[] {
   return [app.getPath('userData'), cliHome('claude'), cliHome('codex')]
 }
 
+/** Where new runs are created when the user has not chosen a folder. */
+function defaultWorkspaceParent(): string {
+  return path.join(app.getPath('home'), 'GauntletGames')
+}
+
+/**
+ * Directories an agent can write into: the app's own private state, the folder
+ * new runs are created in, and every project folder a run has used. Executable
+ * resolution refuses to spawn anything found inside them.
+ */
+configureAgentWritableRoots(() => [
+  ...protectedWorkspaceRoots(),
+  defaultWorkspaceParent(),
+  ...(ledger?.workspaceRoots() ?? []),
+])
+
 app.setName(APP_NAME)
 app.setPath('userData', smokeTestMode && process.env.GAUNTLET_SMOKE_USER_DATA
   ? process.env.GAUNTLET_SMOKE_USER_DATA
-  : resolveUserData())
+  : resolveUserDataOverride(process.argv) ?? resolveUserData())
 fixPath()
 configureRoundRevisionStorage(path.join(app.getPath('userData'), 'round-revisions'))
 
@@ -140,6 +160,13 @@ const harnessLogins = new HarnessLoginManager(app.getPath('home'), {
   },
   terminal: (kind, data) => mainWindow?.webContents.send(IPC.harness.terminalData, { kind, data }),
 })
+
+let onboardingStore: OnboardingStore | null = null
+
+function onboarding(): OnboardingStore {
+  onboardingStore ??= new OnboardingStore(app.getPath('userData'))
+  return onboardingStore
+}
 
 function recordSuccessfulLogin(kind: HarnessKind, action: HarnessAction): void {
   if (action.type !== 'probe_finished' || !action.loggedIn) return
@@ -583,12 +610,18 @@ function registerLoopIpc(): void {
     })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
-  ipcMain.handle(IPC.loop.defaultWorkspace, () => path.join(app.getPath('home'), 'GauntletGames'))
+  ipcMain.handle(IPC.loop.defaultWorkspace, () => defaultWorkspaceParent())
 }
 
 function registerIpc(): void {
+  ipcMain.handle(IPC.onboarding.get, () => onboarding().read())
+  ipcMain.handle(IPC.onboarding.complete, (_event, value: unknown) =>
+    onboarding().complete(parseOnboardingHarness(value)))
+  ipcMain.handle(IPC.onboarding.reset, () => onboarding().reset())
   ipcMain.handle(IPC.harness.detect, (_event, value: unknown) => harnessLogins.detect(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.probe, (_event, value: unknown) => harnessLogins.probe(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.installOffer, (_event, value: unknown) => harnessLogins.offerInstall(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.startInstall, (_event, value: unknown) => harnessLogins.install(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.startLogin, (_event, value: unknown) => harnessLogins.start(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.cancelLogin, (_event, value: unknown) => harnessLogins.cancel(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.logout, async (_event, value: unknown) => {

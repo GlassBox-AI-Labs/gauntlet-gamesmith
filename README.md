@@ -45,21 +45,18 @@ these files.
 You need three things on your computer. All three are free to install, but one
 of them needs a paid subscription to be useful.
 
-**1. A Claude or ChatGPT subscription, and its command-line tool.**
+**1. A Claude or ChatGPT subscription.**
 
-The app drives these tools; it does not replace them. Install at least one:
+The app does its work through Claude Code or Codex, running on your machine with
+your own sign-in. Your subscription pays for the work.
 
-```sh
-npm install -g @anthropic-ai/claude-code   # for Claude
-npm install -g @openai/codex               # for ChatGPT / Codex
-```
-
-You sign in to them inside the app on first launch. Your subscription pays for
-the work the app does.
+You do **not** have to install those tools yourself. During setup the app checks
+whether they are there, and offers to install the one you pick. It runs that
+tool's own official installer and shows you every line of output. Installing
+this way needs nothing else on your computer.
 
 **2. Node.js.** Download it from [nodejs.org](https://nodejs.org/) and take the
-version marked LTS. This also gives you the `npm` command used above. The app
-needs Node to preview the games it builds.
+version marked LTS. The app needs it to preview the games it builds.
 
 **3. Git.** On a Mac, open the Terminal app, type `git --version`, and press
 return — macOS will offer to install it if you don't have it. On Windows, get it
@@ -70,18 +67,29 @@ snapshot of every round, so you can go back to an earlier version of your game.
 
 ## First run
 
-1. Open the app. It starts on the **Agents** tab.
-2. Click the button to sign in to Claude or Codex. A small terminal window opens
-   and walks you through the normal sign-in for that tool. The app only starts
-   the sign-in and reads whether it worked. It does not read or copy your login.
-3. Switch to the **Run** tab. Pick a folder for your game, describe the game you
-   want, and press start.
-4. Watch the rounds go by. The app stops on its own when the critic approves the
-   game, when it hits the round limit, when it hits the spending limit you set,
-   or when you press stop.
+The first time you open the app, it walks you through setup:
+
+1. **Welcome** — a short note on what the app does.
+2. **Connect an agent** — pick Claude or Codex and sign in. A small terminal
+   opens and runs that tool's own login, which usually sends you to your
+   browser. The app only starts the sign-in and reads whether it worked. It
+   never reads or copies your login. If the tool is not installed yet, press
+   **Install** and the app runs its official installer for you, showing every
+   line of what it does. On Windows it shows the command to paste instead.
+3. **How it works** — four cards covering what happens during a run.
+
+You can skip setup, and you can bring the tour back later from the Agents tab
+("Show the tour again").
+
+After that you land on the **Run** tab. Pick a folder for your game, describe
+the game you want, and press start. Watch the rounds go by. The app stops on
+its own when the critic approves the game, when it hits the round limit, when
+it hits the spending limit you set, or when you press stop.
 
 Everything stays on your machine. There is no account to create and no server to
 connect to.
+
+---
 
 ## Sharing a run with someone else
 
@@ -126,9 +134,10 @@ that appears.
 
 ## Troubleshooting
 
-**"CLI not found" on the Agents tab.** The command-line tool for Claude or Codex
-isn't installed yet, or was installed after the app was already open. Install it
-with the commands above, then quit the app fully and open it again.
+**"CLI not found" on the Agents tab.** The tool for Claude or Codex is not
+installed yet. Go through setup again (Agents tab → **Show the tour again**) and
+press **Install** on the one you want. If you installed it yourself in a
+terminal while the app was open, quit the app fully and open it again.
 
 **The game won't preview.** Node.js is missing. Install it from
 [nodejs.org](https://nodejs.org/), then restart the app.

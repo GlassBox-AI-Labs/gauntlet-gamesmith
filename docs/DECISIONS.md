@@ -312,8 +312,101 @@ or authorize similarly broad follow-up changes.
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
 
+## ADR-013 — First-run setup flow gates the app on connecting an agent (2026-09-05)
 
-## ADR-014 — Explicit execution trust for existing run folders (2026-09-05)
+**Status:** accepted.
+
+**Context.** The app cannot run a single round without a signed-in Claude Code or Codex CLI, but
+nothing said so before the Run tab failed. A new user landed on a run form whose start button could
+not work, with the sign-in buried behind an Agents tab they had no reason to visit. The packaged
+0.1.0 download made this worse: recipients have neither the repository nor its README.
+
+**Decision.** First launch renders a four-step flow — welcome, connect, tour, ready — instead of the
+Runs view. The connect step detects each CLI, drives its existing PTY login, and shows the
+`npm install -g` command when a CLI is missing. The flow is skippable and never blocks: someone
+without an agent may continue, and the step says plainly that runs cannot start until one is
+connected. Completion is a flag in `onboarding.json` under the Electron user-data directory, read
+over typed IPC (`onboarding:get`) before the first render. A missing, corrupt, or unwritable file
+means the flow runs again, which is the safe direction to fail. **Show the tour again** on the
+Agents tab resets it.
+
+**Consequences.** The prerequisite is stated where it is discovered rather than in a README the
+downloader never sees. Onboarding state is one boolean outside SQLite, so it stays readable before
+the ledger opens and cannot corrupt run history. Detection, probing, and login-phase reduction now
+live in one renderer hook shared by the setup flow and the Agents tab, so login states cannot drift
+between them.
+
+## ADR-014 — The app installs the harness CLIs with the vendors' native installers (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The first-run connect step told a new user to open a terminal and paste
+`npm install -g …`, which is the exact task the flow exists to remove. It also required Node.js,
+which the non-technical downloader of the packaged build is least likely to have, and a global npm
+install fails with EACCES on system Node without sudo the app must never take.
+
+**Decision.** On macOS and Linux the connect step runs each vendor's own native installer
+(`https://claude.ai/install.sh | bash`, `https://chatgpt.com/codex/install.sh | sh`) in the same PTY
+panel the login uses, with the exact command shown before and during the run. Neither installer
+needs Node; both download a platform binary. The installer runs in a plain environment with the real
+home — not the harness environment, which rewrites `HOME` and sets `CODEX_HOME` and
+`CODEX_INSTALL_DIR`, and would install the CLI into app-private state. Windows offers no plan and
+shows its documented PowerShell/CMD command to copy.
+
+**Consequences.** A user with neither CLI can reach a working run without leaving the app or knowing
+what a terminal is, and Node stops being a prerequisite for the agents (it is still needed to preview
+a built game). Both installers place their launcher in `~/.local/bin` and append it to a shell
+profile that an already-running GUI process never re-reads, so `resolveCliExecutable` now searches
+that directory after `PATH`, under the same validation as every other candidate. The app executes
+vendor-published scripts fetched at run time: the URLs are pinned constants, no user input reaches
+the command line, and the output is shown in full rather than hidden.
+## ADR-015 — Executable resolution guards agent-writable roots, not git checkouts (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `resolveCliExecutable` rejected any candidate whose directory sat under a `.git` marker,
+to stop an agent that had planted an executable in the project it was building from being spawned as
+the CLI. Homebrew's prefix is itself a git repository, so `/opt/homebrew/bin/claude` — installed by
+the documented `brew install --cask claude-code` — was rejected, and the app reported Claude Code as
+not installed on a machine where it was installed and working.
+
+**Decision.** The guard now names the directories agents can actually write into: the app's private
+roots, the folder new runs are created in, and every project folder in the ledger. A `.git` marker
+says nothing about who can write to a directory, so it is no longer consulted. The run path already
+passed `loop.workspaceDir` explicitly; a process-wide provider adds the rest so the protection holds
+for resolutions that happen outside a run, such as detection during setup.
+
+**Consequences.** CLIs installed by Homebrew, or by any other tool that ships its prefix as a git
+checkout, are usable. A binary planted inside any run folder the app knows about is still refused,
+and a provider failure falls back to the caller's own roots rather than making every CLI
+unresolvable. Detection stops depending on how the user chose to install the CLI.
+## ADR-016 — The CLI child keeps the user's real HOME (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `subscriptionEnv` rewrote `HOME` and `USERPROFILE` to the app-managed harness home
+whenever one harness was selected. On macOS the Security framework locates the login keychain
+through `HOME`, and Claude Code keeps its subscription credentials there. The rewritten home
+contained no `Library/Keychains`, so signing in raised the macOS dialog "a default keychain could not
+be found", whose primary button offers to reset the user's real login keychain — a destructive action
+presented to a user who has done nothing wrong. Verified directly: `security default-keychain`
+resolves under the real home and fails with `SecKeychainCopyDefault` under the rewritten one.
+
+**Decision.** `HOME` and `USERPROFILE` are inherited from the parent process like the other
+environment values the CLI needs. Account and app isolation comes from `CLAUDE_CONFIG_DIR` and
+`CODEX_HOME`, which each CLI documents for exactly this purpose and which the app already sets.
+Nothing else about the sanitized environment changes: billing and credential-routing variables are
+still stripped, and `PATH` is still filtered against agent-writable roots.
+
+**Consequences.** Sign-in can reach the credential store the CLI actually uses, and the app never
+puts a keychain-reset prompt in front of a user. Isolation is unchanged in practice — Claude Code
+namespaces its keychain entries per config directory, and a run with the app's config dir still
+reports itself signed out while the user's own CLI login is untouched. The app continues never to
+read, copy, or inspect any credential store (PROC-001). The harness home is no longer a boundary
+against the CLI reading the real home; it never was one on macOS, where the credential store sits
+outside `HOME` regardless.
+
+## ADR-017 — Explicit execution trust for existing run folders (2026-09-05)
 
 **Status:** accepted. Supersedes ADR-005's lack of an existing-history execution trust control;
 its credential, ownership, raw-stream, import, and revision protections remain in force.

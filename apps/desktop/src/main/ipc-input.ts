@@ -56,6 +56,15 @@ export function assertHarnessKind(value: unknown): HarnessKind {
   return value as HarnessKind
 }
 
+/**
+ * The harness recorded at the end of onboarding. Null is a real answer: it
+ * means the user finished the flow without connecting one.
+ */
+export function parseOnboardingHarness(value: unknown): HarnessKind | null {
+  if (value === null || value === undefined) return null
+  return assertHarnessKind(value)
+}
+
 export function assertLoopId(value: unknown): string {
   if (!isRecordId(value)) throw new Error('Invalid loop id.')
   return value

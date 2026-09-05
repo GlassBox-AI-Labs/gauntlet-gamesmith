@@ -9,6 +9,7 @@ export const HARNESS_LABELS: Record<HarnessKind, string> = {
 export type LoginPhase =
   | 'checking'
   | 'not_found'
+  | 'installing'
   | 'logged_out'
   | 'signing_in'
   | 'awaiting_browser'
@@ -32,6 +33,8 @@ export interface HarnessState {
 
 export type HarnessAction =
   | { type: 'detected'; found: boolean; version?: string | null; error?: string | null }
+  | { type: 'install_started' }
+  | { type: 'install_failed'; error: string }
   | { type: 'probe_started' }
   | {
       type: 'probe_finished'
@@ -46,6 +49,13 @@ export type HarnessAction =
   | { type: 'login_failed'; error: string }
   | { type: 'logout_started' }
   | { type: 'logout_failed'; error: string }
+
+/** Whether the app can install this CLI here, and what it would run. */
+export interface InstallOffer {
+  available: boolean
+  /** The exact command, shown before it runs and as the copy-paste fallback. */
+  command: string | null
+}
 
 export interface DetectionResult {
   found: boolean
@@ -114,6 +124,8 @@ export interface TerminalDataEvent {
 export interface HarnessApi {
   detect(kind: HarnessKind): Promise<DetectionResult>
   probe(kind: HarnessKind): Promise<ProbeResult>
+  installOffer(kind: HarnessKind): Promise<InstallOffer>
+  startInstall(kind: HarnessKind): Promise<void>
   startLogin(kind: HarnessKind): Promise<void>
   cancelLogin(kind: HarnessKind): Promise<void>
   logout(kind: HarnessKind): Promise<LogoutResult>
