@@ -26,6 +26,7 @@ export const IPC = {
     reference: 'loop:reference',
     start: 'loop:start',
     resume: 'loop:resume',
+    trust: 'loop:trust',
     stop: 'loop:stop',
     active: 'loop:active',
     log: 'loop:log',

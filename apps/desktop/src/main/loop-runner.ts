@@ -896,7 +896,7 @@ export class LoopRunner {
         if (this.ledger.quarantineUnsafeWorkspace(loop.id, UNSAFE_WORKSPACE_MESSAGE)) this.notifyWorkspaceQuarantine(loop.id)
         continue
       }
-      if (!loop.playTrusted) {
+      if (!loop.playTrusted && !loop.executionTrusted) {
         this.finishLoop(loop.id, 'stopped', UNTRUSTED_HISTORY_MESSAGE)
         continue
       }
@@ -1152,7 +1152,7 @@ export class LoopRunner {
     if (this.ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, UNKNOWN_LAUNCH_OWNERSHIP)) {
       return { ok: false, error: `${UNKNOWN_LAUNCH_OWNERSHIP} Resume is disabled to avoid duplicating an untracked editor; start a new trusted run after confirming the old CLI is stopped.` }
     }
-    if (!loop.playTrusted) return { ok: false, error: UNTRUSTED_HISTORY_MESSAGE }
+    if (!loop.playTrusted && !loop.executionTrusted) return { ok: false, error: UNTRUSTED_HISTORY_MESSAGE }
     if (loop.status === 'running') return { ok: false, error: 'Loop is already running.' }
     if (loop.status === 'passed') return { ok: false, error: 'Loop already passed — start a new run to keep improving.' }
     if (this.current || this.terminatingLoops.size > 0 || this.ledger.runningLoop()) return { ok: false, error: 'Another loop is running. Stop it first.' }
@@ -1163,7 +1163,11 @@ export class LoopRunner {
       return { ok: false, error: redactedErrorMessage(error, 'Retained process ownership could not be verified.') }
     }
     const last = this.ledger.latestRunForLoop(loopId)
-    const resume = planResume(last, loop.maxRounds)
+    const plannedResume = planResume(last, loop.maxRounds)
+    // Imported queued attempts carry no local process/session authority. Start a fresh attempt.
+    const resume = !loop.playTrusted && plannedResume.kind === 'continue-queued'
+      ? { ...plannedResume, kind: 'retry' as const }
+      : plannedResume
     const resumeTarget: { role: RunRole; harness: HarnessKind } | null =
       resume.kind === 'continue-queued' || resume.kind === 'retry'
         ? { role: resume.run.role, harness: resume.run.harness }
@@ -1184,6 +1188,9 @@ export class LoopRunner {
         this.log(loopId, null, 'system', `Loop resumed by user — continuing the already queued round ${resume.run.round} ${resume.run.role}.`)
       } else if (resume.kind === 'retry') {
         const prior = resume.run
+        if (!loop.playTrusted && prior.status === 'queued') {
+          this.ledger.patchRun(prior.id, { status: 'interrupted', finishedAt: this.nowIso(), error: 'Explicit Resume replaced the imported queued attempt with a fresh local attempt.' })
+        }
         const retry = this.ledger.createRun({
           loopId,
           round: prior.round,
@@ -2417,7 +2424,7 @@ export class LoopRunner {
     }
     const childBoundary = this.prepareChildStreams(loop, run)
 
-    const priorSessionId = this.lastImplementSessionId(loop.id, run.round, run.id)
+    const priorSessionId = loop.playTrusted ? this.lastImplementSessionId(loop.id, run.round, run.id) : null
     const effective = effectivePromptForRun(run.prompt)
     const isResume = effective.resumeRequested && priorSessionId != null
     const prompt = effective.prompt
