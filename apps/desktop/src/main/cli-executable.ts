@@ -29,12 +29,36 @@ function canonical(value: string): string {
   }
 }
 
+/**
+ * A git-managed package-manager prefix is an install location, not agent-writable
+ * project content: Homebrew self-manages its prefix with git, so every executable
+ * under it (a `brew install`, or an `npm install -g` whose prefix is the Homebrew
+ * prefix) sits inside a `.git` repository without being project content. Detect a
+ * Homebrew prefix by its `brew` launcher or `Cellar` directory so those installs
+ * are not rejected as "inside a checked-out repository" (issue #38).
+ */
+function isPackageManagerPrefix(directory: string): boolean {
+  try {
+    if (fs.statSync(path.join(directory, 'bin', 'brew')).isFile()) return true
+  } catch {
+    // no brew launcher at this level
+  }
+  try {
+    if (fs.statSync(path.join(directory, 'Cellar')).isDirectory()) return true
+  } catch {
+    // no Cellar at this level
+  }
+  return false
+}
+
 function insideRepository(directory: string): boolean {
   let current = canonical(directory)
   while (true) {
     try {
       const marker = fs.lstatSync(path.join(current, '.git'))
-      if (marker.isDirectory() || marker.isFile()) return true
+      // A real checked-out project repo makes binaries under it untrusted; a
+      // package-manager prefix that merely uses git for itself does not.
+      if ((marker.isDirectory() || marker.isFile()) && !isPackageManagerPrefix(current)) return true
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
     }

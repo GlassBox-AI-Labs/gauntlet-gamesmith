@@ -51,6 +51,27 @@ describe('CLI executable resolution', () => {
     expect(() => cliExecutable('codex', [path.join(root, 'workspace')], source)).toThrow(/changed identity/)
   })
 
+  it('resolves and keeps pinned a CLI installed under a git-managed Homebrew prefix', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-brew-'))
+    roots.push(root)
+    const prefix = path.join(root, 'homebrew')
+    // Homebrew self-manages its prefix with git and ships a brew launcher + Cellar.
+    fs.mkdirSync(path.join(prefix, '.git'), { recursive: true })
+    fs.mkdirSync(path.join(prefix, 'Cellar'), { recursive: true })
+    executable(path.join(prefix, 'bin', 'brew'))
+    executable(path.join(prefix, 'bin', 'codex'))
+    const source = { PATH: path.join(prefix, 'bin') }
+
+    const resolved = resolveCliExecutable('codex', source)
+    expect(resolved.path).toBe(fs.realpathSync(path.join(prefix, 'bin', 'codex')))
+
+    // The pinned real path lives under the git-managed prefix; re-validation must
+    // not trip the "changed identity" guard on a subsequent probe.
+    const pinned = cliExecutable('codex', [], source)
+    expect(pinned).toBe(fs.realpathSync(path.join(prefix, 'bin', 'codex')))
+    expect(cliExecutable('codex', [], source)).toBe(pinned)
+  })
+
   it('constructs delegated binary variables only from canonical safe executables', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-env-'))
     roots.push(root)
