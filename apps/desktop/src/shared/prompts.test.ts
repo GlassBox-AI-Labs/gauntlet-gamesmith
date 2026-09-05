@@ -171,6 +171,9 @@ describe('loop prompts', () => {
     expect(prompt).toContain('critique/round-3/test-plan.md')
     expect(prompt).toContain('Actually PLAY the running game like an expert')
     expect(prompt).toContain('complete the full implemented progression')
+    expect(prompt).toContain('npm run dev')
+    expect(prompt).toContain('Do not switch to `vite preview`')
+    expect(prompt).toContain('Play that Play-button URL')
     expect(prompt).toContain('provoke damage, death, restart, win, pause/resume')
     expect(prompt).toContain('require at least three complete, distinct, playable levels/stages/missions')
     expect(prompt).toContain('test its documented progression model without demanding artificial levels')
@@ -334,6 +337,13 @@ describe('the engine contract inside the reference-study prompts', () => {
 
     expect(prompt).toContain(gateRules)
     expect(prompt).toContain('`node tools/engine-gate.mjs` exited 0')
+  })
+
+  it('blocks a pass when the Play URL is blank, even if preview worked', () => {
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123', 'a'.repeat(40), 'verdict.json', gateRules)
+
+    expect(prompt).toContain('the Play-button URL (`npm run dev`) actually booted')
+    expect(prompt).toContain('you must not credit gameplay you only demonstrated on `vite preview`')
   })
 })
 

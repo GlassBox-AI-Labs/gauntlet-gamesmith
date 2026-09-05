@@ -148,6 +148,20 @@ export function sanitizedExecutablePath(value: string | undefined, unsafeRoots: 
   return safe.length > 0 ? safe.join(path.delimiter) : undefined
 }
 
+/**
+ * Keep node version managers working under an isolated HOME.
+ *
+ * `node`, `npm` and `codex` on the operator's PATH can be Volta shims, and a
+ * shim finds its toolchain through `$VOLTA_HOME`, defaulting to `$HOME/.volta`.
+ * Every child here gets a private HOME, so the shim looks in an empty sandbox
+ * and dies with "Node is not available" (exit 126). Pointing VOLTA_HOME back at
+ * the real install exposes nothing PATH did not already expose.
+ */
+export function voltaHomeEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const voltaHome = source.VOLTA_HOME ?? (source.HOME ? path.join(source.HOME, '.volta') : undefined)
+  return voltaHome && fs.existsSync(path.join(voltaHome, 'bin')) ? { VOLTA_HOME: voltaHome } : {}
+}
+
 export function subscriptionEnv(
   overrides: Record<string, string>,
   source: NodeJS.ProcessEnv = process.env,
@@ -171,5 +185,5 @@ export function subscriptionEnv(
   for (const [key, value] of Object.entries(overrides)) {
     if (PLAN_CLI_ENV.has(key)) env[key] = value
   }
-  return { ...env, NO_COLOR: '1' }
+  return { ...env, ...voltaHomeEnv(source), NO_COLOR: '1' }
 }

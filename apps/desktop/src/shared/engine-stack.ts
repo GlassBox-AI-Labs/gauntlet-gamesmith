@@ -128,7 +128,7 @@ export function engineContract(): string {
     .join(', ')
   return `Engine stack (MANDATORY — this is the engine, not a suggestion). Build on exactly these, pinned exactly, no caret ranges: ${deps}. TypeScript with \`strict: true\`, ES modules, Vite. Do NOT add React, react-three-fiber, \`@react-three/*\`, another ECS, or another physics or audio library — we are building our own stack and a framework wrapper would own the seams that are the point. \`recast-navigation@${ENGINE_OPTIONAL_DEPS['recast-navigation']}\` is the one permitted addition, and only when bots need real navigation meshes.
 
-The workspace is already scaffolded with these dependencies, the \`src/sim\` / \`src/render\` / \`src/assets\` / \`src/audio\` layout, \`CONTRACT.md\`, and \`tools/engine-gate.mjs\`. Build into that layout rather than replacing it.
+The workspace is already scaffolded with these dependencies, the \`src/sim\` / \`src/render\` / \`src/assets\` / \`src/audio\` layout, \`CONTRACT.md\`, \`vite.config.js\`, and \`tools/engine-gate.mjs\`. Build into that layout rather than replacing it. You may extend \`vite.config.js\`. Do not add a Vite resolve plugin: TypeScript \`.js\` specifiers already resolve to \`.ts\` files, and rewriting them 404s vendor chunks so the Play URL is a blank page. An unedited generated config may be updated in place by a later Gauntlet Loop release; a config you have grown is left alone unless it blanks the Play URL.
 
 ${architecture()}
 
@@ -140,7 +140,9 @@ ${assetSeam()}
 
 ${audio()}
 
-Run \`node tools/engine-gate.mjs\` before you finish and fix everything it reports. The critic runs it too, and a game that fails it cannot pass however good it looks. Do not edit the gate — the app rewrites it every round.`
+Run \`node tools/engine-gate.mjs\` before you finish and fix everything it reports. The critic runs it too, and a game that fails it cannot pass however good it looks. Do not edit the gate — the app rewrites it every round.
+
+Play through \`npm run dev\` — that is the Play button, typically \`http://127.0.0.1:5173/\`. Do not treat \`vite preview\` as a substitute. If that URL is a blank page, the round is not done.`
 }
 
 /** What the critic is told about the gate. Failing it blocks a pass outright. */
