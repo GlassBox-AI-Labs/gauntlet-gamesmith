@@ -15,10 +15,11 @@ function result(stdout: string, stderr = '', status = 0): SpawnSyncReturns<strin
 }
 
 describe('subscriptionReadiness', () => {
-  it('accepts only a Claude subscription profile and uses the isolated home', () => {
+  it('accepts only a Claude subscription profile and uses the isolated config dir', () => {
     const command = vi.fn<StatusCommand>(() => result('{"loggedIn":true,"authMethod":"oauth","subscriptionType":"max"}'))
     expect(subscriptionReadiness('claude', '/workspace', '/private/claude', {
       PATH: '.:/workspace/bin:/usr/bin',
+      HOME: '/Users/operator',
       AWS_SECRET_ACCESS_KEY: 'secret',
     }, command, () => '/installed/claude')).toEqual({ ok: true, error: null })
 
@@ -26,7 +27,9 @@ describe('subscriptionReadiness', () => {
       cwd: '/workspace',
       env: expect.objectContaining({
         PATH: '/usr/bin',
-        HOME: '/private/claude',
+        // The real home stays so macOS can reach the login keychain; the
+        // config dir is what isolates this account's credentials.
+        HOME: '/Users/operator',
         CLAUDE_CONFIG_DIR: '/private/claude',
       }),
     }))
