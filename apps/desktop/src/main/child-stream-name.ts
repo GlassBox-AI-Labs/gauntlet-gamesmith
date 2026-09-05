@@ -1,7 +1,7 @@
 import type { HarnessKind } from '../shared/harness'
 
-const CHILD_STREAM_PATTERN = /^([a-z0-9-]{1,64})\.(claude|codex)\.jsonl$/
-const ARCHIVED_CHILD_STREAM_PATTERN = /^(.+\.(?:claude|codex)\.jsonl)\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.archived$/
+const CHILD_STREAM_PATTERN = /^([a-z0-9-]{1,64})\.(claude|codex|grok)\.jsonl$/
+const ARCHIVED_CHILD_STREAM_PATTERN = /^(.+\.(?:claude|codex|grok)\.jsonl)\.([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.archived$/
 export const MAX_CHILD_STREAMS = 256
 export const MAX_CHILD_DIRECTORY_ENTRIES = 1_024
 export const MAX_CHILD_PROJECTION_READ_BYTES = 1024 * 1024

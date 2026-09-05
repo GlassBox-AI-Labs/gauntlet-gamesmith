@@ -436,3 +436,28 @@ folder trust, not an OS sandbox or a permanent content signature: later edits ar
 same-user concurrent filesystem mutation cannot be made atomic with SQLite and process launch.
 Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
 canonical execution consent, records the failure, and attempts mirror repair before returning.
+
+## ADR-018 — A loop may run with no Reference Study (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The Reference Study was mandatory: round 0 of every loop, and the source of the frozen
+pack that implement and critique both read. Its research picker offered a "none" option, but that
+only turned off the researcher fan-out — the phase still ran, still spent a full orchestrator round
+identifying and studying an existing AAA game, and still gated every later phase on the pack it
+produced. An operator building something deliberately original had no way to opt out, and the
+picker's label implied otherwise.
+
+**Decision.** The research picker carries three states. A model fans researchers out. "No fan-out"
+keeps the Reference Study and has it sweep by itself. "None" drops the phase: `LoopModels` gains
+`referenceStudy`, and when it is false the loop opens at implement round 1, `verifyReferenceBoundary`
+passes without a pack, and the implement and critique prompts switch to pack-free variants that
+judge the game against the operator's brief plus the general AAA craft bar. The critic is told
+explicitly that the missing pack is not a finding and that imitating an existing commercial title
+fails the brief.
+
+**Consequences.** Critique in this mode rests on the model's own expertise rather than sourced
+evidence, so its scores are not comparable with a pack-backed loop's, and there is no side-by-side
+comparison, no `pairs.json`, and no cast to sculpt. Rows written before this ADR have no
+`referenceStudy` key and normalize to true, so existing loops are unaffected. The Reference Study
+remains the default and the better path whenever the goal names a reference game.

@@ -6,9 +6,10 @@ import path from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import fixPath from 'fix-path'
 import type { AccountRotation, AccountsResult, AccountsState, HarnessAction, HarnessKind } from '../shared/harness'
+import { HARNESS_LABELS } from '../shared/harness'
 import { IPC } from '../shared/ipc'
 import { type CritiqueRound, type LoopLogLine, type LoopRecord, type ReferenceStudy } from '../shared/loop'
-import { isCodexModel, resolveModels } from '../shared/models'
+import { resolveModels } from '../shared/models'
 import { REPORT_FILE_SUFFIX, type DeleteRunsResult, type ReportRecord, type ReportRunRow } from '../shared/reports'
 import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
 import { failure, success, type OperationResult } from '../shared/result'
@@ -28,7 +29,7 @@ import {
   removeAccount,
   switchAccount,
 } from './accounts'
-import { cliHome, harnessesRoot } from './harness-env'
+import { cliHome, harnessesRoot, sharedHome } from './harness-env'
 import { HarnessLoginManager } from './harness-login'
 import { subscriptionAuthError } from './harness-status'
 import {
@@ -177,6 +178,7 @@ function recordSuccessfulLogin(kind: HarnessKind, action: HarnessAction): void {
   if (email) labelAccount(root, kind, state.activeId, email)
 }
 
+
 async function rotateAccount(kind: HarnessKind, error = ''): Promise<AccountRotation> {
   const root = harnessesRoot()
   const before = readAccounts(root, kind)
@@ -235,17 +237,19 @@ function registerLoopIpc(): void {
     try {
       const input = parseStartLoopInput(value)
       const models = resolveModels(input, input, input, input)
-      const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel, models.assetModel]
-      const needsCodex = picks.some(isCodexModel)
-      const needsClaude = picks.some((model) => model != null && !isCodexModel(model))
-      const [claudeStatus, codexStatus] = await Promise.all([
-        needsClaude ? harnessLogins.probe('claude') : Promise.resolve(null),
-        needsCodex ? harnessLogins.probe('codex') : Promise.resolve(null),
-      ])
-      const claudeError = needsClaude ? subscriptionAuthError('Claude Code', claudeStatus) : null
-      if (claudeError) return { ok: false, error: claudeError }
-      const codexError = needsCodex ? subscriptionAuthError('Codex', codexStatus) : null
-      if (codexError) return { ok: false, error: codexError }
+      // Any role can run on any of the three CLIs, so a run needs whichever
+      // logins its picks actually reach for — no more, no less.
+      const needed = new Set<HarnessKind>([models.orchestratorHarness, models.criticHarness])
+      if (models.subagentHarness) needed.add(models.subagentHarness)
+      if (models.researchHarness) needed.add(models.researchHarness)
+      if (models.assetHarness) needed.add(models.assetHarness)
+      const statuses = await Promise.all(
+        [...needed].map(async (kind) => [kind, await harnessLogins.probe(kind)] as const),
+      )
+      for (const [kind, status] of statuses) {
+        const error = subscriptionAuthError(HARNESS_LABELS[kind], status)
+        if (error) return { ok: false, error }
+      }
       return loopRunner.start({ ...input, ...models }, 'new-child')
     } catch (error) {
       return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
@@ -391,7 +395,7 @@ function registerLoopIpc(): void {
           workspaceDir,
           runId: run.id,
           sessionId: run.sessionId,
-          claudeHome: cliHome('claude'),
+          claudeHome: sharedHome('claude'),
           codexHome: cliHome('codex'),
           allowLiveChildStream: latestImplementRunId === run.id,
         },

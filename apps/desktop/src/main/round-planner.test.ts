@@ -35,4 +35,10 @@ describe('planResume', () => {
   ] as const)('maps resume state %# to one action', (last, expected) => {
     expect(planResume(last, 3)).toEqual(expected)
   })
+
+  // Resuming a loop with no runs must not queue a phase that loop never had.
+  it('opens at round 1 when the loop skipped the Reference Study', () => {
+    expect(planResume(null, 3, false)).toEqual({ kind: 'queue-implement', round: 1, prior: null })
+    expect(planResume(run('implement', 'failed', 1), 3, false)).toEqual({ kind: 'retry', run: run('implement', 'failed', 1) })
+  })
 })

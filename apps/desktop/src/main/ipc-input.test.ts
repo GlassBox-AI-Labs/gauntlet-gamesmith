@@ -50,6 +50,15 @@ describe('IPC input validation', () => {
     expect(() => parseStartLoopInput({ ...validStart, prompt: ' \n\t ' })).toThrow('Goal')
   })
 
+  // The skip sentinel names no model, so it must pass the research field and
+  // fail every other one rather than being waved through as a model id.
+  it('admits the Reference-Study skip sentinel on the research field only', () => {
+    expect(parseStartLoopInput({ ...validStart, researchModel: 'skip' }).researchModel).toBe('skip')
+    expect(() => parseStartLoopInput({ ...validStart, subagentModel: 'skip' })).toThrow('Subagent model')
+    expect(() => parseStartLoopInput({ ...validStart, assetModel: 'skip' })).toThrow('Asset model')
+    expect(() => parseStartLoopInput({ ...validStart, criticModel: 'skip' })).toThrow('Critic model')
+  })
+
   it('bounds titles, limits, and rounds', () => {
     expect(parseRenameInput(loopId, ' New name ')).toEqual({ loopId, title: 'New name' })
     expect(parseLogLimit(99)).toBe(99)

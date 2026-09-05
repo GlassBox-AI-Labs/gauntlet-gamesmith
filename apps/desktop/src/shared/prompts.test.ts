@@ -171,6 +171,9 @@ describe('loop prompts', () => {
     expect(prompt).toContain('critique/round-3/test-plan.md')
     expect(prompt).toContain('Actually PLAY the running game like an expert')
     expect(prompt).toContain('complete the full implemented progression')
+    expect(prompt).toContain('npm run dev')
+    expect(prompt).toContain('Do not switch to `vite preview`')
+    expect(prompt).toContain('Play that Play-button URL')
     expect(prompt).toContain('provoke damage, death, restart, win, pause/resume')
     expect(prompt).toContain('require at least three complete, distinct, playable levels/stages/missions')
     expect(prompt).toContain('test its documented progression model without demanding artificial levels')
@@ -218,6 +221,31 @@ describe('loop prompts', () => {
     expect(preview).toContain('read ./reference/loop-123/README.md')
     expect(preview).toContain('Orchestration preview:')
     expect(preview).toContain('exact launch contract is recorded when round 1 is queued')
+  })
+
+  /**
+   * With no pack there is nothing to read, imitate, or compare against, so
+   * every instruction that assumes one has to be gone — not merely softened.
+   */
+  it('drops every Reference Pack instruction when the loop skipped the study', () => {
+    const implement = composeImplementPrompt('Build an original platformer', 1, null, rules, null)
+    expect(implement).not.toContain('reference/')
+    expect(implement).not.toContain('frozen Reference Pack')
+    expect(implement).not.toContain('Reference Study classifies')
+    expect(implement).toContain('This loop has no Reference Pack')
+    expect(implement).toContain('general AAA craft bar')
+    expect(implement).toContain('<goal>\nBuild an original platformer\n</goal>')
+
+    const critique = buildCriticPrompt('Build an original platformer', 2, null)
+    expect(critique).not.toContain('reference/')
+    expect(critique).not.toContain('pairs.json must be a JSON array')
+    expect(critique).not.toContain('frozen Reference Pack')
+    expect(critique).not.toContain('refs/')
+    expect(critique).toContain('deliberately skipped the Reference Study')
+    expect(critique).toContain('that absence is not a finding')
+    expect(critique).toContain('use `game` for every finding')
+    // The verdict contract is unchanged: the app still parses this file.
+    expect(critique).toContain('critique/round-2/verdict.json')
   })
 
   it('has the Reference Study name the cast and gather isolated object shots', () => {
@@ -334,5 +362,12 @@ describe('the engine contract inside the reference-study prompts', () => {
 
     expect(prompt).toContain(gateRules)
     expect(prompt).toContain('`node tools/engine-gate.mjs` exited 0')
+  })
+
+  it('blocks a pass when the Play URL is blank, even if preview worked', () => {
+    const prompt = buildCriticPrompt('Build a game like Control', 3, 'reference/loop-123', 'a'.repeat(40), 'verdict.json', gateRules)
+
+    expect(prompt).toContain('the Play-button URL (`npm run dev`) actually booted')
+    expect(prompt).toContain('you must not credit gameplay you only demonstrated on `vite preview`')
   })
 })

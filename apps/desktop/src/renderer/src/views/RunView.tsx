@@ -15,6 +15,7 @@ import {
   type CriticFields,
   type AssetFields,
   type ImplementerFields,
+  researchFieldsFor,
   type ResearchFields,
 } from '../../../shared/models'
 import type { OperationResult } from '../../../shared/result'
@@ -128,7 +129,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           setSnapshot(initial)
           setImpl({ orchestratorModel: initial.loop.models.orchestratorModel, orchestratorEffort: initial.loop.models.orchestratorEffort, subagentModel: initial.loop.models.subagentModel, subagentEffort: initial.loop.models.subagentEffort })
           setCritic({ criticModel: initial.loop.models.criticModel, criticEffort: initial.loop.models.criticEffort })
-          setResearch({ researchModel: initial.loop.models.researchModel, researchEffort: initial.loop.models.researchEffort })
+          setResearch(researchFieldsFor(initial.loop.models))
           setAssets({ assetModel: initial.loop.models.assetModel, assetEffort: initial.loop.models.assetEffort })
           setExpandedRuns(new Set([initial.loop.id]))
           const history = await window.loops.log(initial.loop.id)
@@ -246,9 +247,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       loopIdRef.current = detail.loop.id
       setSnapshot(detail)
       setSnapshots((current) => selectSnapshotInList(current, detail))
-      setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: detail.loop.models.orchestratorEffort, subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
-      setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
-      setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
+      // Opening a past run loads its settings into the pickers, but never over
+      // choices being made right now: composing means the operator has already
+      // set up the next run, and silently reverting a picker they just changed
+      // starts a loop that is not the one they configured.
+      if (!composing) {
+        setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: detail.loop.models.orchestratorEffort, subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
+        setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
+        setResearch(researchFieldsFor(detail.loop.models))
+      }
       setSelectedRound(round)
       setComposing(false)
       setSelectedReportId(null)

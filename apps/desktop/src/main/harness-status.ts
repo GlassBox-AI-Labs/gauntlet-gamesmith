@@ -80,6 +80,30 @@ export function parseCodexStatus(
   }
 }
 
+/**
+ * Grok has no dedicated status command; `grok models` reports the login state
+ * on its first line — "You are logged in with grok.com." or "You are not
+ * authenticated."
+ */
+export function parseGrokStatus(stdout: string, stderr: string, version: string | null): ProbeResult {
+  const text = redactLogText(stripAnsi(`${stdout}\n${stderr}`)).trim().slice(0, 4_096)
+  const match = /^you are logged in with\s+(.+?)\.?$/im.exec(text)
+  return {
+    loggedIn: Boolean(match),
+    billingMode: match ? 'subscription' : undefined,
+    authMethod: match ? match[1] : null,
+    details: match
+      ? [
+          ['Version', version == null ? 'Unknown' : redactLogText(version)],
+          ['Provider', 'xAI'],
+          ['Account', match[1]],
+          ['Credentials', 'Managed privately by Grok CLI'],
+        ]
+      : [],
+    error: match || /not authenticated|not logged in/i.test(text) ? null : text || null,
+  }
+}
+
 export function subscriptionAuthError(label: string, status: ProbeResult | null): string | null {
   if (!status?.loggedIn) return `${label} is not connected. Sign in on the Agents tab.`
   if (status.billingMode === 'subscription') return null

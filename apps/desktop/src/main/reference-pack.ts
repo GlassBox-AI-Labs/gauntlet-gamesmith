@@ -17,7 +17,7 @@ import {
 export { referencePackDir } from '../shared/reference-path'
 
 const IMAGE = /\.(png|jpe?g|webp|gif)$/i
-const VIDEO = /\.(webm|mp4|mov)$/i
+const VIDEO = /\.(webm|mp4|mov|mkv)$/i
 const MAX_FILES = 300
 const MAX_ENTRIES = 2_000
 const MAX_PROJECTED_IMAGE_BYTES = 128 * 1024 * 1024

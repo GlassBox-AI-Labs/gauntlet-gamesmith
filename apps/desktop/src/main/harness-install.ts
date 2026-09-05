@@ -8,7 +8,7 @@ import type { HarnessKind } from '../shared/harness'
  *
  * Pinned as constants. Nothing user-supplied ever reaches the command line.
  */
-export const INSTALL_SCRIPT_URLS: Record<HarnessKind, string> = {
+export const INSTALL_SCRIPT_URLS: Partial<Record<HarnessKind, string>> = {
   claude: 'https://claude.ai/install.sh',
   codex: 'https://chatgpt.com/codex/install.sh',
 }
@@ -34,10 +34,12 @@ export interface InstallPlan {
  * Windows is null on purpose: its documented installers are PowerShell and CMD
  * one-liners rather than a POSIX pipeline, and no Windows build ships yet, so
  * claiming support the app has not run would be worse than showing the command.
+ * Grok is null for the same reason: no native installer has been verified here.
  */
 export function installPlan(kind: HarnessKind, platform: NodeJS.Platform = process.platform): InstallPlan | null {
   if (platform !== 'darwin' && platform !== 'linux') return null
   const url = INSTALL_SCRIPT_URLS[kind]
+  if (!url) return null
   // Claude's installer documents bash; Codex's documents sh. Each is used as
   // published rather than normalized to one shell.
   const shell = kind === 'claude' ? 'bash' : 'sh'

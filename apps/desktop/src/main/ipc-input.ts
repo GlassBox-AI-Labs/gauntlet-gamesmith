@@ -6,6 +6,7 @@ import {
   AGENT_MODEL_CHOICES,
   CODEX_ORCHESTRATOR_EFFORTS,
   CLAUDE_ORCHESTRATOR_EFFORTS,
+  SKIP_REFERENCE_STUDY,
   SOLO_SUBAGENT,
 } from '../shared/models'
 
@@ -41,6 +42,16 @@ function model(value: unknown, label: string, nullable = false): string | null {
   const id = boundedString(value, label, 100)
   if (!modelIds.has(id)) throw new Error(`${label} is not supported.`)
   return id
+}
+
+/**
+ * The research picker alone carries a value that names no model: the sentinel
+ * that drops the Reference Study. It survives validation as itself so
+ * resolveModels can read it, and is rejected on every other field.
+ */
+function researchModel(value: unknown): string | null {
+  if (value === SKIP_REFERENCE_STUDY) return SKIP_REFERENCE_STUDY
+  return model(value, 'Research model', true)
 }
 
 function effort(value: unknown, label: string, allowed: Set<string>): string {
@@ -91,7 +102,7 @@ export function parseStartLoopInput(value: unknown): StartLoopInput {
     subagentEffort: effort(input.subagentEffort, 'Subagent effort', agentEfforts),
     criticModel: model(input.criticModel, 'Critic model')!,
     criticEffort: effort(input.criticEffort, 'Critic effort', agentEfforts),
-    researchModel: model(input.researchModel, 'Research model', true),
+    researchModel: researchModel(input.researchModel),
     researchEffort: effort(input.researchEffort, 'Research effort', agentEfforts),
     assetModel: model(input.assetModel, 'Asset model', true),
     assetEffort: effort(input.assetEffort, 'Asset effort', agentEfforts),

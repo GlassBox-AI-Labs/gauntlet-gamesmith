@@ -3,12 +3,14 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  AGENT_EFFORTS,
   AGENT_MODEL_CHOICES,
+  clampEffort,
+  effortsForModel,
   type AssetFields,
   describeCritic,
   modelLabel,
   orchestratorEfforts,
+  SKIP_REFERENCE_STUDY,
   SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
@@ -134,6 +136,10 @@ export function RunForm({
   onAssetsChange,
   onCreate,
 }: RunFormProps): React.JSX.Element {
+  // Three states share one picker: a model fans researchers out, "No fan-out"
+  // keeps the Reference Study and sweeps solo, "None" drops the phase itself.
+  const skipsStudy = research.researchModel === SKIP_REFERENCE_STUDY
+  const fansOut = research.researchModel !== null && !skipsStudy
   return (
     <Card className="gap-0 overflow-visible border-[#393433] bg-[#1d1919] p-0 shadow-2xl shadow-black/20">
       <div className="border-b border-[#393433] p-3">
@@ -189,7 +195,7 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Subagents</span>
           <Select
             value={impl.subagentModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => onImplChange({ ...impl, subagentModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => onImplChange({ ...impl, subagentModel: value === SOLO_SUBAGENT ? null : value, subagentEffort: clampEffort(effortsForModel(value), impl.subagentEffort) })}
           >
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -204,7 +210,7 @@ export function RunForm({
           >
             <SelectTrigger className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(impl.subagentModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -212,28 +218,29 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Research</span>
           <Select
             value={research.researchModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => onResearchChange({ ...research, researchModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => onResearchChange({ ...research, researchModel: value === SOLO_SUBAGENT ? null : value, researchEffort: clampEffort(effortsForModel(value), research.researchEffort) })}
           >
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
-              <SelectItem value={SOLO_SUBAGENT}>none (no fan-out)</SelectItem>
+              <SelectItem value={SOLO_SUBAGENT}>No fan-out (study still runs)</SelectItem>
+              <SelectItem value={SKIP_REFERENCE_STUDY}>None (skip Reference Study)</SelectItem>
             </SelectContent>
           </Select>
           <Select
             value={research.researchEffort}
             onValueChange={(value) => onResearchChange({ ...research, researchEffort: value })}
-            disabled={research.researchModel === null}
+            disabled={!fansOut}
           >
-            <SelectTrigger className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
+            <SelectTrigger className={!fansOut ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(research.researchModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
           <span className="text-xs text-[#7d7772]">Critic</span>
-          <Select value={critic.criticModel} onValueChange={(value) => onCriticChange({ ...critic, criticModel: value })}>
+          <Select value={critic.criticModel} onValueChange={(value) => onCriticChange({ ...critic, criticModel: value, criticEffort: clampEffort(effortsForModel(value), critic.criticEffort) })}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
               {AGENT_MODEL_CHOICES.map((model) => <SelectItem key={model.id} value={model.id}>{model.label}</SelectItem>)}
@@ -242,7 +249,7 @@ export function RunForm({
           <Select value={critic.criticEffort} onValueChange={(value) => onCriticChange({ ...critic, criticEffort: value })}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(critic.criticModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -250,7 +257,7 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Asset sculptors</span>
           <Select
             value={assets.assetModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => onAssetsChange({ ...assets, assetModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => onAssetsChange({ ...assets, assetModel: value === SOLO_SUBAGENT ? null : value, assetEffort: clampEffort(effortsForModel(value), assets.assetEffort) })}
           >
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -265,7 +272,7 @@ export function RunForm({
           >
             <SelectTrigger className={assets.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(assets.assetModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -283,7 +290,11 @@ export function RunForm({
           {modelLabel(impl.orchestratorModel)} at {impl.orchestratorEffort} effort
           {impl.subagentModel ? ` with ${modelLabel(impl.subagentModel)} subagents at ${impl.subagentEffort} effort.` : ' with no subagents.'}{' '}
           {modelLabel(critic.criticModel)} critiques at {critic.criticEffort} effort. {describeCritic(critic.criticModel, impl.subagentModel ?? impl.orchestratorModel)}{' '}
-          {research.researchModel ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.` : 'Reference Study researches without fan-out.'}
+          {skipsStudy
+            ? 'No Reference Study — the loop opens at round 1 and judges the game against your brief and general AAA craft.'
+            : research.researchModel
+              ? `Reference Study fans research out to ${modelLabel(research.researchModel)} at ${research.researchEffort} effort.`
+              : 'Reference Study researches without fan-out.'}
           {' '}{assets.assetModel ? `Each implement round can sculpt missing cast members with ${modelLabel(assets.assetModel)} at ${assets.assetEffort} effort.` : 'Cast assets are implemented by the main team.'}
         </p>
       </div>

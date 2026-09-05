@@ -6,7 +6,7 @@ function snapshot(offset: number, runIds: string[], totalRuns = 500): LoopSnapsh
   return {
     loop: {
       id: '123e4567-e89b-42d3-a456-426614174000', title: 'Loop', prompt: 'Goal', workspaceDir: '/tmp/project',
-      maxRounds: 100, budgetUsd: null, models: { orchestratorModel: 'claude-opus-5', orchestratorEffort: 'high', subagentModel: null, subagentEffort: 'medium', criticModel: 'gpt-5.6-sol', criticEffort: 'high', researchModel: null, researchEffort: 'medium', assetModel: null, assetEffort: 'medium' },
+      maxRounds: 100, budgetUsd: null, models: { orchestratorHarness: 'claude', orchestratorModel: 'claude-opus-5', orchestratorEffort: 'high', subagentHarness: null, subagentModel: null, subagentEffort: 'medium', criticHarness: 'codex', criticModel: 'gpt-5.6-sol', criticEffort: 'high', referenceStudy: true, researchHarness: null, researchModel: null, researchEffort: 'medium', assetHarness: null, assetModel: null, assetEffort: 'medium' },
       status: 'running', round: 100, totalCostUsd: 1, stopReason: null, playTrusted: true,
       createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
     },

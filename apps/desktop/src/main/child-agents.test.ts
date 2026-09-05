@@ -307,3 +307,25 @@ describe('childrenActive', () => {
     }
   })
 })
+
+describe('grok workers', () => {
+  it('reads a delegated grok stream with the claude reader, since the format is the same', () => {
+    write('hud.grok.jsonl', [
+      {
+        type: 'assistant',
+        message: {
+          id: 'msg_1',
+          model: 'grok-4.5',
+          content: [{ type: 'text', text: 'building the HUD' }],
+          usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 500, cache_creation_input_tokens: 0 },
+        },
+      },
+      { type: 'result', subtype: 'success', is_error: false },
+    ])
+    const hud = readChildAgents(boundary, 'grok-4.5').find((r) => r.id === 'child:hud')!
+    expect(hud.label).toBe('grok: hud')
+    expect(hud.model).toBe('grok-4.5')
+    expect(hud.tokens.input).toBe(100)
+    expect(hud.tokens.cacheRead).toBe(500)
+  })
+})

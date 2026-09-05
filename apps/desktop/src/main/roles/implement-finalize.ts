@@ -30,7 +30,8 @@ export interface ImplementFinalizeRuntime {
   run: RunRecord
   now(): number
   nowIso(): string
-  referenceDir: string
+  /** null when the loop skipped the Reference Study. */
+  referenceDir: string | null
   awaitChildren(): Promise<void>
   isStopRequested(): boolean
   finishCancelled(exit: ExitInfo, reason: string, terminalLog: TerminalLog): boolean

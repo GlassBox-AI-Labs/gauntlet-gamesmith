@@ -10,6 +10,7 @@ import {
   claudeChildCommand,
   codexChildCommand,
   delegationRules,
+  grokAgentsJson,
   implementerAgentDefinition,
   implementerAgentMd,
   quote,
@@ -190,14 +191,14 @@ describe('researchRules', () => {
 
   it('routes claude researchers through the claude CLI', () => {
     const base = models('gpt-5.6-sol', null)
-    const rules = researchRules({ ...base, researchModel: 'claude-sonnet-5', researchEffort: 'low' }, 'reference/loop-123')
+    const rules = researchRules({ ...base, researchHarness: 'claude', researchModel: 'claude-sonnet-5', researchEffort: 'low' }, 'reference/loop-123')
     expect(rules).toContain(`'--model' 'claude-sonnet-5'`)
     expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.claude.jsonl')
   })
 
   it('keeps the sweep in-agent when fan-out is off', () => {
     const base = models('claude-opus-5', null)
-    const rules = researchRules({ ...base, researchModel: null }, 'reference/loop-123')
+    const rules = researchRules({ ...base, researchHarness: null, researchModel: null }, 'reference/loop-123')
     expect(rules).toContain('do NOT spawn researcher subagents')
   })
 })
@@ -273,5 +274,50 @@ describe('sculptorRules', () => {
 
   it('says nothing when the phase is off — the runner never queues it', () => {
     expect(sculptorRules(sculptors('claude-fable-5', null), 'reference/loop-1')).toBe('')
+  })
+})
+
+describe('grok delegation', () => {
+  const grokPair = (subagentModel: string | null) =>
+    resolveModels({ orchestratorModel: 'grok-4.6', subagentModel, subagentEffort: 'high' }, null)
+
+  it('uses grok native subagents when both sides are grok, and says effort will not bind', () => {
+    const rules = delegationRules(grokPair('grok-4.5'), 'reference/loop-123')
+    expect(rules).toContain('spawn_subagent')
+    expect(rules).toContain('subagent_type="implementer"')
+    expect(rules).toContain('at high effort')
+    expect(rules).toContain('get_command_or_subagent_output')
+  })
+
+  it('pins the worker model through the --agents payload rather than the prompt', () => {
+    const agents = JSON.parse(grokAgentsJson(grokPair('grok-4.5'), 'reference/loop-123'))
+    expect(agents.implementer.model).toBe('grok-4.5')
+    // `effort` is a typed field on grok's agent definition, so it binds too.
+    expect(agents.implementer.effort).toBe('high')
+    expect(agents.implementer.prompt).toContain('reference/loop-123/README.md')
+  })
+
+  it('shells out when a grok orchestrator drives another CLI', () => {
+    const models = resolveModels({ orchestratorModel: 'grok-4.6', subagentModel: 'gpt-5.6-sol' }, null)
+    const rules = delegationRules(models, 'reference/loop-123')
+    expect(rules).toContain('.gauntlet-gamesmith/codex-<slug>.md')
+    expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.codex.jsonl')
+  })
+
+  it('fronts a grok worker with a claude dispatcher, since Claude Code runs only claude models', () => {
+    const models = resolveModels({ orchestratorModel: 'claude-opus-5', subagentModel: 'grok-4.6' }, null)
+    const md = implementerAgentMd(models, 'reference/loop-123')!
+    expect(md).toContain('model: claude-sonnet-5')
+    expect(md).toContain('through the grok CLI')
+    expect(md).toContain('.gauntlet-gamesmith/grok-<slug>.md')
+    expect(md).toContain('> .gauntlet-gamesmith/agents/<slug>.grok.jsonl')
+    expect(delegationRules(models, 'reference/loop-123')).toContain('through the grok CLI')
+  })
+
+  it('routes grok researchers through the grok CLI', () => {
+    const base = resolveModels({ orchestratorModel: 'claude-opus-5' }, null)
+    const rules = researchRules({ ...base, researchHarness: 'grok', researchModel: 'grok-4.5', researchEffort: 'low' }, 'reference/loop-123')
+    expect(rules).toContain('> .gauntlet-gamesmith/agents/<slug>.grok.jsonl')
+    expect(rules).toContain(`'--reasoning-effort' 'low'`)
   })
 })

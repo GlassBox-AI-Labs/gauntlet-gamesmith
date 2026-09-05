@@ -35,10 +35,11 @@ export type ResumePlan =
   | { kind: 'finish-exhausted'; prior: RunRecord }
 
 /** Pure resume table keeps terminal and successor rules out of controller code. */
-export function planResume(last: RunRecord | null | undefined, maxRounds: number): ResumePlan {
+export function planResume(last: RunRecord | null | undefined, maxRounds: number, referenceStudy = true): ResumePlan {
   if (last?.status === 'queued') return { kind: 'continue-queued', run: last }
   if (last && last.status !== 'succeeded') return { kind: 'retry', run: last }
-  if (!last) return { kind: 'queue-reference', round: 0 }
+  // A loop that skipped the Reference Study has no round 0 to fall back to.
+  if (!last) return referenceStudy ? { kind: 'queue-reference', round: 0 } : { kind: 'queue-implement', round: 1, prior: null }
   if (last.role === 'reference') return { kind: 'queue-implement', round: 1, prior: last }
   if (last.role === 'implement') {
     return last.round >= maxRounds

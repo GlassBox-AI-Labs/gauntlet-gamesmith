@@ -18,12 +18,15 @@ export { PRIMARY_ACCOUNT_ID }
  *
  * For Claude, `projects` holds the session transcripts a run resumes from and
  * `skills` holds the scaffolded asset tools — sharing them is what lets you
- * switch accounts between rounds and still continue the same session. Codex
- * keeps nothing the app reads back, so its accounts stay fully separate.
+ * switch accounts between rounds and still continue the same session. Grok's
+ * `sessions` plays the same role — it is what `--resume` reads back and where
+ * worker attribution is read from. Codex keeps nothing the app reads back, so
+ * its accounts stay fully separate.
  */
 const SHARED_ENTRIES: Record<HarnessKind, readonly string[]> = {
   claude: ['projects', 'skills'],
   codex: [],
+  grok: ['sessions'],
 }
 
 const ACCOUNTS_FILE = 'accounts.json'

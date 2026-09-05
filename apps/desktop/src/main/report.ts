@@ -151,7 +151,7 @@ export function scanCritiqueArtifacts(workspaceDir: string, expectedWorkspace?: 
       }
     }
     const IMAGE = /\.(png|jpe?g|webp|gif)$/i
-    const movies = /\.(webm|mp4|mov)$/i
+    const movies = /\.(webm|mp4|mov|mkv)$/i
     const allVideos = [...listFiles('.', movies), ...listFiles('video', movies), ...listFiles('videos', movies), ...listFiles('shots', movies)]
     if (allVideos.length > MAX_VIDEOS) truncated = true
     const videos = allVideos.slice(0, MAX_VIDEOS)
@@ -360,7 +360,7 @@ export function buildReport(
   }
 
   lines.push(
-    `_Costs are equivalent API cost estimates (claude: the CLI's per-model breakdown at run end, which counts workflow agents that its total_cost_usd omits, and a price-table estimate mid-run that undercounts a fan-out in flight; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
+    `_Costs are equivalent API cost estimates from price table ${PRICE_TABLE_VERSION} (tokens × published list rates). Claude's CLI modelUsage is the token source at run end; Grok's own costUsdTicks is not list price and is not used. Runs themselves use subscription logins. Ledger: ledger.db in app user data._`,
   )
   const projected = redactLogText(lines.join('\n'))
   if (projected.length <= MAX_REPORT_CHARS) return projected

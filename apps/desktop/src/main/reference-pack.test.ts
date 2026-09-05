@@ -136,6 +136,43 @@ describe('Reference Pack', () => {
     expect(pack.issues).not.toContain('manifest.json is not valid JSON')
   })
 
+  it('counts an mkv gameplay clip as the required video', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
+    for (let i = 0; i < 8; i += 1) {
+      fs.writeFileSync(path.join(dir, root, 'images', `still-${i}.jpg`), 'image')
+      fs.writeFileSync(path.join(dir, root, 'motion', `frame-${i}.png`), 'frame')
+    }
+    for (const shot of ['01-title', '02-main-menu', '03-intro', '04-level-1-start']) {
+      fs.writeFileSync(path.join(dir, root, 'journey', `${shot}.png`), 'shot')
+    }
+    fs.writeFileSync(path.join(dir, root, 'video', 'aaa-gameplay.mkv'), 'video')
+    fs.writeFileSync(path.join(dir, root, 'README.md'), '# Target\n\nProgression model: level-based')
+    fs.writeFileSync(path.join(dir, root, 'journey.md'), '# Main menu → Level 1')
+    fs.writeFileSync(path.join(dir, root, 'story.md'), '# Premise')
+    fs.writeFileSync(path.join(dir, root, 'research.md'), '# What players say\n\n## Expert gameplay dossier')
+    fs.writeFileSync(path.join(dir, root, 'cast.md'), 'None — the look is shaders and bloom.')
+    // Every downloaded file needs its own attribution, or the pack is not ready
+    // for reasons that have nothing to do with the clip's container format.
+    const evidence = [
+      ...Array.from({ length: 8 }, (_, i) => `images/still-${i}.jpg`),
+      ...Array.from({ length: 8 }, (_, i) => `motion/frame-${i}.png`),
+      ...['01-title', '02-main-menu', '03-intro', '04-level-1-start'].map((shot) => `journey/${shot}.png`),
+      'video/aaa-gameplay.mkv',
+    ]
+    fs.writeFileSync(path.join(dir, root, 'manifest.json'), JSON.stringify({
+      title: 'Reference Game',
+      sources: evidence.map((file) => ({ url: 'https://example.com', file })),
+    }))
+
+    const pack = scanReferencePack(dir, root)
+    expect(pack.issues).toEqual([])
+    expect(pack.ready).toBe(true)
+    expect(pack.videos).toEqual([`${root}/video/aaa-gameplay.mkv`])
+    expect(pack.issues).not.toContain('needs a gameplay video')
+  })
+
   it('returns actionable issues for an incomplete pack', () => {
     const dir = workspace()
     const root = referencePackDir('loop-123')

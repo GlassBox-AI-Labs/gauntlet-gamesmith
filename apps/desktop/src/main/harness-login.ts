@@ -5,7 +5,7 @@ import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { cliExecutable } from './cli-executable'
 import { cliHome, cliHomeEnv, cliPrivateRoot, subscriptionEnv } from './harness-env'
 import { installEnv, installPlan } from './harness-install'
-import { parseClaudeStatus, parseCodexStatus, parseUrls, stripAnsi } from './harness-status'
+import { parseClaudeStatus, parseCodexStatus, parseGrokStatus, parseUrls, stripAnsi } from './harness-status'
 
 interface HarnessSpec {
   kind: HarnessKind
@@ -75,6 +75,20 @@ export class HarnessLoginManager {
         statusArgs: ['auth', 'status', '--json'],
         loginArgs: ['auth', 'login', '--claudeai'],
         logoutArgs: ['auth', 'logout'],
+        env: cliHomeEnv(kind, home),
+      }
+    }
+    if (kind === 'grok') {
+      return {
+        kind,
+        home,
+        command: 'grok',
+        versionArgs: ['--version'],
+        // Grok has no dedicated status command, but `grok models` reports the
+        // login state on its first line either way.
+        statusArgs: ['models'],
+        loginArgs: ['login'],
+        logoutArgs: ['logout'],
         env: cliHomeEnv(kind, home),
       }
     }
@@ -170,9 +184,9 @@ export class HarnessLoginManager {
       this.command(spec, spec.statusArgs),
       this.detect(kind, home),
     ])
-    return kind === 'claude'
-      ? parseClaudeStatus(result.stdout, result.stderr, detection.version)
-      : parseCodexStatus(result.ok, result.stdout, result.stderr, detection.version)
+    if (kind === 'claude') return parseClaudeStatus(result.stdout, result.stderr, detection.version)
+    if (kind === 'grok') return parseGrokStatus(result.stdout, result.stderr, detection.version)
+    return parseCodexStatus(result.ok, result.stdout, result.stderr, detection.version)
   }
 
   private async verify(kind: HarnessKind): Promise<ProbeResult> {

@@ -19,8 +19,8 @@ function harness(kind: HarnessKind, phase: LoginPhase, error: string | null = nu
   return { ...initialHarnessState(kind, HARNESS_LABELS[kind]), phase, error }
 }
 
-function states(claude: LoginPhase, codex: LoginPhase): Record<HarnessKind, HarnessState> {
-  return { claude: harness('claude', claude), codex: harness('codex', codex) }
+function states(claude: LoginPhase, codex: LoginPhase, grok: LoginPhase = 'logged_out'): Record<HarnessKind, HarnessState> {
+  return { claude: harness('claude', claude), codex: harness('codex', codex), grok: harness('grok', grok) }
 }
 
 describe('step order', () => {

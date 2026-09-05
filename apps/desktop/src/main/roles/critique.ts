@@ -16,7 +16,8 @@ interface CritiqueRoleRuntime {
   loop: LoopRecord
   run: RunRecord
   gate: LogGate
-  referenceDir: string
+  /** null when the loop skipped the Reference Study. */
+  referenceDir: string | null
   maxAttempts: number
   now(): number
   nowIso(): string

@@ -2,11 +2,26 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { cliHomeEnv, runsDir, safeCliHome, sanitizedExecutablePath, subscriptionEnv } from './harness-env'
+import { cliHomeEnv, linkLoginKeychain, runsDir, safeCliHome, sanitizedExecutablePath, subscriptionEnv, voltaHomeEnv } from './harness-env'
 
 it('keeps harness-home environment keys canonical', () => {
   expect(cliHomeEnv('claude', '/private/claude')).toEqual({ CLAUDE_CONFIG_DIR: '/private/claude' })
   expect(cliHomeEnv('codex', '/private/codex')).toEqual({ CODEX_HOME: '/private/codex' })
+})
+
+it.runIf(process.platform === 'darwin')('lets the isolated home resolve the real login keychain', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'keychain-link-'))
+  const realHome = path.join(base, 'real')
+  const home = path.join(base, 'harnesses', 'claude')
+  fs.mkdirSync(path.join(realHome, 'Library', 'Keychains'), { recursive: true })
+  fs.mkdirSync(home, { recursive: true })
+
+  linkLoginKeychain(home, realHome)
+  linkLoginKeychain(home, realHome)
+
+  const link = path.join(home, 'Library', 'Keychains')
+  expect(fs.lstatSync(link).isSymbolicLink()).toBe(true)
+  expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(realHome, 'Library', 'Keychains')))
 })
 
 describe('subscriptionEnv', () => {
@@ -134,5 +149,28 @@ it('refuses to use or chmod a planted CLI-home symlink', () => {
   } finally {
     fs.rmSync(userData, { recursive: true, force: true })
     fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+it('points Volta shims at the real toolchain when a plan isolates HOME', () => {
+  const realHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-real-home-'))
+  const voltaHome = path.join(realHome, '.volta')
+  try {
+    expect(voltaHomeEnv({ HOME: realHome })).toEqual({})
+    fs.mkdirSync(path.join(voltaHome, 'bin'), { recursive: true })
+    expect(voltaHomeEnv({ HOME: realHome })).toEqual({ VOLTA_HOME: voltaHome })
+    expect(voltaHomeEnv({ HOME: realHome, VOLTA_HOME: voltaHome })).toEqual({ VOLTA_HOME: voltaHome })
+    // Claude and Codex keep the real home so sign-in reaches the login keychain (ADR-016).
+    expect(subscriptionEnv({ CODEX_HOME: '/private/codex' }, { HOME: realHome }, 'codex')).toMatchObject({
+      HOME: realHome,
+      VOLTA_HOME: voltaHome,
+    })
+    // Only the grok plan isolates HOME, and its shims still need the real toolchain.
+    expect(subscriptionEnv({ GROK_HOME: '/private/grok', HOME: '/private/neutral' }, { HOME: realHome }, 'grok')).toMatchObject({
+      HOME: '/private/neutral',
+      VOLTA_HOME: voltaHome,
+    })
+  } finally {
+    fs.rmSync(realHome, { recursive: true, force: true })
   }
 })

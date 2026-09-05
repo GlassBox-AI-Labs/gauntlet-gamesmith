@@ -22,6 +22,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useHarnessConnections } from '@/lib/use-harness-connections'
 import {
   HARNESS_LABELS,
+  harnessKinds,
   PRIMARY_ACCOUNT_ID,
   type AccountsResult,
   type AccountsState,
@@ -39,6 +40,19 @@ function accountLabel(account: HarnessAccount): string {
   if (!Number.isFinite(until) || until <= Date.now()) return account.label
   const clock = new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   return `${account.label} — limit resets ~${clock}`
+}
+
+/** The command the login button runs, mirroring harnessSpec in the main process. */
+const LOGIN_COMMAND: Record<HarnessKind, string> = {
+  claude: 'claude auth login',
+  codex: 'codex login',
+  grok: 'grok login',
+}
+
+const HARNESS_GLYPH: Record<HarnessKind, React.JSX.Element> = {
+  claude: <Sparkles />,
+  codex: <span className="grid size-4 place-items-center rounded-full border text-[10px]">◎</span>,
+  grok: <span className="grid size-4 place-items-center rounded-full border text-[10px]">✕</span>,
 }
 
 const phaseLabels: Record<LoginPhase, string> = {
@@ -76,12 +90,15 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
   const { states: state, dispatch, transcripts, registerWriter, clearTranscript, probe } = useHarnessConnections()
   const [activeKind, setActiveKind] = useState<HarnessKind>('claude')
   const [actionBusy, setActionBusy] = useState(false)
-  const [terminalStarted, setTerminalStarted] = useState<Record<HarnessKind, boolean>>({
-    claude: false,
-    codex: false,
-  })
-  const [accounts, setAccounts] = useState<AccountMap>({ claude: noAccounts, codex: noAccounts })
-  const [accountError, setAccountError] = useState<Record<HarnessKind, string | null>>({ claude: null, codex: null })
+  const [terminalStarted, setTerminalStarted] = useState<Record<HarnessKind, boolean>>(
+    () => Object.fromEntries(harnessKinds.map((kind) => [kind, false])) as Record<HarnessKind, boolean>,
+  )
+  const [accounts, setAccounts] = useState<AccountMap>(
+    () => Object.fromEntries(harnessKinds.map((kind) => [kind, noAccounts])) as AccountMap,
+  )
+  const [accountError, setAccountError] = useState<Record<HarnessKind, string | null>>(
+    () => Object.fromEntries(harnessKinds.map((kind) => [kind, null])) as Record<HarnessKind, string | null>,
+  )
   const [replaying, setReplaying] = useState(false)
 
   useEffect(() => {
@@ -94,7 +111,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
         .catch(() => undefined)
     })
     void Promise.all(
-      (['claude', 'codex'] as const).map(async (kind) => {
+      harnessKinds.map(async (kind) => {
         try {
           const list = await window.harnesses.accounts(kind)
           setAccounts((current) => ({ ...current, [kind]: list }))
@@ -239,20 +256,16 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
 
       <Tabs value={activeKind} onValueChange={(value) => setActiveKind(value as HarnessKind)}>
         <TabsList variant="line" className="h-auto w-full justify-start gap-7 border-b border-[#2a2626] p-0">
-          <TabsTrigger
-            value="claude"
-            className="flex-none gap-2 rounded-none border-0 bg-transparent px-0 pb-3 text-[15px] shadow-none after:bg-[#e9c9bc] data-[state=active]:bg-transparent data-[state=active]:shadow-none dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-transparent"
-          >
-            <Sparkles /> {HARNESS_LABELS.claude}
-            {state.claude.phase === 'logged_in' && <span className="text-[10px] text-emerald-300">● connected</span>}
-          </TabsTrigger>
-          <TabsTrigger
-            value="codex"
-            className="flex-none gap-2 rounded-none border-0 bg-transparent px-0 pb-3 text-[15px] shadow-none after:bg-[#e9c9bc] data-[state=active]:bg-transparent data-[state=active]:shadow-none dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-transparent"
-          >
-            <span className="grid size-4 place-items-center rounded-full border text-[10px]">◎</span> {HARNESS_LABELS.codex}
-            {state.codex.phase === 'logged_in' && <span className="text-[10px] text-emerald-300">● connected</span>}
-          </TabsTrigger>
+          {harnessKinds.map((kind) => (
+            <TabsTrigger
+              key={kind}
+              value={kind}
+              className="flex-none gap-2 rounded-none border-0 bg-transparent px-0 pb-3 text-[15px] shadow-none after:bg-[#e9c9bc] data-[state=active]:bg-transparent data-[state=active]:shadow-none dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-transparent"
+            >
+              {HARNESS_GLYPH[kind]} {HARNESS_LABELS[kind]}
+              {state[kind].phase === 'logged_in' && <span className="size-1.5 rounded-full bg-emerald-400" />}
+            </TabsTrigger>
+          ))}
         </TabsList>
       </Tabs>
 
@@ -352,7 +365,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour: () => void }): Reac
           disabled={!harness.found || actionBusy}
           onClick={() => void startLogin()}
         >
-          {actionBusy ? <LoaderCircle className="animate-spin" /> : <Play className="fill-current" />} Run {HARNESS_LABELS[activeKind]} login
+          {actionBusy ? <LoaderCircle className="animate-spin" /> : <Play className="fill-current" />} Run {LOGIN_COMMAND[activeKind]}
         </Button>
       )}
 

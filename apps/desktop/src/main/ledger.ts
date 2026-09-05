@@ -17,8 +17,10 @@ import type {
   RunStatus,
   Verdict,
 } from '../shared/loop'
+import type { HarnessKind } from '../shared/harness'
 import type { ReportRecord } from '../shared/reports'
 import { normalizeModels } from '../shared/models'
+import { equivalentCostUsd, repriceMetrics } from './pricing'
 import { channelForKind, markResumePrompt } from '../shared/loop'
 import { isIsoTimestamp, normalizePersistedModel, normalizeRunMetrics, normalizeVerdict } from '../shared/persisted-data'
 import { isRecordId } from '../shared/record-id'
@@ -768,6 +770,13 @@ function availableLoopTitle(db: DatabaseSync, prompt: string): string {
   return `${base} (${crypto.randomUUID().slice(0, 8)})`
 }
 
+/** Round a stored timestamp to the millisecond ISO the agent contract accepts. */
+function legacyIsoMillis(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null
+}
+
 function toLoop(row: LoopRow): LoopRecord {
   const rawModels = parseStoredJson(row.models_json, `Loop ${row.id} models`)
   if (!rawModels || typeof rawModels !== 'object' || Array.isArray(rawModels)) throw new Error(`Loop ${row.id} models must be an object.`)
@@ -796,14 +805,18 @@ function toLoop(row: LoopRow): LoopRecord {
 function toRun(row: RunRow): RunRecord {
   const verdict = row.verdict_json ? normalizeVerdict(parseStoredJson(row.verdict_json, `Run ${row.id} verdict`)) : null
   if (row.verdict_json && !verdict) throw new Error(`Run ${row.id} verdict does not match the stored verdict contract.`)
+  // Metrics are display-only, so a row written by an older version is dropped
+  // rather than thrown over: one unreadable attempt must never hide the whole
+  // history behind it. The verdict above still throws, because that one gates
+  // whether a loop advances.
   const metrics = row.metrics_json ? normalizeRunMetrics(parseStoredJson(row.metrics_json, `Run ${row.id} metrics`)) : null
-  if (row.metrics_json && !metrics) throw new Error(`Run ${row.id} metrics do not match the stored metrics contract.`)
+  const priced = repriceMetrics(metrics, row.model)
   return {
     id: row.id,
     loopId: row.loop_id,
     round: row.round,
     role: row.role as RunRole,
-    harness: row.harness as 'claude' | 'codex',
+    harness: row.harness as HarnessKind,
     status: row.status as RunStatus,
     prompt: redactLogText(row.prompt),
     model: row.model === null ? null : normalizePersistedModel(row.model),
@@ -817,8 +830,8 @@ function toRun(row: RunRow): RunRecord {
     authMode: typeof row.auth_mode === 'string' && AUTH_MODES.has(row.auth_mode) ? row.auth_mode as 'subscription' | 'api_key' : null,
     summary: row.summary == null ? null : redactLogText(row.summary),
     verdict,
-    metrics,
-    costUsd: row.cost_usd,
+    metrics: priced,
+    costUsd: equivalentCostUsd({ costUsd: row.cost_usd, model: row.model, metrics: priced }),
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     numTurns: row.num_turns,
@@ -976,8 +989,50 @@ export class Ledger {
     this.db = new DatabaseSync(dbPath)
     initializeSchema(this.db, 'WAL')
     this.adoptLegacyWorkspaceIdentities()
+    this.migrateLegacyAgentMetrics()
     this.migrateRegisteredMetadataDirectories()
     this.repairExistingMirrors()
+  }
+
+  /**
+   * Rescue metrics written before the agent contract was bounded.
+   *
+   * Delegated grok workers recorded a `status` field the contract does not
+   * list, and copied grok's microsecond timestamps verbatim where only
+   * millisecond ISO is accepted. Either one makes the whole blob invalid, which
+   * used to hide every attempt in the run. `state` is the contract's field for
+   * the former, and the latter just needs rounding, so both move across and the
+   * row is rewritten only when that makes it valid again.
+   */
+  private migrateLegacyAgentMetrics(): void {
+    const rows = this.db
+      .prepare('SELECT id, metrics_json FROM runs WHERE metrics_json IS NOT NULL LIMIT 5000')
+      .all() as unknown as { id: string; metrics_json: string }[]
+    const update = this.db.prepare('UPDATE runs SET metrics_json = ? WHERE id = ?')
+    for (const row of rows) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(row.metrics_json)
+      } catch {
+        continue
+      }
+      if (normalizeRunMetrics(parsed)) continue
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      const candidate = parsed as { agents?: unknown }
+      if (!Array.isArray(candidate.agents)) continue
+      const agents = candidate.agents.map((agent) => {
+        if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent
+        const { status, ...rest } = agent as Record<string, unknown>
+        return {
+          ...rest,
+          ...(status === undefined ? {} : { state: rest.state ?? status }),
+          firstTs: legacyIsoMillis(rest.firstTs),
+          lastTs: legacyIsoMillis(rest.lastTs),
+        }
+      })
+      const normalized = normalizeRunMetrics({ ...candidate, agents })
+      if (normalized) update.run(JSON.stringify(normalized), row.id)
+    }
   }
 
   /**
@@ -1754,7 +1809,7 @@ export class Ledger {
     loopId: string
     round: number
     role: RunRole
-    harness: 'claude' | 'codex'
+    harness: HarnessKind
     prompt: string
   }): RunRecord {
     if (this.transactionDepth === 0) return this.transaction(() => this.createRun(input))

@@ -5,7 +5,10 @@ import path from 'node:path'
 import { shell } from 'electron'
 import type { LoopRecord, PlayState, PlayStateEvent } from '../shared/loop'
 import { redactedErrorMessage } from '../shared/redact-log'
-import { sanitizedExecutablePath } from './harness-env'
+import { sanitizedExecutablePath, voltaHomeEnv } from './harness-env'
+import { rewriteViteConfig, syncViteConfig } from './engine-stack'
+import { waitForGameBoot } from './play-boot'
+import { formatPlayExitError, npmPlayArgs } from './play-launch'
 import { cleanupRoundCheckout } from './round-revision'
 import { safePid } from './run-process'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
@@ -18,6 +21,8 @@ const PACKAGE_JSON_LIMIT = 1024 * 1024
 interface PlayRuntime {
   spawn: typeof spawn
   openExternal(url: string): Promise<void>
+  /** Confirms the printed URL really serves the game before it is opened. */
+  bootProbe(url: string): Promise<{ ok: true } | { ok: false; error: string }>
   kill(pid: number, signal: NodeJS.Signals): void
   groupIdentity(groupId: number): readonly string[]
   groupAlive(groupId: number, identity: readonly string[]): boolean
@@ -64,6 +69,7 @@ export function processGroupIdentitiesOverlap(captured: readonly string[], curre
 const runtime: PlayRuntime = {
   spawn,
   openExternal: (url) => shell.openExternal(url),
+  bootProbe: (url) => waitForGameBoot(url),
   kill: (pid, signal) => process.kill(pid, signal),
   groupIdentity: processGroupIdentity,
   groupAlive: processGroupStillOwned,
@@ -89,6 +95,8 @@ interface PlaySession {
   identityTimer: NodeJS.Timeout | null
   stopTimers: NodeJS.Timeout[]
   terminating: boolean
+  /** A poisoned generated Vite config is repaired once, never in a loop. */
+  restoredVite: boolean
 }
 
 const sessions = new Map<string, PlaySession>()
@@ -181,6 +189,45 @@ function mergeVerifiedGroupIdentity(session: PlaySession): 'absent' | 'owned' | 
 
 function compareIdentity(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
+}
+
+/**
+ * Vite printing a local address does not mean the game boots. A poisoned
+ * resolve plugin serves index.html and 404s every module behind it, which
+ * looks identical from the launcher's stdout and blank in the browser.
+ *
+ * So the printed URL is fetched and walked before it is opened. On failure the
+ * generated Vite config is restored once — the one boot failure Play can
+ * repair — and the error is kept on the session so the critic sees a blocked
+ * Play rather than a page that silently rendered nothing.
+ */
+async function confirmBoot(loopId: string, session: PlaySession, url: string, push: () => void): Promise<void> {
+  const probe = await session.runtime.bootProbe(url)
+  if (sessions.get(loopId) !== session) return
+  if (probe.ok) {
+    session.state = { ...session.state, url, error: null }
+    openSessionUrl(loopId, session, url)
+    push()
+    return
+  }
+  let repaired = false
+  if (!session.restoredVite) {
+    session.restoredVite = true
+    try {
+      rewriteViteConfig(session.workspaceDir)
+      repaired = true
+    } catch {
+      /* an unrepairable config is reported as the boot failure it is */
+    }
+  }
+  session.state = {
+    ...session.state,
+    url,
+    error: repaired
+      ? `${probe.error} The generated Vite config was restored — stop Play and start it again.`
+      : probe.error,
+  }
+  push()
 }
 
 function openSessionUrl(loopId: string, session: PlaySession, url: string): void {
@@ -408,7 +455,8 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
       ? (pkg.scripts as Record<string, unknown>)
       : null
     for (const script of ['dev', 'start', 'serve', 'preview']) {
-      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['run', script] }
+      const body = scripts?.[script]
+      if (typeof body === 'string' && body.length > 0) return { command: 'npm', args: npmPlayArgs(script, body) }
     }
   } catch {
     /* no valid package.json — fall through */
@@ -433,6 +481,7 @@ export function playEnvironment(workspaceDir: string, source: NodeJS.ProcessEnv 
   else delete env.PATH
   return {
     ...env,
+    ...voltaHomeEnv(source),
     HOME: home,
     USERPROFILE: home,
     NPM_CONFIG_USERCONFIG: path.join(home, 'npmrc'),
@@ -455,7 +504,7 @@ export function startPlay(
   const existing = sessions.get(loopId)
   const activeRuntime = { ...runtime, ...overrides }
   if (existing?.state.running && existing.workspaceDir === workspaceDir) {
-    if (existing.state.url) openSessionUrl(loopId, existing, existing.state.url)
+    if (existing.state.url && !existing.state.error) openSessionUrl(loopId, existing, existing.state.url)
     return existing.state
   }
   if (existing) {
@@ -474,6 +523,11 @@ export function startPlay(
     const cleanupError = cleanupCheckout(cleanupDir)
     const message = `Play is blocked because the workspace root changed: ${redactedErrorMessage(error, 'Workspace identity check failed.')}`
     return { running: false, url: null, error: cleanupError ? `${message} ${cleanupError}` : message, round }
+  }
+  try {
+    syncViteConfig(workspaceDir)
+  } catch {
+    /* a missing or unwritable config is still a boot failure the probe reports */
   }
   const launch = detectLaunch(workspaceDir)
   assertExpectedWorkspace()
@@ -562,6 +616,7 @@ export function startPlay(
     identityTimer: null,
     stopTimers: [],
     terminating: false,
+    restoredVite: false,
   }
   const push = (): void => notifySession(loopId, session)
   session.hardTimeout = activeRuntime.setTimer(() => {
@@ -591,24 +646,27 @@ export function startPlay(
   }
 
   let buffer = ''
+  let output = ''
+  let probing = false
   const scan = (chunk: Buffer): void => {
     if (ownershipVerified) mergeVerifiedGroupIdentity(session)
-    if (session.state.url) return
-    buffer = (buffer + chunk.toString()).slice(-8_000)
+    const text = chunk.toString()
+    output = (output + text).slice(-8_000)
+    if (session.state.url || probing) return
+    buffer = (buffer + text).slice(-8_000)
     const match = buffer.replace(/\u001b\[[0-9;]*m/g, '').match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+\/?/)
     if (match) {
       const browserUrl = new URL(match[0])
       if (round != null) browserUrl.searchParams.set('gauntlet-round', String(round))
-      session.state.url = browserUrl.toString()
-      openSessionUrl(loopId, session, session.state.url)
-      push()
+      probing = true
+      void confirmBoot(loopId, session, browserUrl.toString(), push)
     }
   }
   child.stdout?.on('data', scan)
   child.stderr?.on('data', scan)
   child.on('exit', (code) => {
     if (sessions.get(loopId)?.child !== child) return
-    const finish = (): void => finishPlaySession(loopId, session, code ? `Game process exited (code ${code}).` : null)
+    const finish = (): void => finishPlaySession(loopId, session, code ? formatPlayExitError(code, output) : null)
     // A Stop/timeout shutdown already owns the verified group and its
     // escalation timers; the leader's exit must not cancel or duplicate it.
     if (session.terminating) return
