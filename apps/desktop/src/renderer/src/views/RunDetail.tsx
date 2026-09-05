@@ -323,15 +323,12 @@ export function RunDetail({
   const activityItems = allActivityItems.filter((item) => lineMatchesFilter(item.line, logFilter))
   const activityLines = allActivityItems.map((item) => item.line)
   const emptyLogMessage = logEmptyMessage(activityLines, activityItems.map((item) => item.line))
-  // A loop that skipped the Reference Study has no pack to preview against.
-  const referenceRoot = loop.models.referenceStudy === false
-    ? null
-    : referenceRootForLoop(loop.id, referenceRuns.length > 0 || activeReferenceStudy != null)
+  const referenceRoot = referenceRootForLoop(loop.id, referenceRuns.length > 0 || activeReferenceStudy != null)
   const initialImplementPrompt = exactImplementPrompt ?? undefined
   const systemPrompt = initialImplementPrompt
     ? initialImplementPrompt.startsWith(loop.prompt) ? initialImplementPrompt.slice(loop.prompt.length).trim() : initialImplementPrompt
     : buildImplementPromptPreview(loop.models, loop.prompt, referenceRoot)
-  const critiqueRubric = exactCritiquePrompt ?? buildCriticPrompt(loop.prompt, 1, referenceRoot)
+  const critiqueRubric = exactCritiquePrompt ?? buildCriticPrompt(loop.prompt, 1, referenceRoot, undefined, undefined, undefined, loop.models.referenceMode)
   const detailStatus = selectedRound == null
     ? loop.status
     : visibleRuns.some((run) => run.status === 'running') ? 'running' : (visibleRuns.at(-1)?.status ?? 'queued')

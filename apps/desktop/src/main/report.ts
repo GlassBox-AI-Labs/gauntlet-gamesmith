@@ -269,7 +269,9 @@ export function buildReport(
   }
   lines.push('')
 
-  if (referencePack) {
+  if (loop.models.referenceMode === 'skip') {
+    lines.push('## Reference Study', '', 'Skipped by the operator. No reference agent was run; evaluation uses the goal and supplied context.', '')
+  } else if (referencePack) {
     lines.push('## Reference Pack')
     lines.push('')
     lines.push(`- **Status:** ${referencePack.ready ? 'ready' : 'incomplete'} · **Path:** ${referencePack.root}/`)

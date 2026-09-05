@@ -22,6 +22,7 @@ add or change anything an agent does, make sure the operator can see it (STANDAR
 4. `HANDOFF.md` — the original design brief. Its `packages/contracts` and Zod details never shipped;
    see ADR-004. Treat it as history, not layout.
 5. `docs/LOCAL_PR_REVIEWER.md` — proposed automated PR reviewer. Not built yet.
+6. `docs/ARCHITECTURE.md` — current layout, loop/harness/evaluation boundaries, and persistence.
 
 ## Layout
 

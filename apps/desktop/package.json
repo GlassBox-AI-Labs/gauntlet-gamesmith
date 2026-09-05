@@ -1,7 +1,7 @@
 {
   "name": "@gauntlet/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Gauntlet Gamesmith Electron desktop application",
   "main": "./out/main/index.js",
   "author": "GlassBox AI Labs",
@@ -17,9 +17,12 @@
     "verify:mac:release": "node scripts/verify-mac-release.cjs",
     "package:win": "pnpm build && electron-builder --win portable --x64 --publish never",
     "postinstall": "node scripts/prepare-node-pty.cjs",
+    "prototype:run-form": "vite --config vite.prototype.config.ts --host 127.0.0.1 --port ${CONDUCTOR_PORT:-5173}",
     "start": "electron-vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "prototype:app": "electron-vite dev --config electron.prototype.config.ts --entry out/prototype/main/index.js",
+    "dev:run-form": "GAUNTLET_INSTANCE_ID=run-form electron-vite dev --config electron.run-form.config.ts --entry out/run-form/main/index.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",

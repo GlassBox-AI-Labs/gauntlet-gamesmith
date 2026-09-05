@@ -223,31 +223,6 @@ describe('loop prompts', () => {
     expect(preview).toContain('exact launch contract is recorded when round 1 is queued')
   })
 
-  /**
-   * With no pack there is nothing to read, imitate, or compare against, so
-   * every instruction that assumes one has to be gone — not merely softened.
-   */
-  it('drops every Reference Pack instruction when the loop skipped the study', () => {
-    const implement = composeImplementPrompt('Build an original platformer', 1, null, rules, null)
-    expect(implement).not.toContain('reference/')
-    expect(implement).not.toContain('frozen Reference Pack')
-    expect(implement).not.toContain('Reference Study classifies')
-    expect(implement).toContain('This loop has no Reference Pack')
-    expect(implement).toContain('general AAA craft bar')
-    expect(implement).toContain('<goal>\nBuild an original platformer\n</goal>')
-
-    const critique = buildCriticPrompt('Build an original platformer', 2, null)
-    expect(critique).not.toContain('reference/')
-    expect(critique).not.toContain('pairs.json must be a JSON array')
-    expect(critique).not.toContain('frozen Reference Pack')
-    expect(critique).not.toContain('refs/')
-    expect(critique).toContain('deliberately skipped the Reference Study')
-    expect(critique).toContain('that absence is not a finding')
-    expect(critique).toContain('use `game` for every finding')
-    // The verdict contract is unchanged: the app still parses this file.
-    expect(critique).toContain('critique/round-2/verdict.json')
-  })
-
   it('has the Reference Study name the cast and gather isolated object shots', () => {
     const prompt = buildReferencePrompt('Build a soulslike', 'reference/loop-1', 'fan out')
     expect(prompt).toContain('reference/loop-1/cast.md')
@@ -370,4 +345,20 @@ describe('the engine contract inside the reference-study prompts', () => {
     expect(prompt).toContain('the Play-button URL (`npm run dev`) actually booted')
     expect(prompt).toContain('you must not credit gameplay you only demonstrated on `vite preview`')
   })
+})
+
+it('uses a files-only reference contract and cannot build a skipped reference prompt', () => {
+  expect(() => buildReferencePrompt('goal', 'reference/id', '', 'skip')).toThrow('skipped')
+  const local = buildReferencePrompt('goal', 'reference/id', 'FANOUT-SENTINEL', 'files')
+  expect(local).toContain('Do not browse the web')
+  expect(local).not.toContain('FANOUT-SENTINEL')
+  expect(local).toContain('supplied/manifest.json')
+})
+it('does not demand a missing AAA pack after reference was skipped', () => {
+  const implement = composeImplementPrompt('goal', 1, null, '', 'reference/id', '', [], 'skip')
+  const critic = buildCriticPrompt('goal', 1, 'reference/id', 'revision', 'verdict.json', '', 'skip')
+  expect(implement).toContain('Reference Study was skipped')
+  expect(critic).toContain('Reference Study was skipped')
+  expect(critic).not.toContain('If the dossier or pack is missing')
+  expect(critic).toContain('pairs.json as []')
 })

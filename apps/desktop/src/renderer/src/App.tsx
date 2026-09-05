@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, LoaderCircle } from 'lucide-react'
 import { AgentsView } from '@/views/AgentsView'
+import { RunFormPrototype } from '@/views/RunFormPrototype'
 import { OnboardingView } from '@/views/OnboardingView'
 import { RunView } from '@/views/RunView'
 
@@ -13,6 +14,7 @@ export default function App(): React.JSX.Element {
   const [onboarded, setOnboarded] = useState<boolean | null>(null)
 
   useEffect(() => {
+    if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') return
     let disposed = false
     void window.onboarding.get()
       .then((state) => { if (!disposed) setOnboarded(state.completed) })
@@ -22,6 +24,10 @@ export default function App(): React.JSX.Element {
       .catch(() => { if (!disposed) setOnboarded(true) })
     return () => { disposed = true }
   }, [])
+
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') {
+    return <RunFormPrototype />
+  }
 
   if (onboarded === null) {
     return (
@@ -33,6 +39,7 @@ export default function App(): React.JSX.Element {
   }
 
   if (!onboarded) return <OnboardingView onDone={() => setOnboarded(true)} />
+
 
   if (view === 'run') return <RunView onOpenAgents={() => setView('agents')} />
 

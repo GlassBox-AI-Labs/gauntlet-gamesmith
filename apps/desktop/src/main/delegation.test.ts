@@ -151,8 +151,8 @@ describe('delegationRules', () => {
     }
   })
 
-  it('uses only the versioned app-owned Claude agent identity', () => {
-    const configured = models('claude-fable-5', 'claude-opus-5')
+  it('uses only the versioned app-owned Claude agent identity for legacy workflows', () => {
+    const configured = { ...models('claude-fable-5', 'claude-opus-5'), orchestratorEffort: 'ultracode' }
     const definition = implementerAgentDefinition(configured, 'reference/loop-123')!
     const rules = delegationRules(configured, 'reference/loop-123')
     expect(rules).toContain(`.claude/agents/${definition.filename}`)

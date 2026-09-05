@@ -5,22 +5,20 @@ import {
   DEFAULT_CRITIC,
   DEFAULT_IMPLEMENTER,
   describeCritic,
-  describeModels,
   effortsForModel,
   harnessFor,
   modelFamily,
+  newRunOrchestratorEffort,
   normalizeModels,
   orchestratorEfforts,
-  researchFieldsFor,
   resolveModels,
-  SKIP_REFERENCE_STUDY,
 } from './models'
 
 describe('defaults', () => {
-  it('starts on Opus 5 at ultracode over Opus 5 subagents', () => {
+  it('starts on Opus 5 at high over Opus 5 subagents', () => {
     const models = resolveModels(DEFAULT_IMPLEMENTER, { criticModel: 'claude-opus-5', criticEffort: 'high' })
     expect(models.orchestratorModel).toBe('claude-opus-5')
-    expect(models.orchestratorEffort).toBe('ultracode')
+    expect(models.orchestratorEffort).toBe('high')
     expect(harnessFor(models.criticModel)).toBe('claude')
   })
 
@@ -62,12 +60,12 @@ describe('resolveModels', () => {
     expect(models.orchestratorEffort).toBe('ultra')
     // `ultracode` is claude's fan-out level; codex would reject it.
     expect(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultracode' }, DEFAULT_CRITIC).orchestratorEffort).toBe('high')
-    expect(resolveModels({ orchestratorModel: 'claude-opus-5', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC).orchestratorEffort).toBe('ultracode')
+    expect(resolveModels({ orchestratorModel: 'claude-opus-5', orchestratorEffort: 'ultra' }, DEFAULT_CRITIC).orchestratorEffort).toBe('high')
   })
 
   it('rejects effort levels the CLI would not accept', () => {
     const models = resolveModels({ orchestratorEffort: 'bogus', subagentEffort: 'ultracode' }, DEFAULT_CRITIC)
-    expect(models.orchestratorEffort).toBe('ultracode')
+    expect(models.orchestratorEffort).toBe('high')
     expect(models.subagentEffort).toBe('high')
   })
 
@@ -219,70 +217,6 @@ describe('the harness/model split', () => {
   })
 
   /**
-   * Two different "off" states share one picker: no fan-out keeps the phase,
-   * skip drops it. Only the second may clear referenceStudy.
-   */
-  it('separates a research fan-out that is off from a Reference Study that is skipped', () => {
-    const noFanOut = resolveModels({}, null, { researchModel: null })
-    expect(noFanOut.referenceStudy).toBe(true)
-    expect(noFanOut.researchModel).toBeNull()
-
-    const skipped = resolveModels({}, null, { researchModel: SKIP_REFERENCE_STUDY })
-    expect(skipped.referenceStudy).toBe(false)
-    expect(skipped.researchModel).toBeNull()
-    expect(skipped.researchHarness).toBeNull()
-    expect(describeModels(skipped)).toContain('Reference Study skipped')
-  })
-
-  /**
-   * The picker reloads from a stored loop on every app open and every run
-   * click. Reading researchModel alone cannot tell a skip from a fan-out-less
-   * study, so the skip silently became "no fan-out" on the round trip.
-   */
-  it('round-trips a skipped Reference Study back into the picker', () => {
-    const skipped = resolveModels({}, null, { researchModel: SKIP_REFERENCE_STUDY, researchEffort: 'low' })
-    const reloaded = researchFieldsFor(skipped)
-    expect(reloaded.researchModel).toBe(SKIP_REFERENCE_STUDY)
-    expect(resolveModels({}, null, reloaded).referenceStudy).toBe(false)
-
-    const noFanOut = resolveModels({}, null, { researchModel: null })
-    expect(researchFieldsFor(noFanOut).researchModel).toBeNull()
-    expect(resolveModels({}, null, researchFieldsFor(noFanOut)).referenceStudy).toBe(true)
-
-    const fanOut = resolveModels({}, null, { researchModel: 'claude-opus-5', researchEffort: 'low' })
-    expect(researchFieldsFor(fanOut)).toEqual({ researchModel: 'claude-opus-5', researchEffort: 'low' })
-  })
-
-  /**
-   * The exact shape the IPC handler hands the runner: it resolves once to pick
-   * which CLIs need a login, then passes `{...input, ...models}` on, and the
-   * runner resolves that again. The first pass erases the sentinel to null, so
-   * the second pass must read the resolved flag or it turns the phase back on.
-   */
-  it('stays idempotent when the resolved models are re-resolved', () => {
-    const input = { orchestratorModel: 'claude-opus-5', criticModel: 'claude-opus-5', researchModel: SKIP_REFERENCE_STUDY, researchEffort: 'medium', assetModel: null }
-    const once = resolveModels(input, input, input, input)
-    expect(once.referenceStudy).toBe(false)
-    expect(once.researchModel).toBeNull()
-
-    const merged = { ...input, ...once }
-    expect(merged.researchModel).toBeNull()
-    const twice = resolveModels(merged, merged, merged, merged)
-    expect(twice.referenceStudy).toBe(false)
-    expect(resolveModels(twice, twice, twice, twice).referenceStudy).toBe(false)
-
-    // A kept study survives the same round trip unchanged.
-    const kept = resolveModels({}, null, { researchModel: null })
-    const keptMerged = { ...kept }
-    expect(resolveModels(keptMerged, keptMerged, keptMerged, keptMerged).referenceStudy).toBe(true)
-  })
-
-  it('keeps the Reference Study for rows written before the option existed, and honours a stored skip', () => {
-    expect(normalizeModels({ orchestratorModel: 'claude-opus-5' }).referenceStudy).toBe(true)
-    expect(normalizeModels({ orchestratorModel: 'claude-opus-5', referenceStudy: false }).referenceStudy).toBe(false)
-  })
-
-  /**
    * The path that matters: `resumeLoop` reads these fields to decide which
    * binary to spawn, so a row written before the harness was stored must still
    * come back pointing at the right CLI.
@@ -373,4 +307,27 @@ describe('the asset role', () => {
     expect(older.assetModel).toBe(DEFAULT_ASSET.assetModel)
     expect(older.assetHarness).toBe('claude')
   })
+})
+
+describe('Astra', () => {
+  it('preserves Astra in every role through resolution and persistence', () => {
+    const models = resolveModels(
+      { orchestratorModel: 'gpt-6-astra', orchestratorEffort: 'ultra', subagentModel: 'gpt-6-astra', subagentEffort: 'max' },
+      { criticModel: 'gpt-6-astra', criticEffort: 'high' },
+      { researchModel: 'gpt-6-astra', researchEffort: 'medium' },
+      { assetModel: 'gpt-6-astra', assetEffort: 'high' },
+    )
+    for (const role of ['orchestratorModel', 'subagentModel', 'criticModel', 'researchModel', 'assetModel'] as const) {
+      expect(models[role]).toBe('gpt-6-astra')
+      expect(normalizeModels(models)[role]).toBe('gpt-6-astra')
+    }
+    expect(harnessFor(models.orchestratorModel)).toBe('codex')
+    expect(models.orchestratorEffort).toBe('ultra')
+  })
+})
+
+
+it.each([['ultra', 'gpt-6-astra', 'max'], ['ultracode', 'claude-opus-5', 'xhigh']])('preserves historical %s but removes automatic delegation from copied drafts', (effort, model, copied) => {
+  expect(normalizeModels({ orchestratorModel: model, orchestratorEffort: effort }).orchestratorEffort).toBe(effort)
+  expect(newRunOrchestratorEffort(effort)).toBe(copied)
 })

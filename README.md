@@ -17,15 +17,15 @@ or stores your password.
 
 **[Download the latest version](https://github.com/GlassBox-AI-Labs/gauntlet-gamesmith/releases/latest)**
 
-Version 0.1.0 is a **Mac-only** release. Windows and Linux versions are not
-built yet.
+The latest release is **Mac only**. Windows and Linux versions are not built
+yet.
 
 Pick the file that matches your Mac:
 
 | Your Mac | File to download |
 | --- | --- |
-| Apple chip (M1, M2, M3, M4) | `Gauntlet.Gamesmith-0.1.0-mac-arm64.dmg` |
-| Intel chip | `Gauntlet.Gamesmith-0.1.0-mac-x64.dmg` |
+| Apple chip (M1, M2, M3, M4) | the one ending `-mac-arm64.dmg` |
+| Intel chip | the one ending `-mac-x64.dmg` |
 
 Not sure which Mac you have? Click the Apple menu in the top-left corner, then
 **About This Mac**. If the chip line says "Apple", pick the Apple chip file.
@@ -152,6 +152,9 @@ work would cost through a pay-per-use API. It is not your real bill.
 ---
 
 ## For developers
+
+Start with the [architecture guide](docs/ARCHITECTURE.md) for the repository layout and execution
+flow, and the [coding standards](docs/STANDARDS.md) for author and review requirements.
 
 Building from source, running the tests, and creating the download files are
 covered in [`apps/desktop/README.md`](apps/desktop/README.md).

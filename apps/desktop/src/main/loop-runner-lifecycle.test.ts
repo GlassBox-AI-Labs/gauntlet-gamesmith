@@ -1,3 +1,4 @@
+import { createRunAttachments } from './run-attachments'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -7,7 +8,7 @@ import type { ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { StartLoopInput } from '../shared/loop'
 import { IPC } from '../shared/ipc'
-import { resolveModels, SKIP_REFERENCE_STUDY } from '../shared/models'
+import { resolveModels } from '../shared/models'
 import { composeImplementPrompt, composeResumePrompt } from '../shared/prompts'
 import { Ledger } from './ledger'
 import { implementerAgentDefinition } from './delegation'
@@ -135,6 +136,37 @@ afterEach(async () => {
 })
 
 describe('LoopRunner lifecycle boundary', () => {
+  it('starts skipped study directly at implementation and preserves that policy across reload and Resume', async () => {
+    const spawnChild = vi.fn(() => { throw new Error('fixture launch stopped') })
+    const { ledger, runner, workspaceDir, deps } = setup({ spawnChild })
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'skip' })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.runsForLoop(result.loopId!).every((run) => run.role === 'implement')).toBe(true)
+    expect(ledger.getLoop(result.loopId!)?.models.referenceMode).toBe('skip')
+    expect(spawnChild).toHaveBeenCalled()
+    const reloaded = new LoopRunner(ledger, () => {}, deps)
+    reloaded.resumeLoop(result.loopId!)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.hasRunRole(result.loopId!, 'reference')).toBe(false)
+  })
+
+  it('publishes supplied files before a files-only reference attempt and disables researchers', async () => {
+    const store = createRunAttachments(() => [])
+    const { ledger, runner, workspaceDir } = setup({ prepareContext: (ids) => store.prepare(ids), spawnChild: () => { throw new Error('fixture launch stopped') } })
+    const source = path.join(path.dirname(workspaceDir), 'brief.txt'); fs.writeFileSync(source, 'Design brief')
+    const [item] = store.add([source])
+    const result = runner.start({ ...input(workspaceDir), referenceMode: 'files', researchModel: 'gpt-5.6-luna', attachmentIds: [item.id] })
+    expect(result.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(result.loopId!)?.status !== 'running')
+    expect(ledger.getLoop(result.loopId!)?.models.researchModel).toBeNull()
+    const runs = ledger.runsForLoop(result.loopId!)
+    expect(runs[0].role).toBe('reference')
+    expect(runs[0].prompt).toContain('Do not browse the web')
+    expect(fs.existsSync(path.join(workspaceDir, 'reference', result.loopId!, 'supplied/manifest.json'))).toBe(true)
+    expect(ledger.eventTextForLoopWithPrefix(result.loopId!, 'Supplied context frozen at sha256:')).toBeTruthy()
+  })
+
   it('treats Stop for an unknown loop id as a no-op', () => {
     const { ledger, runner } = setup()
     runner.stop('00000000-0000-4000-8000-000000000000')
@@ -1255,8 +1287,8 @@ describe('LoopRunner lifecycle boundary', () => {
     })
 
     // Exactly what the IPC handler hands the runner: resolved models spread
-    // over the raw input, which erases the sentinel before the runner re-resolves.
-    const raw = { ...input(workspaceDir), researchModel: SKIP_REFERENCE_STUDY }
+    // over the raw input, then re-resolved by the runner.
+    const raw = { ...input(workspaceDir), referenceMode: 'skip' as const }
     const started = runner.start({ ...raw, ...resolveModels(raw, raw, raw, raw) })
     expect(started.ok).toBe(true)
     await waitFor(() => ledger.getLoop(started.loopId!)?.status === 'failed')
@@ -1264,9 +1296,9 @@ describe('LoopRunner lifecycle boundary', () => {
     const attempts = ledger.runsForLoop(started.loopId!)
     expect(attempts.length).toBeGreaterThan(0)
     expect(attempts.every((attempt) => attempt.role === 'implement' && attempt.round === 1)).toBe(true)
-    expect(ledger.getLoop(started.loopId!)?.models.referenceStudy).toBe(false)
+    expect(ledger.getLoop(started.loopId!)?.models.referenceMode).toBe('skip')
     const text = ledger.eventsForLoop(started.loopId!, 2_000).map((event) => event.text).join('\n')
-    expect(text).toContain('Reference Study skipped by configuration')
+    expect(text).toContain('Reference Study skipped by operator')
     // The pack gate never fired, so nothing failed for a missing pack.
     expect(text).not.toContain('Reference Pack is not ready')
   })

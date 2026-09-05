@@ -2,6 +2,9 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
+See the [architecture guide](../../docs/ARCHITECTURE.md) for module ownership, loop execution,
+harnesses, evaluation, and persistence boundaries.
+
 On first launch the app shows a setup flow instead of the Runs view: a welcome
 step, a connect step that detects each CLI and drives its login, and a four-card
 tour of the loop.
@@ -86,6 +89,48 @@ pnpm package:linux  # Linux x64 AppImage (run on Linux)
 pnpm package:dir    # unpacked current-platform app for a quick smoke test
 ```
 
+### Automated releases
+
+`.github/workflows/release.yml` publishes a downloadable build when a `v*` tag is
+pushed. **The tag is the version.** Cutting a release is one command:
+
+```sh
+gh release create v0.1.1 --generate-notes
+```
+
+That creates the tag, which starts the run. The workflow reads the version from
+the tag name and passes it to electron-builder as
+`-c.extraMetadata.version`, so the packaged app carries the tagged version and
+then checks its own `CFBundleShortVersionString` against the tag before
+publishing. A tag that does not point at a commit on `main` is refused, as is one
+that is not `vMAJOR.MINOR.PATCH`.
+
+Nothing reads the `version` field in `package.json`. It stays at the `0.0.0`
+placeholder, so a local `pnpm package:mac` produces obviously-unreleased
+`0.0.0` artifacts and there is no bump to remember, and no way to ship a number
+that disagrees with the tag.
+
+If a release for the tag already exists — as it does when `gh release create`
+made it — the assets are uploaded to it and its notes are left alone. A tag
+pushed with plain `git push --tags` gets a release created here instead, with the
+download and Gatekeeper instructions from
+`.github/release-notes-template.md` above GitHub's generated changelog.
+
+Before publishing, the workflow runs `pnpm typecheck`, `pnpm test`, and the
+packaged-app smoke test, so a broken build cannot reach a download page. To
+rebuild an existing tag, run the workflow manually and give it the tag name.
+
+It builds an Apple-signed and notarized release when these repository secrets are
+set, and an ad hoc signed one otherwise — the release notes say which:
+
+| Secret | Holds |
+| --- | --- |
+| `MAC_CSC_LINK` | base64 of the Developer ID Application `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | password for that `.p12` |
+| `APPLE_API_KEY_CONTENT` | contents of the App Store Connect `.p8` key |
+| `APPLE_API_KEY_ID` | that key's ID |
+| `APPLE_API_ISSUER` | the issuer UUID |
+
 ### Trusted macOS release
 
 Apple-trusted downloads require an active Apple Developer Program membership and
@@ -144,3 +189,39 @@ The app creates isolated CLI homes inside its user-data directory:
 - `harnesses/codex`
 
 The CLIs own everything stored in those directories. The Electron app only starts their commands and reads their documented status output.
+
+
+## Run composer and supplied context
+
+The compact run composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
+fields; fine-tuning models locks pace until Reset. Connection pills reflect CLI subscription
+status and open the real Agents sign-in UI without discarding the form.
+
+Drop files or folders onto the description, or use Attach files / Add folder. Images open a
+lightbox; folder chips open the original folder in Finder. Main snapshots supported reference,
+media, and source files, excluding hidden, credential, generated, and linked entries. The form
+reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
+
+At Create, copies and a provenance manifest are saved to `reference/<loop-id>/supplied/` in the
+new project. They are used as untrusted reference evidence, remain available to implementation
+and critique, and travel with Export. Draft attachments are in memory until Create; reload
+before Create discards the draft. Original files are never modified.
+
+- **Web + files:** the existing web Reference Study plus supplied evidence.
+- **Files only:** one reference agent studies supplied evidence; web research and researcher
+  fan-out are disabled. No downloaded-image/video quotas are required.
+- **Skip:** starts implementation directly, with no reference agent. Later critique evaluates
+  the goal and supplied context without requiring a Reference Pack. 3D sculptors require a
+  reference cast and are unavailable in this mode; implementation builds assets itself.
+
+`pnpm dev:run-form` launches the real app alongside another instance, using a separate profile
+(`Gauntlet Gamesmith Dev run-form`), separate build outputs, and port 5177 or `CONDUCTOR_PORT`.
+This profile needs its own CLI logins; no credentials or production ledger are copied.
+
+New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
+Ultracode are retained only for historical run replay/resume; they must not be added to new-run
+presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
+
+CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
+and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
+project roots, links into those roots, and private app directories remain excluded (ADR-015).

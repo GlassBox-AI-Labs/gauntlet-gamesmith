@@ -17,7 +17,7 @@ interface CritiqueRoleRuntime {
   run: RunRecord
   gate: LogGate
   /** null when the loop skipped the Reference Study. */
-  referenceDir: string | null
+  referenceDir: string
   maxAttempts: number
   now(): number
   nowIso(): string
@@ -142,7 +142,7 @@ export function createCritiqueProtocol(runtime: CritiqueRoleRuntime): StreamPars
     if (runtime.finishCancelled(exit, 'Critique run timed out.', terminalMetric)) return
     if (state.failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
       const error = exit.spawnError ?? state.rateLimitNotice ?? state.failure ?? (verdict ? `${run.harness} exited ${exit.code}` : `${artifact.error ?? 'invalid verdict artifact'} (exit ${exit.code})`)
-      await runtime.failOrRetry(error, 'Critique', runtime.maxAttempts, buildCriticPrompt(loop.prompt, run.round, runtime.referenceDir, run.revision ?? '<missing-revision>'), terminalMetric)
+      await runtime.failOrRetry(error, 'Critique', runtime.maxAttempts, buildCriticPrompt(loop.prompt, run.round, runtime.referenceDir, run.revision ?? '<missing-revision>', 'verdict.json', '', loop.models.referenceMode), terminalMetric)
       return
     }
     if (!runtime.verifyReference(terminalMetric)) return

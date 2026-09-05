@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
 import type { LoopApi, LoopLogLine, LoopSnapshot, PlayStateEvent } from '../shared/loop'
+import type { AttachmentApi } from '../shared/attachments'
 import type { OnboardingApi } from '../shared/onboarding'
 import type { ReportApi } from '../shared/reports'
 
@@ -102,4 +103,13 @@ const reports: ReportApi = {
 contextBridge.exposeInMainWorld('harnesses', harnesses)
 contextBridge.exposeInMainWorld('loops', loops)
 contextBridge.exposeInMainWorld('reports', reports)
+
+const attachments: AttachmentApi = {
+  addFiles: (files) => ipcRenderer.invoke(IPC.attachment.add, files.map((file) => webUtils.getPathForFile(file))),
+  pick: () => ipcRenderer.invoke(IPC.attachment.pick),
+  preview: (id) => ipcRenderer.invoke(IPC.attachment.preview, id),
+  remove: (id) => ipcRenderer.invoke(IPC.attachment.remove, id),
+  openFolder: (id) => ipcRenderer.invoke(IPC.attachment.openFolder, id),
+}
+contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)

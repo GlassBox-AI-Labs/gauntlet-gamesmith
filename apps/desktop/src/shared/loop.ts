@@ -103,6 +103,8 @@ export interface RunMetrics {
   }
 }
 
+export type ReferenceMode = 'web' | 'files' | 'skip'
+
 /**
  * Who builds, who judges, and on which CLI.
  *
@@ -115,6 +117,8 @@ export interface RunMetrics {
  * `normalizeModels` fills the harness in for rows written before this change.
  */
 export interface LoopModels {
+  /** Missing in older histories means the original web Reference Study. */
+  referenceMode?: ReferenceMode
   orchestratorHarness: HarnessKind
   orchestratorModel: string
   orchestratorEffort: string
@@ -125,13 +129,6 @@ export interface LoopModels {
   criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
-  /**
-   * false = no Reference Study at all: the loop starts at implement round 1
-   * and every later phase judges against the operator's brief instead of a
-   * frozen pack. Distinct from a null researchModel, which only turns off the
-   * fan-out inside a Reference Study that still runs.
-   */
-  referenceStudy: boolean
   /** null = no deep-research fan-out; the reference agent sweeps by itself. */
   researchHarness: HarnessKind | null
   researchModel: string | null
@@ -278,6 +275,9 @@ export interface LoopLogLine {
 }
 
 export interface StartLoopInput {
+  referenceMode?: ReferenceMode
+  /** Opaque IDs for bounded, main-process attachment snapshots. */
+  attachmentIds?: string[]
   prompt: string
   workspaceDir: string
   maxRounds: number

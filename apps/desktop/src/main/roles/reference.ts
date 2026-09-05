@@ -166,7 +166,7 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
         error,
         'Reference Study',
         runtime.maxAttempts,
-        buildReferencePrompt(loop.prompt, runtime.referenceDir, researchRules(loop.models, runtime.referenceDir)),
+        buildReferencePrompt(loop.prompt, runtime.referenceDir, researchRules(loop.models, runtime.referenceDir), loop.models.referenceMode),
         terminalMetric,
       )
       return

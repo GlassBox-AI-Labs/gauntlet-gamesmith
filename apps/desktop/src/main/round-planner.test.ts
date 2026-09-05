@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunRecord } from '../shared/loop'
-import { planCompletion, planResume } from './round-planner'
+import { planCompletion, planResume, planStart } from './round-planner'
 
 describe('planCompletion', () => {
   it.each([
@@ -36,9 +36,11 @@ describe('planResume', () => {
     expect(planResume(last, 3)).toEqual(expected)
   })
 
-  // Resuming a loop with no runs must not queue a phase that loop never had.
-  it('opens at round 1 when the loop skipped the Reference Study', () => {
-    expect(planResume(null, 3, false)).toEqual({ kind: 'queue-implement', round: 1, prior: null })
-    expect(planResume(run('implement', 'failed', 1), 3, false)).toEqual({ kind: 'retry', run: run('implement', 'failed', 1) })
-  })
+})
+
+it('skips reference on initial start and on an empty-history resume', () => {
+  expect(planStart('skip')).toEqual({ role: 'implement', round: 1 })
+  expect(planResume(null, 4, 'skip')).toEqual({ kind: 'queue-implement', round: 1, prior: null })
+  expect(planStart('files')).toEqual({ role: 'reference', round: 0 })
+  expect(planStart()).toEqual({ role: 'reference', round: 0 })
 })

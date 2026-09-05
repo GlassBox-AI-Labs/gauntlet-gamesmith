@@ -437,27 +437,97 @@ same-user concurrent filesystem mutation cannot be made atomic with SQLite and p
 Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
 canonical execution consent, records the failure, and attempts mirror repair before returning.
 
-## ADR-018 — A loop may run with no Reference Study (2026-09-05)
+## ADR-018 — Supplied context and explicit Reference Study modes (2026-09-05)
 
 **Status:** accepted.
 
-**Context.** The Reference Study was mandatory: round 0 of every loop, and the source of the frozen
-pack that implement and critique both read. Its research picker offered a "none" option, but that
-only turned off the researcher fan-out — the phase still ran, still spent a full orchestrator round
-identifying and studying an existing AAA game, and still gated every later phase on the pack it
-produced. An operator building something deliberately original had no way to opt out, and the
-picker's label implied otherwise.
+**Context.** The selected run composer must reflect real execution. User-supplied files belong to
+the run's reference evidence, and skipping Reference Study must not launch a research agent.
 
-**Decision.** The research picker carries three states. A model fans researchers out. "No fan-out"
-keeps the Reference Study and has it sweep by itself. "None" drops the phase: `LoopModels` gains
-`referenceStudy`, and when it is false the loop opens at implement round 1, `verifyReferenceBoundary`
-passes without a pack, and the implement and critique prompts switch to pack-free variants that
-judge the game against the operator's brief plus the general AAA craft bar. The critic is told
-explicitly that the missing pack is not a finding and that imitating an existing commercial title
-fails the brief.
+**Decision.** Persist `referenceMode` in the existing models/configuration JSON. Missing values in
+historical records retain the original web Reference Study. `web` studies the web and supplied
+files; `files` queues one study of supplied evidence without researcher fan-out or web research;
+`skip` queues implementation directly, including after recovery or an empty-history Resume.
+Files-only study has a local-source artifact contract without downloaded-media quotas. Skip-mode
+implementation and critique use the goal and supplied context without requiring an AAA pack.
+Sculptor configuration is disabled in skip mode because it requires a studied reference cast.
 
-**Consequences.** Critique in this mode rests on the model's own expertise rather than sourced
-evidence, so its scores are not comparable with a pack-backed loop's, and there is no side-by-side
-comparison, no `pairs.json`, and no cast to sculpt. Rows written before this ADR have no
-`referenceStudy` key and normalize to true, so existing loops are unaffected. The Reference Study
-remains the default and the better path whenever the goal names a reference game.
+Main snapshots selected files into bounded in-memory drafts, returning opaque IDs. At Create,
+the snapshot is published under `reference/<loop-id>/supplied/` before queueing any agent. Its
+manifest records original relative names, sizes, and SHA-256 hashes; its fingerprint is recorded
+in both ledgers' event history and checked at phase boundaries, including Reference Study retries.
+Supplied files remain untrusted evidence, not instructions or automatic redistribution permission.
+The existing whole-project export includes them; no original machine path is needed for replay.
+Folders are flattened into uniquely numbered files with original relative paths in the manifest.
+No symlinks, hidden/credential files, generated dependency trees, or private app/CLI roots are read.
+Limits are 100 files, 20 MB per file, 100 MB total, and 2,000 scanned entries per selected tree.
+
+**Consequences.** Reloading before Create discards draft attachments; created runs retain their
+copies even if originals move or change. Folder chips open the original selected directory in
+Finder through an identity-checked main-process capability. No SQLite schema migration is needed:
+the additive JSON policy field normalizes with the historical default. The reference mode is an
+execution/prompt policy; it does not introduce an OS network sandbox around implementation tools.
+
+
+
+## ADR-019 — Explicit delegation instead of Ultra for new runs (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** Gauntlet prescribes phase execution, agent roles, worker models, and delegation.
+The harness-specific `ultra` (Codex) and `ultracode` (Claude) efforts additionally enable
+harness-managed automatic delegation/workflows. Offering them as simply higher reasoning
+levels overlaps our orchestration policy and makes solo behavior harder to explain and control.
+
+**Decision.** New runs offer only `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts.
+Remove Ultra/Ultracode from the run composer and reject those values at the new-run IPC boundary.
+Defaults and presets must never enable them; the Maximum preset uses `max`. Delegation remains
+explicitly configured by the app. Solo means the orchestrator implements the code itself without
+implementation subagents; reference researchers, critics, and sculptors have separate controls.
+
+**Compatibility.** Preserve stored Ultra/Ultracode settings and their execution support when
+reading or resuming existing runs. Do not migrate their historical configuration or reinterpret
+past logs. When copying historical settings into a new-run draft, map `ultra` to `max` and
+`ultracode` to `xhigh`, keeping reasoning effort without the automatic delegation mode.
+
+**Visibility remains mandatory.** This decision removes a new-run configuration option; it does
+not disable Workflow tools or remove their observability. Retain workflow transcript tailing,
+progress and agent metrics, token/cost accounting, raw event visibility, and persisted offsets
+and file identities for recovery. Observe workflows whenever they occur, regardless of the
+selected effort. `roles/implement-claude.ts`, `workflow-tail.ts`, and `workflow-progress.ts`
+remain necessary for historical runs and any workflow activity in ordinary-effort sessions.
+Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
+
+**Consequences.** Keep legacy normalization separate from new-run validation and picker choices.
+Teammates must not reintroduce these modes through defaults, presets, or new model support.
+Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
+automatic harness orchestration requires a new product decision with explicit UI semantics.
+
+
+## ADR-020 — Grok Build is a third harness (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The app drove two CLIs, Claude Code and Codex, and the code said so in places that
+were not really about either one: a role's harness was guessed from its model name, the executable
+resolver hardcoded `claude` or `codex` as the binary to look for, and the effort pickers offered
+one fixed list of five levels to every model.
+
+**Decision.** Grok Build (`grok`) is a harness like the others and can take any of the four roles —
+orchestrator, subagent, research, critic. Three things follow. Every role stores its harness beside
+its model instead of inferring it, because a harness can host another harness's model ids and the
+name no longer carries that meaning; `normalizeModels` fills the field in for older rows from the
+model name. The executable resolver looks for each harness under its own binary name. Effort levels
+are read per model rather than per harness: grok-4.6 takes low/medium/high/xhigh and grok-4.5 stops
+at high, neither takes `max`, and offering a level the CLI refuses fails the run at launch.
+
+Grok's `--output-format streaming-messages-json` is Claude Code's own `stream-json` format, event
+for event, so the existing Claude stream parser reads it; only usage and cost attribution are
+Grok-specific. Grok has no equivalent of `ultracode`/`ultra` — its fan-out is a tool, not an effort
+level — and no verified native installer, so the install offer stays null for it and the operator
+installs the CLI themselves.
+
+**Consequences.** Run presets still pick from Claude and Codex only; Grok is chosen by hand. A
+stored effort a newly chosen model refuses is clamped in the picker rather than carried through.
+Rows written before the harness field normalize from the model name, so existing runs resume on the
+CLI they always used.

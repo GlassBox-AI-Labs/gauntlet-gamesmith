@@ -1,3 +1,4 @@
+import { referenceReadingInstructions } from '../shared/prompts'
 import { createHash } from 'node:crypto'
 import type { HarnessKind } from '../shared/harness'
 import type { LoopModels } from '../shared/loop'
@@ -101,13 +102,13 @@ export function childCommand(harness: HarnessKind, model: string, effort: string
  * definition — an invalid value is refused with "expected one of low, medium,
  * high, xhigh, max", where an unknown key is silently ignored.
  */
-export function grokAgentsJson(models: LoopModels, referenceDir: string | null): string {
+export function grokAgentsJson(models: LoopModels, referenceDir: string): string {
   return JSON.stringify({
     implementer: {
       description: 'Builds and polishes one assigned slice of the game to AAA quality.',
       model: models.subagentModel,
       effort: models.subagentEffort,
-      prompt: `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). ${referenceDir ? `Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. If the pack is missing, report the blocker instead of implementing from memory.` : 'This project has no reference pack: your brief quotes the parts of the goal your slice must satisfy, and that brief plus the general AAA craft bar you know from experience is the whole standard. Build something original — never imitate an existing commercial title.'} Implement your slice to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.`,
+      prompt: `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). ${!models.referenceMode || models.referenceMode === 'web' ? `Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. If the pack is missing, report the blocker instead of implementing from memory.` : referenceReadingInstructions(referenceDir, models.referenceMode)} Implement your slice to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.`,
     },
   })
 }
@@ -117,22 +118,19 @@ export function grokAgentsJson(models: LoopModels, referenceDir: string | null):
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function implementerAgentDefinition(models: LoopModels, referenceDir: string | null): ImplementerAgentDefinition | null {
+export function implementerAgentDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition | null {
   if (models.orchestratorHarness !== 'claude' || !models.subagentModel) return null
   const cli = models.subagentHarness ?? harnessFor(models.subagentModel)
   const workerIsClaude = cli === 'claude'
   const frontModel = workerIsClaude ? models.subagentModel : DISPATCHER_MODEL_ID
   const frontEffort = workerIsClaude ? models.subagentEffort : 'low'
   const body = workerIsClaude
-    ? !referenceDir
-      ? `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). This project has no reference pack: your brief quotes the parts of the goal your slice must satisfy, and that brief plus the general AAA craft bar you know from experience is the whole standard. Build something original — never imitate an existing commercial title. Implement your slice to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
-`
-      : `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory. Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
+    ? `You are an elite AAA game engineer. You receive one specific slice of the game (rendering, weapons, physics, audio, HUD, story, difficulty, level design, ...). ${!models.referenceMode || models.referenceMode === 'web' ? `Before writing code, read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to your slice; and WATCH the reference gameplay clip when motion or game feel matters. Treat the Reference Study's sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements rather than substituting memory. The Reference Study must be complete before you are spawned; if the pack is missing, report the blocker instead of implementing from memory.` : referenceReadingInstructions(referenceDir, models.referenceMode)} Implement it to the highest visual and technical quality, verify it actually runs, and report exactly what you changed and how to verify it.
 `
     : `You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the ${cli} CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if the worker struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
-2. ${referenceDir ? `Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop.` : 'This project has no reference pack: the goal text is the whole specification, and anything it does not name is judged against the general AAA craft bar. The game must be original, never an imitation of an existing commercial title.'} Write your full brief to \`${RUN_METADATA_DIR}/${cli}-<slug>.md\`: the slice, the files it owns, ${referenceDir ? 'the exact Reference Pack path and relevant files it must inspect' : 'the parts of the goal it must satisfy'}, the quality bar, and how to verify it. The worker starts with no memory of this conversation, so the brief must stand alone.
+${!models.referenceMode || models.referenceMode === 'web' ? `2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop.` : `2. ${referenceReadingInstructions(referenceDir, models.referenceMode)}`} Write your full brief to \`${RUN_METADATA_DIR}/${cli}-<slug>.md\`: the slice, the files it owns, the reference mode and exact supplied or frozen evidence paths it must inspect, the quality bar, and how to verify it. The worker starts with no memory of this conversation, so the brief must stand alone.
 3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
 
    ${childCommand(cli, models.subagentModel, models.subagentEffort, '<slug>')}
@@ -156,7 +154,7 @@ ${body}`
 }
 
 /** Compatibility accessor for code that only needs the generated markdown. */
-export function implementerAgentMd(models: LoopModels, referenceDir: string | null): string | null {
+export function implementerAgentMd(models: LoopModels, referenceDir: string): string | null {
   return implementerAgentDefinition(models, referenceDir)?.markdown ?? null
 }
 
@@ -164,7 +162,7 @@ export function implementerAgentMd(models: LoopModels, referenceDir: string | nu
  * Agent definitions are immutable and definition-addressed. A workspace can
  * retain old configurations without a later run replacing their bytes.
  */
-function requireImplementerDefinition(models: LoopModels, referenceDir: string | null): ImplementerAgentDefinition {
+function requireImplementerDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition {
   const definition = implementerAgentDefinition(models, referenceDir)
   if (!definition) throw new Error('Claude implementer definition requested for a non-delegated phase.')
   return definition
@@ -178,7 +176,7 @@ function requireImplementerDefinition(models: LoopModels, referenceDir: string |
  * from either orchestrator harness. Null researchModel = no fan-out: the
  * reference agent does the sweep itself, cheaply.
  */
-export function researchRules(models: LoopModels, referenceDir: string | null): string {
+export function researchRules(models: LoopModels, referenceDir: string): string {
   if (!models.researchModel) {
     return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
   }
@@ -213,15 +211,12 @@ followed by \`wait\`. When they return, read their notes and distill them into $
 const HANDS_OFF =
   'Before the first hand-off you may scaffold: the project skeleton, a CONTRACTS.md, and stub files. After that you must NOT edit game source yourself — no writes, no `cat >`, no `sed -i`, no scripted rewrites of files a worker owns. Read, build, run, and test all you like; when something is wrong, send it back to a worker instead of fixing it yourself.'
 
-function referenceHandoff(referenceDir: string | null): string {
-  if (!referenceDir) {
-    return 'This loop skipped the Reference Study, so there is no pack and no reference game. Every worker brief must instead quote the sections of the goal its slice has to satisfy, state the acceptance criteria you derived, and hold the worker to the general AAA craft bar. Workers must not imitate an existing commercial title.'
-  }
+function referenceHandoff(referenceDir: string): string {
   return `The Reference Study at ${referenceDir} must be complete before the first hand-off. Every worker brief must name that exact path, tell the worker to read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant journey.md and story.md sections, and VIEW the relevant downloaded references before writing code. Brief story, difficulty, level/progression, and gameplay workers from the study's sourced expert dossier; if the pack is missing, do not spawn workers.`
 }
 
 /** The rules appended to the implement prompt, per combination. */
-export function delegationRules(models: LoopModels, referenceDir: string | null): string {
+export function delegationRules(models: LoopModels, referenceDir: string): string {
   const verify = `Verify the game actually builds and runs before you finish. ${MACOS_BROWSER_SANDBOX_RULE}`
   if (!models.subagentModel) {
     return `Working rules: you implement this yourself — do NOT delegate to subagents. ${verify}`
@@ -279,7 +274,7 @@ followed by \`wait\`. Each command runs to completion on its own — do not inte
  * brief file, because a delegated worker starts with no memory of the run and
  * has to be able to work from this alone.
  */
-export function sculptorBrief(referenceDir: string | null): string {
+export function sculptorBrief(referenceDir: string): string {
   return `You rebuild ONE object from the reference game as a procedural Three.js model, using the \`img2threejs\` skill. You build models and nothing else: never touch gameplay, rendering, HUD or level code, and never write outside \`src/assets/\` and \`.img2threejs/\`.
 
 1. Read your entry in ${referenceDir}/cast.md. You are given its slug, what it is, where it appears, and how it behaves in play.
@@ -296,7 +291,7 @@ export function sculptorBrief(referenceDir: string | null): string {
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function sculptorAgentMd(models: LoopModels, referenceDir: string | null): string | null {
+export function sculptorAgentMd(models: LoopModels, referenceDir: string): string | null {
   if (models.orchestratorHarness !== 'claude' || !models.assetModel) return null
   const claudeWorker = models.assetHarness === 'claude'
   const model = claudeWorker ? models.assetModel : DISPATCHER_MODEL_ID
@@ -337,7 +332,7 @@ ${sculptorBrief(referenceDir)}
  * by finishing, so a usage limit landing mid-wave discards every one still in
  * flight. See ASSET_WAVE_SIZE.
  */
-export function sculptorRules(models: LoopModels, referenceDir: string | null): string {
+export function sculptorRules(models: LoopModels, referenceDir: string): string {
   if (!models.assetModel) return ''
   const orchestrator = models.orchestratorHarness
   const worker = models.assetHarness

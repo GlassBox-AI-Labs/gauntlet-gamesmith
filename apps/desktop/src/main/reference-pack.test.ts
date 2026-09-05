@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { captureWorkspaceIdentity } from './workspace-boundary'
 import { referencePackDir, scanReferencePack } from './reference-pack'
 
 const dirs: string[] = []
@@ -354,3 +355,14 @@ function completePack(dir: string, root: string): void {
     sources: files.map((file) => ({ url: 'https://example.com', file })),
   }))
 }
+
+it('accepts grounded files-only evidence without web media quotas, while old runs retain them', () => {
+  const dir = workspace(); const reference = 'reference/local-study'; const target = path.join(dir, reference)
+  fs.mkdirSync(path.join(target, 'supplied'), { recursive: true })
+  fs.writeFileSync(path.join(target, 'supplied/brief.txt'), 'brief')
+  for (const [name, text] of Object.entries({ 'README.md': 'Progression model: non-level-based', 'research.md': 'Expert gameplay dossier', 'journey.md': 'Unknown from supplied files', 'story.md': 'Unknown', 'cast.md': 'none' })) fs.writeFileSync(path.join(target, name), text)
+  fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify({ title: 'Supplied target', sources: [{ file: 'supplied/brief.txt', note: 'Design brief' }], cast: [] }))
+  const captured = captureWorkspaceIdentity(dir, [])
+  expect(scanReferencePack(dir, reference, { ...captured, models: { referenceMode: 'files' } }).ready).toBe(true)
+  expect(scanReferencePack(dir, reference, captured).ready).toBe(false)
+})

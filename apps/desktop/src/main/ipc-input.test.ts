@@ -21,7 +21,7 @@ const validStart = {
   maxRounds: 5,
   budgetUsd: 10,
   orchestratorModel: 'claude-opus-5',
-  orchestratorEffort: 'ultracode',
+  orchestratorEffort: 'high',
   subagentModel: 'gpt-5.6-sol',
   subagentEffort: 'high',
   criticModel: 'gpt-5.6-sol',
@@ -50,13 +50,16 @@ describe('IPC input validation', () => {
     expect(() => parseStartLoopInput({ ...validStart, prompt: ' \n\t ' })).toThrow('Goal')
   })
 
-  // The skip sentinel names no model, so it must pass the research field and
-  // fail every other one rather than being waved through as a model id.
-  it('admits the Reference-Study skip sentinel on the research field only', () => {
-    expect(parseStartLoopInput({ ...validStart, researchModel: 'skip' }).researchModel).toBe('skip')
-    expect(() => parseStartLoopInput({ ...validStart, subagentModel: 'skip' })).toThrow('Subagent model')
-    expect(() => parseStartLoopInput({ ...validStart, assetModel: 'skip' })).toThrow('Asset model')
-    expect(() => parseStartLoopInput({ ...validStart, criticModel: 'skip' })).toThrow('Critic model')
+  // The reference mode is a policy the runner acts on, so an unknown value has
+  // to fail here rather than reaching the loop as an unrecognized string.
+  it('takes the three reference modes and rejects anything else', () => {
+    for (const mode of ['web', 'skip'] as const) {
+      expect(parseStartLoopInput({ ...validStart, referenceMode: mode }).referenceMode).toBe(mode)
+    }
+    expect(parseStartLoopInput(validStart).referenceMode).toBeUndefined()
+    expect(() => parseStartLoopInput({ ...validStart, referenceMode: 'none' })).toThrow('reference mode')
+    // Files-only has nothing to study without them.
+    expect(() => parseStartLoopInput({ ...validStart, referenceMode: 'files' })).toThrow('requires attachments')
   })
 
   it('bounds titles, limits, and rounds', () => {
@@ -92,4 +95,9 @@ describe('IPC input validation', () => {
     expect(() => parseTerminalInput({ kind: 'codex', data: 1 })).toThrow('Invalid terminal input')
     expect(() => parseTerminalResize({ kind: 'claude', cols: '80', rows: 24 })).toThrow('Invalid terminal size')
   })
+})
+
+
+it.each(['ultra', 'ultracode'])('rejects %s for new runs', (orchestratorEffort) => {
+  expect(() => parseStartLoopInput({ ...validStart, orchestratorEffort })).toThrow()
 })

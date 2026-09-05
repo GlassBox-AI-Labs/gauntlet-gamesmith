@@ -31,7 +31,7 @@ export interface ImplementFinalizeRuntime {
   now(): number
   nowIso(): string
   /** null when the loop skipped the Reference Study. */
-  referenceDir: string | null
+  referenceDir: string
   awaitChildren(): Promise<void>
   isStopRequested(): boolean
   finishCancelled(exit: ExitInfo, reason: string, terminalLog: TerminalLog): boolean
@@ -153,7 +153,7 @@ export async function finalizeImplement(
         round: plan.round,
         role: 'critique',
         harness: harnessFor(loop.models.criticModel),
-        prompt: buildCriticPrompt(loop.prompt, plan.round, runtime.referenceDir, revision),
+        prompt: buildCriticPrompt(loop.prompt, plan.round, runtime.referenceDir, revision, 'verdict.json', '', loop.models.referenceMode),
       })
       ledger.patchRun(critique.id, { revision })
     } else if (terminalReason) {
