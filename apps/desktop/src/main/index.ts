@@ -1,3 +1,4 @@
+import { trustExistingRun } from './trust-ipc'
 import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
@@ -249,6 +250,16 @@ function registerLoopIpc(): void {
     } catch (error) {
       return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
     }
+  })
+  ipcMain.handle(IPC.loop.trust, (_event, value: unknown) => {
+    if (!ledger) return failure('Run history is not ready.')
+    return trustExistingRun(ledger, value,
+      (options) => mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options),
+      (loop, line) => {
+        mainWindow?.webContents.send(IPC.loop.log, line)
+        const projection = ledger?.recentRunProjectionForLoop(loop.id, 200)
+        if (projection) mainWindow?.webContents.send(IPC.loop.update, boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger!.runCount(loop.id), detailTruncated: projection.truncatedFields, aggregate: ledger!.runAggregate(loop.id) }))
+      }, hasActivePlay)
   })
   ipcMain.handle(IPC.loop.resume, (_event, value: unknown) => {
     try {

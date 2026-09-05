@@ -1,3 +1,4 @@
+import { withExistingRunTrust } from '@/lib/trusted-action'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { RunDetail } from '@/views/RunDetail'
@@ -62,6 +63,9 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
   const [referenceStudies, setReferenceStudies] = useState<Map<string, ReferenceStudy>>(new Map())
   const [exactPrompts, setExactPrompts] = useState<{ implement: string | null; critique: string | null }>({ implement: null, critique: null })
+  const selectionGeneration = useRef(0)
+  const privilegedActionPending = useRef(false)
+  useEffect(() => () => { selectionGeneration.current += 1 }, [])
   const loopIdRef = useRef<string | null>(null)
   const mainRef = useRef<HTMLElement | null>(null)
 
@@ -234,6 +238,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   }
 
   const selectRun = async (next: LoopSnapshot, round: number | null = null): Promise<void> => {
+    selectionGeneration.current += 1
     setError(null)
     try {
       const detail = await window.loops.get(next.loop.id)
@@ -435,25 +440,35 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
   }
 
   const resumeLoop = async (): Promise<void> => {
-    if (!loop || busy) return
+    if (!loop || busy || privilegedActionPending.current) return
+    const generation = selectionGeneration.current
+    const stillSelected = () => loopIdRef.current === loop.id && selectionGeneration.current === generation
+    privilegedActionPending.current = true
     setBusy(true)
     setError(null)
     try {
-      const result = await window.loops.resume(loop.id)
-      if (!result.ok) setError(result.error ?? 'Could not resume.')
+      const result = await withExistingRunTrust(loop, window.loops.trust, stillSelected, (id) => window.loops.resume(id))
+      if (stillSelected() && result && !result.ok) setError(result.error ?? 'Could not resume.')
     } catch (cause) {
-      setError(`Could not resume: ${errorMessage(cause, 'IPC request failed.')}`)
+      if (stillSelected()) setError(`Could not resume: ${errorMessage(cause, 'IPC request failed.')}`)
     } finally {
+      privilegedActionPending.current = false
       setBusy(false)
     }
   }
 
   const startPlay = async (round: number | null): Promise<void> => {
-    if (!loop) return
+    if (!loop || privilegedActionPending.current) return
+    const generation = selectionGeneration.current
+    const stillSelected = () => loopIdRef.current === loop.id && selectionGeneration.current === generation
+    privilegedActionPending.current = true
     try {
-      setPlay(await window.loops.playStart(loop.id, round))
+      const state = await withExistingRunTrust(loop, window.loops.trust, stillSelected, (id) => window.loops.playStart(id, round))
+      if (stillSelected() && state) setPlay(state)
     } catch (cause) {
-      setPlay({ running: false, url: null, error: `Could not start game process: ${errorMessage(cause, 'IPC request failed.')}`, round })
+      if (stillSelected()) setPlay({ running: false, url: null, error: `Could not start game process: ${errorMessage(cause, 'IPC request failed.')}`, round })
+    } finally {
+      privilegedActionPending.current = false
     }
   }
 

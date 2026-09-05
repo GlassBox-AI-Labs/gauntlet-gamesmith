@@ -53,6 +53,7 @@ const loops: LoopApi = {
     return () => ipcRenderer.removeListener(IPC.play.state, wrapped)
   },
   start: (input) => ipcRenderer.invoke(IPC.loop.start, input),
+  trust: (loopId) => ipcRenderer.invoke(IPC.loop.trust, loopId),
   resume: (loopId) => ipcRenderer.invoke(IPC.loop.resume, loopId),
   stop: (loopId) => ipcRenderer.invoke(IPC.loop.stop, loopId),
   active: () => ipcRenderer.invoke(IPC.loop.active),
