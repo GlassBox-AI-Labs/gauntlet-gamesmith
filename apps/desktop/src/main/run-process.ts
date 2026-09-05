@@ -8,7 +8,7 @@ import { WORKSPACE_METADATA_DIR } from './workspace-metadata'
 
 const META_VERSION = 1
 const MAX_META_BYTES = 256 * 1024
-const OFFSET_KEY = /^[a-z0-9-]+\.(?:claude|codex)\.jsonl$/
+const OFFSET_KEY = /^[a-z0-9-]+\.(?:claude|codex|grok)\.jsonl$/
 const WORKFLOW_OFFSET_KEY = /^wf_[A-Za-z0-9_-]{1,128}\/(?:journal|agent-[A-Za-z0-9_-]{1,128})\.jsonl$/
 const PROCESS_LSTART = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12]\d|3[01]) \d{2}:\d{2}:\d{2} \d{4}$/
 const MAX_GROUP_IDENTITIES = 256

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { HarnessKind } from '../shared/harness'
 import { childAgentMetricId } from '../shared/agent-id'
 import type { AgentMetric, TokenTotals } from '../shared/loop'
 import { isRecordId } from '../shared/record-id'
@@ -290,7 +291,7 @@ interface OpenedChildStream {
 
 export interface ChildStreamFailure {
   agentId: string
-  harness: 'claude' | 'codex'
+  harness: HarnessKind
   reason: string
 }
 
@@ -307,7 +308,7 @@ function childStreamState(
   now: number,
 ): ChildStreamState {
   const { name, text, stat } = stream
-  const totals = name.harness === 'claude' ? readClaudeStream(text) : readCodexStream(text)
+  const totals = name.harness === 'codex' ? readCodexStream(text) : readClaudeStream(text)
   const settled = now - stat.mtimeMs >= Math.max(0, quietMs)
   let reason: string | null = null
   if (settled && totals.exitCode !== null && totals.exitCode !== 0) {

@@ -1,8 +1,10 @@
+import type { HarnessKind } from '../../shared/harness'
 import type { AgentMetric, LoopRecord, RunMetrics, RunRecord, TokenTotals } from '../../shared/loop'
 import { normalizeSessionId } from '../../shared/session-id'
 import { isCrossHarness } from '../../shared/models'
 import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
 import { parseChildStreamName } from '../child-stream-name'
+import { GrokToolOwnerIndex, readGrokWorkers } from '../grok-usage'
 import { buildImplementMetrics, hasCliModelCost } from '../implement-metrics'
 import type { Ledger } from '../ledger'
 import { estimateCostUsd, PRICE_TABLE_VERSION } from '../pricing'
@@ -29,7 +31,9 @@ export interface ClaudeImplementRuntime {
   initialWorkflowIdentities?: Record<string, { dev: number; ino: number }>
   now(): number
   nowIso(): string
-  harnessHome(kind: 'claude' | 'codex'): string
+  harnessHome(kind: HarnessKind): string
+  /** Transcripts live in the shared store, not the active account's dir. */
+  harnessSharedHome(kind: HarnessKind): string
   log(kind: string, text: string, agentId?: string): void
   broadcast(): void
   finalize(exit: ExitInfo, collect: () => ImplementOutcome): Promise<void>
@@ -135,6 +139,12 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
     .slice(0, MAX_IMPLEMENT_AGENT_IDS)
   let workflowAgents: AgentMetric[] = workflowBaseline
   let childAgents: AgentMetric[] = []
+  // Grok leaves `parent_tool_use_id` null on every forwarded event, so who did
+  // what is read off disk instead of out of the stream.
+  const grokTools = loop.models.orchestratorHarness === 'grok'
+    ? new GrokToolOwnerIndex(runtime.harnessSharedHome('grok'), loop.workspaceDir)
+    : null
+  let grokWorkers: AgentMetric[] = []
   let workflowRuns: WorkflowRunSummary[] = []
   let workflowTokens = 0
   const loggedWorkflowRuns = new Set<string>()
@@ -144,7 +154,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
 
   const pollWorkflows = (): void => {
     if (!sessionId) return
-    const claudeHome = runtime.harnessHome('claude')
+    const claudeHome = runtime.harnessSharedHome('claude')
     tail ??= new WorkflowTail(
       workflowTailDir(claudeHome, loop.workspaceDir, sessionId),
       initialWorkflowOffsets,
@@ -201,6 +211,15 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
     }
   }
 
+  const pollGrok = (): void => {
+    if (!grokTools) return
+    grokTools.poll(sessionId)
+    // `status` is grok's own vocabulary and is not part of the persisted agent
+    // contract; it rides along in `state`, which is what the UI already shows.
+    grokWorkers = readGrokWorkers(runtime.harnessSharedHome('grok'), loop.workspaceDir, sessionId)
+      .map(({ status, ...worker }) => ({ ...worker, state: status }))
+  }
+
   const pollChildren = (): void => {
     if (!isCrossHarness(loop.models)) return
     childAgents = readChildAgents(runtime.childBoundary, loop.models.subagentModel, runtime.harnessHome('codex'))
@@ -211,6 +230,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
     lastTokenFlush = runtime.now()
     pollWorkflows()
     pollChildren()
+    pollGrok()
     let input = 0
     let output = 0
     const perModel = new Map<string, TokenTotals>()
@@ -230,6 +250,9 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       const cost = estimateCostUsd(model, tokens)
       if (cost != null) liveCostEstimate = (liveCostEstimate ?? 0) + cost
     }
+    // grokWorkers are intentionally not summed here: their tokens are already
+    // inside the forwarded parent stream counted above, so adding them would
+    // double every delegated grok run.
     for (const agent of [...workflowAgents, ...childAgents]) {
       if (agent.costUsd != null) liveCostEstimate = (liveCostEstimate ?? 0) + agent.costUsd
       input += agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite
@@ -249,6 +272,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
         workflowAgents,
         childAgents,
         childParents,
+        splitAgents: grokWorkers,
       }),
     })
     runtime.broadcast()
@@ -322,8 +346,8 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       if (notAgents.has(toolUseId) || finishedAgents.has(toolUseId)) return
       if (finishedAgents.size < MAX_IMPLEMENT_TASK_IDS) finishedAgents.add(toolUseId)
       else reportRetentionLimit()
-      const label = agentLabels.get(toolUseId)?.label ?? `agent-${toolUseId.slice(-6)}`
-      plog('spawn', `⇊ subagent "${label}" ${(obj.status as string | undefined) ?? 'finished'}`, toolUseId)
+      // The line itself comes from the translator, which reports every task
+      // notification — agent or not — with the status and the task summary.
       return
     }
 
@@ -346,6 +370,21 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       }
       const content = Array.isArray(message.content) ? (message.content as Record<string, unknown>[]) : []
       const spawnEventIds: string[] = []
+      // Grok forwards a worker's own tool calls up the parent stream unlabelled.
+      // The tool-call id is the only link back, and it is recorded in the
+      // worker's session file rather than in the event.
+      let grokOwner = null as { id: string; label: string } | null
+      if (grokTools) {
+        grokTools.poll(sessionId)
+        for (const block of content) {
+          if (block.type !== 'tool_use') continue
+          const owner = grokTools.ownerOf(streamId(block.id))
+          if (owner) {
+            grokOwner = owner
+            break
+          }
+        }
+      }
       for (const block of content) {
         if (block.type !== 'tool_use') continue
         const name = block.name as string
@@ -372,7 +411,11 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       }
       for (const event of translated?.events ?? []) {
         const eventAgentId = event.kind === 'spawn' ? (spawnEventIds.shift() ?? event.agentId) : event.agentId
-        plog(event.kind === 'claude' && parentId ? 'agent' : event.kind, `[${who}] ${event.text}`, eventAgentId)
+        plog(
+          event.kind === 'claude' && (parentId || grokOwner) ? 'agent' : event.kind,
+          `[${grokOwner?.label ?? who}] ${event.text}`,
+          grokOwner && event.kind !== 'spawn' ? grokOwner.id : eventAgentId,
+        )
       }
       return
     }

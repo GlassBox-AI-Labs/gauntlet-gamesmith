@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
 
-const homes = { claudeHome: '/homes/claude', codexHome: '/homes/codex' }
+const homes = { claudeHome: '/homes/claude', codexHome: '/homes/codex', grokHome: '/homes/grok', neutralHome: '/tmp/neutral' }
 const ctx = (models: ReturnType<typeof resolveModels>) => ({ models, prompt: 'build it', ...homes })
 
 describe('implementPlan', () => {
@@ -26,6 +26,8 @@ describe('implementPlan', () => {
     expect(plan.bin).toBe('codex')
     expect(plan.args).toContain('exec')
     expect(plan.args.join(' ')).toContain('model_reasoning_effort=ultra')
+    expect(plan.args.join(' ')).toContain('-s danger-full-access')
+    expect(plan.args.join(' ')).not.toContain('workspace-write')
     expect(plan.env.CODEX_HOME).toBe('/homes/codex')
     expect(plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
   })
@@ -74,5 +76,57 @@ describe('referencePlan', () => {
     expect(codex.bin).toBe('codex')
     expect(codex.args.join(' ')).toContain('-m gpt-5.6-sol')
     expect(codex.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+  })
+})
+
+describe('grok plans', () => {
+  it('runs grok for a grok critic, with the sandbox off and permissions bypassed', () => {
+    const models = resolveModels(null, { criticModel: 'grok-4.6', criticEffort: 'xhigh' })
+    const plan = critiquePlan({ ...ctx(models), outFile: '/runs/verdict.txt' })
+    expect(plan.bin).toBe('grok')
+    expect(plan.args.join(' ')).toContain('--output-format streaming-messages-json')
+    expect(plan.args.join(' ')).toContain('--sandbox off')
+    expect(plan.args).toContain('--always-approve')
+    expect(plan.args.join(' ')).toContain('-m grok-4.6')
+    expect(plan.args.join(' ')).toContain('--reasoning-effort xhigh')
+    // No `-o` equivalent: the verdict comes back in the result event.
+    expect(plan.args).not.toContain('-o')
+  })
+
+  /**
+   * GROK_HOME alone does not stop grok reading the operator's ~/.claude
+   * configuration as its own, which would put their skills, agents and MCP
+   * servers into a run the app is supposed to be controlling.
+   */
+  it('redirects HOME as well as GROK_HOME so the operator config cannot leak in', () => {
+    const models = resolveModels(null, { criticModel: 'grok-4.6' })
+    const plan = critiquePlan(ctx(models))
+    expect(plan.env.GROK_HOME).toBe('/homes/grok')
+    expect(plan.env.HOME).toBe('/tmp/neutral')
+  })
+
+  it('runs grok as an orchestrator when that is the stored harness', () => {
+    const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'grok-4.6', subagentModel: null }, null)))
+    expect(plan.bin).toBe('grok')
+    expect(plan.env.HOME).toBe('/tmp/neutral')
+  })
+})
+
+describe('grok orchestrator delegation', () => {
+  it('passes the --agents payload only when grok drives grok workers', () => {
+    const grokPair = resolveModels({ orchestratorModel: 'grok-4.6', subagentModel: 'grok-4.5' }, null)
+    const withAgents = implementPlan({ ...ctx(grokPair), agentsJson: '{"implementer":{"model":"grok-4.5"}}' })
+    expect(withAgents.args).toContain('--agents')
+    expect(withAgents.args.join(' ')).toContain('"model":"grok-4.5"')
+
+    const without = implementPlan(ctx(grokPair))
+    expect(without.args).not.toContain('--agents')
+  })
+
+  it('exports every harness home so a shelled-out child reuses the app logins', () => {
+    const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'grok-4.6', subagentModel: 'gpt-5.6-sol' }, null)))
+    expect(plan.env.CODEX_HOME).toBe('/homes/codex')
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe('/homes/claude')
+    expect(plan.env.GROK_HOME).toBe('/homes/grok')
   })
 })

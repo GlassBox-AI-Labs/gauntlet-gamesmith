@@ -17,7 +17,7 @@ import type {
 } from '../shared/loop'
 import { channelForKind, markResumePrompt, runPromptLabel } from '../shared/loop'
 import { IPC } from '../shared/ipc'
-import { describeModels, harnessFor, isUltracode, resolveModels } from '../shared/models'
+import { describeModels, isUltracode, resolveModels } from '../shared/models'
 import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt, effectivePromptForRun } from '../shared/prompts'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
@@ -36,7 +36,7 @@ import { cliExecutable, validatedExecutableEnv } from './cli-executable'
 import { delegationRules, GAUNTLET_IMPLEMENTER_AGENT_PREFIX, implementerAgentDefinition, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { cliHome, ensureSkill, neutralHome, sharedHome, subscriptionEnv } from './harness-env'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
 import { defaultLoopTitle, type Ledger, type RunProcessOwnership } from './ledger'
@@ -164,7 +164,9 @@ export interface LoopRunnerDeps {
   cliVersion(binary: string, env: Record<string, string>, cwd: string): string
   accountLabel(kind: HarnessKind, binary: string, env: Record<string, string>, cwd: string): string
   hostname(): string
-  harnessHome(kind: 'claude' | 'codex'): string
+  harnessHome(kind: HarnessKind): string
+  /** Where the CLIs write session transcripts, whichever account is active. */
+  harnessSharedHome(kind: HarnessKind): string
   protectedRoots(): string[]
   subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
   cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
@@ -197,6 +199,7 @@ const DEFAULT_DEPS: LoopRunnerDeps = {
   accountLabel: detectAccountLabel,
   hostname: os.hostname,
   harnessHome: cliHome,
+  harnessSharedHome: sharedHome,
   protectedRoots: () => [cliHome('claude'), cliHome('codex')],
   subscriptionReady: (kind, cwd, home) => subscriptionReadiness(kind, cwd, home),
   cliExecutable,
@@ -298,7 +301,8 @@ export class LoopRunner {
   private verifyReferenceBoundary(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
     if (!this.verifySuppliedContext(loop, run, terminalLog)) return false
     if (loop.models.referenceMode === 'skip') return true
-    const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop)
+    const referenceDir = this.referenceDir(loop.id)
+    const pack = scanReferencePack(loop.workspaceDir, referenceDir, loop)
     if (!pack.ready) {
       const message = pack.issues.join('; ')
       this.failAttemptAndLoop(
@@ -312,7 +316,7 @@ export class LoopRunner {
     }
     let actual: string
     try {
-      actual = referencePackFingerprint(loop.workspaceDir, this.referenceDir(loop.id))
+      actual = referencePackFingerprint(loop.workspaceDir, referenceDir)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.failAttemptAndLoop(
@@ -545,7 +549,7 @@ export class LoopRunner {
         loopId: loop.id,
         round: run.round,
         role: run.role,
-        harness: harnessFor(run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
+        harness: run.role === 'critique' ? loop.models.criticHarness : loop.models.orchestratorHarness,
         prompt:
           run.role === 'implement' ? markResumePrompt(run.prompt) : run.prompt,
       })
@@ -559,6 +563,15 @@ export class LoopRunner {
     this.broadcast(loop.id)
     this.scheduleRetry(loop.id, pause.retryAtMs)
     return true
+  }
+
+  /**
+   * A retry that is handed the same brief as the attempt that just failed can
+   * only repeat it: the previous attempt audited its own work, found it sound,
+   * and died on a gate it was never told about. Lead the retry with the reason.
+   */
+  private static retryPromptFor(prompt: string, error: string): string {
+    return `The previous attempt at this phase FAILED and was rejected for exactly this reason:\n\n${error.slice(0, 4_000)}\n\nThis is the retry. Fix that specific rejection before anything else, keep every other valid artifact the previous attempt produced, and do not finish until the stated reason no longer applies.\n\n${prompt}`
   }
 
   /** One same-phase retry protocol for artifact phases; rate pauses do not consume attempts. */
@@ -592,8 +605,8 @@ export class LoopRunner {
         loopId: loop.id,
         round: run.round,
         role: run.role,
-        harness: harnessFor(run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
-        prompt,
+        harness: run.role === 'critique' ? loop.models.criticHarness : loop.models.orchestratorHarness,
+        prompt: LoopRunner.retryPromptFor(prompt, error),
       })
       retryId = retry.id
       if (run.revision) this.ledger.patchRun(retry.id, { revision: run.revision })
@@ -666,14 +679,14 @@ export class LoopRunner {
   }
 
   private requiredHarnesses(loop: LoopRecord, role: RunRole, primary: HarnessKind): HarnessKind[] {
-    const workerModels = role === 'implement'
-      ? [loop.models.subagentModel, loop.models.assetModel]
+    const workerHarnesses = role === 'implement'
+      ? [loop.models.subagentHarness, loop.models.assetHarness]
       : role === 'reference'
-        ? [loop.models.researchModel]
+        ? [loop.models.researchHarness]
         : []
     return [...new Set<HarnessKind>([
       primary,
-      ...workerModels.filter((model): model is string => model != null).map(harnessFor),
+      ...workerHarnesses.filter((kind): kind is HarnessKind => kind != null),
     ])]
   }
 
@@ -874,7 +887,7 @@ export class LoopRunner {
           loopId: created.id,
           round: initialPhase.round,
           role: initialPhase.role,
-          harness: harnessFor(models.orchestratorModel),
+          harness: models.orchestratorHarness,
           prompt: initialPhase.role === 'reference' ? buildReferencePrompt(prompt, referenceDir, researchRules(models, referenceDir), models.referenceMode) : buildImplementPrompt(models, prompt, 1, null, referenceDir),
         })
         if (initialPhase.role === 'implement') this.ledger.patchLoop(created.id, { round: 1 })
@@ -1206,10 +1219,10 @@ export class LoopRunner {
       resume.kind === 'continue-queued' || resume.kind === 'retry'
         ? { role: resume.run.role, harness: resume.run.harness }
         : resume.kind === 'queue-critique'
-          ? { role: 'critique', harness: harnessFor(loop.models.criticModel) }
+          ? { role: 'critique', harness: loop.models.criticHarness }
           : resume.kind === 'finish-exhausted'
             ? null
-            : { role: resume.kind === 'queue-reference' ? 'reference' : 'implement', harness: harnessFor(loop.models.orchestratorModel) }
+            : { role: resume.kind === 'queue-reference' ? 'reference' : 'implement', harness: loop.models.orchestratorHarness }
     if (resumeTarget) {
       const subscriptionBlock = this.subscriptionBlock(loop, resumeTarget.role, resumeTarget.harness)
       if (subscriptionBlock) return { ok: false, error: this.subscriptionBlockMessage(subscriptionBlock.harness, subscriptionBlock.readiness) }
@@ -1229,7 +1242,7 @@ export class LoopRunner {
           loopId,
           round: prior.round,
           role: prior.role,
-          harness: harnessFor(prior.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
+          harness: prior.role === 'critique' ? loop.models.criticHarness : loop.models.orchestratorHarness,
           prompt: prior.role === 'implement' ? markResumePrompt(prior.prompt) : prior.prompt,
         })
         if (prior.revision) this.ledger.patchRun(retry.id, { revision: prior.revision })
@@ -1241,7 +1254,7 @@ export class LoopRunner {
           loopId,
           round: resume.round,
           role: 'implement',
-          harness: harnessFor(loop.models.orchestratorModel),
+          harness: loop.models.orchestratorHarness,
           prompt: this.nextImplementPrompt(loop, resume.round, resume.prior?.verdict ?? null),
         })
         this.log(loopId, null, 'system', resume.prior?.role === 'critique' ? `Loop resumed by user — starting round ${resume.round}.` : 'Loop resumed by user — Reference Pack ready; starting round 1.')
@@ -1251,7 +1264,7 @@ export class LoopRunner {
           loopId,
           round: resume.round,
           role: 'critique',
-          harness: harnessFor(loop.models.criticModel),
+          harness: loop.models.criticHarness,
           prompt: buildCriticPrompt(loop.prompt, resume.round, this.referenceDir(loopId), prior.revision ?? '<missing-revision>', 'verdict.json', '', loop.models.referenceMode),
         })
         this.ledger.patchRun(critique.id, { revision: prior.revision })
@@ -1269,7 +1282,7 @@ export class LoopRunner {
           loopId,
           round: 0,
           role: 'reference',
-          harness: harnessFor(loop.models.orchestratorModel),
+          harness: loop.models.orchestratorHarness,
           prompt: buildReferencePrompt(loop.prompt, referenceDir, researchRules(loop.models, referenceDir), loop.models.referenceMode),
         })
         this.log(loopId, null, 'system', 'Loop resumed by user — starting Reference Study.')
@@ -1545,6 +1558,7 @@ export class LoopRunner {
       /* the ledger remains authoritative across a transient renderer failure */
     }
     if (loop.status !== 'running') try {
+      const referenceDirForReport = this.referenceDir(loop.id)
       const runs = this.ledger.recentRunProjectionForLoop(loopId, 500).runs
       const snapshot = publishOwnedWorkspaceSnapshot(
         loop.workspaceDir,
@@ -1556,7 +1570,7 @@ export class LoopRunner {
           loop,
           runs,
           scanCritiqueArtifacts(loop.workspaceDir, loop),
-          scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop),
+          referenceDirForReport === null ? undefined : scanReferencePack(loop.workspaceDir, referenceDirForReport, loop),
           { totalRuns, aggregate: this.ledger.runAggregate(loopId) },
         ),
         'html',
@@ -1631,7 +1645,7 @@ export class LoopRunner {
             loopId: loop.id,
             round: run.round,
             role: 'implement',
-            harness: harnessFor(loop.models.orchestratorModel),
+            harness: loop.models.orchestratorHarness,
             prompt: this.nextImplementPrompt(loop, run.round, this.verdictForRound(loop.id, run.round - 1)),
           })
           this.log(loop.id, run.id, 'system', 'Legacy Asset Build migrated into the implement round; no standalone asset process was launched.')
@@ -2375,6 +2389,8 @@ export class LoopRunner {
       prompt: run.prompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
+      grokHome: this.deps.harnessHome('grok'),
+      neutralHome: neutralHome(),
     })
     const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }
@@ -2391,7 +2407,8 @@ export class LoopRunner {
       run,
       gate,
       childBoundary,
-      referenceDir: this.referenceDir(loop.id),
+      // A reference run only exists on a loop that kept the phase.
+      referenceDir: this.referenceDir(loop.id) ?? referencePackDir(loop.id),
       maxAttempts: MAX_REFERENCE_ATTEMPTS,
       now: this.deps.now,
       nowIso: () => this.nowIso(),
@@ -2414,7 +2431,7 @@ export class LoopRunner {
 
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
-    const harness = harnessFor(models.orchestratorModel)
+    const harness = models.orchestratorHarness
     if (!this.verifyReferenceBoundary(loop, run)) return
     if (!this.verifyCritiqueTreeBoundary(loop, run, true)) return
     const wanted = this.wantedCast(loop, this.verdictForRound(loop.id, run.round - 1))
@@ -2475,6 +2492,8 @@ export class LoopRunner {
       prompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
+      grokHome: this.deps.harnessHome('grok'),
+      neutralHome: neutralHome(),
       resumeId: isResume ? priorSessionId : null,
     })
     const executable = this.executableEnvironment(loop, run, plan.env)
@@ -2551,6 +2570,7 @@ export class LoopRunner {
       now: this.deps.now,
       nowIso: () => this.nowIso(),
       harnessHome: this.deps.harnessHome,
+      harnessSharedHome: this.deps.harnessSharedHome,
       log: (kind, text, agentId) => this.log(loop.id, run.id, kind, text, agentId),
       broadcast: () => this.broadcast(loop.id),
       finalize: (exit, collect) => this.finishImplement(loop, run, childBoundary, exit, collect),
@@ -2669,6 +2689,8 @@ export class LoopRunner {
       prompt: exactPrompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
+      grokHome: this.deps.harnessHome('grok'),
+      neutralHome: neutralHome(),
     })
     const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }

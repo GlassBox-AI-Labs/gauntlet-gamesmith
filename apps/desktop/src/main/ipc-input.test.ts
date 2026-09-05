@@ -50,6 +50,18 @@ describe('IPC input validation', () => {
     expect(() => parseStartLoopInput({ ...validStart, prompt: ' \n\t ' })).toThrow('Goal')
   })
 
+  // The reference mode is a policy the runner acts on, so an unknown value has
+  // to fail here rather than reaching the loop as an unrecognized string.
+  it('takes the three reference modes and rejects anything else', () => {
+    for (const mode of ['web', 'skip'] as const) {
+      expect(parseStartLoopInput({ ...validStart, referenceMode: mode }).referenceMode).toBe(mode)
+    }
+    expect(parseStartLoopInput(validStart).referenceMode).toBeUndefined()
+    expect(() => parseStartLoopInput({ ...validStart, referenceMode: 'none' })).toThrow('reference mode')
+    // Files-only has nothing to study without them.
+    expect(() => parseStartLoopInput({ ...validStart, referenceMode: 'files' })).toThrow('requires attachments')
+  })
+
   it('bounds titles, limits, and rounds', () => {
     expect(parseRenameInput(loopId, ' New name ')).toEqual({ loopId, title: 'New name' })
     expect(parseLogLimit(99)).toBe(99)

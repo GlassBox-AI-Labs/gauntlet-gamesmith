@@ -49,6 +49,7 @@ describe('delegated workers', () => {
       now: Date.now,
       nowIso: () => new Date().toISOString(),
       harnessHome: () => path.join(dir!, 'harness'),
+      harnessSharedHome: () => path.join(dir!, 'harness'),
       log: () => {},
       broadcast: () => {},
       finalize: async () => {},

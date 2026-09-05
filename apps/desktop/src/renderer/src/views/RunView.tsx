@@ -257,9 +257,15 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
       loopIdRef.current = detail.loop.id
       setSnapshot(detail)
       setSnapshots((current) => selectSnapshotInList(current, detail))
-      setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: newRunOrchestratorEffort(detail.loop.models.orchestratorEffort), subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
-      setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
-      setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
+      // Opening a past run loads its settings into the pickers, but never over
+      // choices being made right now: composing means the operator has already
+      // set up the next run, and silently reverting a picker they just changed
+      // starts a loop that is not the one they configured.
+      if (!composing) {
+        setImpl({ orchestratorModel: detail.loop.models.orchestratorModel, orchestratorEffort: newRunOrchestratorEffort(detail.loop.models.orchestratorEffort), subagentModel: detail.loop.models.subagentModel, subagentEffort: detail.loop.models.subagentEffort })
+        setCritic({ criticModel: detail.loop.models.criticModel, criticEffort: detail.loop.models.criticEffort })
+        setResearch({ researchModel: detail.loop.models.researchModel, researchEffort: detail.loop.models.researchEffort })
+      }
       setSelectedRound(round)
       setComposing(false)
       setSelectedReportId(null)

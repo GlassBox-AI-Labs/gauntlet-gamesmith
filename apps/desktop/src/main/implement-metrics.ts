@@ -24,6 +24,15 @@ export interface ImplementMetricInput {
   workflowAgents?: AgentMetric[]
   childAgents?: AgentMetric[]
   childParents?: Map<string, string>
+  /**
+   * Rows whose tokens are already inside the orchestrator's own totals.
+   *
+   * Grok forwards a subagent's messages into the parent stream, so the run
+   * total already contains the worker's spend. These rows therefore come *out*
+   * of the orchestrator rather than adding on top of it — the opposite of
+   * `childAgents`, which are separate processes the app spawned itself.
+   */
+  splitAgents?: AgentMetric[]
 }
 
 function emptyTokens(): TokenTotals {
@@ -65,6 +74,7 @@ export function buildImplementMetrics(input: ImplementMetricInput): RunMetrics {
     workflowAgents = [],
     childAgents = [],
     childParents = new Map(),
+    splitAgents = [],
   } = input
   const agents = new Map<string, AgentMetric>()
   const ensure = (key: string): AgentMetric | null => {
@@ -161,6 +171,19 @@ export function buildImplementMetrics(input: ImplementMetricInput): RunMetrics {
   }
   for (const [key, agent] of agents) if (key !== 'orchestrator') agent.done = finished.has(key)
 
+  // Take each split row's spend back out of the orchestrator, so the rows still
+  // sum to what the run actually cost instead of counting the worker twice.
+  const orchestrator = agents.get('orchestrator')
+  if (orchestrator) {
+    for (const worker of splitAgents) {
+      orchestrator.tokens.input = Math.max(0, orchestrator.tokens.input - worker.tokens.input)
+      orchestrator.tokens.output = Math.max(0, orchestrator.tokens.output - worker.tokens.output)
+      orchestrator.tokens.cacheRead = Math.max(0, orchestrator.tokens.cacheRead - worker.tokens.cacheRead)
+      orchestrator.tokens.cacheWrite = Math.max(0, orchestrator.tokens.cacheWrite - worker.tokens.cacheWrite)
+      orchestrator.messages = Math.max(0, orchestrator.messages - worker.messages)
+    }
+  }
+
   const list = [...agents.values()]
   list.sort((leftAgent, rightAgent) => {
     if (leftAgent.id === 'orchestrator') return -1
@@ -179,5 +202,5 @@ export function buildImplementMetrics(input: ImplementMetricInput): RunMetrics {
     else orphans.push(child)
   }
   const nested = list.flatMap((agent) => [agent, ...(byParent.get(agent.id) ?? [])])
-  return { agents: [...nested, ...workflowAgents, ...orphans].slice(0, MAX_PERSISTED_AGENTS), perModel }
+  return { agents: [...nested, ...splitAgents, ...workflowAgents, ...orphans].slice(0, MAX_PERSISTED_AGENTS), perModel }
 }

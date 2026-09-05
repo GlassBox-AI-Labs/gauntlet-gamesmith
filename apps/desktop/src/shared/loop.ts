@@ -105,20 +105,36 @@ export interface RunMetrics {
 
 export type ReferenceMode = 'web' | 'files' | 'skip'
 
+/**
+ * Who builds, who judges, and on which CLI.
+ *
+ * Every role stores its harness alongside its model. It used to be inferred
+ * from the model name — anything starting with `gpt-` meant codex — but a
+ * harness can host another harness's models (OpenCode offers both Claude and
+ * GPT ids), so the name cannot carry that meaning. The critic has stored its
+ * harness this way from the start; the other roles now match it.
+ *
+ * `normalizeModels` fills the harness in for rows written before this change.
+ */
 export interface LoopModels {
   /** Missing in older histories means the original web Reference Study. */
   referenceMode?: ReferenceMode
+  orchestratorHarness: HarnessKind
   orchestratorModel: string
   orchestratorEffort: string
   /** null = the orchestrator implements by itself, with no subagents. */
+  subagentHarness: HarnessKind | null
   subagentModel: string | null
   subagentEffort: string
+  criticHarness: HarnessKind
   criticModel: string
   criticEffort: string
   /** null = no deep-research fan-out; the reference agent sweeps by itself. */
+  researchHarness: HarnessKind | null
   researchModel: string | null
   researchEffort: string
   /** null = no asset phase; implement rounds build their own models, as before. */
+  assetHarness: HarnessKind | null
   assetModel: string | null
   assetEffort: string
 }

@@ -5,10 +5,9 @@ import { initialHarnessState, reduceHarness } from '@/lib/login-state'
 export type HarnessMap = Record<HarnessKind, HarnessState>
 export type HarnessStateEvent = { kind: HarnessKind; action: HarnessAction }
 
-const initialState: HarnessMap = {
-  claude: initialHarnessState('claude', HARNESS_LABELS.claude),
-  codex: initialHarnessState('codex', HARNESS_LABELS.codex),
-}
+const initialState: HarnessMap = Object.fromEntries(
+  harnessKinds.map((kind) => [kind, initialHarnessState(kind, HARNESS_LABELS[kind])]),
+) as HarnessMap
 
 function stateReducer(state: HarnessMap, event: HarnessStateEvent): HarnessMap {
   return { ...state, [event.kind]: reduceHarness(state[event.kind], event.action) }
@@ -39,7 +38,9 @@ export interface HarnessConnections {
  */
 export function useHarnessConnections(): HarnessConnections {
   const [states, dispatch] = useReducer(stateReducer, initialState)
-  const transcripts = useRef<Record<HarnessKind, string>>({ claude: '', codex: '' })
+  const transcripts = useRef<Record<HarnessKind, string>>(
+    Object.fromEntries(harnessKinds.map((kind) => [kind, ''])) as Record<HarnessKind, string>,
+  )
   const writers = useRef<Partial<Record<HarnessKind, (data: string) => void>>>({})
 
   useEffect(() => {

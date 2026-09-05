@@ -38,6 +38,7 @@ export type ResumePlan =
 export function planResume(last: RunRecord | null | undefined, maxRounds: number, referenceMode: ReferenceMode = 'web'): ResumePlan {
   if (last?.status === 'queued') return { kind: 'continue-queued', run: last }
   if (last && last.status !== 'succeeded') return { kind: 'retry', run: last }
+  // A loop that skipped the Reference Study has no round 0 to fall back to.
   if (!last) return referenceMode === 'skip' ? { kind: 'queue-implement', round: 1, prior: null } : { kind: 'queue-reference', round: 0 }
   if (last.role === 'reference') return { kind: 'queue-implement', round: 1, prior: last }
   if (last.role === 'implement') {

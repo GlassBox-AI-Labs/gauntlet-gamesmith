@@ -502,3 +502,32 @@ Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
 Teammates must not reintroduce these modes through defaults, presets, or new model support.
 Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
 automatic harness orchestration requires a new product decision with explicit UI semantics.
+
+
+## ADR-020 — Grok Build is a third harness (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The app drove two CLIs, Claude Code and Codex, and the code said so in places that
+were not really about either one: a role's harness was guessed from its model name, the executable
+resolver hardcoded `claude` or `codex` as the binary to look for, and the effort pickers offered
+one fixed list of five levels to every model.
+
+**Decision.** Grok Build (`grok`) is a harness like the others and can take any of the four roles —
+orchestrator, subagent, research, critic. Three things follow. Every role stores its harness beside
+its model instead of inferring it, because a harness can host another harness's model ids and the
+name no longer carries that meaning; `normalizeModels` fills the field in for older rows from the
+model name. The executable resolver looks for each harness under its own binary name. Effort levels
+are read per model rather than per harness: grok-4.6 takes low/medium/high/xhigh and grok-4.5 stops
+at high, neither takes `max`, and offering a level the CLI refuses fails the run at launch.
+
+Grok's `--output-format streaming-messages-json` is Claude Code's own `stream-json` format, event
+for event, so the existing Claude stream parser reads it; only usage and cost attribution are
+Grok-specific. Grok has no equivalent of `ultracode`/`ultra` — its fan-out is a tool, not an effort
+level — and no verified native installer, so the install offer stays null for it and the operator
+installs the CLI themselves.
+
+**Consequences.** Run presets still pick from Claude and Codex only; Grok is chosen by hand. A
+stored effort a newly chosen model refuses is clamped in the picker rather than carried through.
+Rows written before the harness field normalize from the model name, so existing runs resume on the
+CLI they always used.

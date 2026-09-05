@@ -4,7 +4,7 @@ import { boundedLoopSnapshot, IPC_LOOP_LIST_LIMIT, loopListPage } from './ipc-pr
 
 const loop: LoopRecord = {
   id: '11111111-1111-4111-8111-111111111111', title: 'Test', prompt: 'goal', workspaceDir: '/tmp/project', maxRounds: 1,
-  budgetUsd: null, models: { orchestratorModel: 'gpt-5.6-luna', orchestratorEffort: 'medium', subagentModel: null, subagentEffort: 'medium', criticModel: 'gpt-5.6-sol', criticEffort: 'high', researchModel: null, researchEffort: 'medium', assetModel: null, assetEffort: 'medium' },
+  budgetUsd: null, models: { orchestratorHarness: 'codex', orchestratorModel: 'gpt-5.6-luna', orchestratorEffort: 'medium', subagentHarness: null, subagentModel: null, subagentEffort: 'medium', criticHarness: 'codex', criticModel: 'gpt-5.6-sol', criticEffort: 'high', researchHarness: null, researchModel: null, researchEffort: 'medium', assetHarness: null, assetModel: null, assetEffort: 'medium' },
   status: 'stopped', round: 1, totalCostUsd: 0, stopReason: null, playTrusted: true,
   createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
 }

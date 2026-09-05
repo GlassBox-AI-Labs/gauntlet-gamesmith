@@ -1,7 +1,7 @@
-import type { TokenTotals } from '../shared/loop'
+import type { RunMetrics, TokenTotals } from '../shared/loop'
 import { canonicalModelId, MODEL_IDS } from '../shared/models'
 
-export const PRICE_TABLE_VERSION = '2026-09-02'
+export const PRICE_TABLE_VERSION = '2026-09-03'
 
 // USD per MTok, list prices as of PRICE_TABLE_VERSION.
 // claude cacheWrite is priced at the 1h TTL (2x input — what subscription
@@ -27,6 +27,10 @@ const PRICES: Record<string, { input: number; output: number; cacheRead: number;
   [MODEL_IDS.codexSol]: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
   [MODEL_IDS.codexTerra]: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
   [MODEL_IDS.codexLuna]: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  // Longer grok ids first: `grok-4.6-build`.includes('grok-4.6') must not hit
+  // grok-4.5, and a bare `grok-4` key would steal both.
+  [MODEL_IDS.grok46]: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  [MODEL_IDS.grok45]: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 2 },
 }
 
 export function estimateCostUsd(model: string | null | undefined, tokens: TokenTotals): number | null {
@@ -39,4 +43,39 @@ export function estimateCostUsd(model: string | null | undefined, tokens: TokenT
     (tokens.input * p.input + tokens.output * p.output + tokens.cacheRead * p.cacheRead + tokens.cacheWrite * p.cacheWrite) /
     1_000_000
   )
+}
+
+/** Rewrite stored CLI/tick costs to the price table so the UI matches list rates. */
+export function repriceMetrics(metrics: RunMetrics | null | undefined, fallbackModel?: string | null): RunMetrics | null {
+  if (!metrics) return null
+  const perModel = Object.fromEntries(
+    Object.entries(metrics.perModel).map(([model, entry]) => [
+      model,
+      { ...entry, costUsd: estimateCostUsd(model, entry.tokens) ?? entry.costUsd },
+    ]),
+  )
+  const agents = metrics.agents.map((agent) => ({
+    ...agent,
+    costUsd: estimateCostUsd(agent.model ?? fallbackModel, agent.tokens) ?? agent.costUsd,
+  }))
+  return { agents, perModel }
+}
+
+/**
+ * Equivalent API cost for a run. Prefer tokens × the price table over a stored
+ * figure: Grok's `costUsdTicks` / `modelUsage.costUSD` is not list price.
+ */
+export function equivalentCostUsd(run: {
+  costUsd?: number | null
+  model?: string | null
+  metrics?: RunMetrics | null
+}): number | null {
+  const metrics = repriceMetrics(run.metrics, run.model)
+  if (metrics) {
+    const models = Object.values(metrics.perModel)
+    if (models.some((m) => m.costUsd != null)) return models.reduce((sum, m) => sum + (m.costUsd ?? 0), 0)
+    const agents = metrics.agents.filter((a) => a.costUsd != null)
+    if (agents.length) return agents.reduce((sum, a) => sum + (a.costUsd ?? 0), 0)
+  }
+  return run.costUsd ?? null
 }

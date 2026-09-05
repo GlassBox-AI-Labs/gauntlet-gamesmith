@@ -1,10 +1,12 @@
-export const harnessKinds = ['claude', 'codex'] as const
+export const harnessKinds = ['claude', 'codex', 'grok'] as const
 
 export type HarnessKind = (typeof harnessKinds)[number]
 
+/** Display name per harness, for tabs and for "X is not connected" messages. */
 export const HARNESS_LABELS: Record<HarnessKind, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  grok: 'Grok Build',
 }
 export type LoginPhase =
   | 'checking'

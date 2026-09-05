@@ -905,6 +905,51 @@ describe('Ledger', () => {
   })
 })
 
+describe('Ledger legacy metrics migration', () => {
+  /**
+   * Delegated grok workers once wrote a `status` field and grok's microsecond
+   * timestamps. Both are outside the bounded agent contract, so the run
+   * projected with no metrics — and before this, one such attempt threw and
+   * took the operator's entire run history down with it.
+   */
+  it('repairs grok worker rows written before the agent contract was bounded', () => {
+    const ledger = makeLedger()
+    const dbPath = path.join(dir!, 'ledger.db')
+    const loop = ledger.createLoop({ prompt: 'build it', workspaceDir: workspace(), maxRounds: 1, budgetUsd: null, models })
+    const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'grok', prompt: 'go' })
+    ledger.close()
+
+    const legacy = {
+      agents: [
+        {
+          id: 'worker:01a06483-0e5a-75d0-ac63-63bbc137bb2f',
+          label: '[implementer] CORE engine surfaces',
+          model: 'grok-4.6',
+          messages: 0,
+          tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 0 },
+          firstTs: '2026-09-02T23:45:05.651236Z',
+          lastTs: '2026-09-03T00:07:14.658257Z',
+          done: true,
+          status: 'completed',
+        },
+      ],
+      perModel: {},
+    }
+    const raw = new DatabaseSync(dbPath)
+    raw.prepare('UPDATE runs SET metrics_json = ? WHERE id = ?').run(JSON.stringify(legacy), run.id)
+    raw.close()
+
+    const reopened = new Ledger(dbPath)
+    const rows = reopened.runsForLoop(loop.id)
+    expect(rows).toHaveLength(1)
+    const [worker] = rows[0].metrics!.agents
+    expect(worker.state).toBe('completed')
+    expect(worker.firstTs).toBe('2026-09-02T23:45:05.651Z')
+    expect(worker.tokens.input).toBe(10)
+    reopened.close()
+  })
+})
+
 describe('Ledger deletion and report storage', () => {
   it('forgets a run without touching the folder ledger, so it can be imported back', () => {
     const ledger = makeLedger()

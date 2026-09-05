@@ -4,6 +4,8 @@ import { isRecordId } from '../shared/record-id'
 import {
   AGENT_EFFORTS,
   AGENT_MODEL_CHOICES,
+  CODEX_ORCHESTRATOR_EFFORTS,
+  CLAUDE_ORCHESTRATOR_EFFORTS,
   SOLO_SUBAGENT,
 } from '../shared/models'
 

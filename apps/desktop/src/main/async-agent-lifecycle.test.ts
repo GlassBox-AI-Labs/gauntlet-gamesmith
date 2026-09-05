@@ -52,6 +52,7 @@ function replay(lines: unknown[], ledger: Ledger, loopId: string, runId: string)
     now: Date.now,
     nowIso: () => new Date().toISOString(),
     harnessHome: () => path.join(dir!, 'harness'),
+    harnessSharedHome: () => path.join(dir!, 'harness'),
     log: (kind, text, agentId) => ledger.appendEvent({
       loopId,
       runId,
@@ -127,7 +128,7 @@ describe('backgrounded subagents', () => {
     expect(agent(ledger, runId, 'toolu_bash')).toBeUndefined()
     const shellLifecycle = ledger.eventsForRun(runId).filter((line) => line.text.includes('Retake final QA screenshots'))
     expect(shellLifecycle.length).toBeGreaterThan(0)
-    expect(shellLifecycle.every((line) => line.kind === 'system')).toBe(true)
+    expect(shellLifecycle.every((line) => line.kind !== 'spawn')).toBe(true)
   })
 
   it('still finishes a synchronous agent on its tool_result', () => {

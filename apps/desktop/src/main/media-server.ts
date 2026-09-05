@@ -17,6 +17,7 @@ const MIME: Record<string, string> = {
   '.webm': 'video/webm',
   '.mp4': 'video/mp4',
   '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska',
 }
 
 function mediaLimit(mime: string): number {

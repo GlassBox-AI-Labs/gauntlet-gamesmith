@@ -35,6 +35,7 @@ describe('planResume', () => {
   ] as const)('maps resume state %# to one action', (last, expected) => {
     expect(planResume(last, 3)).toEqual(expected)
   })
+
 })
 
 it('skips reference on initial start and on an empty-history resume', () => {

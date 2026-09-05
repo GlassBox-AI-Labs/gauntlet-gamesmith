@@ -1264,6 +1264,43 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(attempts.every((attempt) => attempt.status === 'failed')).toBe(true)
     expect(runner.activeRun()).toBeNull()
     expect(attempts.every((attempt) => fs.existsSync(processMetaPath(workspaceDir, attempt.id)))).toBe(true)
+    // The retry must be told why the first attempt was rejected, or it can only repeat it.
+    expect(attempts[0].error).toBeTruthy()
+    expect(attempts[1].prompt).toContain(attempts[0].error!)
+    expect(attempts[1].prompt).toContain('This is the retry.')
+    expect(attempts[1].prompt).toContain(attempts[0].prompt)
+  })
+
+  /**
+   * The whole point of skipping the study: no round 0 is ever queued, and the
+   * pack boundary that fails every later phase closed must not fire.
+   */
+  it('opens a Reference-Study-free loop at implement round 1', async () => {
+    const { ledger, runner, workspaceDir } = setup({
+      wait: async () => {},
+      spawnChild: () => {
+        const child = new EventEmitter() as ChildProcess
+        Object.assign(child, { pid: process.pid, unref: () => child })
+        queueMicrotask(() => child.emit('exit', 1))
+        return child
+      },
+    })
+
+    // Exactly what the IPC handler hands the runner: resolved models spread
+    // over the raw input, then re-resolved by the runner.
+    const raw = { ...input(workspaceDir), referenceMode: 'skip' as const }
+    const started = runner.start({ ...raw, ...resolveModels(raw, raw, raw, raw) })
+    expect(started.ok).toBe(true)
+    await waitFor(() => ledger.getLoop(started.loopId!)?.status === 'failed')
+
+    const attempts = ledger.runsForLoop(started.loopId!)
+    expect(attempts.length).toBeGreaterThan(0)
+    expect(attempts.every((attempt) => attempt.role === 'implement' && attempt.round === 1)).toBe(true)
+    expect(ledger.getLoop(started.loopId!)?.models.referenceMode).toBe('skip')
+    const text = ledger.eventsForLoop(started.loopId!, 2_000).map((event) => event.text).join('\n')
+    expect(text).toContain('Reference Study skipped by operator')
+    // The pack gate never fired, so nothing failed for a missing pack.
+    expect(text).not.toContain('Reference Pack is not ready')
   })
 
   it('turns a rate-limit event into a durable bounded pause without consuming a failure attempt', async () => {

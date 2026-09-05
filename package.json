@@ -2,7 +2,7 @@
   "name": "gauntlet-gamesmith",
   "private": true,
   "version": "0.0.0",
-  "description": "Electron desktop app for local Claude Code and Codex harnesses",
+  "description": "Electron desktop app for local Claude Code, Codex, and Grok Build harnesses",
   "packageManager": "pnpm@10.15.0",
   "pnpm": {
     "overrides": {

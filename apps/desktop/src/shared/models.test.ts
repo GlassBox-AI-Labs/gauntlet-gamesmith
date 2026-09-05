@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, newRunOrchestratorEffort, resolveModels } from './models'
+import {
+  clampEffort,
+  DEFAULT_ASSET,
+  DEFAULT_CRITIC,
+  DEFAULT_IMPLEMENTER,
+  describeCritic,
+  effortsForModel,
+  harnessFor,
+  modelFamily,
+  newRunOrchestratorEffort,
+  normalizeModels,
+  orchestratorEfforts,
+  resolveModels,
+} from './models'
 
 describe('defaults', () => {
   it('starts on Opus 5 at high over Opus 5 subagents', () => {
@@ -184,6 +197,117 @@ describe('normalizeModels critic harness', () => {
   })
 })
 
+describe('the harness/model split', () => {
+  it('stores a harness for every role, taken from the picker rather than the model name', () => {
+    const models = resolveModels(
+      { orchestratorModel: 'claude-opus-5', subagentModel: 'gpt-5.6-sol' },
+      { criticModel: 'grok-4.6' },
+      { researchModel: 'gpt-5.6-luna' },
+    )
+    expect(models.orchestratorHarness).toBe('claude')
+    expect(models.subagentHarness).toBe('codex')
+    expect(models.criticHarness).toBe('grok')
+    expect(models.researchHarness).toBe('codex')
+  })
+
+  it('leaves the harness null for a role that is turned off', () => {
+    const models = resolveModels({ subagentModel: null }, null, { researchModel: null })
+    expect(models.subagentHarness).toBeNull()
+    expect(models.researchHarness).toBeNull()
+  })
+
+  /**
+   * The path that matters: `resumeLoop` reads these fields to decide which
+   * binary to spawn, so a row written before the harness was stored must still
+   * come back pointing at the right CLI.
+   */
+  it('recovers the harness of a row written before the split', () => {
+    const legacy = normalizeModels({
+      orchestratorModel: 'gpt-5.6-sol',
+      orchestratorEffort: 'high',
+      subagentModel: 'claude-opus-5',
+      subagentEffort: 'high',
+      criticModel: 'claude-fable-5',
+      criticEffort: 'medium',
+      researchModel: 'gpt-5.6-luna',
+      researchEffort: 'medium',
+    })
+    expect(legacy.orchestratorHarness).toBe('codex')
+    expect(legacy.subagentHarness).toBe('claude')
+    expect(legacy.criticHarness).toBe('claude')
+    expect(legacy.researchHarness).toBe('codex')
+  })
+
+  it('prefers a stored harness over what the model name would suggest', () => {
+    const models = normalizeModels({
+      orchestratorHarness: 'grok',
+      orchestratorModel: 'claude-opus-5',
+      criticModel: 'gpt-5.6-sol',
+    })
+    expect(models.orchestratorHarness).toBe('grok')
+  })
+})
+
+describe('per-harness efforts', () => {
+  it('does not offer grok an effort its CLI refuses, per model', () => {
+    expect(effortsForModel('grok-4.6')).not.toContain('max')
+    expect(effortsForModel('claude-opus-5')).toContain('max')
+    // grok-4.5 stops a level lower than grok-4.6 — the CLI names the set it takes.
+    expect(effortsForModel('grok-4.6')).toContain('xhigh')
+    expect(effortsForModel('grok-4.5')).not.toContain('xhigh')
+    expect(orchestratorEfforts('grok-4.5')).not.toContain('xhigh')
+  })
+
+  it('clamps a carried-over effort to what the new model accepts', () => {
+    expect(clampEffort(effortsForModel('grok-4.6'), 'max')).toBe('high')
+    expect(clampEffort(effortsForModel('claude-opus-5'), 'max')).toBe('max')
+  })
+
+  it('offers grok no orchestrator fan-out level, and withholds ultra from luna', () => {
+    expect(orchestratorEfforts('grok-4.6')).not.toContain('ultracode')
+    expect(orchestratorEfforts('gpt-5.6-sol')).toContain('ultra')
+    expect(orchestratorEfforts('gpt-5.6-luna')).not.toContain('ultra')
+  })
+
+  it('falls back to the role default when a stored effort is one the harness refuses', () => {
+    expect(resolveModels(null, { criticModel: 'grok-4.6', criticEffort: 'max' }, null).criticEffort).toBe('medium')
+    expect(resolveModels(null, { criticModel: 'grok-4.6', criticEffort: 'xhigh' }, null).criticEffort).toBe('xhigh')
+  })
+})
+
+describe('describeCritic', () => {
+  it('judges lineage by the model, not the CLI running it', () => {
+    expect(describeCritic('grok-4.6', 'claude-opus-5')).toContain('different model family')
+    expect(describeCritic('claude-opus-5', 'claude-fable-5')).toContain('Same model family')
+    expect(modelFamily('openai/gpt-5.6-sol')).toBe('openai')
+  })
+})
+
+describe('the asset role', () => {
+  it('stores its harness like every other role', () => {
+    const models = resolveModels(null, null, null, { assetModel: 'grok-4.6', assetEffort: 'high' })
+    expect(models.assetHarness).toBe('grok')
+    expect(resolveModels(null, null, null, { assetModel: null }).assetHarness).toBeNull()
+  })
+
+  /**
+   * The asset phase shipped after the harness split, so its rows carry a model
+   * but no harness. `executeAssets` reads the harness to pick a binary, so a
+   * missed fallback would spawn the wrong CLI on an old run.
+   */
+  it('recovers the harness of a row written before the field existed', () => {
+    const legacy = normalizeModels({ orchestratorModel: 'claude-opus-5', assetModel: 'gpt-5.6-sol', assetEffort: 'high' })
+    expect(legacy.assetHarness).toBe('codex')
+  })
+
+  it('leaves the phase off when a row stored it off, and defaults when the key predates it', () => {
+    expect(normalizeModels({ orchestratorModel: 'claude-opus-5', assetModel: null }).assetHarness).toBeNull()
+    // No assetModel key at all means the row predates the phase: take the default.
+    const older = normalizeModels({ orchestratorModel: 'claude-opus-5' })
+    expect(older.assetModel).toBe(DEFAULT_ASSET.assetModel)
+    expect(older.assetHarness).toBe('claude')
+  })
+})
 
 describe('Astra', () => {
   it('preserves Astra in every role through resolution and persistence', () => {

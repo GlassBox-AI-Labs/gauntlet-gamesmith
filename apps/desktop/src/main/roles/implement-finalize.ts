@@ -152,7 +152,7 @@ export async function finalizeImplement(
         round: plan.round,
         role: 'critique',
         harness: harnessFor(loop.models.criticModel),
-        prompt: buildCriticPrompt(loop.prompt, plan.round, runtime.referenceDir, revision),
+        prompt: buildCriticPrompt(loop.prompt, plan.round, runtime.referenceDir, revision, 'verdict.json', '', loop.models.referenceMode),
       })
       ledger.patchRun(critique.id, { revision })
     } else if (terminalReason) {

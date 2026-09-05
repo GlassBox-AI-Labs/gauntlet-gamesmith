@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
@@ -6,9 +7,10 @@ import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
 import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 
-export const CLI_HOME_ENV_KEYS: Record<HarnessKind, 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'> = {
+export const CLI_HOME_ENV_KEYS: Record<HarnessKind, 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME' | 'GROK_HOME'> = {
   claude: 'CLAUDE_CONFIG_DIR',
   codex: 'CODEX_HOME',
+  grok: 'GROK_HOME',
 }
 
 export function cliHomeEnv(kind: HarnessKind, home: string): Record<string, string> {
@@ -47,10 +49,34 @@ export function harnessesRoot(): string {
   return path.join(app.getPath('userData'), 'harnesses')
 }
 
+/**
+ * Let the isolated HOME reach the real macOS login keychain.
+ *
+ * macOS finds the keychain search list through `$HOME`, so pointing HOME at the
+ * private config dir leaves the CLI with no default keychain: signing in raises
+ * a "Keychain Not Found" panel over the app and the credentials fall back to a
+ * plaintext file. One link restores the lookup without exposing the rest of the
+ * operator's home. Accounts stay separate either way — the Claude CLI names its
+ * keychain item after the config dir it was signed in with.
+ */
+export function linkLoginKeychain(home: string, realHome: string = os.homedir()): void {
+  if (process.platform !== 'darwin') return
+  const link = path.join(home, 'Library', 'Keychains')
+  try {
+    if (fs.existsSync(link)) return
+    fs.mkdirSync(path.dirname(link), { recursive: true, mode: 0o700 })
+    fs.symlinkSync(path.join(realHome, 'Library', 'Keychains'), link, 'dir')
+  } catch {
+    /* without the link the CLI falls back to its own credential file */
+  }
+}
+
 /** The config dir holding the login of the harness's active account. */
 export function cliHome(kind: HarnessKind): string {
   const root = harnessesRoot()
-  return prepareAccountDir(root, kind, readAccounts(root, kind).activeId)
+  const home = prepareAccountDir(root, kind, readAccounts(root, kind).activeId)
+  linkLoginKeychain(home)
+  return home
 }
 
 /**
@@ -118,6 +144,9 @@ const INHERITED_CLI_ENV = new Set([
 /** Explicit plan fields reviewed as safe for subscription-authenticated runs. */
 const PLAN_CLI_ENV = new Set([
   ...Object.values(CLI_HOME_ENV_KEYS),
+  // Only the grok plan sets HOME, and only to the neutral home (see `neutralHome`).
+  // Claude and Codex inherit the real home so their sign-in reaches the login keychain (ADR-016).
+  'HOME',
   'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS',
   'CLAUDE_CODE_SUBAGENT_MODEL',
   'BASH_MAX_TIMEOUT_MS',
@@ -148,6 +177,20 @@ export function sanitizedExecutablePath(value: string | undefined, unsafeRoots: 
   return safe.length > 0 ? safe.join(path.delimiter) : undefined
 }
 
+/**
+ * Keep node version managers working under an isolated HOME.
+ *
+ * `node`, `npm` and `codex` on the operator's PATH can be Volta shims, and a
+ * shim finds its toolchain through `$VOLTA_HOME`, defaulting to `$HOME/.volta`.
+ * Every child here gets a private HOME, so the shim looks in an empty sandbox
+ * and dies with "Node is not available" (exit 126). Pointing VOLTA_HOME back at
+ * the real install exposes nothing PATH did not already expose.
+ */
+export function voltaHomeEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const voltaHome = source.VOLTA_HOME ?? (source.HOME ? path.join(source.HOME, '.volta') : undefined)
+  return voltaHome && fs.existsSync(path.join(voltaHome, 'bin')) ? { VOLTA_HOME: voltaHome } : {}
+}
+
 export function subscriptionEnv(
   overrides: Record<string, string>,
   source: NodeJS.ProcessEnv = process.env,
@@ -171,5 +214,37 @@ export function subscriptionEnv(
   for (const [key, value] of Object.entries(overrides)) {
     if (PLAN_CLI_ENV.has(key)) env[key] = value
   }
-  return { ...env, NO_COLOR: '1' }
+  return { ...env, ...voltaHomeEnv(source), NO_COLOR: '1' }
+}
+
+/**
+ * A HOME for grok runs that holds nothing but git identity.
+ *
+ * Grok reads Claude Code's configuration as its own — `~/.claude/skills`,
+ * `~/.claude/agents`, `~/.claude/plugins`, `~/.claude.json` MCP servers,
+ * `CLAUDE.md`, and `.claude/settings.json` permissions — and GROK_HOME does not
+ * stop it. Neither do the GROK_CLAUDE_*_ENABLED switches: with all of them set
+ * to 0 the operator's skills, agents and MCP servers still loaded. Since runs
+ * spawn with permissions bypassed, that would hand an autonomous round the
+ * operator's live MCP connections, and it puts uncontrolled variables into an
+ * experiment built for controlled comparison.
+ *
+ * Pointing HOME somewhere empty does stop it, and leaves project-scoped
+ * `.claude/agents/` discovery intact — verified. It lives under the temp dir so
+ * a grok process can write there without touching the real home.
+ *
+ * Git is the one thing that legitimately wants the real home, and rounds record
+ * revisions, so the user's git config is linked back in.
+ */
+export function neutralHome(): string {
+  const home = path.join(os.tmpdir(), 'gauntlet-gamesmith-neutral-home')
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+  const link = path.join(home, '.gitconfig')
+  const real = path.join(os.homedir(), '.gitconfig')
+  try {
+    if (!fs.existsSync(link) && fs.existsSync(real)) fs.symlinkSync(real, link)
+  } catch {
+    /* git falls back to repo-local config */
+  }
+  return home
 }

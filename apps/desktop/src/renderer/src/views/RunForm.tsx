@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { AgentsView } from './AgentsView'
 import { DEFAULT_RUN_PACE, RUN_PACES, runPreset, type RunPace } from '../../../shared/run-presets'
 import { harnessFor } from '../../../shared/models'
+import { harnessKinds, HARNESS_LABELS, type HarnessKind } from '../../../shared/harness'
 import type { RunAttachment, AttachmentResult } from '../../../shared/attachments'
 import type { ReferenceMode } from '../../../shared/loop'
 import { Check, ChevronDown, FolderGit2, FolderPlus, LoaderCircle } from 'lucide-react'
@@ -13,7 +14,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  AGENT_EFFORTS,
+  clampEffort,
+  effortsForModel,
   type AssetFields,
   newRunOrchestratorEffort,
   SOLO_SUBAGENT,
@@ -21,6 +23,10 @@ import {
   type ImplementerFields,
   type ResearchFields,
 } from '../../../shared/models'
+
+function noneConnected(): Record<HarnessKind, boolean> {
+  return Object.fromEntries(harnessKinds.map((kind) => [kind, false])) as Record<HarnessKind, boolean>
+}
 
 function projectName(workspaceDir: string): string {
   return workspaceDir.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Choose project'
@@ -159,7 +165,7 @@ export function RunForm({
   const [agentsOpen, setAgentsOpen] = useState(false)
   const [checking, setChecking] = useState(true)
   const [createAttempted, setCreateAttempted] = useState(false)
-  const [connected, setConnected] = useState({ claude: false, codex: false })
+  const [connected, setConnected] = useState<Record<HarnessKind, boolean>>(() => noneConnected())
   const [contextBusy, setContextBusy] = useState(false)
   const [copyingDroppedContext, setCopyingDroppedContext] = useState(false)
   const [contextError, setContextError] = useState<string | null>(null)
@@ -175,9 +181,9 @@ export function RunForm({
       const probe = ++latestProbe
       setChecking(true)
       try {
-        const [claude, codex] = await Promise.all([window.harnesses.probe('claude'), window.harnesses.probe('codex')])
-        if (!disposed && probe === latestProbe) setConnected({ claude: claude.loggedIn && claude.billingMode === 'subscription', codex: codex.loggedIn && codex.billingMode === 'subscription' })
-      } catch { if (!disposed && probe === latestProbe) { setConnected({ claude: false, codex: false }); setContextError('Could not check agent access. Open Agents to retry.') } }
+        const probes = await Promise.all(harnessKinds.map((kind) => window.harnesses.probe(kind)))
+        if (!disposed && probe === latestProbe) setConnected(Object.fromEntries(harnessKinds.map((kind, index) => [kind, probes[index].loggedIn && probes[index].billingMode === 'subscription'])) as Record<HarnessKind, boolean>)
+      } catch { if (!disposed && probe === latestProbe) { setConnected(noneConnected()); setContextError('Could not check agent access. Open Agents to retry.') } }
       finally { if (!disposed && probe === latestProbe) setChecking(false) }
     }
     void refresh()
@@ -288,7 +294,7 @@ export function RunForm({
               orchestratorModel: value,
               // Keep new runs on explicit reasoning efforts (ADR-019).
               // A historical setting must not re-enable automatic delegation.
-              orchestratorEffort: newRunOrchestratorEffort(impl.orchestratorEffort),
+              orchestratorEffort: clampEffort(effortsForModel(value), newRunOrchestratorEffort(impl.orchestratorEffort)),
             })}
           >
             <SelectTrigger aria-label="Orchestrator model"><SelectValue /></SelectTrigger>
@@ -299,7 +305,7 @@ export function RunForm({
           <Select value={impl.orchestratorEffort} onValueChange={(value) => changeImpl({ ...impl, orchestratorEffort: value })}>
             <SelectTrigger aria-label="Orchestrator effort"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => (
+              {effortsForModel(impl.orchestratorModel).map((effort) => (
                 <SelectItem key={effort} value={effort}>
                   {effort}
                 </SelectItem>
@@ -311,7 +317,7 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Subagents</span>
           <Select
             value={impl.subagentModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeImpl({ ...impl, subagentModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => changeImpl({ ...impl, subagentModel: value === SOLO_SUBAGENT ? null : value, subagentEffort: clampEffort(effortsForModel(value), impl.subagentEffort) })}
           >
             <SelectTrigger aria-label="Subagent model"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -326,7 +332,7 @@ export function RunForm({
           >
             <SelectTrigger aria-label="Subagent effort" className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(impl.subagentModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -335,7 +341,7 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Research</span>
           <Select
             value={research.researchModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeResearch({ ...research, researchModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => changeResearch({ ...research, researchModel: value === SOLO_SUBAGENT ? null : value, researchEffort: clampEffort(effortsForModel(value), research.researchEffort) })}
           >
             <SelectTrigger aria-label="Researcher model"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -350,14 +356,14 @@ export function RunForm({
           >
             <SelectTrigger aria-label="Researcher effort" className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(research.researchModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
         {referenceMode === 'web' && <>
         <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
           <span className="text-xs text-[#7d7772]">Critic</span>
-          <Select value={critic.criticModel} onValueChange={(value) => changeCritic({ ...critic, criticModel: value })}>
+          <Select value={critic.criticModel} onValueChange={(value) => changeCritic({ ...critic, criticModel: value, criticEffort: clampEffort(effortsForModel(value), critic.criticEffort) })}>
             <SelectTrigger aria-label="Critic model"><SelectValue /></SelectTrigger>
             <SelectContent>
               <ModelSelectItems />
@@ -366,7 +372,7 @@ export function RunForm({
           <Select value={critic.criticEffort} onValueChange={(value) => changeCritic({ ...critic, criticEffort: value })}>
             <SelectTrigger aria-label="Critic effort"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(critic.criticModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -375,7 +381,7 @@ export function RunForm({
           <span className="text-xs text-[#7d7772]">Asset sculptors</span>
           <Select
             value={assets.assetModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeAssets({ ...assets, assetModel: value === SOLO_SUBAGENT ? null : value })}
+            onValueChange={(value) => changeAssets({ ...assets, assetModel: value === SOLO_SUBAGENT ? null : value, assetEffort: clampEffort(effortsForModel(value), assets.assetEffort) })}
           >
             <SelectTrigger aria-label="Asset model"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -390,7 +396,7 @@ export function RunForm({
           >
             <SelectTrigger aria-label="Asset effort" className={assets.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
             <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
+              {effortsForModel(assets.assetModel).map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -402,9 +408,9 @@ export function RunForm({
         </div>
         {error && <p role="alert" className="mx-4 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       </Card>
-      <div className="mt-3 flex flex-wrap items-center gap-2">{(['claude', 'codex'] as const).map((kind) => {
+      <div className="mt-3 flex flex-wrap items-center gap-2">{harnessKinds.map((kind) => {
         const needsConnection = showConnectionError && !connected[kind] && ((!connected.claude && !connected.codex) || needed.some((model) => harnessFor(model) === kind))
-        const label = kind === 'claude' ? 'Claude Code' : 'Codex'
+        const label = HARNESS_LABELS[kind]
         return <button type="button" key={kind} aria-label={`${label}: ${connected[kind] ? 'connected' : 'not connected'}. Open agent connections`} title="Open agent connections" onClick={() => setAgentsOpen(true)} aria-describedby={needsConnection ? 'run-connection-error' : undefined} className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${needsConnection ? 'border-red-400 bg-red-950/30 text-red-200 ring-1 ring-red-400/30' : 'border-[#3b3534] bg-[#1b1717] text-[#cfc8c4]'}`}><span aria-hidden="true" className={`size-2 rounded-full ${connected[kind] ? 'bg-emerald-400' : 'bg-[#69615e]'}`} />{label}</button>
       })}</div>
       <Sheet open={agentsOpen} onOpenChange={setAgentsOpen}><SheetContent className="overflow-y-auto"><SheetHeader><SheetTitle>Agent connections</SheetTitle><SheetDescription>Sign in through the installed CLI. Your run draft stays here.</SheetDescription></SheetHeader><div className="px-4 pb-6"><AgentsView /></div></SheetContent></Sheet>

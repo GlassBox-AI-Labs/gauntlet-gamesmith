@@ -8,7 +8,7 @@ import { cliHomeEnv } from './harness-env'
 /**
  * How to start each CLI, as data.
  *
- * Both harnesses can take any role, so the runner asks for a plan rather than
+ * Every harness can take any role, so the runner asks for a plan rather than
  * branching on the harness at every call site. These are pure functions: what
  * to run, with which flags, in which environment. Nothing here touches disk.
  */
@@ -23,13 +23,23 @@ export interface PlanContext {
   prompt: string
   claudeHome: string
   codexHome: string
+  grokHome: string
+  /** An empty HOME for grok runs — see `neutralHome` for why it is needed. */
+  neutralHome: string
   /** Session/thread to continue, when the app is picking up an interrupted run. */
   resumeId?: string | null
+  /** Continue the most recent session instead of naming one. */
+  resumeLatest?: boolean
   /** Optional Codex compatibility output; machine decisions never trust it. */
   outFile?: string | null
+  /**
+   * Inline subagent definitions for a grok orchestrator, pinning the worker
+   * model. Built in delegation.ts, passed in so the plans stay pure.
+   */
+  agentsJson?: string | null
 }
 
-/** Codex flags shared by every role: a sandbox that can build, with the network on. */
+/** Codex flags shared by every role: no sandbox, so Playwright can launch a browser. */
 export function codexArgs(model: string, effort: string, outFile: string | null | undefined, resumeId?: string | null): string[] {
   return [
     'exec',
@@ -42,10 +52,9 @@ export function codexArgs(model: string, effort: string, outFile: string | null 
     // missing (verified live) — the classic shell path works everywhere.
     '--disable',
     'code_mode',
+    // Codex has no `off` value; `danger-full-access` is unrestricted execution.
     '-s',
-    'workspace-write',
-    '-c',
-    'sandbox_workspace_write.network_access=true',
+    'danger-full-access',
     '-c',
     'tools.web_search=true',
     '-c',
@@ -55,6 +64,33 @@ export function codexArgs(model: string, effort: string, outFile: string | null 
     '-c',
     `model_reasoning_effort=${effort}`,
     ...(outFile ? ['-o', outFile] : []),
+  ]
+}
+
+/**
+ * Grok flags shared by every role.
+ *
+ * `streaming-messages-json` is Claude Code's own stream-json wire format — same
+ * event types, same usage field names, same result event with `total_cost_usd`
+ * — so the claude translator reads it unchanged.
+ *
+ * The sandbox is `off` (unrestricted). `workspace` Seatbelt on macOS kills
+ * Playwright's bundled Chromium at launch (SIGSEGV in IOKit / Mach register).
+ * The flag is explicit so a GROK_HOME config cannot quietly re-enable it.
+ */
+export function grokArgs(model: string, effort: string, prompt: string): string[] {
+  return [
+    '-p',
+    prompt,
+    '--output-format',
+    'streaming-messages-json',
+    '--always-approve',
+    '--sandbox',
+    'off',
+    '-m',
+    model,
+    '--reasoning-effort',
+    effort,
   ]
 }
 
@@ -80,15 +116,29 @@ export function claudeArgs(model: string, effort: string, prompt: string): strin
  * harness and no-delegation runs receive only their own home, avoiding
  * needless access to the other CLI's private profile.
  */
+/** The private home for one harness, so only the needed ones are exported. */
+function homeFor(ctx: PlanContext, kind: HarnessKind): string {
+  return kind === 'claude' ? ctx.claudeHome : kind === 'codex' ? ctx.codexHome : ctx.grokHome
+}
+
 function requiredHomes(ctx: PlanContext, primaryModel: string, delegatedModels: readonly (string | null)[]): Record<string, string> {
   const primary = harnessFor(primaryModel)
   const delegated = new Set(delegatedModels.filter((model): model is string => model != null).map(harnessFor))
   return {
-    ...cliHomeEnv(primary, primary === 'claude' ? ctx.claudeHome : ctx.codexHome),
+    ...cliHomeEnv(primary, homeFor(ctx, primary)),
     ...([...delegated].reduce<Record<string, string>>((env, kind) => (
-      kind === primary ? env : { ...env, ...cliHomeEnv(kind, kind === 'claude' ? ctx.claudeHome : ctx.codexHome) }
+      kind === primary ? env : { ...env, ...cliHomeEnv(kind, homeFor(ctx, kind)) }
     ), {})),
   }
+}
+
+/**
+ * Grok's own environment. HOME is redirected as well as GROK_HOME, because
+ * GROK_HOME alone does not stop grok reading the operator's `~/.claude`
+ * configuration as its own — see `neutralHome`.
+ */
+function grokEnv(ctx: PlanContext): Record<string, string> {
+  return { GROK_HOME: ctx.grokHome, HOME: ctx.neutralHome }
 }
 
 const CLAUDE_RUN_ENV: Record<string, string> = {
@@ -105,7 +155,20 @@ const CLAUDE_RUN_ENV: Record<string, string> = {
 
 export function implementPlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
-  const harness: HarnessKind = harnessFor(models.orchestratorModel)
+  const harness = models.orchestratorHarness
+  if (harness === 'grok') {
+    return {
+      bin: 'grok',
+      args: [
+        ...(ctx.resumeId ? ['--resume', ctx.resumeId] : ctx.resumeLatest ? ['--continue'] : []),
+        ...grokArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
+        // Pins the worker model on grok's own delegation path; verified to
+        // reach the subagent's effective_model_id.
+        ...(ctx.agentsJson ? ['--agents', ctx.agentsJson] : []),
+      ],
+      env: { ...requiredHomes(ctx, models.orchestratorModel, [models.subagentModel, models.assetModel]), ...grokEnv(ctx) },
+    }
+  }
   if (harness === 'codex') {
     return {
       bin: 'codex',
@@ -129,7 +192,7 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
       // workflow agent falls back to when the script names no model. A codex
       // pick binds the dispatcher instead — the CLI would ignore a gpt id.
       ...(models.subagentModel
-        ? { CLAUDE_CODE_SUBAGENT_MODEL: harnessFor(models.subagentModel) === 'claude' ? models.subagentModel : DISPATCHER_MODEL }
+        ? { CLAUDE_CODE_SUBAGENT_MODEL: models.subagentHarness === 'claude' ? models.subagentModel : DISPATCHER_MODEL }
         : {}),
     },
   }
@@ -142,7 +205,15 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
  */
 export function assetsPlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
-  if (harnessFor(models.orchestratorModel) === 'codex') {
+  const harness = models.orchestratorHarness
+  if (harness === 'grok') {
+    return {
+      bin: 'grok',
+      args: grokArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
+      env: { ...requiredHomes(ctx, models.orchestratorModel, [models.assetModel]), ...grokEnv(ctx) },
+    }
+  }
+  if (harness === 'codex') {
     return {
       bin: 'codex',
       args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, null, ctx.resumeId), ctx.prompt],
@@ -159,7 +230,7 @@ export function assetsPlan(ctx: PlanContext): SpawnPlan {
       ...requiredHomes(ctx, models.orchestratorModel, [models.assetModel]),
       ...CLAUDE_RUN_ENV,
       ...(models.assetModel
-        ? { CLAUDE_CODE_SUBAGENT_MODEL: harnessFor(models.assetModel) === 'claude' ? models.assetModel : DISPATCHER_MODEL }
+        ? { CLAUDE_CODE_SUBAGENT_MODEL: models.assetHarness === 'claude' ? models.assetModel : DISPATCHER_MODEL }
         : {}),
     },
   }
@@ -168,7 +239,14 @@ export function assetsPlan(ctx: PlanContext): SpawnPlan {
 /** A one-agent research run using the orchestrator model, with no delegation. */
 export function referencePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
-  if (harnessFor(models.orchestratorModel) === 'codex') {
+  if (models.orchestratorHarness === 'grok') {
+    return {
+      bin: 'grok',
+      args: grokArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
+      env: { ...requiredHomes(ctx, models.orchestratorModel, [models.researchModel]), ...grokEnv(ctx) },
+    }
+  }
+  if (models.orchestratorHarness === 'codex') {
     return {
       bin: 'codex',
       args: [...codexArgs(models.orchestratorModel, models.orchestratorEffort, ctx.outFile), ctx.prompt],
@@ -184,7 +262,16 @@ export function referencePlan(ctx: PlanContext): SpawnPlan {
 
 export function critiquePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
-  if (harnessFor(models.criticModel) === 'codex') {
+  if (models.criticHarness === 'grok') {
+    // No `-o` equivalent: grok's verdict comes back in the result event's
+    // `result` field, which the claude translator already surfaces.
+    return {
+      bin: 'grok',
+      args: grokArgs(models.criticModel, models.criticEffort, ctx.prompt),
+      env: grokEnv(ctx),
+    }
+  }
+  if (models.criticHarness === 'codex') {
     return {
       bin: 'codex',
       args: [...codexArgs(models.criticModel, models.criticEffort, ctx.outFile), ctx.prompt],

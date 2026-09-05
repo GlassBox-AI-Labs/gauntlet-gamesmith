@@ -17,8 +17,10 @@ import {
   prepareAccountDir,
   readAccounts,
   removeAccount,
+  sharedDir,
   switchAccount,
 } from './accounts'
+import { workflowTailDir } from './workflow-tail'
 
 let root: string
 
@@ -61,6 +63,19 @@ describe('harness accounts', () => {
     fs.writeFileSync(path.join(primaryDir, '.credentials.json'), 'first')
 
     expect(fs.existsSync(path.join(secondDir, '.credentials.json'))).toBe(false)
+  })
+
+  it('resolves workflow transcripts through the shared store, not a second account dir', () => {
+    const second = addAccount(root, 'claude').activeId
+    const secondDir = prepareAccountDir(root, 'claude', second)
+    const shared = fs.realpathSync(sharedDir(root, 'claude'))
+
+    // A second account reaches transcripts through a `projects` link, and the
+    // workflow path walker refuses to follow one. Read from the shared store.
+    expect(() => workflowTailDir(secondDir, '/workspace', 'sess-1')).toThrow(/symbolic link/)
+    expect(workflowTailDir(shared, '/workspace', 'sess-1')).toBe(
+      path.join(shared, 'projects', '-workspace', 'sess-1', 'subagents', 'workflows'),
+    )
   })
 
   it('switches the active account and remembers it', () => {
