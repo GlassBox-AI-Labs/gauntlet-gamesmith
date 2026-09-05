@@ -36,6 +36,7 @@ import {
   parseLogLimit,
   parseDeleteRunsInput,
   parseLoopListOffset,
+  parseOnboardingHarness,
   parseOptionalRound,
   parseRunPageOffset,
   parseRunPromptRequest,
@@ -46,6 +47,7 @@ import {
   renameTrustError,
 } from './ipc-input'
 import { Ledger } from './ledger'
+import { OnboardingStore } from './onboarding'
 import { LoopRunner } from './loop-runner'
 import { stopExistingLoop } from './loop-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
@@ -139,6 +141,13 @@ const harnessLogins = new HarnessLoginManager(app.getPath('home'), {
   },
   terminal: (kind, data) => mainWindow?.webContents.send(IPC.harness.terminalData, { kind, data }),
 })
+
+let onboardingStore: OnboardingStore | null = null
+
+function onboarding(): OnboardingStore {
+  onboardingStore ??= new OnboardingStore(app.getPath('userData'))
+  return onboardingStore
+}
 
 function recordSuccessfulLogin(kind: HarnessKind, action: HarnessAction): void {
   if (action.type !== 'probe_finished' || !action.loggedIn) return
@@ -576,6 +585,10 @@ function registerLoopIpc(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.handle(IPC.onboarding.get, () => onboarding().read())
+  ipcMain.handle(IPC.onboarding.complete, (_event, value: unknown) =>
+    onboarding().complete(parseOnboardingHarness(value)))
+  ipcMain.handle(IPC.onboarding.reset, () => onboarding().reset())
   ipcMain.handle(IPC.harness.detect, (_event, value: unknown) => harnessLogins.detect(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.probe, (_event, value: unknown) => harnessLogins.probe(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.startLogin, (_event, value: unknown) => harnessLogins.start(assertHarnessKind(value)))

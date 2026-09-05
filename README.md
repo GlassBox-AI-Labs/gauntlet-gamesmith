@@ -70,18 +70,28 @@ snapshot of every round, so you can go back to an earlier version of your game.
 
 ## First run
 
-1. Open the app. It starts on the **Agents** tab.
-2. Click the button to sign in to Claude or Codex. A small terminal window opens
-   and walks you through the normal sign-in for that tool. The app only starts
-   the sign-in and reads whether it worked. It does not read or copy your login.
-3. Switch to the **Run** tab. Pick a folder for your game, describe the game you
-   want, and press start.
-4. Watch the rounds go by. The app stops on its own when the critic approves the
-   game, when it hits the round limit, when it hits the spending limit you set,
-   or when you press stop.
+The first time you open the app, it walks you through setup:
+
+1. **Welcome** — a short note on what the app does.
+2. **Connect an agent** — pick Claude or Codex and sign in. A small terminal
+   opens and runs that tool's own login, which usually sends you to your
+   browser. The app only starts the sign-in and reads whether it worked. It
+   never reads or copies your login. If the tool is not installed yet, this
+   step shows you the exact command to install it.
+3. **How it works** — four cards covering what happens during a run.
+
+You can skip setup, and you can bring the tour back later from the Agents tab
+("Show the tour again").
+
+After that you land on the **Run** tab. Pick a folder for your game, describe
+the game you want, and press start. Watch the rounds go by. The app stops on
+its own when the critic approves the game, when it hits the round limit, when
+it hits the spending limit you set, or when you press stop.
 
 Everything stays on your machine. There is no account to create and no server to
 connect to.
+
+---
 
 ## Sharing a run with someone else
 
