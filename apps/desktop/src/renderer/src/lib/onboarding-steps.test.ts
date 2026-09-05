@@ -3,7 +3,6 @@ import type { HarnessKind, HarnessState, LoginPhase } from '../../../shared/harn
 import { HARNESS_LABELS } from '../../../shared/harness'
 import { initialHarnessState } from './login-state'
 import {
-  INSTALL_COMMANDS,
   ONBOARDING_STEPS,
   canLeaveConnectStep,
   connectFooterNote,
@@ -97,9 +96,23 @@ describe('leaving the connect step', () => {
   })
 })
 
-describe('install commands', () => {
-  it('gives the published package for each harness', () => {
-    expect(INSTALL_COMMANDS.claude).toBe('npm install -g @anthropic-ai/claude-code')
-    expect(INSTALL_COMMANDS.codex).toBe('npm install -g @openai/codex')
+describe('installing state', () => {
+  it('reports an install in progress as its own status', () => {
+    expect(connectStatus(harness('claude', 'installing'))).toBe('installing')
+    expect(connectStatusLabel(harness('claude', 'installing'))).toBe('Installing…')
+  })
+
+  it('shows why an install failed instead of the generic missing-CLI line', () => {
+    expect(connectStatusLabel(harness('codex', 'not_found', 'The installer exited 1.')))
+      .toBe('The installer exited 1.')
+  })
+
+  it('still names the missing CLI when there is no failure to report', () => {
+    expect(connectStatusLabel(harness('codex', 'not_found'))).toContain('not installed')
+  })
+
+  it('does not count an in-progress install as settled or connected', () => {
+    expect(connectStepSettled(states('installing', 'not_found'))).toBe(true)
+    expect(canLeaveConnectStep(states('installing', 'not_found'))).toBe(false)
   })
 })

@@ -21,6 +21,41 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
+describe('newly installed CLIs', () => {
+  it('finds a binary the native installer put in ~/.local/bin but not on PATH', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-userbin-'))
+    roots.push(root)
+    const home = path.join(root, 'home')
+    const elsewhere = path.join(root, 'elsewhere')
+    fs.mkdirSync(elsewhere, { recursive: true })
+    executable(path.join(home, '.local', 'bin', 'claude'))
+
+    const resolved = resolveCliExecutable('claude', { PATH: elsewhere, HOME: home })
+    expect(resolved.path).toBe(fs.realpathSync(path.join(home, '.local', 'bin', 'claude')))
+  })
+
+  it('still prefers a PATH entry over the install directory', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-userbin-order-'))
+    roots.push(root)
+    const home = path.join(root, 'home')
+    const onPath = path.join(root, 'usr-local-bin')
+    executable(path.join(onPath, 'codex'))
+    executable(path.join(home, '.local', 'bin', 'codex'))
+
+    const resolved = resolveCliExecutable('codex', { PATH: onPath, HOME: home })
+    expect(resolved.path).toBe(fs.realpathSync(path.join(onPath, 'codex')))
+  })
+
+  it('does not use an install directory inside a protected app root', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-userbin-unsafe-'))
+    roots.push(root)
+    const home = path.join(root, 'private-home')
+    executable(path.join(home, '.local', 'bin', 'claude'))
+
+    expect(() => resolveCliExecutable('claude', { PATH: '', HOME: home }, [home])).toThrow(/not found/)
+  })
+})
+
 describe('CLI executable resolution', () => {
   it('skips a repository-planted binary and pins the installed real path', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-resolution-'))

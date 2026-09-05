@@ -3,6 +3,8 @@ export const IPC = {
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',
+    installOffer: 'harness:install-offer',
+    startInstall: 'harness:start-install',
     startLogin: 'harness:start-login',
     cancelLogin: 'harness:cancel-login',
     logout: 'harness:logout',

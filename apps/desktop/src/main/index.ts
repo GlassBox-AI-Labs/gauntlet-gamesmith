@@ -592,6 +592,8 @@ function registerIpc(): void {
   ipcMain.handle(IPC.onboarding.reset, () => onboarding().reset())
   ipcMain.handle(IPC.harness.detect, (_event, value: unknown) => harnessLogins.detect(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.probe, (_event, value: unknown) => harnessLogins.probe(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.installOffer, (_event, value: unknown) => harnessLogins.offerInstall(assertHarnessKind(value)))
+  ipcMain.handle(IPC.harness.startInstall, (_event, value: unknown) => harnessLogins.install(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.startLogin, (_event, value: unknown) => harnessLogins.start(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.cancelLogin, (_event, value: unknown) => harnessLogins.cancel(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.logout, async (_event, value: unknown) => {
