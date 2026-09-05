@@ -69,7 +69,7 @@ describe('CLI executable resolution', () => {
     executable(path.join(installed, 'claude'))
     configureAgentWritableRoots(() => [workspace])
 
-    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}` })
+    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}`, HOME: root })
     expect(resolved.path).toBe(fs.realpathSync(path.join(installed, 'claude')))
   })
 
@@ -82,7 +82,7 @@ describe('CLI executable resolution', () => {
     fs.mkdirSync(path.join(prefix, '.git'), { recursive: true })
     executable(path.join(prefix, 'bin', 'claude'))
 
-    const resolved = resolveCliExecutable('claude', { PATH: path.join(prefix, 'bin') })
+    const resolved = resolveCliExecutable('claude', { PATH: path.join(prefix, 'bin'), HOME: root })
     expect(resolved.path).toBe(fs.realpathSync(path.join(prefix, 'bin', 'claude')))
   })
 
@@ -93,7 +93,7 @@ describe('CLI executable resolution', () => {
     executable(path.join(workspace, 'bin', 'codex'))
     configureAgentWritableRoots(() => [workspace])
 
-    expect(() => resolveCliExecutable('codex', { PATH: path.join(workspace, 'bin') })).toThrow(/not found/)
+    expect(() => resolveCliExecutable('codex', { PATH: path.join(workspace, 'bin'), HOME: root })).toThrow(/not found/)
   })
 
   it('falls back to the caller’s roots when the tracked-root lookup fails', () => {
@@ -105,7 +105,7 @@ describe('CLI executable resolution', () => {
     executable(path.join(installed, 'claude'))
     configureAgentWritableRoots(() => { throw new Error('ledger is closed') })
 
-    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}` }, [workspace])
+    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}`, HOME: root }, [workspace])
     expect(resolved.path).toBe(fs.realpathSync(path.join(installed, 'claude')))
   })
 
