@@ -153,5 +153,8 @@ work would cost through a pay-per-use API. It is not your real bill.
 
 ## For developers
 
+Start with the [architecture guide](docs/ARCHITECTURE.md) for the repository layout and execution
+flow, and the [coding standards](docs/STANDARDS.md) for author and review requirements.
+
 Building from source, running the tests, and creating the download files are
 covered in [`apps/desktop/README.md`](apps/desktop/README.md).
