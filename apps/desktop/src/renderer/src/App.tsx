@@ -1,12 +1,17 @@
 import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { AgentsView } from '@/views/AgentsView'
+import { RunFormPrototype } from '@/views/RunFormPrototype'
 import { RunView } from '@/views/RunView'
 
 type View = 'run' | 'agents'
 
 export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>('run')
+
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') {
+    return <RunFormPrototype />
+  }
 
   if (view === 'run') return <RunView onOpenAgents={() => setView('agents')} />
 

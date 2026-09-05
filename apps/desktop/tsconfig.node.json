@@ -10,6 +10,8 @@
   },
   "include": [
     "electron.vite.config.ts",
+    "electron.prototype.config.ts",
+    "electron.run-form.config.ts",
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts"

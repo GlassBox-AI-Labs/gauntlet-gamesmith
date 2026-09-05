@@ -34,6 +34,7 @@ export function estimateCostUsd(model: string | null | undefined, tokens: TokenT
   const key = canonicalModelId(model)
   if (!key) return null
   const p = PRICES[key]
+  if (!p) return null
   return (
     (tokens.input * p.input + tokens.output * p.output + tokens.cacheRead * p.cacheRead + tokens.cacheWrite * p.cacheWrite) /
     1_000_000

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearCliExecutableCacheForTest,
   cliExecutable,
@@ -17,6 +17,7 @@ function executable(file: string): void {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   clearCliExecutableCacheForTest()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
@@ -67,5 +68,47 @@ describe('CLI executable resolution', () => {
     expect(() => validatedExecutableEnv(new Map([['codex', path.join(workspace, 'codex')]]), [workspace])).toThrow(
       /absolute canonical|safe installed executable/,
     )
+  })
+})
+
+
+describe('NVM global CLI installations', () => {
+  it('accepts installed global CLIs beneath NVM’s own Git checkout, including cached real paths', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-nvm-'))
+    roots.push(home)
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const nvm = path.join(home, '.nvm')
+    const version = path.join(nvm, 'versions/node/v22.23.1')
+    fs.mkdirSync(path.join(nvm, '.git'), { recursive: true })
+    const installed = path.join(version, 'lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe')
+    executable(installed)
+    fs.mkdirSync(path.join(version, 'bin'), { recursive: true })
+    fs.symlinkSync(installed, path.join(version, 'bin/claude'))
+    const env = { PATH: path.join(version, 'bin') }
+    expect(cliExecutable('claude', [], env)).toBe(fs.realpathSync(installed))
+    expect(cliExecutable('claude', [], env)).toBe(fs.realpathSync(installed))
+    expect(() => resolveCliExecutable('claude', env, [version])).toThrow(/not found/)
+    fs.mkdirSync(path.join(version, 'lib/node_modules/@anthropic-ai/claude-code/.git'))
+    expect(() => resolveCliExecutable('claude', env)).toThrow(/not found/)
+  })
+
+  it('rejects project links, other NVM directories, and repositories above the NVM root', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-nvm-project-'))
+    roots.push(home)
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const nvm = path.join(home, '.nvm')
+    fs.mkdirSync(path.join(nvm, '.git'), { recursive: true })
+    executable(path.join(nvm, 'project/bin/claude'))
+    expect(() => resolveCliExecutable('claude', { PATH: path.join(nvm, 'project/bin') })).toThrow(/not found/)
+    const bin = path.join(nvm, 'versions/node/v22.23.1/bin')
+    const project = path.join(home, 'project')
+    fs.mkdirSync(path.join(project, '.git'), { recursive: true })
+    executable(path.join(project, 'claude'))
+    fs.mkdirSync(bin, { recursive: true })
+    fs.symlinkSync(path.join(project, 'claude'), path.join(bin, 'claude'))
+    expect(() => resolveCliExecutable('claude', { PATH: bin })).toThrow(/not found/)
+    executable(path.join(bin, 'codex'))
+    fs.mkdirSync(path.join(home, '.git'))
+    expect(() => resolveCliExecutable('codex', { PATH: bin })).toThrow(/not found/)
   })
 })

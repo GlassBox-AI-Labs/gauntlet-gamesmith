@@ -122,4 +122,10 @@ function SelectScrollDownButton({
   )
 }
 
-export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue }
+const SelectGroup = SelectPrimitive.Group
+
+function SelectLabel({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Label>) {
+  return <SelectPrimitive.Label className={cn("px-2 py-1.5 text-[10px] font-medium uppercase tracking-wide text-[#958780]", className)} {...props} />
+}
+
+export { SelectGroup, SelectLabel, Select, SelectContent, SelectItem, SelectTrigger, SelectValue }

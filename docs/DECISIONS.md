@@ -311,3 +311,100 @@ or authorize similarly broad follow-up changes.
 
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
+
+
+## ADR-013 — Supplied context and explicit Reference Study modes (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** The selected run composer must reflect real execution. User-supplied files belong to
+the run's reference evidence, and skipping Reference Study must not launch a research agent.
+
+**Decision.** Persist `referenceMode` in the existing models/configuration JSON. Missing values in
+historical records retain the original web Reference Study. `web` studies the web and supplied
+files; `files` queues one study of supplied evidence without researcher fan-out or web research;
+`skip` queues implementation directly, including after recovery or an empty-history Resume.
+Files-only study has a local-source artifact contract without downloaded-media quotas. Skip-mode
+implementation and critique use the goal and supplied context without requiring an AAA pack.
+Sculptor configuration is disabled in skip mode because it requires a studied reference cast.
+
+Main snapshots selected files into bounded in-memory drafts, returning opaque IDs. At Create,
+the snapshot is published under `reference/<loop-id>/supplied/` before queueing any agent. Its
+manifest records original relative names, sizes, and SHA-256 hashes; its fingerprint is recorded
+in both ledgers' event history and checked at phase boundaries, including Reference Study retries.
+Supplied files remain untrusted evidence, not instructions or automatic redistribution permission.
+The existing whole-project export includes them; no original machine path is needed for replay.
+Folders are flattened into uniquely numbered files with original relative paths in the manifest.
+No symlinks, hidden/credential files, generated dependency trees, or private app/CLI roots are read.
+Limits are 100 files, 20 MB per file, 100 MB total, and 2,000 scanned entries per selected tree.
+
+**Consequences.** Reloading before Create discards draft attachments; created runs retain their
+copies even if originals move or change. Folder chips open the original selected directory in
+Finder through an identity-checked main-process capability. No SQLite schema migration is needed:
+the additive JSON policy field normalizes with the historical default. The reference mode is an
+execution/prompt policy; it does not introduce an OS network sandbox around implementation tools.
+
+
+## ADR-014 — Explicit execution trust for existing run folders (2026-09-05)
+
+**Status:** accepted. Supersedes ADR-005's lack of an existing-history execution trust control;
+its credential, ownership, raw-stream, import, and revision protections remain in force.
+
+**Decision.** Play and Resume offer a native main-process warning at the privileged action boundary.
+It names the registered run and exact folder, explains local-user execution permissions, and uses
+Cancel as both default and escape action. Confirmation is bound to the captured registry row,
+workspace device/inode, matching inert portable history, and a bounded metadata fingerprint of the
+folder. Main checks these before and after the dialog and rejects retained/unknown process ownership,
+quarantine, protected roots, escaping/broken links, special files, or concurrent changes. Browsing
+history never grants trust. The renderer captures the action's run ID and selection generation;
+changing selection prevents continuation, including changing away and back.
+
+An additive `execution_trusted` column defaults to false in both ledgers, and import always clears it.
+Only explicit consent sets it through the canonical mirrored transaction and records a visible trust
+event. Play and Resume accept local creation provenance or this local execution consent. The existing
+`play_trusted` provenance stays unchanged, so consent does not unlock private transcript access or
+rename, adopt portable CLI session IDs, or promote workspace Git objects into app-private revision
+authority. Resume of an imported queued attempt creates a new attempt, and imported histories use
+fresh CLI sessions. New local runs retain their behavior.
+
+**Consequences.** Existing teammates' games can Play without creating another run or clicking twice.
+Resume and historical-round Play still fail closed if an app-private revision or validated phase
+artifact is unavailable. Trees above 200,000 entries require reducing the tree before consent. The
+metadata fingerprint does not read project file contents or follow external links. This is explicit
+folder trust, not an OS sandbox or a permanent content signature: later edits are permitted, and
+same-user concurrent filesystem mutation cannot be made atomic with SQLite and process launch.
+Registry-first crash/mirror recovery remains as in ADR-005; a reported persistence failure revokes
+canonical execution consent, records the failure, and attempts mirror repair before returning.
+
+## ADR-015 — Explicit delegation instead of Ultra for new runs (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** Gauntlet prescribes phase execution, agent roles, worker models, and delegation.
+The harness-specific `ultra` (Codex) and `ultracode` (Claude) efforts additionally enable
+harness-managed automatic delegation/workflows. Offering them as simply higher reasoning
+levels overlaps our orchestration policy and makes solo behavior harder to explain and control.
+
+**Decision.** New runs offer only `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts.
+Remove Ultra/Ultracode from the run composer and reject those values at the new-run IPC boundary.
+Defaults and presets must never enable them; the Maximum preset uses `max`. Delegation remains
+explicitly configured by the app. Solo means the orchestrator implements the code itself without
+implementation subagents; reference researchers, critics, and sculptors have separate controls.
+
+**Compatibility.** Preserve stored Ultra/Ultracode settings and their execution support when
+reading or resuming existing runs. Do not migrate their historical configuration or reinterpret
+past logs. When copying historical settings into a new-run draft, map `ultra` to `max` and
+`ultracode` to `xhigh`, keeping reasoning effort without the automatic delegation mode.
+
+**Visibility remains mandatory.** This decision removes a new-run configuration option; it does
+not disable Workflow tools or remove their observability. Retain workflow transcript tailing,
+progress and agent metrics, token/cost accounting, raw event visibility, and persisted offsets
+and file identities for recovery. Observe workflows whenever they occur, regardless of the
+selected effort. `roles/implement-claude.ts`, `workflow-tail.ts`, and `workflow-progress.ts`
+remain necessary for historical runs and any workflow activity in ordinary-effort sessions.
+Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
+
+**Consequences.** Keep legacy normalization separate from new-run validation and picker choices.
+Teammates must not reintroduce these modes through defaults, presets, or new model support.
+Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
+automatic harness orchestration requires a new product decision with explicit UI semantics.
