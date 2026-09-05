@@ -161,6 +161,7 @@ export function RunForm({
   const [createAttempted, setCreateAttempted] = useState(false)
   const [connected, setConnected] = useState({ claude: false, codex: false })
   const [contextBusy, setContextBusy] = useState(false)
+  const [copyingDroppedContext, setCopyingDroppedContext] = useState(false)
   const [contextError, setContextError] = useState<string | null>(null)
   const [contextNotice, setContextNotice] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -192,7 +193,7 @@ export function RunForm({
   }
   useEffect(() => {
     if (checking || busy || custom) return
-    // Keep the draft when neither provider is available; Create stays disabled.
+    // Keep the draft when neither provider is available; Create explains the missing connection.
     if (!connected.claude && !connected.codex) { appliedPreset.current = null; return }
     const next = settings.initialized ? pace : DEFAULT_RUN_PACE
     const signature = `${next}:${connected.claude}:${connected.codex}:${assets.assetModel !== null}`
@@ -201,9 +202,9 @@ export function RunForm({
     if (!settings.initialized) onSettingsChange((current) => ({ ...current, initialized: true }))
     applyPace(next)
   }, [checking, connected.claude, connected.codex, busy, custom, pace, settings.initialized, assets.assetModel !== null])
-  const add = async (operation: () => Promise<AttachmentResult<RunAttachment[]>>): Promise<void> => {
+  const add = async (operation: () => Promise<AttachmentResult<RunAttachment[]>>, fromPicker = false): Promise<void> => {
     if (adding.current || busy) return
-    adding.current = true; setContextBusy(true); onAttachmentBusyChange(true); setContextError(null); setContextNotice(null)
+    adding.current = true; setCopyingDroppedContext(!fromPicker); setContextBusy(true); onAttachmentBusyChange(true); setContextError(null); setContextNotice(null)
     try {
       const result = await operation()
       if (!result.ok) { setContextError(result.error); return }
@@ -211,7 +212,7 @@ export function RunForm({
       const skipped = result.value.reduce((sum, item) => sum + item.skipped, 0)
       if (skipped) setContextNotice(`${skipped} hidden, generated, unsupported, or linked entries were excluded from the folder snapshot.`)
     } catch { setContextError('Could not attach those files. Please choose them again.') }
-    finally { adding.current = false; setContextBusy(false); onAttachmentBusyChange(false) }
+    finally { adding.current = false; setCopyingDroppedContext(false); setContextBusy(false); onAttachmentBusyChange(false) }
   }
   const remove = async (id: string): Promise<void> => {
     if (busy || adding.current) return
@@ -252,7 +253,7 @@ export function RunForm({
         <textarea aria-label="Game description" value={prompt} onChange={(event) => onPromptChange(event.target.value)} disabled={busy} rows={7} spellCheck={false} placeholder="Describe the game you want to build…" className="min-h-[220px] w-full resize-y bg-transparent px-5 py-5 text-[14px] leading-relaxed text-[#e4dfdc] outline-none placeholder:text-[#827975] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[#89776f]" />
         <div className="px-4 pb-3">
           <RunAttachmentChips items={attachments} disabled={busy || contextBusy} onRemove={(id) => void remove(id)} onError={setContextError} />
-          {contextBusy && <p role="status" className="mt-2 text-[11px] text-[#a49790]">Copying context…</p>}
+          {copyingDroppedContext && <p role="status" className="mt-2 text-[11px] text-[#a49790]">Copying context…</p>}
           {contextNotice && <p role="status" className="mt-2 text-[11px] text-[#b7a497]">{contextNotice}</p>}
           {contextError && <p role="alert" className="mt-2 text-xs text-[#f0aaaa]">{contextError}</p>}
         </div>
@@ -261,7 +262,7 @@ export function RunForm({
             <label title={custom ? 'Reset models to change pace' : 'Run pace'} className={`flex items-center gap-2 text-[11px] text-[#b2a7a1] ${custom ? 'opacity-40' : ''}`}><Gauge className="size-3.5" /><input aria-label="Speed to quality" type="range" min="0" max={RUN_PACES.length - 1} step="1" value={pace} aria-valuetext={RUN_PACES[pace]} disabled={custom || busy || checking} onChange={(event) => applyPace(Number(event.target.value) as RunPace)} className="h-1 w-20 accent-[#b9ada7]" /><span className="w-[60px]">{RUN_PACES[pace]}</span></label>
             <button type="button" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)} className="flex items-center gap-1 text-[11px] text-[#a29791] hover:text-white">Run options{custom ? ' · Custom' : ''}<ChevronDown className={`size-3 ${optionsOpen ? 'rotate-180' : ''}`} /></button>
             <div className="ml-auto flex items-center gap-3">
-              <button type="button" disabled={busy || contextBusy} onClick={() => void add(() => window.attachments.pick())} aria-label="Attach files or folders" title="Attach files or folders" className="grid size-9 place-items-center rounded text-[#a49790] hover:text-white disabled:opacity-40"><Paperclip aria-hidden="true" className="size-4" /></button>
+              <button type="button" disabled={busy || contextBusy} onClick={() => void add(() => window.attachments.pick(), true)} aria-label="Attach files or folders" title="Attach files or folders" className="grid size-9 place-items-center rounded text-[#a49790] hover:text-white disabled:opacity-40"><Paperclip aria-hidden="true" className="size-4" /></button>
               <Button disabled={busy || contextBusy || checking} onClick={attemptCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create run</Button>
             </div>
           </div>
