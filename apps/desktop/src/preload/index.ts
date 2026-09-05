@@ -8,6 +8,8 @@ import type { ReportApi } from '../shared/reports'
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke(IPC.harness.detect, kind),
   probe: (kind) => ipcRenderer.invoke(IPC.harness.probe, kind),
+  installOffer: (kind) => ipcRenderer.invoke(IPC.harness.installOffer, kind),
+  startInstall: (kind) => ipcRenderer.invoke(IPC.harness.startInstall, kind),
   startLogin: (kind) => ipcRenderer.invoke(IPC.harness.startLogin, kind),
   cancelLogin: (kind) => ipcRenderer.invoke(IPC.harness.cancelLogin, kind),
   logout: (kind) => ipcRenderer.invoke(IPC.harness.logout, kind),

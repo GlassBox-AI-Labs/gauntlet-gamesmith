@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import pty, { type IPty } from 'node-pty'
-import type { DetectionResult, HarnessAction, HarnessKind, LogoutResult, ProbeResult } from '../shared/harness'
+import type { DetectionResult, HarnessAction, HarnessKind, InstallOffer, LogoutResult, ProbeResult } from '../shared/harness'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { cliExecutable } from './cli-executable'
 import { cliHome, cliHomeEnv, cliPrivateRoot, subscriptionEnv } from './harness-env'
+import { installEnv, installPlan } from './harness-install'
 import { parseClaudeStatus, parseCodexStatus, parseUrls, stripAnsi } from './harness-status'
 
 interface HarnessSpec {
@@ -231,6 +232,76 @@ export class HarnessLoginManager {
           ? { type: 'probe_finished', ...status }
           : { type: 'login_failed', error: `Login command exited ${exitCode}, but the CLI is not signed in.` },
       )
+    })
+  }
+
+  /** What the app would run to install this CLI, for the UI to show first. */
+  offerInstall(kind: HarnessKind): InstallOffer {
+    const plan = installPlan(kind)
+    return { available: plan !== null, command: plan?.displayCommand ?? null }
+  }
+
+  /**
+   * Runs the vendor's own installer in the login terminal, so the user watches
+   * the same output they would see had they pasted the command themselves.
+   *
+   * The installer gets a plain environment with the real home — never the
+   * harness environment, which points HOME and CODEX_HOME at app-private
+   * directories the CLI must not be installed into.
+   */
+  install(kind: HarnessKind): void {
+    if (this.running.has(kind)) return
+    const plan = installPlan(kind)
+    if (!plan) {
+      this.events.action(kind, {
+        type: 'install_failed',
+        error: 'Installing from the app is only supported on macOS and Linux.',
+      })
+      return
+    }
+
+    let child: IPty
+    try {
+      child = this.spawnPty(plan.command, plan.args, {
+        name: 'xterm-256color',
+        cols: 100,
+        rows: 22,
+        cwd: this.homeDir,
+        env: installEnv(this.homeDir, process.env),
+      })
+    } catch (error) {
+      this.events.action(kind, {
+        type: 'install_failed',
+        error: redactedErrorMessage(error, 'Unable to start the installer.'),
+      })
+      return
+    }
+
+    this.running.set(kind, child)
+    this.events.action(kind, { type: 'install_started' })
+    this.events.terminal(kind, `$ ${plan.displayCommand}\r\n`)
+    child.onData((chunk) => this.events.terminal(kind, chunk))
+    child.onExit(async ({ exitCode, signal }) => {
+      this.running.delete(kind)
+      if (signal || exitCode === 130 || exitCode === 143) {
+        this.events.action(kind, { type: 'install_failed', error: 'The install was stopped before it finished.' })
+        return
+      }
+      if (exitCode !== 0) {
+        this.events.action(kind, { type: 'install_failed', error: `The installer exited ${exitCode}.` })
+        return
+      }
+      // The installer adds its directory to a shell profile, which this
+      // already-running process never re-reads, so detection has to find the
+      // new binary by its known install location rather than by PATH alone.
+      const detection = await this.detect(kind)
+      this.events.action(kind, detection.found
+        ? { type: 'detected', ...detection }
+        : {
+            type: 'install_failed',
+            error: 'The installer finished but the command is still not available. Restart the app and try again.',
+          })
+      if (detection.found) this.events.action(kind, { type: 'probe_finished', ...await this.probe(kind) })
     })
   }
 

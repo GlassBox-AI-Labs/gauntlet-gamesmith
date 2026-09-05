@@ -1,7 +1,19 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { HarnessKind } from '../shared/harness'
 import { sanitizedExecutablePath } from './harness-env'
+
+/**
+ * Where both vendors' native installers place their launcher. A login shell
+ * has this on PATH through a profile edit, but a GUI app started before that
+ * edit does not, so a freshly installed CLI would otherwise stay invisible
+ * until the whole machine was restarted. Searched after PATH, never instead of
+ * it, and every candidate still goes through the same validation.
+ */
+function userInstallDirectories(homeDir = os.homedir()): string[] {
+  return homeDir ? [path.join(homeDir, '.local', 'bin')] : []
+}
 
 interface ExecutableIdentity {
   path: string
@@ -70,7 +82,12 @@ export function resolveCliExecutable(
 ): ExecutableIdentity {
   const binary = kind === 'claude' ? 'claude' : 'codex'
   const executablePath = sanitizedExecutablePath(sourceEnv.PATH, unsafeRoots)
-  for (const directory of executablePath?.split(path.delimiter) ?? []) {
+  const searched = [
+    ...(executablePath?.split(path.delimiter) ?? []),
+    ...sanitizedExecutablePath(userInstallDirectories(sourceEnv.HOME).join(path.delimiter), unsafeRoots)
+      ?.split(path.delimiter) ?? [],
+  ]
+  for (const directory of searched) {
     const resolved = validateCandidate(path.join(directory, binary), unsafeRoots)
     if (resolved) return resolved
   }

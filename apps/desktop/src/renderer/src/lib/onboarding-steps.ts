@@ -11,12 +11,6 @@ export const STEP_TITLES: Record<OnboardingStep, string> = {
   ready: 'You are ready',
 }
 
-/** The command that installs a harness CLI, shown when one is missing. */
-export const INSTALL_COMMANDS: Record<HarnessKind, string> = {
-  claude: 'npm install -g @anthropic-ai/claude-code',
-  codex: 'npm install -g @openai/codex',
-}
-
 export interface TourCard {
   title: string
   body: string
@@ -73,7 +67,7 @@ export function connectedHarness(states: Record<HarnessKind, HarnessState>): Har
  * amount of clicking sign-in will help and the install command must be shown
  * instead.
  */
-export type ConnectStatus = 'checking' | 'blocked' | 'ready' | 'working' | 'connected' | 'failed'
+export type ConnectStatus = 'checking' | 'blocked' | 'installing' | 'ready' | 'working' | 'connected' | 'failed'
 
 export function connectStatus(state: HarnessState): ConnectStatus {
   switch (state.phase) {
@@ -81,6 +75,8 @@ export function connectStatus(state: HarnessState): ConnectStatus {
       return 'checking'
     case 'not_found':
       return 'blocked'
+    case 'installing':
+      return 'installing'
     case 'signing_in':
     case 'awaiting_browser':
     case 'signing_out':
@@ -99,7 +95,9 @@ export function connectStatusLabel(state: HarnessState): string {
     case 'checking':
       return 'Looking for it…'
     case 'blocked':
-      return `${HARNESS_LABELS[state.kind]} is not installed yet`
+      return state.error ?? `${HARNESS_LABELS[state.kind]} is not installed yet`
+    case 'installing':
+      return 'Installing…'
     case 'working':
       return 'Finish signing in'
     case 'connected':

@@ -1,11 +1,10 @@
-import { useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Copy, LoaderCircle, Play, Sparkles, TriangleAlert } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, ArrowRight, Check, Copy, Download, LoaderCircle, Play, Sparkles, TriangleAlert } from 'lucide-react'
 import { TerminalPanel } from '@/components/TerminalPanel'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { useHarnessConnections } from '@/lib/use-harness-connections'
 import {
-  INSTALL_COMMANDS,
   ONBOARDING_STEPS,
   STEP_TITLES,
   TOUR_CARDS,
@@ -20,7 +19,7 @@ import {
   stepIndex,
   type OnboardingStep,
 } from '@/lib/onboarding-steps'
-import { HARNESS_LABELS, harnessKinds, type HarnessKind, type HarnessState } from '../../../shared/harness'
+import { HARNESS_LABELS, harnessKinds, type HarnessKind, type HarnessState, type InstallOffer } from '../../../shared/harness'
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback
@@ -47,11 +46,17 @@ function StepDots({ step }: { step: OnboardingStep }): React.JSX.Element {
   )
 }
 
-function InstallHint({ kind }: { kind: HarnessKind }): React.JSX.Element {
+function InstallHint({ kind, offer, busy, onInstall }: {
+  kind: HarnessKind
+  offer: InstallOffer | null
+  busy: boolean
+  onInstall: () => void
+}): React.JSX.Element {
   const [copied, setCopied] = useState(false)
-  const command = INSTALL_COMMANDS[kind]
+  const command = offer?.command ?? null
 
   const copy = async (): Promise<void> => {
+    if (!command) return
     try {
       await navigator.clipboard.writeText(command)
       setCopied(true)
@@ -61,41 +66,79 @@ function InstallHint({ kind }: { kind: HarnessKind }): React.JSX.Element {
     }
   }
 
+  if (!offer) {
+    return (
+      <p className="mt-3 text-xs text-[#96908d]">
+        <LoaderCircle className="mr-1.5 inline size-3 animate-spin" aria-hidden="true" />
+        Checking how to install it…
+      </p>
+    )
+  }
+
   return (
     <div className="mt-3 rounded-lg border border-[#3b3636] bg-[#171313] p-3">
-      <p className="text-xs text-[#96908d]">
-        Install it first. Open the Terminal app, paste this line, and press return. Then come back and
-        press Refresh.
-      </p>
-      <div className="mt-2 flex items-center gap-2">
-        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-[#0e0c0c] px-2.5 py-2 font-mono text-[11px] text-[#ded9d6]">
-          {command}
-        </code>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-[#b5afac] hover:bg-white/5 hover:text-white"
-          aria-label={`Copy the ${HARNESS_LABELS[kind]} install command`}
-          onClick={() => void copy()}
-        >
-          {copied ? <Check /> : <Copy />}
-        </Button>
-      </div>
-      {copied && <p className="mt-1.5 text-[11px] text-emerald-300">Copied.</p>}
+      {offer.available
+        ? (
+          <>
+            <p className="text-xs leading-relaxed text-[#96908d]">
+              The app can install it for you. It downloads and runs {HARNESS_LABELS[kind]}&apos;s official
+              installer, which needs no other software, and shows you everything it does.
+            </p>
+            <Button
+              variant="outline"
+              className="mt-3 border-[#494343] bg-transparent text-[#eeeae7] hover:bg-white/5 hover:text-white"
+              disabled={busy}
+              onClick={onInstall}
+            >
+              {busy ? <LoaderCircle className="animate-spin" /> : <Download />} Install {HARNESS_LABELS[kind]}
+            </Button>
+          </>
+        )
+        : (
+          <p className="text-xs leading-relaxed text-[#96908d]">
+            Installing from the app is only supported on macOS and Linux. Open a terminal, paste this
+            line, and press return. Then come back and press Refresh.
+          </p>
+        )}
+
+      {command && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-[11px] text-[#7d7772] hover:text-[#b5afac]">
+            {offer.available ? 'Show the exact command' : 'The command to run'}
+          </summary>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-[#0e0c0c] px-2.5 py-2 font-mono text-[11px] text-[#ded9d6]">
+              {command}
+            </code>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-[#b5afac] hover:bg-white/5 hover:text-white"
+              aria-label={`Copy the ${HARNESS_LABELS[kind]} install command`}
+              onClick={() => void copy()}
+            >
+              {copied ? <Check /> : <Copy />}
+            </Button>
+          </div>
+          {copied && <p className="mt-1.5 text-[11px] text-emerald-300">Copied.</p>}
+        </details>
+      )}
     </div>
   )
 }
 
 interface AgentCardProps {
   state: HarnessState
+  offer: InstallOffer | null
   selected: boolean
   busy: boolean
   onSelect: () => void
   onSignIn: () => void
+  onInstall: () => void
   onRefresh: () => void
 }
 
-function AgentCard({ state, selected, busy, onSelect, onSignIn, onRefresh }: AgentCardProps): React.JSX.Element {
+function AgentCard({ state, offer, selected, busy, onSelect, onSignIn, onInstall, onRefresh }: AgentCardProps): React.JSX.Element {
   const status = connectStatus(state)
   const label = HARNESS_LABELS[state.kind]
 
@@ -117,7 +160,9 @@ function AgentCard({ state, selected, busy, onSelect, onSignIn, onRefresh }: Age
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium text-[#eeeae7]">{label}</span>
           <span className="flex items-center gap-1.5 text-xs text-[#96908d]">
-            {status === 'checking' && <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />}
+            {(status === 'checking' || status === 'installing') && (
+              <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+            )}
             {status === 'connected' && <Check className="size-3 text-emerald-400" aria-hidden="true" />}
             {(status === 'blocked' || status === 'failed') && (
               <TriangleAlert className="size-3 text-amber-400" aria-hidden="true" />
@@ -128,16 +173,21 @@ function AgentCard({ state, selected, busy, onSelect, onSignIn, onRefresh }: Age
       </button>
 
       <div className="px-4 pb-4">
-        {status === 'blocked' && <InstallHint kind={state.kind} />}
         {status === 'blocked' && (
-          <Button
-            variant="ghost"
-            className="mt-2 text-[#b5afac] hover:bg-white/5 hover:text-white"
-            disabled={busy}
-            onClick={onRefresh}
-          >
-            Refresh
-          </Button>
+          <>
+            <InstallHint kind={state.kind} offer={offer} busy={busy} onInstall={onInstall} />
+            <Button
+              variant="ghost"
+              className="mt-2 text-[#b5afac] hover:bg-white/5 hover:text-white"
+              disabled={busy}
+              onClick={onRefresh}
+            >
+              Refresh
+            </Button>
+          </>
+        )}
+        {status === 'installing' && (
+          <p className="text-xs text-[#96908d]">Installing. The output is below; this takes a minute.</p>
         )}
         {(status === 'ready' || status === 'failed') && (
           <Button
@@ -170,13 +220,30 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
   const { states, dispatch, transcripts, registerWriter, clearTranscript, probe } = useHarnessConnections()
   const [step, setStep] = useState<OnboardingStep>('welcome')
   const [selected, setSelected] = useState<HarnessKind>('claude')
+  const [offers, setOffers] = useState<Partial<Record<HarnessKind, InstallOffer>>>({})
   const [busy, setBusy] = useState(false)
   const [finishing, setFinishing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const active = states[selected]
   const signingIn = active.phase === 'signing_in' || active.phase === 'awaiting_browser'
+  const installing = active.phase === 'installing'
   const connected = connectedHarness(states)
+
+  useEffect(() => {
+    let disposed = false
+    void Promise.all(harnessKinds.map(async (kind) => {
+      try {
+        const offer = await window.harnesses.installOffer(kind)
+        if (!disposed) setOffers((current) => ({ ...current, [kind]: offer }))
+      } catch {
+        // Without an offer the card shows the missing-CLI message with no
+        // install button, which is the correct conservative fallback.
+        if (!disposed) setOffers((current) => ({ ...current, [kind]: { available: false, command: null } }))
+      }
+    }))
+    return () => { disposed = true }
+  }, [])
 
   const finish = async (): Promise<void> => {
     if (finishing) return
@@ -201,6 +268,21 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
       await window.harnesses.startLogin(kind)
     } catch (cause) {
       dispatch({ kind, action: { type: 'login_failed', error: errorMessage(cause, 'Unable to start login.') } })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startInstall = async (kind: HarnessKind): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setSelected(kind)
+    clearTranscript(kind)
+    try {
+      await window.harnesses.startInstall(kind)
+    } catch (cause) {
+      dispatch({ kind, action: { type: 'install_failed', error: errorMessage(cause, 'Unable to start the installer.') } })
     } finally {
       setBusy(false)
     }
@@ -292,10 +374,12 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
                 <AgentCard
                   key={kind}
                   state={states[kind]}
+                  offer={offers[kind] ?? null}
                   selected={selected === kind}
-                  busy={busy || signingIn}
+                  busy={busy || signingIn || installing}
                   onSelect={() => setSelected(kind)}
                   onSignIn={() => void startLogin(kind)}
+                  onInstall={() => void startInstall(kind)}
                   onRefresh={() => void refresh(kind)}
                 />
               ))}
@@ -307,7 +391,7 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
               </p>
             )}
 
-            {signingIn && (
+            {(signingIn || installing) && (
               <div className="mt-5">
                 <TerminalPanel
                   kind={selected}
@@ -393,7 +477,7 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
           )}
           <Button
             className="ml-auto"
-            disabled={finishing || (step === 'connect' && signingIn)}
+            disabled={finishing || (step === 'connect' && (signingIn || installing))}
             onClick={goNext}
           >
             {finishing && <LoaderCircle className="animate-spin" />}

@@ -44,6 +44,7 @@ function accountLabel(account: HarnessAccount): string {
 const phaseLabels: Record<LoginPhase, string> = {
   checking: 'Checking…',
   not_found: 'CLI not found',
+  installing: 'Installing the CLI',
   logged_out: 'Not connected',
   signing_in: 'Running login',
   awaiting_browser: 'Finish in browser',
@@ -53,7 +54,13 @@ const phaseLabels: Record<LoginPhase, string> = {
 }
 
 function StatusDot({ phase }: { phase: LoginPhase }): React.JSX.Element {
-  if (phase === 'checking' || phase === 'signing_in' || phase === 'awaiting_browser' || phase === 'signing_out') {
+  if (
+    phase === 'checking'
+    || phase === 'installing'
+    || phase === 'signing_in'
+    || phase === 'awaiting_browser'
+    || phase === 'signing_out'
+  ) {
     return <LoaderCircle className="size-3.5 animate-spin text-[#b5afac]" />
   }
   return (
