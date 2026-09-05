@@ -6,7 +6,7 @@ import { redactLogText } from './redact-log'
 export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * Legacy persisted session-level efforts (ADR-015); never offer these for new runs.
+ * Legacy persisted session-level efforts (ADR-019); never offer these for new runs.
  * Session-level efforts that also switch on the CLI's own fan-out.
  *
  * `ultracode` is not in claude's `--help` and not in its "valid values"

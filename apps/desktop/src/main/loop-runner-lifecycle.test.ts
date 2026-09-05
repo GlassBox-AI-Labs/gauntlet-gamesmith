@@ -1650,8 +1650,12 @@ describe('LoopRunner lifecycle boundary', () => {
       spawnChild: (_command, args) => { spawnedArgs = args; throw new Error('stop after inspecting trusted Resume') },
     })
     const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
-    models.referenceMode = 'skip'
     const loop = ledger.createLoop({ prompt: 'Imported game', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const referenceRoot = writeReadyReferencePack(workspaceDir, loop.id)
+    const reference = ledger.createRun({ loopId: loop.id, round: 0, role: 'reference', harness: 'codex', prompt: 'research' })
+    ledger.patchRun(reference.id, { status: 'succeeded', finishedAt: new Date().toISOString() })
+    ledger.appendEvent({ loopId: loop.id, runId: reference.id, ts: new Date().toISOString(), kind: 'artifact', channel: 'system',
+      text: `Reference Pack frozen at sha256:${referencePackFingerprint(workspaceDir, path.relative(workspaceDir, referenceRoot))}` })
     const prior = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'Build the game.' })
     ledger.patchRun(prior.id, { status: 'cancelled', sessionId: 'unowned-portable-session' })
     const queued = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: '[[gauntlet:resume]]\nBuild the game.' })

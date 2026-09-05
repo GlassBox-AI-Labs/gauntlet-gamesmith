@@ -1,17 +1,45 @@
-import { useState } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, LoaderCircle } from 'lucide-react'
 import { AgentsView } from '@/views/AgentsView'
 import { RunFormPrototype } from '@/views/RunFormPrototype'
+import { OnboardingView } from '@/views/OnboardingView'
 import { RunView } from '@/views/RunView'
 
 type View = 'run' | 'agents'
 
 export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>('run')
+  // Null until the main process answers, so the app never flashes the Runs
+  // view at a first-time user before the flow appears.
+  const [onboarded, setOnboarded] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') return
+    let disposed = false
+    void window.onboarding.get()
+      .then((state) => { if (!disposed) setOnboarded(state.completed) })
+      // A failed read means an unknown answer. Showing the app is the kinder
+      // guess: a returning user is not blocked, and the flow stays reachable
+      // from the Agents tab.
+      .catch(() => { if (!disposed) setOnboarded(true) })
+    return () => { disposed = true }
+  }, [])
 
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') {
     return <RunFormPrototype />
   }
+
+  if (onboarded === null) {
+    return (
+      <div className="grid min-h-screen place-items-center" role="status" aria-live="polite">
+        <LoaderCircle className="size-5 animate-spin text-[#7d7772]" />
+        <span className="sr-only">Starting Gauntlet Gamesmith</span>
+      </div>
+    )
+  }
+
+  if (!onboarded) return <OnboardingView onDone={() => setOnboarded(true)} />
+
 
   if (view === 'run') return <RunView onOpenAgents={() => setView('agents')} />
 
@@ -28,7 +56,7 @@ export default function App(): React.JSX.Element {
           </button>
         </div>
       </nav>
-      <AgentsView />
+      <AgentsView onReplayTour={() => setOnboarded(false)} />
     </div>
   )
 }

@@ -2,6 +2,24 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
+On first launch the app shows a setup flow instead of the Runs view: a welcome
+step, a connect step that detects each CLI and drives its login, and a four-card
+tour of the loop.
+
+When a CLI is missing, the connect step offers to install it. On macOS and Linux
+**Install** runs the vendor's own native installer — `https://claude.ai/install.sh`
+piped to `bash`, `https://chatgpt.com/codex/install.sh` piped to `sh` — in the
+login terminal, so every line is visible; the exact command stays available to
+copy. Neither installer needs Node. The installer runs with a plain environment
+and the real home rather than the harness environment, which rewrites `HOME` and
+sets `CODEX_HOME`/`CODEX_INSTALL_DIR` and would otherwise redirect the install
+into app-private state. Both land in `~/.local/bin` and edit a shell profile that
+the running app never re-reads, so `cli-executable.ts` searches that directory
+after `PATH`. Windows has no plan and shows the command instead. Completion is stored in `onboarding.json` under the Electron user-data
+directory, read over `onboarding:get` before the first render; a missing or
+unreadable file simply means the flow runs again. The flow is skippable, and
+**Show the tour again** on the Agents tab resets it.
+
 Two tabs:
 
 - **Agents** — CLI detection, login-status probing, and an interactive PTY for signing in to Claude Code and Codex. It does not read credential files.
@@ -22,6 +40,21 @@ pnpm dev
 ```
 
 Use Node 22 (`nvm use` will read the checked-in `.nvmrc`).
+
+### Running a second instance
+
+Everything the app owns — run history, harness logins, round revisions, and the
+single-instance lock — lives under the Electron user-data directory, so a second
+launch is normally refused while one is already running. Pass an absolute
+`--gauntlet-user-data` path to get a separate profile that runs beside it:
+
+```sh
+pnpm --filter @gauntlet/desktop exec electron . --gauntlet-user-data=/tmp/gg-test-profile
+```
+
+That profile starts empty: no runs, no signed-in CLIs, and the first-run setup
+flow. Delete the directory to discard it. A missing or relative path fails at
+startup rather than falling back to the real profile.
 
 Useful commands:
 
@@ -142,8 +175,8 @@ This profile needs its own CLI logins; no credentials or production ledger are c
 
 New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
 Ultracode are retained only for historical run replay/resume; they must not be added to new-run
-presets or pickers. See [ADR-015](../../docs/DECISIONS.md#adr-015--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
+presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
 
 CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
-and their global package targets even when NVM itself is a Git checkout. Nested project
-repositories, links into projects, and private app directories remain excluded.
+and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
+project roots, links into those roots, and private app directories remain excluded (ADR-015).

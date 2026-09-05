@@ -276,7 +276,7 @@ export function RunForm({
             onValueChange={(value) => changeImpl({
               ...impl,
               orchestratorModel: value,
-              // Keep new runs on explicit reasoning efforts (ADR-015).
+              // Keep new runs on explicit reasoning efforts (ADR-019).
               // A historical setting must not re-enable automatic delegation.
               orchestratorEffort: newRunOrchestratorEffort(impl.orchestratorEffort),
             })}
