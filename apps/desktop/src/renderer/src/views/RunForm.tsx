@@ -158,6 +158,7 @@ export function RunForm({
   const setCustom = (next: boolean): void => onSettingsChange((current) => ({ ...current, custom: next }))
   const [agentsOpen, setAgentsOpen] = useState(false)
   const [checking, setChecking] = useState(true)
+  const [createAttempted, setCreateAttempted] = useState(false)
   const [connected, setConnected] = useState({ claude: false, codex: false })
   const [contextBusy, setContextBusy] = useState(false)
   const [contextError, setContextError] = useState<string | null>(null)
@@ -228,7 +229,13 @@ export function RunForm({
   const needed = [impl.orchestratorModel, impl.subagentModel, critic.criticModel, referenceMode === 'web' ? research.researchModel : null, referenceMode !== 'skip' ? assets.assetModel : null].filter((model): model is string => !!model)
   const agentsReady = needed.every((model) => connected[harnessFor(model)])
   const validLimits = /^\d+$/.test(maxRounds) && Number(maxRounds) >= 1 && Number(maxRounds) <= 100 && (!budget.trim() || Number.isFinite(Number(budget)) && Number(budget) > 0)
-  const ready = !checking && agentsReady && !!prompt.trim() && !!workspaceDir && validLimits && (referenceMode !== 'files' || attachments.length > 0)
+  const showConnectionError = createAttempted && !checking && !agentsReady
+  const attemptCreate = (): void => {
+    if (busy || contextBusy || checking) return
+    setCreateAttempted(true)
+    if (!agentsReady || !prompt.trim() || !workspaceDir || !validLimits || (referenceMode === 'files' && attachments.length === 0)) return
+    onCreate()
+  }
   return (
     <div className="mx-auto flex max-w-[880px] flex-col py-1">
       <Card
@@ -255,10 +262,12 @@ export function RunForm({
             <button type="button" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)} className="flex items-center gap-1 text-[11px] text-[#a29791] hover:text-white">Run options{custom ? ' · Custom' : ''}<ChevronDown className={`size-3 ${optionsOpen ? 'rotate-180' : ''}`} /></button>
             <div className="ml-auto flex items-center gap-3">
               <button type="button" disabled={busy || contextBusy} onClick={() => void add(() => window.attachments.pick())} aria-label="Attach files or folders" title="Attach files or folders" className="grid size-9 place-items-center rounded text-[#a49790] hover:text-white disabled:opacity-40"><Paperclip aria-hidden="true" className="size-4" /></button>
-              <Button disabled={busy || contextBusy || !ready} onClick={onCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create run</Button>
+              <Button disabled={busy || contextBusy || checking} onClick={attemptCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create run</Button>
             </div>
           </div>
-          {!checking && !agentsReady && <p className="mt-3 text-[11px] text-[#d1a78e]">Connect the agents used by this configuration, or choose models from a connected agent.</p>}
+          {showConnectionError && <p role="alert" id="run-connection-error" className="mt-3 text-[11px] text-[#f0aaaa]">Connect the agents used by this configuration, or choose models from a connected agent.</p>}
+          {createAttempted && agentsReady && !prompt.trim() && <p role="alert" className="mt-3 text-[11px] text-[#f0aaaa]">Describe the game you want to build.</p>}
+          {createAttempted && agentsReady && !workspaceDir && <p role="alert" className="mt-3 text-[11px] text-[#f0aaaa]">Choose a workspace for this run.</p>}
           {referenceMode === 'files' && attachments.length === 0 && <p className="mt-3 text-[11px] text-[#d1a78e]">Attach files for a files-only Reference Study.</p>}
           {!validLimits && <p className="mt-3 text-[11px] text-[#d1a78e]">Choose 1–100 rounds and a positive budget, or leave the budget empty.</p>}
           {optionsOpen && <div className="mt-3 border-t border-[#302b2a] pt-3">
@@ -392,7 +401,10 @@ export function RunForm({
         </div>
         {error && <p role="alert" className="mx-4 mb-3 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       </Card>
-      <div className="mt-3 flex flex-wrap items-center gap-2">{(['claude', 'codex'] as const).map((kind) => <button type="button" key={kind} onClick={() => setAgentsOpen(true)} className="flex items-center gap-2 rounded-full border border-[#3b3534] bg-[#1b1717] px-3 py-1.5 text-xs text-[#cfc8c4]"><span className={`size-2 rounded-full ${connected[kind] ? 'bg-emerald-400' : 'bg-[#69615e]'}`} />{kind === 'claude' ? 'Claude Code' : 'Codex'}<span className="text-[10px] text-[#a3948c]">{checking ? 'Checking…' : connected[kind] ? 'Connected · Manage' : 'Connect'}</span></button>)}</div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">{(['claude', 'codex'] as const).map((kind) => {
+        const needsConnection = showConnectionError && !connected[kind] && ((!connected.claude && !connected.codex) || needed.some((model) => harnessFor(model) === kind))
+        return <button type="button" key={kind} onClick={() => setAgentsOpen(true)} aria-describedby={needsConnection ? 'run-connection-error' : undefined} className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${needsConnection ? 'border-red-400 bg-red-950/30 text-red-200 ring-1 ring-red-400/30' : 'border-[#3b3534] bg-[#1b1717] text-[#cfc8c4]'}`}><span className={`size-2 rounded-full ${connected[kind] ? 'bg-emerald-400' : needsConnection ? 'bg-red-400' : 'bg-[#69615e]'}`} />{kind === 'claude' ? 'Claude Code' : 'Codex'}<span className={`text-[10px] ${needsConnection ? 'text-red-200' : 'text-[#a3948c]'}`}>{checking ? 'Checking…' : connected[kind] ? 'Connected · Manage' : 'Connect'}</span></button>
+      })}</div>
       <Sheet open={agentsOpen} onOpenChange={setAgentsOpen}><SheetContent className="overflow-y-auto"><SheetHeader><SheetTitle>Agent connections</SheetTitle><SheetDescription>Sign in through the installed CLI. Your run draft stays here.</SheetDescription></SheetHeader><div className="px-4 pb-6"><AgentsView /></div></SheetContent></Sheet>
     </div>
   )
