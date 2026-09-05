@@ -380,3 +380,28 @@ for resolutions that happen outside a run, such as detection during setup.
 checkout, are usable. A binary planted inside any run folder the app knows about is still refused,
 and a provider failure falls back to the caller's own roots rather than making every CLI
 unresolvable. Detection stops depending on how the user chose to install the CLI.
+## ADR-016 — The CLI child keeps the user's real HOME (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `subscriptionEnv` rewrote `HOME` and `USERPROFILE` to the app-managed harness home
+whenever one harness was selected. On macOS the Security framework locates the login keychain
+through `HOME`, and Claude Code keeps its subscription credentials there. The rewritten home
+contained no `Library/Keychains`, so signing in raised the macOS dialog "a default keychain could not
+be found", whose primary button offers to reset the user's real login keychain — a destructive action
+presented to a user who has done nothing wrong. Verified directly: `security default-keychain`
+resolves under the real home and fails with `SecKeychainCopyDefault` under the rewritten one.
+
+**Decision.** `HOME` and `USERPROFILE` are inherited from the parent process like the other
+environment values the CLI needs. Account and app isolation comes from `CLAUDE_CONFIG_DIR` and
+`CODEX_HOME`, which each CLI documents for exactly this purpose and which the app already sets.
+Nothing else about the sanitized environment changes: billing and credential-routing variables are
+still stripped, and `PATH` is still filtered against agent-writable roots.
+
+**Consequences.** Sign-in can reach the credential store the CLI actually uses, and the app never
+puts a keychain-reset prompt in front of a user. Isolation is unchanged in practice — Claude Code
+namespaces its keychain entries per config directory, and a run with the app's config dir still
+reports itself signed out while the user's own CLI login is untouched. The app continues never to
+read, copy, or inspect any credential store (PROC-001). The harness home is no longer a boundary
+against the CLI reading the real home; it never was one on macOS, where the credential store sits
+outside `HOME` regardless.
