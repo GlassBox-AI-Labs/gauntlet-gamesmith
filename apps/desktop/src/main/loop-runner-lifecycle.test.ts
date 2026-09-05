@@ -1264,6 +1264,11 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(attempts.every((attempt) => attempt.status === 'failed')).toBe(true)
     expect(runner.activeRun()).toBeNull()
     expect(attempts.every((attempt) => fs.existsSync(processMetaPath(workspaceDir, attempt.id)))).toBe(true)
+    // The retry must be told why the first attempt was rejected, or it can only repeat it.
+    expect(attempts[0].error).toBeTruthy()
+    expect(attempts[1].prompt).toContain(attempts[0].error!)
+    expect(attempts[1].prompt).toContain('This is the retry.')
+    expect(attempts[1].prompt).toContain(attempts[0].prompt)
   })
 
   it('turns a rate-limit event into a durable bounded pause without consuming a failure attempt', async () => {

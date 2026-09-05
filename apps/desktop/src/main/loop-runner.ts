@@ -561,6 +561,15 @@ export class LoopRunner {
     return true
   }
 
+  /**
+   * A retry that is handed the same brief as the attempt that just failed can
+   * only repeat it: the previous attempt audited its own work, found it sound,
+   * and died on a gate it was never told about. Lead the retry with the reason.
+   */
+  private static retryPromptFor(prompt: string, error: string): string {
+    return `The previous attempt at this phase FAILED and was rejected for exactly this reason:\n\n${error.slice(0, 4_000)}\n\nThis is the retry. Fix that specific rejection before anything else, keep every other valid artifact the previous attempt produced, and do not finish until the stated reason no longer applies.\n\n${prompt}`
+  }
+
   /** One same-phase retry protocol for artifact phases; rate pauses do not consume attempts. */
   private async failOrRetryPhase(loop: LoopRecord, run: RunRecord, error: string, label: string, maxAttempts: number, prompt: string, terminalLog?: { kind: string; text: string }): Promise<void> {
     if (await this.retryRateLimit(loop, run, error, terminalLog)) return
@@ -593,7 +602,7 @@ export class LoopRunner {
         round: run.round,
         role: run.role,
         harness: harnessFor(run.role === 'critique' ? loop.models.criticModel : loop.models.orchestratorModel),
-        prompt,
+        prompt: LoopRunner.retryPromptFor(prompt, error),
       })
       retryId = retry.id
       if (run.revision) this.ledger.patchRun(retry.id, { revision: run.revision })
