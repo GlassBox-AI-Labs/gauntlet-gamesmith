@@ -41,19 +41,41 @@ function canonical(value: string): string {
   }
 }
 
-function insideRepository(directory: string): boolean {
-  let current = canonical(directory)
-  while (true) {
-    try {
-      const marker = fs.lstatSync(path.join(current, '.git'))
-      if (marker.isDirectory() || marker.isFile()) return true
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return true
-    }
-    const parent = path.dirname(current)
-    if (parent === current) return false
-    current = parent
+/**
+ * The directories agents can write into: every run folder the app manages, plus
+ * the parent it creates new ones in.
+ *
+ * This used to be "any directory under a git checkout", which rejected the real
+ * threat — an agent planting `claude` in the project it is building — but also
+ * rejected Homebrew, whose prefix is itself a git repository, making a
+ * `brew install --cask claude-code` invisible to the app. Naming the roots the
+ * app actually controls covers the threat without guessing from a `.git`
+ * marker that says nothing about who can write there.
+ */
+let agentWritableRoots: () => readonly string[] = () => []
+
+export function configureAgentWritableRoots(provider: () => readonly string[]): void {
+  agentWritableRoots = provider
+}
+
+export function clearAgentWritableRootsForTest(): void {
+  agentWritableRoots = () => []
+}
+
+/**
+ * Callers name the roots they know about; this adds the ones the app tracks
+ * globally. A provider that fails must not make every CLI unresolvable, so its
+ * failure falls back to the caller's own roots — which on the run path already
+ * include the workspace being built.
+ */
+function effectiveRoots(unsafeRoots: readonly string[]): string[] {
+  let tracked: readonly string[] = []
+  try {
+    tracked = agentWritableRoots()
+  } catch {
+    tracked = []
   }
+  return [...new Set([...unsafeRoots, ...tracked])]
 }
 
 function validateCandidate(candidate: string, unsafeRoots: readonly string[]): ExecutableIdentity | null {
@@ -68,9 +90,6 @@ function validateCandidate(candidate: string, unsafeRoots: readonly string[]): E
   if (!stat.isFile() || (stat.mode & 0o111) === 0) return null
   const roots = unsafeRoots.map(canonical)
   if (roots.some((root) => inside(root, real) || inside(root, canonical(candidate)))) return null
-  // PATH entries inside a checked-out repository are agent-writable project
-  // content, not installed CLIs. Continue to the next installed candidate.
-  if (insideRepository(path.dirname(candidate))) return null
   return { path: real, dev: stat.dev, ino: stat.ino }
 }
 
@@ -81,14 +100,15 @@ export function resolveCliExecutable(
   unsafeRoots: readonly string[] = [],
 ): ExecutableIdentity {
   const binary = kind === 'claude' ? 'claude' : 'codex'
-  const executablePath = sanitizedExecutablePath(sourceEnv.PATH, unsafeRoots)
+  const roots = effectiveRoots(unsafeRoots)
+  const executablePath = sanitizedExecutablePath(sourceEnv.PATH, roots)
   const searched = [
     ...(executablePath?.split(path.delimiter) ?? []),
-    ...sanitizedExecutablePath(userInstallDirectories(sourceEnv.HOME).join(path.delimiter), unsafeRoots)
+    ...sanitizedExecutablePath(userInstallDirectories(sourceEnv.HOME).join(path.delimiter), roots)
       ?.split(path.delimiter) ?? [],
   ]
   for (const directory of searched) {
-    const resolved = validateCandidate(path.join(directory, binary), unsafeRoots)
+    const resolved = validateCandidate(path.join(directory, binary), roots)
     if (resolved) return resolved
   }
   throw new Error(`${binary} was not found as an installed executable outside project and private app directories.`)
@@ -106,7 +126,7 @@ export function cliExecutable(
 ): string {
   const prior = cached.get(kind)
   if (prior) {
-    const current = validateCandidate(prior.path, unsafeRoots)
+    const current = validateCandidate(prior.path, effectiveRoots(unsafeRoots))
     if (!current || current.dev !== prior.dev || current.ino !== prior.ino) {
       throw new Error(`The installed ${kind} executable changed identity; restart after verifying the CLI installation.`)
     }
@@ -128,11 +148,12 @@ export function validatedExecutableEnv(
   unsafeRoots: readonly string[] = [],
 ): Record<string, string> {
   const env: Record<string, string> = {}
+  const roots = effectiveRoots(unsafeRoots)
   for (const [kind, executable] of executables) {
     if (!path.isAbsolute(executable) || canonical(executable) !== path.normalize(executable)) {
       throw new Error(`The pinned ${kind} executable must be an absolute canonical path.`)
     }
-    const current = validateCandidate(executable, unsafeRoots)
+    const current = validateCandidate(executable, roots)
     if (!current || current.path !== executable) {
       throw new Error(`The pinned ${kind} executable is no longer a safe installed executable.`)
     }
