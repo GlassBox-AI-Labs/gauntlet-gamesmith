@@ -1,7 +1,7 @@
 {
   "name": "@gauntlet/desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Gauntlet Gamesmith Electron desktop application",
   "main": "./out/main/index.js",
   "author": "GlassBox AI Labs",
