@@ -1612,6 +1612,15 @@ export class Ledger {
     return rows.map(toLoop)
   }
 
+  /**
+   * Every project folder this app has ever run in. Executable resolution treats
+   * these as agent-writable, so a binary planted in one is never spawned.
+   */
+  workspaceRoots(): string[] {
+    const rows = this.db.prepare('SELECT DISTINCT workspace_dir FROM loops').all() as unknown as Array<{ workspace_dir: string }>
+    return rows.map((row) => row.workspace_dir).filter((dir) => typeof dir === 'string' && dir.length > 0)
+  }
+
   loopsInWorkspace(workspaceDir: string): LoopRecord[] {
     let canonical = path.resolve(workspaceDir)
     try {

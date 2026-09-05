@@ -311,3 +311,24 @@ or authorize similarly broad follow-up changes.
 
 **Consequences.** Reviewers may evaluate PR #24 as an explicitly approved integration batch rather
 than reject it solely for breadth. Subsequent work must again satisfy SCOPE-001 normally.
+
+## ADR-015 — Executable resolution guards agent-writable roots, not git checkouts (2026-09-05)
+
+**Status:** accepted.
+
+**Context.** `resolveCliExecutable` rejected any candidate whose directory sat under a `.git` marker,
+to stop an agent that had planted an executable in the project it was building from being spawned as
+the CLI. Homebrew's prefix is itself a git repository, so `/opt/homebrew/bin/claude` — installed by
+the documented `brew install --cask claude-code` — was rejected, and the app reported Claude Code as
+not installed on a machine where it was installed and working.
+
+**Decision.** The guard now names the directories agents can actually write into: the app's private
+roots, the folder new runs are created in, and every project folder in the ledger. A `.git` marker
+says nothing about who can write to a directory, so it is no longer consulted. The run path already
+passed `loop.workspaceDir` explicitly; a process-wide provider adds the rest so the protection holds
+for resolutions that happen outside a run, such as detection during setup.
+
+**Consequences.** CLIs installed by Homebrew, or by any other tool that ships its prefix as a git
+checkout, are usable. A binary planted inside any run folder the app knows about is still refused,
+and a provider failure falls back to the caller's own roots rather than making every CLI
+unresolvable. Detection stops depending on how the user chose to install the CLI.

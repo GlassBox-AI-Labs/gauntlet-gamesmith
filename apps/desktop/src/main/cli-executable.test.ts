@@ -3,8 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  clearAgentWritableRootsForTest,
   clearCliExecutableCacheForTest,
   cliExecutable,
+  configureAgentWritableRoots,
   resolveCliExecutable,
   validatedExecutableEnv,
 } from './cli-executable'
@@ -18,20 +20,57 @@ function executable(file: string): void {
 
 afterEach(() => {
   clearCliExecutableCacheForTest()
+  clearAgentWritableRootsForTest()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe('CLI executable resolution', () => {
-  it('skips a repository-planted binary and pins the installed real path', () => {
+  it('skips a binary planted in a run workspace and pins the installed real path', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-resolution-'))
     roots.push(root)
-    const repository = path.join(root, 'project')
+    const workspace = path.join(root, 'project')
     const installed = path.join(root, 'installed')
-    fs.mkdirSync(path.join(repository, '.git'), { recursive: true })
-    executable(path.join(repository, 'bin', 'claude'))
+    executable(path.join(workspace, 'bin', 'claude'))
     executable(path.join(installed, 'claude'))
+    configureAgentWritableRoots(() => [workspace])
 
-    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(repository, 'bin')}:${installed}` })
+    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}` })
+    expect(resolved.path).toBe(fs.realpathSync(path.join(installed, 'claude')))
+  })
+
+  it('uses a CLI installed under a git checkout that is not agent-writable', () => {
+    // Homebrew's own prefix is a git repository, so rejecting every directory
+    // under a `.git` marker made `brew install --cask claude-code` invisible.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-brew-'))
+    roots.push(root)
+    const prefix = path.join(root, 'homebrew')
+    fs.mkdirSync(path.join(prefix, '.git'), { recursive: true })
+    executable(path.join(prefix, 'bin', 'claude'))
+
+    const resolved = resolveCliExecutable('claude', { PATH: path.join(prefix, 'bin') })
+    expect(resolved.path).toBe(fs.realpathSync(path.join(prefix, 'bin', 'claude')))
+  })
+
+  it('rejects a planted binary even when the caller names no roots itself', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-tracked-'))
+    roots.push(root)
+    const workspace = path.join(root, 'run-folder')
+    executable(path.join(workspace, 'bin', 'codex'))
+    configureAgentWritableRoots(() => [workspace])
+
+    expect(() => resolveCliExecutable('codex', { PATH: path.join(workspace, 'bin') })).toThrow(/not found/)
+  })
+
+  it('falls back to the caller’s roots when the tracked-root lookup fails', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-provider-fail-'))
+    roots.push(root)
+    const workspace = path.join(root, 'run-folder')
+    const installed = path.join(root, 'installed')
+    executable(path.join(workspace, 'bin', 'claude'))
+    executable(path.join(installed, 'claude'))
+    configureAgentWritableRoots(() => { throw new Error('ledger is closed') })
+
+    const resolved = resolveCliExecutable('claude', { PATH: `${path.join(workspace, 'bin')}:${installed}` }, [workspace])
     expect(resolved.path).toBe(fs.realpathSync(path.join(installed, 'claude')))
   })
 
