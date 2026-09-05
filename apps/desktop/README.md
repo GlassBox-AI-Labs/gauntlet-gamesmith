@@ -2,6 +2,9 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
+See the [architecture guide](../../docs/ARCHITECTURE.md) for module ownership, loop execution,
+harnesses, evaluation, and persistence boundaries.
+
 On first launch the app shows a setup flow instead of the Runs view: a welcome
 step, a connect step that detects each CLI and drives its login, and a four-card
 tour of the loop.
