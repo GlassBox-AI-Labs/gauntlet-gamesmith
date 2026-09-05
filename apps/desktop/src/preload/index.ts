@@ -2,11 +2,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
 import type { LoopApi, LoopLogLine, LoopSnapshot, PlayStateEvent } from '../shared/loop'
+import type { OnboardingApi } from '../shared/onboarding'
 import type { ReportApi } from '../shared/reports'
 
 const harnesses: HarnessApi = {
   detect: (kind) => ipcRenderer.invoke(IPC.harness.detect, kind),
   probe: (kind) => ipcRenderer.invoke(IPC.harness.probe, kind),
+  installOffer: (kind) => ipcRenderer.invoke(IPC.harness.installOffer, kind),
+  startInstall: (kind) => ipcRenderer.invoke(IPC.harness.startInstall, kind),
   startLogin: (kind) => ipcRenderer.invoke(IPC.harness.startLogin, kind),
   cancelLogin: (kind) => ipcRenderer.invoke(IPC.harness.cancelLogin, kind),
   logout: (kind) => ipcRenderer.invoke(IPC.harness.logout, kind),
@@ -74,6 +77,12 @@ const loops: LoopApi = {
   },
 }
 
+const onboarding: OnboardingApi = {
+  get: () => ipcRenderer.invoke(IPC.onboarding.get),
+  complete: (harness) => ipcRenderer.invoke(IPC.onboarding.complete, harness),
+  reset: () => ipcRenderer.invoke(IPC.onboarding.reset),
+}
+
 const reports: ReportApi = {
   list: () => ipcRenderer.invoke(IPC.report.list),
   get: (reportId) => ipcRenderer.invoke(IPC.report.get, reportId),
@@ -92,3 +101,4 @@ const reports: ReportApi = {
 contextBridge.exposeInMainWorld('harnesses', harnesses)
 contextBridge.exposeInMainWorld('loops', loops)
 contextBridge.exposeInMainWorld('reports', reports)
+contextBridge.exposeInMainWorld('onboarding', onboarding)

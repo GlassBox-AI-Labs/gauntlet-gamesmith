@@ -24,6 +24,12 @@ export function reduceHarness(state: HarnessState, action: HarnessAction): Harne
         phase: action.found ? 'logged_out' : 'not_found',
         error: action.error ?? null,
       }
+    case 'install_started':
+      return { ...state, phase: 'installing', url: null, error: null }
+    // A failed install leaves the CLI missing, so go back to saying so rather
+    // than to a generic error the install button would not appear under.
+    case 'install_failed':
+      return { ...state, phase: 'not_found', found: false, error: action.error }
     case 'probe_started':
       return { ...state, phase: 'checking', error: null }
     case 'probe_finished':
