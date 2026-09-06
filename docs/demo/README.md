@@ -1,6 +1,6 @@
-# Continuing lead in Steering chat
+# Continuing lead in Chat
 
-![Lead context answered in the existing Steering conversation](continuing-lead-chat-v1.jpg)
+![Lead context answered in the existing Chat conversation](continuing-lead-chat-v1.jpg)
 
 Captured from the built Electron app in an isolated profile with seeded sample history.
 No provider was running; game actions, verification, and the assistant response are sample records.

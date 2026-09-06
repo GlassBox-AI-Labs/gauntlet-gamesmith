@@ -661,7 +661,9 @@ and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
 injects into a running phase or starts a stopped run.
 
-The existing Steering conversation is the operator's interface for lead context.
+The sidebar is labelled **Chat**, with **Run assistant** as the speaker. This
+conversation is the operator's interface for lead context; steering names the
+internal mechanism that queues confirmed directions.
 It answers questions about plans, decisions, failed approaches, verification,
 and remaining work from the saved memory. Do not add separate lead status, notebook
 panels, selectors, or extra explanatory elements to the Run surface. Memory stays

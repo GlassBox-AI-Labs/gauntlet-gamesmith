@@ -98,7 +98,7 @@ source-bound directions, and the immutable requirements shared by implementation
 Explicit Resume can include pending directions in the same round; automatic recovery preserves the
 prior snapshot. Consults do not enter the phase queue or rounds table, but their events and costs
 remain visible. Attachments are immutable, verified copies outside the frozen Reference Pack.
-`window.steering` exposes validated operations. The existing conversation answers questions about
+`window.steering` exposes validated operations. The existing Chat conversation answers questions about
 the lead using its saved memory; there is no additional lead panel or notebook IPC surface.
 Complete attempt and recovery events remain in the existing activity log (ADR-020/021/022/026/027).
 

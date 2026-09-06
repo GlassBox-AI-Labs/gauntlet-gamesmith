@@ -84,7 +84,7 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
       const result = await window.steering.setModel({ loopId: runId, model })
       if (!result.ok) throw new Error(result.error)
       if (mounted.current && updated.current === version) setState(result.value)
-    } catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : 'Could not save the steering model.') }
+    } catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : 'Could not save the chat model.') }
     finally { if (mounted.current) setSavingModel(false) }
   }
   async function send() {
@@ -113,17 +113,17 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
     catch (error) { if (mounted.current) setError(String(error)) }
   }
   const timing = loopStatus === 'running' ? 'New directions enter the next implementation attempt' : ['stopped', 'failed'].includes(loopStatus) ? 'Resume includes queued directions when retrying implementation' : 'Directions wait for another implementation attempt'
-  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Steering for ${runName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
+  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Chat for ${runName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
     <div className="steering-sidebar-header">
-      <button aria-label={collapsed ? 'Expand steering' : 'Collapse steering'} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}</button>
-      {!collapsed && <div><h2>Steering</h2><p>{runName} · Round {round}</p></div>}
+      <button aria-label={collapsed ? 'Expand chat' : 'Collapse chat'} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}</button>
+      {!collapsed && <div><h2>Chat</h2><p>{runName} · Round {round}</p></div>}
     </div>
-    {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Steering{busy ? ' · Thinking' : ''}</button>}
+    {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Chat{busy ? ' · Thinking' : ''}</button>}
     <div className="steering-sidebar-expanded" hidden={collapsed}>
       <div className="steering-chat" role="log" aria-label="Run conversation" aria-live="polite">
         {!loaded && !error && <span className="steering-thinking">Loading conversation…</span>}
         {state.messages.map(message => <div key={message.id} className={`steering-message ${message.role}`}>
-          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Steering assistant'}</span>}
+          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Run assistant'}</span>}
           {!!message.attachments?.length && <div className="steering-attachments">{message.attachments.map(file => <Attachment key={file.id} file={file} runId={runId} />)}</div>}
           {message.content && <p>{message.content}</p>}
           {state.directives.filter(d => d.messageId === message.id).map(d => <div className="steering-direction-status" key={d.id} title={d.text}>
@@ -137,10 +137,10 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
       </div>
       <form className="steering-compose" onSubmit={event => { event.preventDefault(); void send() }}>
         {!!files.length && <div className="steering-attachments">{files.map(file => <Attachment key={file.id} file={file} onRemove={sending ? undefined : () => remove(file.id)} />)}</div>}
-        <textarea aria-label="Message steering" placeholder="Message…" value={draft} maxLength={MAX_STEERING_MESSAGE} disabled={sending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
+        <textarea aria-label="Message chat" placeholder="Message…" value={draft} maxLength={MAX_STEERING_MESSAGE} disabled={sending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
         <div className="steering-compose-actions">
           <button type="button" className="steering-attach-button" aria-label="Attach files or images" title="Attach files or images, or drop them here" disabled={attaching || sending} onClick={() => void attach()}>{attaching ? <LoaderCircle size={16} className="animate-spin" /> : <Paperclip size={16} />}</button>
-          <select aria-label="Steering model" title="Codex model for the next reply · saved for this run" value={state.model} disabled={!loaded || savingModel || sending} onChange={event => void selectModel(event.target.value)}>
+          <select aria-label="Chat model" title="Codex model for the next reply · saved for this run" value={state.model} disabled={!loaded || savingModel || sending} onChange={event => void selectModel(event.target.value)}>
             {STEERING_MODEL_CHOICES.map(model => <option key={model.id} value={model.id}>{model.label.replace('Codex · ', '')}</option>)}
           </select>
           {busy ? <button type="button" onClick={() => void cancel()}>Stop response</button> : <button type="submit" aria-label="Send message" disabled={!loaded || attaching || savingModel || (!draft.trim() && !files.length)}><ArrowUp size={17} /></button>}

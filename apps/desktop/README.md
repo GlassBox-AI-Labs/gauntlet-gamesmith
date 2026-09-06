@@ -36,11 +36,11 @@ Existing-folder execution consent does not grant private CLI transcript access o
 
 Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<loop-id>/` and their exact relative path is recorded in the loop log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
-### Steering a run
+### Chat with a run
 
 New runs use a continuing implementation lead across rounds. Each round
 still has its own process, saved build, independent critic, and accounting. The
-Steering chat can explain the lead's plan, decisions, failed approaches,
+Chat can explain the lead's plan, decisions, failed approaches,
 verification, and remaining work when you ask. Saved notes stay behind the scenes;
 there is no separate lead status or notebook panel. Notes are saved when an attempt
 ends, and the assistant distinguishes recorded claims from actual verification.
@@ -54,15 +54,15 @@ The activity log records these changes. Codex continuation subtracts prior sessi
 usage so earlier rounds are not charged again; without a reliable baseline the
 app visibly starts a fresh session with saved memory.
 
-Each run has an initially empty **Steering** chat in a collapsible right sidebar.
+Each run has an initially empty **Chat** conversation in a collapsible right sidebar.
 Connect Codex on the Agents tab, then ask questions or describe changes. Attach
-files/images with the paperclip or drop them into Steering. Image previews and
+files/images with the paperclip or drop them into Chat. Image previews and
 file chips stay with each message. You can send a file without text and clarify
 its purpose in the next reply. The chat
 assistant can inspect the workspace, consolidates feedback, and asks related
 clarifying questions together. Clear directions queue automatically. Messages and
 directions persist across rounds, app restarts, and folder export/import.
-The steering assistant also receives the lead's latest valid notebook and recent
+The Run assistant also receives the lead's latest valid notebook and recent
 attempt reports. It answers separately from the lead and can explain recorded
 decisions while the lead works. Questions alone do not change requirements.
 
@@ -82,7 +82,7 @@ can schedule a 3D model rebuild or integrate a supplied replacement during
 implementation. A rebuild request is work for its first included round; its
 resulting requirement persists afterward. Originals remain available for history
 and export. Limits are 10 files per message, 20 MB per file, and 100 files/100 MB
-of steering attachments per run. Choose the steering model below the message box;
+of steering attachments per run. Choose the chat model below the message box;
 the choice is saved per run and affects the next reply. An active reply keeps its
 original model and cost attribution. V1 offers the supported Codex models through
 the app's Codex profile, defaults to `gpt-5.6-sol`, and uses low effort independently
