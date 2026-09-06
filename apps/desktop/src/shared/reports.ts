@@ -1,51 +1,51 @@
-import type { LoopModels, LoopStatus, RunStatus } from './loop'
+import type { BuildModels, BuildStatus, AttemptStatus } from './build'
 
 /** Marker and version written into every exported report file. */
 export const REPORT_FILE_KIND = 'gauntlet-gamesmith-report'
 /** The marker on reports exported before the app was renamed. Still valid. */
 export const LEGACY_REPORT_FILE_KIND = 'gauntlet-loop-report'
-export const REPORT_FILE_VERSION = 1
+export const REPORT_FILE_VERSION = 2
 export const REPORT_FILE_SUFFIX = '.gauntlet-report.json'
 
 /**
- * One round of a run, with its attempts folded together. A round is normally
+ * One round of a build, with its attempts folded together. A round is normally
  * one implement attempt plus one critique, but a resumed round can hold more,
  * so `attempts` says how many rows went into these numbers.
  */
 export interface ReportRoundRow {
   round: number
   attempts: number
-  status: RunStatus
+  status: AttemptStatus
   score: number | null
   pass: boolean
   costUsd: number
-  /** Everything the model read, cache included — the same figure the run detail shows. */
+  /** Everything the model read, cache included — the same figure the build detail shows. */
   inputTokens: number
   outputTokens: number
-  /** Only known for runs whose per-model breakdown survived; null on older rows. */
+  /** Only known for builds whose per-model breakdown survived; null on older rows. */
   cacheReadTokens: number | null
   cacheWriteTokens: number | null
   /** Time inside this round's own attempts. */
   activeMs: number
-  /** Wall clock from the start of the run through the end of this round. */
+  /** Wall clock from the start of the build through the end of this round. */
   elapsedMs: number | null
   revision: string | null
 }
 
 /**
- * One run in a report, frozen at capture time. Everything a reader needs is
+ * One build in a report, frozen at capture time. Everything a reader needs is
  * copied in, so an exported report still reads correctly on a machine that has
- * never seen the run itself.
+ * never seen the build itself.
  */
-export interface ReportRunRow {
-  loopId: string
+export interface ReportBuildRow {
+  buildId: string
   title: string
   prompt: string
-  /** SHA-256 of the normalized prompt. Two runs of the same brief share it. */
+  /** SHA-256 of the normalized prompt. Two builds of the same brief share it. */
   promptHash: string
   workspaceDir: string
-  models: LoopModels
-  status: LoopStatus
+  models: BuildModels
+  status: BuildStatus
   stopReason: string | null
   roundsUsed: number
   maxRounds: number
@@ -75,7 +75,7 @@ export interface ReportRecord {
   updatedAt: string
   /** When the numbers below were last pulled out of the ledger. */
   capturedAt: string
-  rows: ReportRunRow[]
+  rows: ReportBuildRow[]
 }
 
 export interface ReportFile {
@@ -93,15 +93,15 @@ export interface ReportTransferResult {
   error?: string
 }
 
-export interface DeleteRunsResult {
+export interface DeleteBuildsResult {
   ok: boolean
   deletedIds: string[]
-  /** One line per run that could not be removed, safe to show as-is. */
+  /** One line per build that could not be removed, safe to show as-is. */
   errors: string[]
 }
 
 export interface ReportTotals {
-  runs: number
+  attempts: number
   rounds: number
   costUsd: number
   inputTokens: number
@@ -123,15 +123,15 @@ export function normalizePrompt(prompt: string): string {
   return prompt.replace(/\[\[gauntlet:resume\]\]/g, '').replace(/\s+/g, ' ').trim()
 }
 
-/** True when the report holds runs from more than one brief, so totals mean less. */
-export function hasMixedPrompts(rows: readonly ReportRunRow[]): boolean {
+/** True when the report holds builds from more than one brief, so totals mean less. */
+export function hasMixedPrompts(rows: readonly ReportBuildRow[]): boolean {
   return new Set(rows.map((row) => row.promptHash)).size > 1
 }
 
-export function reportTotals(rows: readonly ReportRunRow[]): ReportTotals {
+export function reportTotals(rows: readonly ReportBuildRow[]): ReportTotals {
   return rows.reduce<ReportTotals>(
     (sum, row) => ({
-      runs: sum.runs + 1,
+      attempts: sum.attempts + 1,
       rounds: sum.rounds + row.roundsUsed,
       costUsd: sum.costUsd + row.costUsd,
       inputTokens: sum.inputTokens + row.inputTokens,
@@ -139,23 +139,23 @@ export function reportTotals(rows: readonly ReportRunRow[]): ReportTotals {
       activeMs: sum.activeMs + row.activeMs,
       wallClockMs: sum.wallClockMs + (row.wallClockMs ?? 0),
     }),
-    { runs: 0, rounds: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, activeMs: 0, wallClockMs: 0 },
+    { attempts: 0, rounds: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, activeMs: 0, wallClockMs: 0 },
   )
 }
 
 /** Cheapest cost per point of best score — null while nothing has been scored. */
-export function costPerPoint(row: ReportRunRow): number | null {
+export function costPerPoint(row: ReportBuildRow): number | null {
   return row.bestScore != null && row.bestScore > 0 ? row.costUsd / row.bestScore : null
 }
 
 export interface ReportApi {
   list(): Promise<ReportRecord[]>
   get(reportId: string): Promise<ReportRecord | null>
-  create(name: string, loopIds: string[]): Promise<ReportRecord | null>
+  create(name: string, buildIds: string[]): Promise<ReportRecord | null>
   rename(reportId: string, name: string): Promise<ReportRecord | null>
-  addRuns(reportId: string, loopIds: string[]): Promise<ReportRecord | null>
-  removeRuns(reportId: string, loopIds: string[]): Promise<ReportRecord | null>
-  /** Re-read every row whose run is still in the ledger. */
+  addBuilds(reportId: string, buildIds: string[]): Promise<ReportRecord | null>
+  removeBuilds(reportId: string, buildIds: string[]): Promise<ReportRecord | null>
+  /** Re-read every row whose build is still in the ledger. */
   refresh(reportId: string): Promise<ReportRecord | null>
   remove(reportId: string): Promise<boolean>
   markdown(reportId: string): Promise<string>

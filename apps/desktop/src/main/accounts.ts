@@ -16,7 +16,7 @@ export { PRIMARY_ACCOUNT_ID }
 /**
  * Config-dir entries every account shares instead of keeping its own copy.
  *
- * For Claude, `projects` holds the session transcripts a run resumes from and
+ * For Claude, `projects` holds the session transcripts a build resumes from and
  * `skills` holds the scaffolded asset tools — sharing them is what lets you
  * switch accounts between rounds and still continue the same session. Codex
  * keeps nothing the app reads back, so its accounts stay fully separate.
@@ -264,7 +264,7 @@ export function switchAccount(root: string, kind: HarnessKind, accountId: string
  * Forget an extra account and delete its credentials.
  *
  * The primary account is not removable: its folder is the shared transcript
- * store, so deleting it would take every run's session history with it.
+ * store, so deleting it would take every build's session history with it.
  */
 export function removeAccount(root: string, kind: HarnessKind, accountId: string): AccountsState {
   const state = readAccounts(root, kind)

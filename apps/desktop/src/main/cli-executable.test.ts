@@ -61,7 +61,7 @@ describe('newly installed CLIs', () => {
 })
 
 describe('CLI executable resolution', () => {
-  it('skips a binary planted in a run workspace and pins the installed real path', () => {
+  it('skips a binary planted in a build workspace and pins the installed real path', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-resolution-'))
     roots.push(root)
     const workspace = path.join(root, 'project')
@@ -90,7 +90,7 @@ describe('CLI executable resolution', () => {
   it('rejects a planted binary even when the caller names no roots itself', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-tracked-'))
     roots.push(root)
-    const workspace = path.join(root, 'run-folder')
+    const workspace = path.join(root, 'build-folder')
     executable(path.join(workspace, 'bin', 'codex'))
     configureAgentWritableRoots(() => [workspace])
 
@@ -100,7 +100,7 @@ describe('CLI executable resolution', () => {
   it('falls back to the caller’s roots when the tracked-root lookup fails', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-cli-provider-fail-'))
     roots.push(root)
-    const workspace = path.join(root, 'run-folder')
+    const workspace = path.join(root, 'build-folder')
     const installed = path.join(root, 'installed')
     executable(path.join(workspace, 'bin', 'claude'))
     executable(path.join(installed, 'claude'))

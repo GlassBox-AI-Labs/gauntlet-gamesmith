@@ -10,7 +10,7 @@ import {
   roundRevisionRepositoryPath,
   workspaceMatchesRevision,
 } from './round-revision'
-import { RUN_METADATA_DIR } from './run-transfer'
+import { BUILD_METADATA_DIR } from './build-transfer'
 
 const tempDirs: string[] = []
 const LOOP_ID = '123e4567-e89b-42d3-a456-426614174000'
@@ -47,7 +47,7 @@ describe('round revisions', () => {
     fs.mkdirSync(path.join(dir, 'src'))
     fs.writeFileSync(path.join(dir, 'src', 'game.ts'), 'export const round = 1\n')
 
-    const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 }))
+    const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 }))
 
     expect(fs.readFileSync(path.join(checkout, 'src', 'game.ts'), 'utf8')).toContain('round = 1')
     expect(fs.existsSync(path.join(checkout, 'node_modules'))).toBe(false)
@@ -69,7 +69,7 @@ describe('round revisions', () => {
     fs.writeFileSync(path.join(dir, 'package.json'), '{"scripts":{"dev":"vite"}}')
     fs.writeFileSync(path.join(dir, 'src', 'game.ts'), 'export const round = 1\n')
 
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
 
     expect(revision).toMatch(/^[0-9a-f]{40,64}$/)
@@ -81,7 +81,7 @@ describe('round revisions', () => {
       expect(fs.readFileSync(path.join(checkout, sourceOutput, 'source.txt'), 'utf8')).toBe(sourceOutput)
     }
     expect(fs.existsSync(path.join(roundRevisionRepositoryPath(LOOP_ID), 'objects'))).toBe(true)
-    expect(fs.existsSync(path.join(dir, RUN_METADATA_DIR, 'revisions.git'))).toBe(false)
+    expect(fs.existsSync(path.join(dir, BUILD_METADATA_DIR, 'revisions.git'))).toBe(false)
 
     cleanupRoundCheckout(checkout)
     expect(fs.existsSync(checkout)).toBe(true)
@@ -90,9 +90,9 @@ describe('round revisions', () => {
   it('chains later rounds from an explicit parent and can replay either revision', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'round one')
-    const first = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const first = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     fs.writeFileSync(path.join(dir, 'game.js'), 'round two')
-    const second = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 2, parentRevision: first })
+    const second = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 2, parentRevision: first })
 
     const firstCheckout = checkoutRoundRevision(dir, LOOP_ID, 1, first)
     expect(fs.readFileSync(path.join(firstCheckout, 'game.js'), 'utf8')).toBe('round one')
@@ -105,7 +105,7 @@ describe('round revisions', () => {
   it('ignores an imported repository fsmonitor and hooks path', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
-    captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     const marker = path.join(dir, 'untrusted-config-ran')
     const command = path.join(dir, 'malicious-hook.sh')
     fs.writeFileSync(command, `#!/bin/sh\nprintf compromised > '${marker}'\n`)
@@ -117,7 +117,7 @@ describe('round revisions', () => {
     )
     fs.writeFileSync(path.join(dir, 'game.js'), 'still safe')
 
-    captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 2 })
+    captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 2 })
 
     expect(fs.existsSync(marker)).toBe(false)
   })
@@ -126,7 +126,7 @@ describe('round revisions', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'payload.txt'), 'first')
     fs.writeFileSync(path.join(dir, '.gitattributes'), 'payload.txt filter=hostile\n')
-    captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     const marker = path.join(dir, 'filter-ran')
     const command = path.join(dir, 'hostile-filter.sh')
     fs.writeFileSync(command, `#!/bin/sh\nprintf compromised > '${marker}'\ncat\n`)
@@ -135,7 +135,7 @@ describe('round revisions', () => {
     fs.appendFileSync(config, `\n[filter "hostile"]\n\tclean = ${command}\n\trequired = true\n`)
     fs.writeFileSync(path.join(dir, 'payload.txt'), 'second')
 
-    captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 2 })
+    captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 2 })
 
     expect(fs.existsSync(marker)).toBe(false)
   })
@@ -144,7 +144,7 @@ describe('round revisions', () => {
     const dir = workspace()
     const outside = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'first')
-    captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     const repo = roundRevisionRepositoryPath(LOOP_ID)
     const sentinel = path.join(outside, 'sentinel')
     fs.writeFileSync(sentinel, 'untouched')
@@ -157,20 +157,20 @@ describe('round revisions', () => {
     }
     fs.writeFileSync(path.join(dir, 'game.js'), 'second')
 
-    expect(() => captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 2 })).toThrow(/symlink|non-owned/)
+    expect(() => captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 2 })).toThrow(/symlink|non-owned/)
     expect(fs.readFileSync(sentinel, 'utf8')).toBe('untouched')
   })
 
-  it.each(['loop-1', '../escape', 'space here', '/absolute', 'a'.repeat(129)])('rejects unsafe loop id %s before creating a Git ref', (loopId) => {
+  it.each(['build-1', '../escape', 'space here', '/absolute', 'a'.repeat(129)])('rejects unsafe build id %s before creating a Git ref', (buildId) => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
-    expect(() => captureRoundRevision({ workspaceDir: dir, loopId, round: 1 })).toThrow(/Invalid loop id/)
+    expect(() => captureRoundRevision({ workspaceDir: dir, buildId, round: 1 })).toThrow(/Invalid build id/)
   })
 
   it('detects source drift while ignoring critic-owned evidence', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'frozen')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     expect(workspaceMatchesRevision(dir, LOOP_ID, revision)).toBe(true)
     fs.mkdirSync(path.join(dir, 'critique'), { recursive: true })
     fs.writeFileSync(path.join(dir, 'critique', 'evidence.txt'), 'allowed')
@@ -185,7 +185,7 @@ describe('round revisions', () => {
     const target = path.join(dir, relative)
     fs.mkdirSync(path.dirname(target), { recursive: true })
     fs.writeFileSync(target, 'frozen playable output')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
 
     fs.writeFileSync(target, 'critic changed playable output')
 
@@ -199,7 +199,7 @@ describe('round revisions', () => {
     fs.mkdirSync(path.join(dir, 'dist'))
     fs.writeFileSync(path.join(dir, 'src', 'game.ts'), 'source')
     fs.writeFileSync(path.join(dir, 'dist', 'checked-in-runtime.js'), 'frozen playable output')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
 
     fs.writeFileSync(path.join(dir, 'dist', 'generated.js'), 'critic build output')
     expect(workspaceMatchesRevision(dir, LOOP_ID, revision)).toBe(true)
@@ -216,7 +216,7 @@ describe('round revisions', () => {
     fs.symlinkSync(outside, path.join(revisionRoot, LOOP_ID, 'repository.git'))
     fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
 
-    expect(() => captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })).toThrow(/not a real directory/)
+    expect(() => captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })).toThrow(/not a real directory/)
     expect(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8')).toBe('untouched')
   })
 
@@ -224,11 +224,11 @@ describe('round revisions', () => {
     const dir = workspace()
     const outside = workspace()
     fs.writeFileSync(path.join(outside, 'sentinel'), 'untouched')
-    fs.mkdirSync(path.join(dir, RUN_METADATA_DIR), { recursive: true })
-    fs.symlinkSync(outside, path.join(dir, RUN_METADATA_DIR, 'revisions.git'))
+    fs.mkdirSync(path.join(dir, BUILD_METADATA_DIR), { recursive: true })
+    fs.symlinkSync(outside, path.join(dir, BUILD_METADATA_DIR, 'revisions.git'))
     fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
 
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
 
     expect(revision).toMatch(/^[0-9a-f]{40,64}$/)
     expect(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8')).toBe('untouched')
@@ -239,9 +239,9 @@ describe('round revisions', () => {
     const dir = workspace()
     const outside = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
-    fs.mkdirSync(path.join(dir, RUN_METADATA_DIR), { recursive: true })
-    fs.symlinkSync(outside, path.join(dir, RUN_METADATA_DIR, 'play'))
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    fs.mkdirSync(path.join(dir, BUILD_METADATA_DIR), { recursive: true })
+    fs.symlinkSync(outside, path.join(dir, BUILD_METADATA_DIR, 'play'))
 
     expect(() => checkoutRoundRevision(dir, LOOP_ID, 1, revision)).toThrow(/not a real directory/)
     expect(fs.readdirSync(outside)).toEqual([])
@@ -250,7 +250,7 @@ describe('round revisions', () => {
   it('uses a unique checkout and never deletes a replacement during cleanup', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'saved revision')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
     const first = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
     const second = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
     expect(second).not.toBe(first)
@@ -268,8 +268,8 @@ describe('round revisions', () => {
   it('bounds retained unique checkouts instead of deleting an uncertain path', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'saved revision')
-    const revision = captureRoundRevision({ workspaceDir: dir, loopId: LOOP_ID, round: 1 })
-    const playRoot = path.join(dir, RUN_METADATA_DIR, 'play')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    const playRoot = path.join(dir, BUILD_METADATA_DIR, 'play')
     fs.mkdirSync(playRoot, { recursive: true })
     for (let index = 0; index < 16; index += 1) {
       fs.mkdirSync(path.join(playRoot, `round-1-${revision.slice(0, 12)}-00000000-0000-4000-8000-${String(index).padStart(12, '0')}`))

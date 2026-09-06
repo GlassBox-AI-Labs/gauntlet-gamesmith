@@ -60,12 +60,12 @@ describe('media server', () => {
   it('serves an authenticated artifact and honors a bounded byte range', async () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'critique', 'round-1', 'shots', 'frame.png'), '0123456789')
-    const server = await createMediaServer((loopId) => (loopId === 'loop-1' ? dir : null))
+    const server = await createMediaServer((buildId) => (buildId === 'build-1' ? dir : null))
     servers.push(server)
 
-    const whole = await get(`${server.baseUrl}/loop-1/critique/round-1/shots/frame.png`)
+    const whole = await get(`${server.baseUrl}/build-1/critique/round-1/shots/frame.png`)
     expect(whole).toMatchObject({ status: 200, body: '0123456789' })
-    const partial = await get(`${server.baseUrl}/loop-1/critique/round-1/shots/frame.png`, { Range: 'bytes=2-5' })
+    const partial = await get(`${server.baseUrl}/build-1/critique/round-1/shots/frame.png`, { Range: 'bytes=2-5' })
     expect(partial).toMatchObject({ status: 206, body: '2345' })
     expect(partial.headers['content-range']).toBe('bytes 2-5/10')
   })
@@ -75,10 +75,10 @@ describe('media server', () => {
     fs.writeFileSync(path.join(dir, 'reference', 'images', 'frame.png'), 'image')
     const server = await createMediaServer(() => dir)
     servers.push(server)
-    const url = `${server.baseUrl}/loop-1/reference/images/frame.png`
+    const url = `${server.baseUrl}/build-1/reference/images/frame.png`
 
-    expect((await get(url.replace(/\/[^/]+\/loop-1/, '/wrong-token/loop-1'))).status).toBe(404)
-    expect((await get(`${server.baseUrl}/loop-1/reference/%2e%2e/package.png`)).status).toBe(404)
+    expect((await get(url.replace(/\/[^/]+\/build-1/, '/wrong-token/build-1'))).status).toBe(404)
+    expect((await get(`${server.baseUrl}/build-1/reference/%2e%2e/package.png`)).status).toBe(404)
     expect((await get(url, { Range: 'bytes=9-2' })).status).toBe(416)
     expect((await get(url, { Range: 'bytes=wat' })).status).toBe(416)
   })

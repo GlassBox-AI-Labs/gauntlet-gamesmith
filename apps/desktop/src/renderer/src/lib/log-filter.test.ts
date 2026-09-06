@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { LoopLogLine } from '../../../shared/loop'
+import type { BuildLogLine } from '../../../shared/build'
 import { agentFilterKey, lineMatchesFilter, logLineColor, PRIMARY_AGENT, roundChipLabel } from './log-filter'
 
-const line: LoopLogLine = {
-  loopId: 'loop',
-  runId: 'run',
+const line: BuildLogLine = {
+  buildId: 'build',
+  attemptId: 'build',
   ts: '2026-09-02T12:00:00.000Z',
   kind: 'thought',
   channel: 'thought',

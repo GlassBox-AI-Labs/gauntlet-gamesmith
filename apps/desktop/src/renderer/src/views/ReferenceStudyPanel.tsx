@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, LoaderCircle, X } from 'lucide-react'
 import { ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, type LogFilterState } from '@/components/LogFilter'
-import { logEmptyMessage } from '@/lib/run-visibility'
+import { logEmptyMessage } from '@/lib/build-visibility'
 import { useMediaBase } from '@/lib/use-media-base'
 import { useStickToBottom } from '@/lib/use-stick-to-bottom'
-import type { ReferenceStudy } from '../../../shared/loop'
+import type { ReferenceStudy } from '../../../shared/build'
 
 function time(iso: string): string {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? '' : date.toTimeString().slice(0, 8)
 }
 
-/** Drill-down for the first-class, per-loop Reference Study attempt. */
-export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: ReferenceStudy }): React.JSX.Element {
+/** Drill-down for the first-class, per-build Reference Study attempt. */
+export function ReferenceStudyPanel({ buildId, study }: { buildId: string; study: ReferenceStudy }): React.JSX.Element {
   const { base, error: mediaError, retry: retryMedia } = useMediaBase()
   const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null)
   const zoomTrigger = useRef<HTMLButtonElement | null>(null)
@@ -22,7 +22,7 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
   const log = useStickToBottom(study.logs)
   const visibleLogs = study.logs.filter((line) => lineMatchesFilter(line, logFilter))
   const mediaUrl = (relative: string): string =>
-    base ? `${base}/${loopId}/${relative.split('/').map(encodeURIComponent).join('/')}` : ''
+    base ? `${base}/${buildId}/${relative.split('/').map(encodeURIComponent).join('/')}` : ''
   const openZoom = (src: string, alt: string, trigger: HTMLButtonElement): void => {
     zoomTrigger.current = trigger
     setZoom({ src, alt })
@@ -175,10 +175,10 @@ export function ReferenceStudyPanel({ loopId, study }: { loopId: string; study: 
 
       {study.pack.manifest && (
         <section className="min-w-0">
-          <button type="button" aria-expanded={manifestOpen} aria-controls={`reference-manifest-${study.runId}`} onClick={() => setManifestOpen((open) => !open)} className="text-[11px] text-[#96908d] hover:text-[#c9c3c0]">
+          <button type="button" aria-expanded={manifestOpen} aria-controls={`reference-manifest-${study.attemptId}`} onClick={() => setManifestOpen((open) => !open)} className="text-[11px] text-[#96908d] hover:text-[#c9c3c0]">
             Source manifest {manifestOpen ? '▾' : '▸'}
           </button>
-          {manifestOpen && <pre id={`reference-manifest-${study.runId}`} className="mt-2 max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#96908d]">{study.pack.manifest}</pre>}
+          {manifestOpen && <pre id={`reference-manifest-${study.attemptId}`} className="mt-2 max-h-64 min-w-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-[#332e2e] bg-[#100d0e] p-3 font-mono text-[10px] leading-relaxed text-[#96908d]">{study.pack.manifest}</pre>}
         </section>
       )}
 

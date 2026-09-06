@@ -4,13 +4,13 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
-import { LoopRunner } from './loop-runner'
+import { BuildRunner } from './build-runner'
 
 /**
  * Which phase a resume picks up from.
  *
  * A failed Asset Build is tolerated on purpose, so a usage limit can end the
- * assets run and fail the implement run behind it. Resuming at the last run
+ * assets attempt and fail the implement attempt behind it. Resuming at the last attempt
  * then rebuilds the game around a half-built cast — the case this covers.
  */
 
@@ -19,30 +19,30 @@ const models = resolveModels({ orchestratorModel: 'claude-fable-5-1' }, DEFAULT_
 let dir: string
 
 interface Harness {
-  runner: LoopRunner
+  runner: BuildRunner
   ledger: Ledger
-  loopId: string
+  buildId: string
 }
 
 function setup(): Harness {
   const workspaceDir = path.join(dir, 'workspace')
   fs.mkdirSync(workspaceDir, { recursive: true })
   const ledger = new Ledger(path.join(dir, 'ledger.db'))
-  const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 3, budgetUsd: null, models })
-  const runner = new LoopRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' }))
-  return { runner, ledger, loopId: loop.id }
+  const build = ledger.createBuild({ prompt: 'build it', workspaceDir, maxRounds: 3, budgetUsd: null, models })
+  const runner = new BuildRunner(ledger, () => {}, async () => ({ ok: false, from: 'test' }))
+  return { runner, ledger, buildId: build.id }
 }
 
 function add(h: Harness, round: number, role: 'assets' | 'implement' | 'critique' | 'reference', status: string) {
-  const run = h.ledger.createRun({ loopId: h.loopId, round, role, harness: 'claude', prompt: `${role} prompt` })
-  h.ledger.patchRun(run.id, { status: status as never })
-  return run
+  const attempt = h.ledger.createAttempt({ buildId: h.buildId, round, role, harness: 'claude', prompt: `${role} prompt` })
+  h.ledger.patchAttempt(attempt.id, { status: status as never })
+  return attempt
 }
 
 function target(h: Harness, round: number) {
   return (
     h.runner as unknown as { resumeTarget: (id: string, r: number) => { role: string; id: string } | null }
-  ).resumeTarget(h.loopId, round)
+  ).resumeTarget(h.buildId, round)
 }
 
 beforeEach(() => {
@@ -54,13 +54,13 @@ afterEach(() => {
 })
 
 describe('resume target', () => {
-  it('goes back to the assets phase when it failed before the implement run did', () => {
+  it('goes back to the assets phase when it failed before the implement build did', () => {
     const h = setup()
     add(h, 1, 'assets', 'cancelled')
     add(h, 1, 'assets', 'failed')
     add(h, 1, 'implement', 'failed')
 
-    // Not the implement run, which is what resuming used to retry.
+    // Not the implement attempt, which is what resuming used to retry.
     expect(target(h, 1)?.role).toBe('assets')
   })
 
@@ -73,7 +73,7 @@ describe('resume target', () => {
     expect(target(h, 1)?.id).toBe(second.id)
   })
 
-  it('moves on to the implement run once the assets phase has succeeded', () => {
+  it('moves on to the implement build once the assets phase has succeeded', () => {
     const h = setup()
     add(h, 1, 'assets', 'failed')
     add(h, 1, 'assets', 'succeeded')
@@ -114,7 +114,7 @@ describe('resume target', () => {
     expect(target(h, 2)?.role).toBe('implement')
   })
 
-  it('finds no phase order in round 0, leaving the reference run as its own target', () => {
+  it('finds no phase order in round 0, leaving the reference build as its own target', () => {
     const h = setup()
     add(h, 0, 'reference', 'failed')
 

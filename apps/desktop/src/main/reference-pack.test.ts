@@ -18,14 +18,14 @@ function workspace(): string {
 }
 
 describe('Reference Pack', () => {
-  it('scopes each pack to its loop', () => {
-    expect(referencePackDir('loop-123')).toBe('reference/loop-123')
-    expect(() => referencePackDir('../elsewhere')).toThrow('Invalid loop id')
+  it('scopes each pack to its build', () => {
+    expect(referencePackDir('build-123')).toBe('reference/build-123')
+    expect(() => referencePackDir('../elsewhere')).toThrow('Invalid build id')
   })
 
   it('validates and inventories a completed pack', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
     for (let i = 0; i < 8; i += 1) {
       fs.writeFileSync(path.join(dir, root, 'images', `still-${i}.jpg`), 'image')
@@ -90,7 +90,7 @@ describe('Reference Pack', () => {
 
   it('rejects a shallow study that cannot make the critic a game expert', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root), { recursive: true })
     fs.writeFileSync(path.join(dir, root, 'README.md'), '# Visual mood board')
     fs.writeFileSync(path.join(dir, root, 'research.md'), '# A few reviews')
@@ -102,7 +102,7 @@ describe('Reference Pack', () => {
 
   it('validates a manifest larger than the display cap without truncating it', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root), { recursive: true })
     const sources = Array.from({ length: 200 }, (_, index) => ({
       url: `https://example.com/source-${index}`,
@@ -117,7 +117,7 @@ describe('Reference Pack', () => {
 
   it('redacts credentials from every document projected over IPC while validating the raw manifest', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root), { recursive: true })
     const token = `ghp_${'a'.repeat(36)}`
     fs.writeFileSync(path.join(dir, root, 'README.md'), `Progression model: level-based\n${token}`)
@@ -139,7 +139,7 @@ describe('Reference Pack', () => {
 
   it('counts an mkv gameplay clip as the required video', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
     for (let i = 0; i < 8; i += 1) {
       fs.writeFileSync(path.join(dir, root, 'images', `still-${i}.jpg`), 'image')
@@ -176,7 +176,7 @@ describe('Reference Pack', () => {
 
   it('returns actionable issues for an incomplete pack', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root), { recursive: true })
     fs.writeFileSync(path.join(dir, root, 'manifest.json'), '{bad json')
 
@@ -195,7 +195,7 @@ describe('Reference Pack', () => {
 
   it('accepts a game with nothing worth sculpting', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-none')
+    const root = referencePackDir('build-none')
     completePack(dir, root)
     fs.writeFileSync(path.join(dir, root, 'cast.md'), 'none — the look is neon walls, bloom and glow trails, not models.')
 
@@ -206,7 +206,7 @@ describe('Reference Pack', () => {
 
   it('faults a cast written in prose but never put in the manifest', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-prose')
+    const root = referencePackDir('build-prose')
     completePack(dir, root)
     fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed — the player dog')
 
@@ -216,7 +216,7 @@ describe('Reference Pack', () => {
 
   it('faults a cast entry that names no frame to crop from', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-noframe')
+    const root = referencePackDir('build-noframe')
     completePack(dir, root)
     fs.writeFileSync(path.join(dir, root, 'cast.md'), '# Cast\n\n- samoyed')
     fs.writeFileSync(
@@ -230,7 +230,7 @@ describe('Reference Pack', () => {
 
   it('reads isolated object shots as their own source', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-objects')
+    const root = referencePackDir('build-objects')
     completePack(dir, root)
     fs.mkdirSync(path.join(dir, root, 'objects'), { recursive: true })
     fs.writeFileSync(path.join(dir, root, 'objects', 'samoyed-01.jpg'), 'shot')
@@ -240,7 +240,7 @@ describe('Reference Pack', () => {
 
   it('refuses symlinked and oversized machine-readable inputs before reading them', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root), { recursive: true })
     const outside = path.join(dir, 'outside.json')
     fs.writeFileSync(outside, JSON.stringify({ sources: [{ url: 'https://secret.test' }] }))
@@ -258,7 +258,7 @@ describe('Reference Pack', () => {
 
   it('rejects a symlinked pack root and invalid or escaping source entries', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     const outside = path.join(dir, 'outside')
     fs.mkdirSync(outside, { recursive: true })
     fs.writeFileSync(path.join(outside, 'manifest.json'), JSON.stringify({ title: 'Secret', sources: [{ url: 'https://example.com' }] }))
@@ -280,7 +280,7 @@ describe('Reference Pack', () => {
 
   it('does not demand a source URL for an agent-written note in an evidence directory', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     fs.mkdirSync(path.join(dir, root, 'images'), { recursive: true })
     fs.mkdirSync(path.join(dir, root, 'objects'), { recursive: true })
     fs.writeFileSync(path.join(dir, root, 'images', 'still.jpg'), 'image')
@@ -300,7 +300,7 @@ describe('Reference Pack', () => {
 
   it('fails closed when the inventory exceeds its file-count cap', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     const images = path.join(dir, root, 'images')
     fs.mkdirSync(images, { recursive: true })
     for (let index = 0; index < 301; index += 1) fs.writeFileSync(path.join(images, `${index}.png`), 'x')
@@ -309,7 +309,7 @@ describe('Reference Pack', () => {
 
   it('excludes oversized images and surfaces the bounded projection', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     const images = path.join(dir, root, 'images')
     fs.mkdirSync(images, { recursive: true })
     const oversized = path.join(images, 'oversized.png')
@@ -323,7 +323,7 @@ describe('Reference Pack', () => {
 
   it('keeps a complete pack ready when only extra display media is truncated', () => {
     const dir = workspace()
-    const root = referencePackDir('loop-123')
+    const root = referencePackDir('build-123')
     for (const subdir of ['images', 'motion', 'video', 'journey']) fs.mkdirSync(path.join(dir, root, subdir), { recursive: true })
     const files = [
       ...Array.from({ length: 25 }, (_, index) => `images/still-${index}.jpg`),
@@ -376,7 +376,7 @@ function completePack(dir: string, root: string): void {
   }))
 }
 
-it('accepts grounded files-only evidence without web media quotas, while old runs retain them', () => {
+it('accepts grounded files-only evidence without web media quotas, while old builds retain them', () => {
   const dir = workspace(); const reference = 'reference/local-study'; const target = path.join(dir, reference)
   fs.mkdirSync(path.join(target, 'supplied'), { recursive: true })
   fs.writeFileSync(path.join(target, 'supplied/brief.txt'), 'brief')

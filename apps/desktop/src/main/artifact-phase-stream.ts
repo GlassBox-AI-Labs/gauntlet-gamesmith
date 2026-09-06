@@ -1,5 +1,5 @@
 import type { HarnessKind } from '../shared/harness'
-import type { TokenTotals } from '../shared/loop'
+import type { TokenTotals } from '../shared/build'
 import { codexTokens } from './codex-usage'
 import { rateLimitPause } from './rate-limit'
 import { translateClaudeLine } from './streams/claude-stream'
@@ -156,7 +156,7 @@ export function createArtifactPhaseStream(options: ArtifactPhaseStreamOptions): 
     if (translated.summary !== undefined) summary = translated.summary
     // A completed turn is proof the CLI got its answer, so anything it reported
     // as an error before that was survived — a dropped websocket it reconnected
-    // through, most often. Leaving it set made a recovered transient the run's
+    // through, most often. Leaving it set made a recovered transient the build's
     // recorded cause of death half an hour later. A rate-limit notice is
     // deliberately kept: that is a real condition, and clearing it would
     // suppress the account rotation it exists to trigger.

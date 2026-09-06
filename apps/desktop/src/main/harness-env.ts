@@ -57,7 +57,7 @@ export function cliHome(kind: HarnessKind): string {
  * Session transcripts and installed skills, which every account reads and
  * writes through.
  *
- * Keeping these out of the per-account credential dir is what lets a run
+ * Keeping these out of the per-account credential dir is what lets a build
  * switch accounts between rounds and still `--continue` the same session.
  */
 export function sharedHome(kind: HarnessKind): string {
@@ -72,7 +72,7 @@ export function sharedHome(kind: HarnessKind): string {
  * Installed into the *shared* home, not the active account's. Every account
  * reaches `skills/` through the same store — the primary account's dir is that
  * store, and the others symlink into it — so installing once here is what makes
- * a mid-loop account switch keep finding the skill. Installing into
+ * a mid-build account switch keep finding the skill. Installing into
  * `cliHome()` would land in whichever account happened to be active and only
  * reach the shared store by symlink, which `prepareAccountDir` declines to
  * create when a real directory is already sitting there.
@@ -84,9 +84,9 @@ export function ensureSkill(): SkillInstall {
   return installSkill(sharedHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
 }
 
-/** Run transcripts live with the project so a folder transfer is complete. */
-export function runsDir(workspaceDir: string, create = true): string {
-  return safeWorkspaceMetadataDir(workspaceDir, ['runs'], create)
+/** Attempt transcripts live with the project so a folder transfer is complete. */
+export function attemptsDir(workspaceDir: string, create = true): string {
+  return safeWorkspaceMetadataDir(workspaceDir, ['builds'], create)
 }
 
 /** Non-secret process basics required to find binaries and run terminal tools. */
@@ -115,7 +115,7 @@ const INHERITED_CLI_ENV = new Set([
   'TZ',
 ])
 
-/** Explicit plan fields reviewed as safe for subscription-authenticated runs. */
+/** Explicit plan fields reviewed as safe for subscription-authenticated attempts. */
 const PLAN_CLI_ENV = new Set([
   ...Object.values(CLI_HOME_ENV_KEYS),
   'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS',

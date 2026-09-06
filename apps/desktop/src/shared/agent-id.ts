@@ -4,7 +4,7 @@ const CODEX_AGENT_ID = /^codex:([a-zA-Z0-9_-]{1,160})$/
 
 export type ParsedAgentMetricId =
   | { kind: 'child'; slug: string }
-  | { kind: 'workflow'; runId: string; agentId: string }
+  | { kind: 'workflow'; attemptId: string; agentId: string }
   | { kind: 'codex'; threadId: string }
 
 /** Canonical parser for metric ids that map to a separately owned raw stream. */
@@ -13,7 +13,7 @@ export function parseAgentMetricId(value: unknown): ParsedAgentMetricId | null {
   const child = CHILD_AGENT_ID.exec(value)
   if (child) return { kind: 'child', slug: child[1] }
   const workflow = WORKFLOW_AGENT_ID.exec(value)
-  if (workflow) return { kind: 'workflow', runId: workflow[1], agentId: workflow[2] }
+  if (workflow) return { kind: 'workflow', attemptId: workflow[1], agentId: workflow[2] }
   const codex = CODEX_AGENT_ID.exec(value)
   if (codex) return { kind: 'codex', threadId: codex[1] }
   return null
@@ -23,8 +23,8 @@ export function childAgentMetricId(slug: string): string {
   return `child:${slug}`
 }
 
-export function workflowAgentMetricId(runId: string, agentId: string): string {
-  return `wf:${runId}:${agentId}`
+export function workflowAgentMetricId(attemptId: string, agentId: string): string {
+  return `wf:${attemptId}:${agentId}`
 }
 
 export function codexAgentMetricId(threadId: string): string {

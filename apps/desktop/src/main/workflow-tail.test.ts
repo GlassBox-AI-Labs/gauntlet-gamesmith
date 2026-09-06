@@ -6,7 +6,7 @@ import { deriveLabels, WorkflowTail, workflowTailDir } from './workflow-tail'
 
 let root: string | null = null
 
-function makeRun(): { dir: string; runDir: string } {
+function makeAttempt(): { dir: string; runDir: string } {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-tail-'))
   const runDir = path.join(root, 'wf_abc123')
   fs.mkdirSync(runDir, { recursive: true })
@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe('WorkflowTail', () => {
   it('emits each workflow brief, spawn, thought, tool, output, and completion with the workflow agent id', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const agentLine = JSON.stringify({
       type: 'assistant',
       timestamp: '2026-08-31T18:00:00.000Z',
@@ -73,7 +73,7 @@ describe('WorkflowTail', () => {
   })
 
   it('reads only what was appended since the last poll', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const file = path.join(runDir, 'agent-a1.jsonl')
     fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { content: 'do the thing' } })}\n${assistant('m1', 50, 2)}\n`)
     fs.writeFileSync(path.join(runDir, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'implementer', spawnDepth: 1 }))
@@ -98,7 +98,7 @@ describe('WorkflowTail', () => {
   })
 
   it('restores newline-safe offsets without replaying history and emits downtime appends', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), `${assistant('m1', 10)}\n`)
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), `${JSON.stringify({ type: 'started', agentId: 'a1' })}\n`)
     const first = new WorkflowTail(dir)
@@ -115,7 +115,7 @@ describe('WorkflowTail', () => {
   })
 
   it('counts a streamed message once, however many times it is rewritten', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     // The runtime rewrites a message as it streams; 429 of 885 lines in a real
     // transcript were repeats of an id already seen.
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), [assistant('m1', 10), assistant('m1', 40), assistant('m2', 5), ''].join('\n'))
@@ -125,25 +125,25 @@ describe('WorkflowTail', () => {
   })
 
   it('keeps the same agent id distinct across workflow runs', () => {
-    const { dir, runDir } = makeRun()
-    const secondRun = path.join(dir, 'wf_second')
-    fs.mkdirSync(secondRun)
+    const { dir, runDir } = makeAttempt()
+    const secondAttempt = path.join(dir, 'wf_second')
+    fs.mkdirSync(secondAttempt)
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), `${assistant('m1', 10)}\n`)
-    fs.writeFileSync(path.join(secondRun, 'agent-a1.jsonl'), `${assistant('m2', 20)}\n`)
+    fs.writeFileSync(path.join(secondAttempt, 'agent-a1.jsonl'), `${assistant('m2', 20)}\n`)
     const agents = new WorkflowTail(dir).poll()
     expect(agents.map((agent) => agent.id)).toEqual(['wf:wf_abc123:a1', 'wf:wf_second:a1'])
     expect(agents.map((agent) => agent.tokens.output)).toEqual([10, 20])
   })
 
   it('counts repeated tool blocks once', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), [assistant('m1', 10, 2), assistant('m1', 40, 2), ''].join('\n'))
     const [agent] = new WorkflowTail(dir).poll()
     expect(agent.toolCalls).toBe(2)
   })
 
   it('holds back a partial trailing line until it is complete', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const file = path.join(runDir, 'agent-a1.jsonl')
     const line = assistant('m1', 10)
     fs.writeFileSync(file, line.slice(0, 40))
@@ -154,7 +154,7 @@ describe('WorkflowTail', () => {
   })
 
   it('checkpoints a partial record at its last newline across restart', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const file = path.join(runDir, 'agent-a1.jsonl')
     const line = assistant('m1', 10)
     fs.writeFileSync(file, line.slice(0, 40))
@@ -168,7 +168,7 @@ describe('WorkflowTail', () => {
   })
 
   it('fails closed on live shrink and replacement across durable recovery', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const file = path.join(runDir, 'agent-a1.jsonl')
     fs.writeFileSync(file, `${assistant('m1', 10)}\n`)
     const first = new WorkflowTail(dir)
@@ -186,7 +186,7 @@ describe('WorkflowTail', () => {
   })
 
   it('prices each agent from its own token split', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), `${assistant('m1', 1_000_000)}\n`)
     const [agent] = new WorkflowTail(dir).poll()
     // opus output is $25/MTok, so a million output tokens dominates the total.
@@ -199,7 +199,7 @@ describe('WorkflowTail', () => {
   })
 
   it('surfaces malformed journal and transcript values without crashing the tailer', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), 'null\n{}\n')
     fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), 'null\n')
     const events = new WorkflowTail(dir).pollWithEvents().events
@@ -211,7 +211,7 @@ describe('WorkflowTail', () => {
   })
 
   it('rejects a journal agent id that could escape its workflow directory', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), `${JSON.stringify({ type: 'started', agentId: '../escape' })}\n`)
     const result = new WorkflowTail(dir).pollWithEvents()
     expect(result.agents).toEqual([])
@@ -221,7 +221,7 @@ describe('WorkflowTail', () => {
   })
 
   it('bounds unterminated transcript projections and refuses symlinked agent files', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const huge = path.join(runDir, 'agent-a1.jsonl')
     fs.writeFileSync(huge, Buffer.alloc(1024 * 1024 + 1, 0x61))
     const tail = new WorkflowTail(dir)
@@ -240,7 +240,7 @@ describe('WorkflowTail', () => {
   })
 
   it('refuses hard-linked and inspection-raced workflow transcripts', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const outside = path.join(dir, 'outside.jsonl')
     fs.writeFileSync(outside, `${assistant('secret', 999)}\n`)
     fs.linkSync(outside, path.join(runDir, 'agent-linked.jsonl'))
@@ -268,7 +268,7 @@ describe('WorkflowTail', () => {
   })
 
   it('applies one aggregate byte budget across all workflow transcripts', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     for (const id of ['a1', 'a2', 'a3']) {
       fs.writeFileSync(path.join(runDir, `agent-${id}.jsonl`), Buffer.alloc(1024 * 1024 + 1, 0x61))
     }
@@ -279,7 +279,7 @@ describe('WorkflowTail', () => {
   })
 
   it('caps retained agents below the persisted run-metrics ceiling', () => {
-    const { dir } = makeRun()
+    const { dir } = makeAttempt()
     for (let run = 0; run < 3; run += 1) {
       const runDir = path.join(dir, `wf_many_${run}`)
       fs.mkdirSync(runDir)
@@ -298,7 +298,7 @@ describe('WorkflowTail', () => {
   })
 
   it('bounds long-lived prompt and note projections at assignment time', () => {
-    const { dir, runDir } = makeRun()
+    const { dir, runDir } = makeAttempt()
     const long = 'x'.repeat(10_000)
     fs.writeFileSync(
       path.join(runDir, 'agent-a1.jsonl'),

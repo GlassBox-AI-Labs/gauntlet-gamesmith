@@ -1,5 +1,5 @@
-import type { LoopModels, ReferenceMode, Verdict } from './loop'
-import { RESUME_PREFIX, stripResumeMarker } from './loop'
+import type { BuildModels, ReferenceMode, Verdict } from './build'
+import { RESUME_PREFIX, stripResumeMarker } from './build'
 import { harnessFor } from './models'
 
 export const MACOS_BROWSER_SANDBOX_RULE =
@@ -24,7 +24,7 @@ export function composeResumePrompt(prompt: string): string {
 }
 
 /** Resolve the queued internal marker into the exact prompt sent to a CLI. */
-export function effectivePromptForRun(prompt: string): { resumeRequested: boolean; prompt: string } {
+export function effectivePromptForAttempt(prompt: string): { resumeRequested: boolean; prompt: string } {
   const resumeRequested = prompt.startsWith(RESUME_PREFIX)
   return { resumeRequested, prompt: resumeRequested ? composeResumePrompt(prompt) : prompt }
 }
@@ -145,11 +145,11 @@ Completion rules, non-negotiable: finish only when the integrated game builds, t
 }
 
 /**
- * Visible before Reference Study has queued round 1. The queued run remains the
+ * Visible before Reference Study has queued round 1. The queued attempt remains the
  * authority once it exists; this bounded preview makes the configured role,
- * reference handoff, and delegation policy inspectable from loop creation.
+ * reference handoff, and delegation policy inspectable from build creation.
  */
-export function buildImplementPromptPreview(models: LoopModels, userPrompt: string, referenceDir: string): string {
+export function buildImplementPromptPreview(models: BuildModels, userPrompt: string, referenceDir: string): string {
   const delegation = models.subagentModel
     ? `Orchestration preview: the ${harnessFor(models.orchestratorModel)} orchestrator delegates substantial implementation to the configured workers with disjoint write sets, then integrates and verifies their work. Every worker brief must name the frozen Reference Pack at ${referenceDir} and its relevant evidence. The exact launch contract is recorded when round 1 is queued.`
     : `Working rules preview: the ${harnessFor(models.orchestratorModel)} orchestrator implements without subagents and verifies the complete running game. The exact execution prompt is recorded when round 1 is queued.`

@@ -9,7 +9,7 @@ const ONBOARDING_FILE = 'onboarding.json'
 const MAX_ONBOARDING_FILE_BYTES = 8 * 1024
 
 /**
- * Whether the first-run flow still needs to be shown, stored beside the other
+ * Whether the first-build flow still needs to be shown, stored beside the other
  * user-data registries.
  *
  * It is deliberately not in SQLite: the answer is one flag that has to be read

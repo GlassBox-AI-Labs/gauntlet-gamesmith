@@ -1,20 +1,20 @@
-import { channelForKind, type LoopLogLine } from '../../../shared/loop'
+import { channelForKind, type BuildLogLine } from '../../../shared/build'
 import { logAgentIdForMetric } from '../../../shared/agent-id'
 
-/** Filter key for lines without an agentId — the run's primary agent. */
+/** Filter key for lines without an agentId — the attempt's primary agent. */
 export const PRIMARY_AGENT = '__primary__'
 
 export interface LogFilterState {
   /** null = all rounds; 0 = the Reference Study. */
   round: number | null
-  /** null = all agents; PRIMARY_AGENT = the run's own agent. */
+  /** null = all agents; PRIMARY_AGENT = the attempt's own agent. */
   agent: string | null
 }
 
 export const ALL_LOG_FILTER: LogFilterState = { round: null, agent: null }
 
-/** Both dimensions are pure predicates over LoopLogLine fields — no runs join. */
-export function lineMatchesFilter(line: LoopLogLine, filter: LogFilterState): boolean {
+/** Both dimensions are pure predicates over BuildLogLine fields — no attempts join. */
+export function lineMatchesFilter(line: BuildLogLine, filter: LogFilterState): boolean {
   if (filter.round != null && line.round !== filter.round) return false
   if (filter.agent == null) return true
   return filter.agent === PRIMARY_AGENT ? !line.agentId : line.agentId === filter.agent
@@ -62,7 +62,7 @@ const CHANNEL_COLORS: Record<string, string> = {
   system: KIND_COLORS.system,
 }
 
-export function logLineColor(line: LoopLogLine): string {
+export function logLineColor(line: BuildLogLine): string {
   return KIND_COLORS[line.kind] ?? CHANNEL_COLORS[line.channel ?? channelForKind(line.kind)] ?? 'text-[#b5afac]'
 }
 

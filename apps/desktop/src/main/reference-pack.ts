@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { LoopModels, ReferencePack } from '../shared/loop'
+import type { BuildModels, ReferencePack } from '../shared/build'
 import { parseCast } from './asset-phase'
 import { redactLogText } from '../shared/redact-log'
 import { referencePackDir } from '../shared/reference-path'
@@ -135,7 +135,7 @@ function declaresNoCast(castMd: string): boolean {
 }
 
 /** The sole filesystem seam for Reference Pack discovery and validation. */
-export function scanReferencePack(workspaceDir: string, root: string, expectedWorkspace?: WorkspaceRootIdentity & { models?: Pick<LoopModels, 'referenceMode'> }): ReferencePack {
+export function scanReferencePack(workspaceDir: string, root: string, expectedWorkspace?: WorkspaceRootIdentity & { models?: Pick<BuildModels, 'referenceMode'> }): ReferencePack {
   const filesOnly = expectedWorkspace?.models?.referenceMode === 'files'
   const inventory = filesBelow(workspaceDir, root, expectedWorkspace)
   const { files, sizes, truncated, unsafePaths } = inventory
@@ -267,7 +267,7 @@ export function scanReferencePack(workspaceDir: string, root: string, expectedWo
           // not downloaded, so it has no URL to attribute and could never pass.
           // The protocol asks for exactly such a note when no clean object shot
           // exists — "a missing object shot makes a weaker pack, not a failed
-          // pack" — and counting it as evidence failed the run for obeying.
+          // pack" — and counting it as evidence failed the attempt for obeying.
           // Everything else stays in: an allowlist of media extensions would
           // let an unattributed format nobody listed slip through.
           const downloaded = files

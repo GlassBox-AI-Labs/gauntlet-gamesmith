@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import type { RawStreamLink } from '@/lib/run-visibility'
-import type { RawStreamChunk, ReadRawStreamInput } from '../../../shared/loop'
+import type { RawStreamLink } from '@/lib/build-visibility'
+import type { RawStreamChunk, ReadRawStreamInput } from '../../../shared/build'
 import type { OperationResult } from '../../../shared/result'
 
 export interface RawStreamBrowserProps {

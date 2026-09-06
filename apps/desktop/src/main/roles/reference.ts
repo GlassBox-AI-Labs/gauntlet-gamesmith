@@ -1,4 +1,4 @@
-import type { AgentMetric, LoopRecord, RunMetrics, RunRecord, TokenTotals } from '../../shared/loop'
+import type { AgentMetric, BuildRecord, AttemptMetrics, PhaseAttempt, TokenTotals } from '../../shared/build'
 import { buildReferencePrompt } from '../../shared/prompts'
 import { harnessFor } from '../../shared/models'
 import { createArtifactPhaseStream } from '../artifact-phase-stream'
@@ -10,13 +10,13 @@ import { referencePackFingerprint } from '../phase-contracts'
 import { estimateCostUsd, PRICE_TABLE_VERSION } from '../pricing'
 import { scanReferencePack } from '../reference-pack'
 import { planCompletion } from '../round-planner'
-import { commitRunningAttempt } from '../run-transition'
+import { commitRunningAttempt } from '../attempt-transition'
 import type { ExitInfo, LogGate, StreamParser } from './types'
 
 interface ReferenceRoleRuntime {
   ledger: Ledger
-  loop: LoopRecord
-  run: RunRecord
+  build: BuildRecord
+  attempt: PhaseAttempt
   gate: LogGate
   childBoundary: ChildStreamBoundary
   referenceDir: string
@@ -34,7 +34,7 @@ interface ReferenceRoleRuntime {
   ensureSourceBaseline(terminalLog: { kind: string; text: string }): boolean
   failOrRetry(error: string, label: string, maxAttempts: number, prompt: string, terminalLog: { kind: string; text: string }): Promise<void>
   overBudget(): boolean
-  persistLoopTerminal(status: 'stopped', reason: string): void
+  persistBuildTerminal(status: 'stopped', reason: string): void
   implementPrompt(round: number, verdict: null): string
 }
 
@@ -50,28 +50,28 @@ function formatTokens(n: number): string {
 
 /** Owns the complete Reference Study stream, accounting, artifact, and handoff protocol. */
 export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamParser {
-  const { ledger, loop, run, gate } = runtime
-  const model = loop.models.orchestratorModel
-  const startedAtMs = Date.parse(ledger.getRun(run.id)?.startedAt ?? run.createdAt)
+  const { ledger, build, attempt, gate } = runtime
+  const model = build.models.orchestratorModel
+  const startedAtMs = Date.parse(ledger.getAttempt(attempt.id)?.startedAt ?? attempt.createdAt)
   let lastFlushAt = 0
   const plog = (kind: string, text: string, agentId?: string): void => {
     if (!gate.suppress) runtime.log(kind, text, agentId)
   }
   const stream = createArtifactPhaseStream({
-    harness: run.harness,
+    harness: attempt.harness,
     phase: 'reference',
     defaultModel: model,
     startedAtMs,
-    initialSessionId: ledger.getRun(run.id)?.sessionId,
+    initialSessionId: ledger.getAttempt(attempt.id)?.sessionId,
     now: runtime.now,
     log: plog,
     onIdentity: (sessionId, reportedModel) => {
-      ledger.patchRun(run.id, { sessionId, ...(reportedModel ? { model: reportedModel } : {}) })
+      ledger.patchAttempt(attempt.id, { sessionId, ...(reportedModel ? { model: reportedModel } : {}) })
     },
     onUsage: () => flush(),
   })
 
-  const accounting = (): { metrics: RunMetrics; input: number; output: number; costUsd: number | null } => {
+  const accounting = (): { metrics: AttemptMetrics; input: number; output: number; costUsd: number | null } => {
     const state = stream.snapshot()
     const billedModel = state.reportedModel ?? model
     const primary: AgentMetric = {
@@ -83,20 +83,20 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
       firstTs: new Date(startedAtMs).toISOString(),
       lastTs: runtime.nowIso(),
     }
-    const nativeCodexResearchers = !!loop.models.researchModel
-      && harnessFor(loop.models.orchestratorModel) === 'codex'
-      && harnessFor(loop.models.researchModel) === 'codex'
-    const streamedResearchers = loop.models.researchModel
-      ? readChildAgents(runtime.childBoundary, loop.models.researchModel, runtime.harnessHome('codex'))
+    const nativeCodexResearchers = !!build.models.researchModel
+      && harnessFor(build.models.orchestratorModel) === 'codex'
+      && harnessFor(build.models.researchModel) === 'codex'
+    const streamedResearchers = build.models.researchModel
+      ? readChildAgents(runtime.childBoundary, build.models.researchModel, runtime.harnessHome('codex'))
       : []
-    const nativeResearchers = nativeCodexResearchers && state.sessionId && loop.models.researchModel
-      ? readCodexUsage(runtime.harnessHome('codex'), startedAtMs, loop.models.researchModel, state.sessionId)
+    const nativeResearchers = nativeCodexResearchers && state.sessionId && build.models.researchModel
+      ? readCodexUsage(runtime.harnessHome('codex'), startedAtMs, build.models.researchModel, state.sessionId)
       : []
-    // A recovery can finish a run whose prompt predates native Codex research.
+    // A recovery can finish an attempt whose prompt predates native Codex research.
     // Preserve those stream-backed rows while new prompts use native sessions.
     const researchers = [...nativeResearchers, ...streamedResearchers]
     const agents = [primary, ...researchers]
-    const perModel: RunMetrics['perModel'] = {}
+    const perModel: AttemptMetrics['perModel'] = {}
     for (const agent of agents) {
       if (!agent.model) continue
       const entry = perModel[agent.model] ?? { costUsd: null, tokens: emptyTokens() }
@@ -118,7 +118,7 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
     if (!force && runtime.now() - lastFlushAt < 15_000) return
     lastFlushAt = runtime.now()
     const current = accounting()
-    ledger.patchRun(run.id, {
+    ledger.patchAttempt(attempt.id, {
       inputTokens: current.input,
       outputTokens: current.output,
       costUsd: current.costUsd,
@@ -129,21 +129,21 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
   }
 
   const finalize = async (exit: ExitInfo): Promise<void> => {
-    if (ledger.getRun(run.id)?.status !== 'running') return
+    if (ledger.getAttempt(attempt.id)?.status !== 'running') return
     let state = stream.snapshot()
-    const processError = exit.spawnError ?? state.failure ?? (exit.code !== 0 && exit.code !== null ? `${run.harness} exited ${exit.code}` : null)
+    const processError = exit.spawnError ?? state.failure ?? (exit.code !== 0 && exit.code !== null ? `${attempt.harness} exited ${exit.code}` : null)
     if (!processError && !state.rateLimitNotice && !runtime.isStopRequested() && !exit.timedOut) await runtime.awaitChildren()
     state = stream.snapshot()
     const durationMs = runtime.now() - startedAtMs
     const finalAccounting = accounting()
     const hasUsage = state.sawUsage || finalAccounting.metrics.agents.length > 1
     const costUsd = hasUsage ? finalAccounting.costUsd : null
-    const pack = scanReferencePack(loop.workspaceDir, runtime.referenceDir, loop)
+    const pack = scanReferencePack(build.workspaceDir, runtime.referenceDir, build)
     const artifactError = pack.ready ? null : pack.issues.join('; ')
-    ledger.patchRun(run.id, {
+    ledger.patchAttempt(attempt.id, {
       metrics: {
         ...finalAccounting.metrics,
-        ...(ledger.getRun(run.id)?.metrics?.projection ? { projection: ledger.getRun(run.id)!.metrics!.projection } : {}),
+        ...(ledger.getAttempt(attempt.id)?.metrics?.projection ? { projection: ledger.getAttempt(attempt.id)!.metrics!.projection } : {}),
       },
       inputTokens: hasUsage ? finalAccounting.input : null,
       outputTokens: hasUsage ? finalAccounting.output : null,
@@ -161,39 +161,39 @@ export function createReferenceProtocol(runtime: ReferenceRoleRuntime): StreamPa
     if (runtime.finishCancelled(exit, 'Reference Study timed out.', terminalMetric)) return
     if (!runtime.ensureSourceBaseline(terminalMetric)) return
     if (processError || artifactError) {
-      const error = exit.spawnError ?? state.rateLimitNotice ?? state.failure ?? (exit.code !== 0 && exit.code !== null ? `${run.harness} exited ${exit.code}` : artifactError!)
+      const error = exit.spawnError ?? state.rateLimitNotice ?? state.failure ?? (exit.code !== 0 && exit.code !== null ? `${attempt.harness} exited ${exit.code}` : artifactError!)
       await runtime.failOrRetry(
         error,
         'Reference Study',
         runtime.maxAttempts,
-        buildReferencePrompt(loop.prompt, runtime.referenceDir, researchRules(loop.models, runtime.referenceDir), loop.models.referenceMode),
+        buildReferencePrompt(build.prompt, runtime.referenceDir, researchRules(build.models, runtime.referenceDir), build.models.referenceMode),
         terminalMetric,
       )
       return
     }
 
-    const fingerprint = referencePackFingerprint(loop.workspaceDir, runtime.referenceDir)
-    const latestLoop = ledger.getLoop(loop.id)
-    const projectedCost = (latestLoop?.totalCostUsd ?? 0) + (costUsd ?? 0)
-    const budgetExceeded = !!latestLoop?.budgetUsd && projectedCost >= latestLoop.budgetUsd
-    const plan = planCompletion({ role: 'reference', round: 0, maxRounds: loop.maxRounds, budgetExceeded })
+    const fingerprint = referencePackFingerprint(build.workspaceDir, runtime.referenceDir)
+    const latestBuild = ledger.getBuild(build.id)
+    const projectedCost = (latestBuild?.totalCostUsd ?? 0) + (costUsd ?? 0)
+    const budgetExceeded = !!latestBuild?.budgetUsd && projectedCost >= latestBuild.budgetUsd
+    const plan = planCompletion({ role: 'reference', round: 0, maxRounds: build.maxRounds, budgetExceeded })
     const fingerprintMessage = `Reference Pack frozen at sha256:${fingerprint}`
-    const applied = commitRunningAttempt(ledger, loop.id, run.id, { status: 'succeeded' }, () => {
+    const applied = commitRunningAttempt(ledger, build.id, attempt.id, { status: 'succeeded' }, () => {
       runtime.persistLog(terminalMetric.kind, terminalMetric.text)
       runtime.persistLog('artifact', fingerprintMessage)
       if (plan.kind === 'queue-implement') {
-        ledger.patchLoop(loop.id, { round: plan.round })
-        ledger.createRun({
-          loopId: loop.id,
+        ledger.patchBuild(build.id, { round: plan.round })
+        ledger.createAttempt({
+          buildId: build.id,
           round: plan.round,
           role: 'implement',
           harness: harnessFor(model),
           prompt: runtime.implementPrompt(plan.round, null),
         })
       } else if (plan.kind === 'finish-budget') {
-        runtime.persistLoopTerminal(
+        runtime.persistBuildTerminal(
           'stopped',
-          `Budget ceiling hit: $${projectedCost.toFixed(2)} of $${latestLoop!.budgetUsd!.toFixed(2)} (equivalent API cost).`,
+          `Budget ceiling hit: $${projectedCost.toFixed(2)} of $${latestBuild!.budgetUsd!.toFixed(2)} (equivalent API cost).`,
         )
       }
     })

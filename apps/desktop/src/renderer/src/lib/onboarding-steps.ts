@@ -35,7 +35,7 @@ export const TOUR_CARDS: readonly TourCard[] = [
   },
   {
     title: 'Play it and share it',
-    body: 'Press Play at any point to open the game in your browser. Export packs the whole run — code, reference material, and history — into one folder you can send to someone else.',
+    body: 'Press Play at any point to open the game in your browser. Export packs the whole build — code, reference material, and history — into one folder you can send to someone else.',
   },
 ]
 
@@ -133,5 +133,5 @@ export function connectStepSettled(states: Record<HarnessKind, HarnessState>): b
 export function connectFooterNote(states: Record<HarnessKind, HarnessState>): string {
   const connected = connectedHarness(states)
   if (connected) return `${HARNESS_LABELS[connected]} is connected. Your own subscription pays for the work.`
-  return 'You can look around without connecting one, but a run cannot start until an agent is signed in.'
+  return 'You can look around without connecting one, but a build cannot start until an agent is signed in.'
 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { readExactFileDescriptor } from './bounded-fd'
-import type { Verdict } from '../shared/loop'
+import type { Verdict } from '../shared/build'
 import { normalizeVerdict } from '../shared/persisted-data'
 import { isRecordId } from '../shared/record-id'
 
@@ -14,14 +14,14 @@ export interface VerdictArtifactResult {
   error: string | null
 }
 
-export function verdictArtifactRelativePath(round: number, runId: string): string {
+export function verdictArtifactRelativePath(round: number, attemptId: string): string {
   if (!Number.isInteger(round) || round < 1 || round > 100) throw new Error('Invalid critique round.')
-  if (!isRecordId(runId)) throw new Error('Invalid critique attempt id.')
-  return `critique/round-${round}/verdict-${runId}.json`
+  if (!isRecordId(attemptId)) throw new Error('Invalid critique attempt id.')
+  return `critique/round-${round}/verdict-${attemptId}.json`
 }
 
-function artifactPath(workspaceDir: string, round: number, runId: string): { workspace: string; critiqueDir: string; roundDir: string; file: string; relative: string } {
-  const relative = verdictArtifactRelativePath(round, runId)
+function artifactPath(workspaceDir: string, round: number, attemptId: string): { workspace: string; critiqueDir: string; roundDir: string; file: string; relative: string } {
+  const relative = verdictArtifactRelativePath(round, attemptId)
   const workspace = fs.realpathSync(workspaceDir)
   const critiqueDir = path.join(workspace, 'critique')
   const roundDir = path.join(critiqueDir, `round-${round}`)
@@ -38,8 +38,8 @@ function assertOwnedDirectory(workspace: string, directory: string, expected?: {
 }
 
 /** Claim a unique per-attempt result path without deleting any workspace entry. */
-export function prepareVerdictArtifact(workspaceDir: string, round: number, runId: string): string {
-  const target = artifactPath(workspaceDir, round, runId)
+export function prepareVerdictArtifact(workspaceDir: string, round: number, attemptId: string): string {
+  const target = artifactPath(workspaceDir, round, attemptId)
   for (const directory of [target.critiqueDir, target.roundDir]) {
     try {
       assertOwnedDirectory(target.workspace, directory)
@@ -62,9 +62,9 @@ function exactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
 }
 
-/** Strict machine-result schema used before a critic is allowed to advance a loop. */
+/** Strict machine-result schema used before a critic is allowed to advance a build. */
 export function parseVerdictArtifact(value: unknown, expectedRevision: string): VerdictArtifactResult {
-  if (!REVISION_PATTERN.test(expectedRevision)) return { verdict: null, error: 'The critique run has no valid revision binding.' }
+  if (!REVISION_PATTERN.test(expectedRevision)) return { verdict: null, error: 'The critique attempt has no valid revision binding.' }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { verdict: null, error: 'Verdict must be a JSON object.' }
   const raw = value as Record<string, unknown>
   if (!exactKeys(raw, ['revision', 'score', 'pass', 'summary', 'findings'])) {
@@ -84,14 +84,14 @@ export function parseVerdictArtifact(value: unknown, expectedRevision: string): 
 export function readVerdictArtifact(
   workspaceDir: string,
   round: number,
-  runId: string,
+  attemptId: string,
   startedAtMs: number,
   expectedRevision: string,
   completedAtMs = Date.now(),
 ): VerdictArtifactResult {
   let target: ReturnType<typeof artifactPath>
   try {
-    target = artifactPath(workspaceDir, round, runId)
+    target = artifactPath(workspaceDir, round, attemptId)
   } catch (error) {
     return { verdict: null, error: error instanceof Error ? error.message : String(error) }
   }

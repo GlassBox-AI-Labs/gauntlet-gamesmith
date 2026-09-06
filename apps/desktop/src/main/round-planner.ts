@@ -1,4 +1,4 @@
-import type { ReferenceMode, RunRecord } from '../shared/loop'
+import type { ReferenceMode, PhaseAttempt } from '../shared/build'
 
 export type CompletionPlan =
   | { kind: 'queue-implement'; round: number }
@@ -27,17 +27,17 @@ export function planCompletion(input: CompletionInput): CompletionPlan {
 }
 
 export type ResumePlan =
-  | { kind: 'continue-queued'; run: RunRecord }
-  | { kind: 'retry'; run: RunRecord }
+  | { kind: 'continue-queued'; attempt: PhaseAttempt }
+  | { kind: 'retry'; attempt: PhaseAttempt }
   | { kind: 'queue-reference'; round: 0 }
-  | { kind: 'queue-implement'; round: number; prior: RunRecord | null }
-  | { kind: 'queue-critique'; round: number; prior: RunRecord }
-  | { kind: 'finish-exhausted'; prior: RunRecord }
+  | { kind: 'queue-implement'; round: number; prior: PhaseAttempt | null }
+  | { kind: 'queue-critique'; round: number; prior: PhaseAttempt }
+  | { kind: 'finish-exhausted'; prior: PhaseAttempt }
 
 /** Pure resume table keeps terminal and successor rules out of controller code. */
-export function planResume(last: RunRecord | null | undefined, maxRounds: number, referenceMode: ReferenceMode = 'web'): ResumePlan {
-  if (last?.status === 'queued') return { kind: 'continue-queued', run: last }
-  if (last && last.status !== 'succeeded') return { kind: 'retry', run: last }
+export function planResume(last: PhaseAttempt | null | undefined, maxRounds: number, referenceMode: ReferenceMode = 'web'): ResumePlan {
+  if (last?.status === 'queued') return { kind: 'continue-queued', attempt: last }
+  if (last && last.status !== 'succeeded') return { kind: 'retry', attempt: last }
   if (!last) return referenceMode === 'skip' ? { kind: 'queue-implement', round: 1, prior: null } : { kind: 'queue-reference', round: 0 }
   if (last.role === 'reference') return { kind: 'queue-implement', round: 1, prior: last }
   if (last.role === 'implement') {

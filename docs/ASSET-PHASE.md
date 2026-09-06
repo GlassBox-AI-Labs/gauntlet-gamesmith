@@ -3,7 +3,7 @@
 Reference images become a library of procedural Three.js asset factories using
 the `img2threejs` skill, so an implement round wires assets up instead of
 sculpting them by hand. This shipped in two cuts: §§1–6 describe the original
-design, where sculpting ran as its own `assets` run role before implement.
+design, where sculpting ran as its own `assets` phase role before implement.
 **§2b The merge** describes the current architecture — sculpting still runs
 the same pipeline, but as part of the implement round's own orchestrator
 conversation rather than a separate one. Read §§1–6 for why the pipeline
@@ -13,7 +13,7 @@ exists and what it enforces; read §2b for how it is actually invoked today.
 
 ## 1. Why
 
-The app has never used `img2threejs`. Across all three run logs in the
+The app has never used `img2threejs`. Across all three build logs in the
 `engine-test` workspace (12,751 lines): zero `Skill` tool calls, no
 `.img2threejs/state.json`, and every one of the 51 mentions of `forge/*.py` is
 a `grep` of the skill's own repo rather than a run of it. What landed instead
@@ -22,7 +22,7 @@ shape without running its screenshot-comparison correction loop.
 
 That costs two things. Asset work competes with the game for the same round —
 sculpting a dog, tuning difficulty and wiring a HUD all happen inside one
-implement run. And quality drifts: the header of `src/assets/char/samoyed.ts`
+implement attempt. And quality drifts: the header of `src/assets/char/samoyed.ts`
 records four ways round 1 lost the shot and how round 2 hand-fixed each, which
 is exactly the job that correction loop exists to do.
 
@@ -31,13 +31,13 @@ dependencies; asset provenance is invisible to it.
 
 Part of the reason was plainer than prompting: the skill was never installed.
 It had to already exist at `<userData>/harnesses/claude/skills/img2threejs`, the
-config dir every run is spawned against, and nothing in the app ever put it
+config dir every attempt is spawned against, and nothing in the app ever put it
 there. A sculptor told to run `forge/state.py` with no skill loaded cannot fail
 usefully, so it improvises — which is precisely the hand-written code above.
 
 The skill now ships with the app: vendored in `vendor/img2threejs`, packaged as
 an `extraResources` entry, and copied into that harness home (`skills.ts`)
-before any round that needs to sculpt. If it is ever missing, the run halts
+before any round that needs to sculpt. If it is ever missing, the attempt halts
 before spawning a single sculptor rather than paying for models nobody can
 trust — originally that guard lived in `executeAssets`; after the merge (§2b)
 it lives in `executeImplement`.
@@ -63,18 +63,18 @@ cut                       ↑                        │
 
 The phase is **re-entrant, not one-shot**. Round 1 builds the cast list. Later
 rounds build only what is missing or what the critic flagged. That part is
-unchanged by the merge in §2b — only which run does the building changed.
+unchanged by the merge in §2b — only which attempt does the building changed.
 
 ---
 
 ## 2b. The merge — sculpting moves inside implement
 
-**As shipped, there is no `assets` run role anymore.** `queueAssets` (the
+**As shipped, there is no `assets` phase role anymore.** `queueAssets` (the
 function that created one) is deleted. What each round still owes gets
-computed by `wantedCast(loop, verdict)` (`loop-runner.ts`) — the same
+computed by `wantedCast(build, verdict)` (`build-runner.ts`) — the same
 three-way logic §2's diagram shows (nothing to sculpt / round-1 unbuilt list /
 critic-faulted list) — and threaded into the implement prompt instead of
-spawning a second run:
+spawning a second attempt:
 
 ```
 now:  reference → implement 1 (sculpts what wantedCast names, then wires up) → critique 1 → implement 2 (same) → …
@@ -91,26 +91,26 @@ since the orchestrator still wires up the whole cast, freshly sculpted and
 previously-built entries alike.
 
 `executeImplement` gained the setup `executeAssets` used to do: install the
-skill (halting the run if it's missing), scaffold `tools/crop.py`, and write
+skill (halting the attempt if it's missing), scaffold `tools/crop.py`, and write
 `.claude/agents/sculptor.md` — all gated on `wantedCast` being non-empty for
 this round, computed fresh at execute time. `sculptorAgentMd`, `sculptorRules`,
 `assetTargets`, `unbuiltCast`, and the `img2threejs` pipeline itself are
 untouched; only the call site moved.
 
 **`executeAssets`/`assetsParser`/`finishAssets`/`assetsPlan` were kept, not
-deleted.** They're unreachable from any *new* round, but `resumeLoop`'s
-generic "retry the exact last run" branch and `recoverAll`'s boot-time
-reattach both replay whatever role a run already had — so a loop with an
-in-flight or interrupted `role: 'assets'` run from before this merge still
+deleted.** They're unreachable from any *new* round, but `resumeBuild`'s
+generic "retry the exact last attempt" branch and `recoverAll`'s boot-time
+reattach both replay whatever role an attempt already had — so a build with an
+in-flight or interrupted `role: 'assets'` attempt from before this merge still
 resumes correctly through the old path, which already ends by calling
-`queueImplement`. `RunRole` keeps `'assets'` in its union for the same reason:
+`queueImplement`. `PhaseRole` keeps `'assets'` in its union for the same reason:
 old ledger rows still have it.
 
 **Nothing about §3 changed except what's noted inline** — the cast-list
 format (§3.1), the crop tool (§3.3, now scaffolded conditionally), the model
 setting (§3.4), the ownership seam (§4), the risks (§5), and the gate's soft
 provenance check (§3.8) all work exactly as designed, just invoked from one
-run instead of two.
+attempt instead of two.
 
 ---
 
@@ -118,7 +118,7 @@ run instead of two.
 
 ### 3.1 Cast list in the Reference Study
 
-New required artifact `reference/<loop>/cast.md`, with matching entries in
+New required artifact `reference/<build>/cast.md`, with matching entries in
 `manifest.json`. Per entry:
 
 | Field | What it is |
@@ -137,7 +137,7 @@ points at frames; finding and cutting it out is the asset phase's job.
 and score popups are not objects and are not entries; they stay with the
 implementer. An empty `cast.md` means there is nothing to sculpt.
 
-**New folder `reference/<loop>/objects/`** — clean isolated shots of cast
+**New folder `reference/<build>/objects/`** — clean isolated shots of cast
 members from wikis, official art, bestiary pages and model viewers. Gameplay
 stills alone never guarantee a usable view of every cast member.
 
@@ -146,22 +146,22 @@ entry names at least one still, and `objects/` is filled where isolated
 material could be found. Missing `objects/` material makes a weaker pack, not a
 failed one.
 
-### 3.2 The `assets` run role (superseded — see §2b)
+### 3.2 The `assets` phase role (superseded — see §2b)
 
-This section describes the original design: a separate run role. **§2b The
+This section describes the original design: a separate phase role. **§2b The
 merge** describes the current architecture, where the same dispatch mechanics
 below (fan-out, `delegationRules`/`sculptorRules`, the agent-file sibling, the
 stream/cost accounting, `awaitChildren`) run inside the implement round
-instead of their own run. Left here because the mechanics themselves didn't
-change — only which run invokes them.
+instead of their own attempt. Left here because the mechanics themselves didn't
+change — only which attempt invokes them.
 
-`RunRole` gained `'assets'` (kept in the type today for old ledger rows, per
-§2b, even though no new run uses it).
+`PhaseRole` gained `'assets'` (kept in the type today for old ledger rows, per
+§2b, even though no new build uses it).
 
-**One run that fans out to one subagent per cast entry.** `LoopRunner` holds a
-single `private current: Attachment` (`loop-runner.ts:259`) and drives one child
-process per loop, so parallel runs would mean restructuring it. Fanning out from
-inside one run is what implement already does, so the phase inherits:
+**One attempt that fans out to one subagent per cast entry.** `BuildRunner` holds a
+single `private current: Attachment` (`build-runner.ts:259`) and drives one child
+process per build, so parallel attempts would mean restructuring it. Fanning out from
+inside one attempt is what implement already does, so the phase inherits:
 
 - `delegationRules(models, referenceDir)`, which covers all four harness
   combinations. It needs a parameter for which model pair to bind — today it
@@ -170,7 +170,7 @@ inside one run is what implement already does, so the phase inherits:
   `model: assetModel` and `effort: assetEffort`.
 - the `.gauntlet-gamesmith/agents/<slug>.<harness>.jsonl` stream the app already
   parses, so per-asset cost needs no new accounting.
-- `awaitChildren` (`loop-runner.ts:1039`) and `childrenActive`.
+- `awaitChildren` (`build-runner.ts:1039`) and `childrenActive`.
 
 Orchestrator runs on `orchestratorModel`/`orchestratorEffort` like every other
 role; `assetModel`/`assetEffort` bind the workers.
@@ -197,7 +197,7 @@ Each worker:
 a round that sculpts shares implement's single 12-hour cap rather than getting
 this budget on top — a deliberate choice to keep one constant rather than add
 a conditional one, at the cost of the ~18-hour combined ceiling the two
-separate runs used to have.)
+separate attempts used to have.)
 
 ### 3.3 `tools/crop.py`
 
@@ -231,12 +231,12 @@ notice. Ladder, best source first: `objects/` → `images/` → `journey/` →
 `motion/` → `video/`. `motion/` is built by `ffmpeg -vf fps=1` over the clip
 (`prompts.ts:18`), so the bottom two rungs stand or fall together.
 
-**"No usable crop" is a legal outcome** that the run reports, not something a
+**"No usable crop" is a legal outcome** that the attempt reports, not something a
 worker works around.
 
-### 3.4 Model setting in the run form
+### 3.4 Model setting in the build form
 
-`LoopModels` (`shared/loop.ts:80-92`) gains two fields:
+`BuildModels` (`shared/build.ts:80-92`) gains two fields:
 
 ```ts
 /** null = no asset phase; implement rounds build their own models, as today. */
@@ -245,7 +245,7 @@ assetEffort: string
 ```
 
 Null is the off switch — it lets the same prompt run with and without the phase
-for comparison, and gives pre-existing loops a sane value.
+for comparison, and gives pre-existing builds a sane value.
 
 Default `claude-opus-5` at `high`, matching the subagent default because asset
 workers *are* fan-out workers. Not the critic's `gpt-5.6-sol`: the critic is
@@ -255,12 +255,12 @@ applies to production work. Efforts come from `AGENT_EFFORTS`, not
 
 | File | Change |
 |---|---|
-| `shared/loop.ts:80` | `LoopModels` gains `assetModel`, `assetEffort` |
-| `shared/loop.ts:189` | `StartLoopInput` gains the same two |
+| `shared/build.ts:80` | `BuildModels` gains `assetModel`, `assetEffort` |
+| `shared/build.ts:189` | `StartBuildInput` gains the same two |
 | `shared/models.ts` | `AssetFields`, `DEFAULT_ASSET`; fourth argument to `resolveModels`; `normalizeModels` fills older ledger rows |
-| `RunView.tsx` ~1230 | a fourth picker row after Research, same grid |
-| `RunView.tsx:99` | run summary line gains **Assets** |
-| `RunView.tsx` 634, 708, 816, 854 | form state, hydrate, submit, switch-run |
+| `BuildView.tsx` ~1230 | a fourth picker row after Research, same grid |
+| `BuildView.tsx:99` | build summary line gains **Assets** |
+| `BuildView.tsx` 634, 708, 816, 854 | form state, hydrate, submit, switch-build |
 
 Harness is never stored — `harnessFor(assetModel)` derives it.
 
@@ -283,7 +283,7 @@ check `rig.bound` at load and fail loudly.
 
 ### 3.6 Routing the critic's findings
 
-`VerdictFinding` (`shared/loop.ts:17-20`) gains an optional target:
+`VerdictFinding` (`shared/build.ts:17-20`) gains an optional target:
 
 ```ts
 export interface VerdictFinding {
@@ -295,17 +295,17 @@ export interface VerdictFinding {
 
 The runner splits the verdict: asset-targeted findings name what to rebuild,
 everything else goes to the implementer. Originally this meant queuing a
-separate `assets` run before implement, because implement depended on the
-library existing first. After §2b, `wantedCast(loop, verdict)` computes the
+separate `assets` attempt before implement, because implement depended on the
+library existing first. After §2b, `wantedCast(build, verdict)` computes the
 same split — `assetTargets(verdict.findings)` if the critic named specific
 assets, else whatever `unbuiltCast` still owes — and `queueImplement` threads
 the result straight into the same round's prompt, so the ordering guarantee
 ("implement depends on the library") now holds *within* one conversation
-(sculpt first, per §2b/§3.5) instead of across two runs.
+(sculpt first, per §2b/§3.5) instead of across two attempts.
 
-Code touched — `queueImplement`'s callers, in `loop-runner.ts`: reference →
+Code touched — `queueImplement`'s callers, in `build-runner.ts`: reference →
 implement, implement → critique → implement, and the equivalent branches in
-`resumeLoop`. All four now make one call each; the conditional "queue assets,
+`resumeBuild`. All four now make one call each; the conditional "queue assets,
 else queue implement directly" branching this section originally described is
 gone.
 
@@ -341,7 +341,7 @@ a factory at `src/assets/<name>.ts`.
 Requiring `.img2threejs/<name>/state.json` on every factory would fail the
 legitimate path where the Asset Build reports an entry unbuildable and the
 implementer models it instead, and the only thing that pressure buys is a
-worker who fakes a state file. So a factory with no img2threejs run behind it
+worker who fakes a state file. So a factory with no img2threejs execution behind it
 is a note on the check, not a violation.
 
 The gate checks that a named asset **exists**, never that anything imports it.
@@ -388,9 +388,9 @@ gap stays with the implementer and the engine contract.
 ## 6. Sequence (historical — this was the original ship order)
 
 1. `cast.md` plus the `scanReferencePack` checks.
-2. The `assets` run role, one agent per entry, no routing yet — it runs once
+2. The `assets` phase role, one agent per entry, no routing yet — it runs once
    before implement 1.
-3. The model setting, through `LoopModels`, `resolveModels` and the run form.
+3. The model setting, through `BuildModels`, `resolveModels` and the build form.
    Ships with the role, since a nullable `assetModel` is how the phase is turned
    off.
 4. Shrink the implement prompt to consume the library.
@@ -400,4 +400,4 @@ gap stays with the implementer and the engine contract.
 Steps 1–4 shipped and fixed the main problem: assets stopped being sculpted by
 hand inside implement rounds. Steps 5–6 kept it from sliding back. §2b is a
 later, separate change on top of all six steps — it did not redo any of them,
-it only changed which run performs step 2's dispatch.
+it only changed which attempt performs step 2's dispatch.

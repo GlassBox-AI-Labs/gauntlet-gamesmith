@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AccountRotation, HarnessKind } from '../shared/harness'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
-import { LoopRunner } from './loop-runner'
+import { BuildRunner } from './build-runner'
 
 /**
  * A usage limit ends the account's window, not the work. These cover the
@@ -19,10 +19,10 @@ const LIMIT = "You've hit your session limit · resets 3:20am (America/Chicago)"
 let dir: string
 
 interface Harness {
-  runner: LoopRunner
+  runner: BuildRunner
   ledger: Ledger
-  loopId: string
-  runId: string
+  buildId: string
+  attemptId: string
   asked: HarnessKind[]
 }
 
@@ -30,24 +30,24 @@ function setup(rotation: AccountRotation): Harness {
   const workspaceDir = path.join(dir, 'workspace')
   fs.mkdirSync(workspaceDir, { recursive: true })
   const ledger = new Ledger(path.join(dir, 'ledger.db'))
-  const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 3, budgetUsd: null, models })
-  const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
+  const build = ledger.createBuild({ prompt: 'build it', workspaceDir, maxRounds: 3, budgetUsd: null, models })
+  const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
   const asked: HarnessKind[] = []
-  const runner = new LoopRunner(ledger, () => {}, async (kind) => {
+  const runner = new BuildRunner(ledger, () => {}, async (kind) => {
     asked.push(kind)
     return rotation
   })
-  return { runner, ledger, loopId: loop.id, runId: run.id, asked }
+  return { runner, ledger, buildId: build.id, attemptId: attempt.id, asked }
 }
 
 function rotate(h: Harness, error: string): Promise<{ rotated: boolean; message?: string | null }> {
-  const loop = h.ledger.getLoop(h.loopId)!
-  const run = h.ledger.getRun(h.runId)!
+  const build = h.ledger.getBuild(h.buildId)!
+  const attempt = h.ledger.getAttempt(h.attemptId)!
   return (
     h.runner as unknown as {
-      rotateForUsageLimit: (l: typeof loop, r: typeof run, e: string) => Promise<{ rotated: boolean; message?: string | null }>
+      rotateForUsageLimit: (l: typeof build, r: typeof attempt, e: string) => Promise<{ rotated: boolean; message?: string | null }>
     }
-  ).rotateForUsageLimit(loop, run, error)
+  ).rotateForUsageLimit(build, attempt, error)
 }
 
 beforeEach(() => {
@@ -113,11 +113,11 @@ describe('usage-limit account rotation', () => {
     expect(h.asked).toHaveLength(3)
   })
 
-  it('gives a finished loop its rotation budget back', async () => {
+  it('gives a finished build its rotation budget back', async () => {
     const h = setup({ ok: true, from: 'a', to: 'b' })
     for (let i = 0; i < 3; i += 1) await rotate(h, LIMIT)
-    ;(h.runner as unknown as { finishLoop: (id: string, s: string, r: string) => void }).finishLoop(
-      h.loopId,
+    ;(h.runner as unknown as { finishBuild: (id: string, s: string, r: string) => void }).finishBuild(
+      h.buildId,
       'stopped',
       'done',
     )

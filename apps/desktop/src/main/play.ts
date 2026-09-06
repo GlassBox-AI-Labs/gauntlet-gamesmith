@@ -3,14 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { shell } from 'electron'
-import type { LoopRecord, PlayState, PlayStateEvent } from '../shared/loop'
+import type { BuildRecord, PlayState, PlayStateEvent } from '../shared/build'
 import { redactedErrorMessage } from '../shared/redact-log'
 import { sanitizedExecutablePath } from './harness-env'
 import { cleanupRoundCheckout } from './round-revision'
-import { safePid } from './run-process'
+import { safePid } from './attempt-process'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 import { readExactFileDescriptor } from './bounded-fd'
-import { assertLoopWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
+import { assertBuildWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
 
 export const PLAY_TIMEOUT_MS = 4 * 60 * 60_000
 const PACKAGE_JSON_LIMIT = 1024 * 1024
@@ -94,9 +94,9 @@ interface PlaySession {
 const sessions = new Map<string, PlaySession>()
 const settlementWaiters = new Set<() => void>()
 
-function notifySession(loopId: string, session: PlaySession): void {
+function notifySession(buildId: string, session: PlaySession): void {
   try {
-    session.notify({ loopId, ...session.state })
+    session.notify({ buildId, ...session.state })
   } catch {
     // Renderer delivery is observational. A destroyed webContents must never
     // interrupt process signaling, state cleanup, or app-quit settlement.
@@ -109,19 +109,19 @@ function resolveSettlementWaiters(): void {
   settlementWaiters.clear()
 }
 
-export function playState(loopId: string): PlayState {
-  return sessions.get(loopId)?.state ?? { running: false, url: null, error: null, round: null }
+export function playState(buildId: string): PlayState {
+  return sessions.get(buildId)?.state ?? { running: false, url: null, error: null, round: null }
 }
 
 /**
- * Decide whether a loop may execute Play. Agent-loop activity is deliberately
- * not a denial condition: trusted local runs may preview their live workspace
+ * Decide whether a build may execute Play. Agent-build activity is deliberately
+ * not a denial condition: trusted local builds may preview their live workspace
  * while agents continue editing it.
  */
-export function playAccessError(loop: Pick<LoopRecord, 'playTrusted' | 'executionTrusted' | 'status'>): string | null {
-  return loop.playTrusted || loop.executionTrusted
+export function playAccessError(build: Pick<BuildRecord, 'playTrusted' | 'executionTrusted' | 'status'>): string | null {
+  return build.playTrusted || build.executionTrusted
     ? null
-    : 'Untrusted history (imported or created before trust provenance shipped) cannot use Play because it executes project scripts. Use Play to explicitly trust this run and folder.'
+    : 'Untrusted history (imported or created before trust provenance shipped) cannot use Play because it executes project scripts. Use Play to explicitly trust this build and folder.'
 }
 
 function cleanupCheckout(checkoutDir: string | null): string | null {
@@ -183,14 +183,14 @@ function compareIdentity(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
 }
 
-function openSessionUrl(loopId: string, session: PlaySession, url: string): void {
+function openSessionUrl(buildId: string, session: PlaySession, url: string): void {
   void session.runtime.openExternal(url).catch((error: unknown) => {
-    if (sessions.get(loopId)?.child !== session.child) return
+    if (sessions.get(buildId)?.child !== session.child) return
     session.state = {
       ...session.state,
       error: `Game is running, but its URL could not be opened: ${redactedErrorMessage(error, 'Unknown browser failure.')}`,
     }
-    notifySession(loopId, session)
+    notifySession(buildId, session)
   })
 }
 
@@ -214,28 +214,28 @@ function checkedGroupAlive(session: PlaySession, pid: number, identity: readonly
   }
 }
 
-function noteUnknownGroupProbe(loopId: string, session: PlaySession): void {
+function noteUnknownGroupProbe(buildId: string, session: PlaySession): void {
   session.state = {
     ...session.state,
     running: true,
     url: null,
-    error: 'Play process-group ownership could not be checked. Gauntlet Loop will not signal or unblock a possibly live group; it will retry until absence is verified.',
+    error: 'Play process-group ownership could not be checked. Gauntlet Gamesmith will not signal or unblock a possibly live group; it will retry until absence is verified.',
   }
-  notifySession(loopId, session)
+  notifySession(buildId, session)
 }
 
-function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit?: () => void): void {
+function signalProcessGroup(buildId: string, session: PlaySession, afterGroupExit?: () => void): void {
   const pid = session.child.pid
   if (!safePid(pid)) return
   const identity = session.groupIdentity
   const watchForExit = (): void => {
-    if (!afterGroupExit || sessions.get(loopId) !== session) return
+    if (!afterGroupExit || sessions.get(buildId) !== session) return
     scheduleSessionTimer(session, () => {
-      if (sessions.get(loopId) !== session) return
+      if (sessions.get(buildId) !== session) return
       const alive = checkedGroupAlive(session, pid, identity)
       if (alive === false) afterGroupExit()
       else {
-        if (alive === null) noteUnknownGroupProbe(loopId, session)
+        if (alive === null) noteUnknownGroupProbe(buildId, session)
         watchForExit()
       }
     }, 1_000)
@@ -245,7 +245,7 @@ function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit
   const initiallyAlive = checkedGroupAlive(session, pid, identity)
   if (initiallyAlive !== true) {
     if (initiallyAlive === null) {
-      noteUnknownGroupProbe(loopId, session)
+      noteUnknownGroupProbe(buildId, session)
       watchForExit()
       return
     }
@@ -266,7 +266,7 @@ function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit
       const alive = checkedGroupAlive(session, pid, identity)
       if (alive !== true) {
         if (alive === null) {
-          noteUnknownGroupProbe(loopId, session)
+          noteUnknownGroupProbe(buildId, session)
           watchForExit()
           return
         }
@@ -283,7 +283,7 @@ function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit
           const settledAlive = checkedGroupAlive(session, pid, identity)
           if (settledAlive !== true) {
             if (settledAlive === null) {
-              noteUnknownGroupProbe(loopId, session)
+              noteUnknownGroupProbe(buildId, session)
               watchForExit()
               return
             }
@@ -294,7 +294,7 @@ function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit
             ...session.state,
             error: 'The game launcher exited, but its verified background process group survived SIGKILL. Play and Export remain blocked; stop that process manually.',
           }
-          notifySession(loopId, session)
+          notifySession(buildId, session)
           watchForExit()
         }, 250)
       }
@@ -302,9 +302,9 @@ function signalProcessGroup(loopId: string, session: PlaySession, afterGroupExit
   }
 }
 
-function finishPlaySession(loopId: string, session: PlaySession, error: string | null): void {
-  if (sessions.get(loopId) !== session) return
-  sessions.delete(loopId)
+function finishPlaySession(buildId: string, session: PlaySession, error: string | null): void {
+  if (sessions.get(buildId) !== session) return
+  sessions.delete(buildId)
   const cleanupError = cleanup(session)
   session.state = {
     running: false,
@@ -313,21 +313,21 @@ function finishPlaySession(loopId: string, session: PlaySession, error: string |
     round: session.state.round,
   }
   try {
-    notifySession(loopId, session)
+    notifySession(buildId, session)
   } finally {
     resolveSettlementWaiters()
   }
 }
 
-function stopVerifiedSession(loopId: string, session: PlaySession, pendingMessage: string, finalError: string | null): void {
+function stopVerifiedSession(buildId: string, session: PlaySession, pendingMessage: string, finalError: string | null): void {
   if (session.terminating) return
   session.terminating = true
   session.state = { ...session.state, running: true, url: null, error: pendingMessage }
-  notifySession(loopId, session)
-  signalProcessGroup(loopId, session, () => finishPlaySession(loopId, session, finalError))
+  notifySession(buildId, session)
+  signalProcessGroup(buildId, session, () => finishPlaySession(buildId, session, finalError))
 }
 
-function retainUnrelatedGroup(loopId: string, session: PlaySession, finalError: string | null): void {
+function retainUnrelatedGroup(buildId: string, session: PlaySession, finalError: string | null): void {
   if (session.terminating) return
   session.terminating = true
   session.runtime.clearTimer(session.hardTimeout)
@@ -335,16 +335,16 @@ function retainUnrelatedGroup(loopId: string, session: PlaySession, finalError: 
     ...session.state,
     running: true,
     url: null,
-    error: 'The game launcher exited but its numeric process group could not be tied to any exact owned member. Gauntlet Loop will not signal a possibly unrelated group; Play, Export, and app quit remain blocked until the numeric group is verified absent.',
+    error: 'The game launcher exited but its numeric process group could not be tied to any exact owned member. Gauntlet Gamesmith will not signal a possibly unrelated group; Play, Export, and app quit remain blocked until the numeric group is verified absent.',
   }
-  notifySession(loopId, session)
+  notifySession(buildId, session)
   const poll = (): void => {
     scheduleSessionTimer(session, () => {
-      if (sessions.get(loopId) !== session) return
+      if (sessions.get(buildId) !== session) return
       const pid = session.child.pid
       try {
         const current = safePid(pid) ? session.runtime.groupIdentity(pid) : []
-        if (current.length === 0) finishPlaySession(loopId, session, finalError)
+        if (current.length === 0) finishPlaySession(buildId, session, finalError)
         else poll()
       } catch {
         poll()
@@ -354,15 +354,15 @@ function retainUnrelatedGroup(loopId: string, session: PlaySession, finalError: 
   poll()
 }
 
-export function stopPlay(loopId: string): void {
-  const session = sessions.get(loopId)
+export function stopPlay(buildId: string): void {
+  const session = sessions.get(buildId)
   if (!session) return
   if (session.groupIdentity.length === 0) {
     session.state = {
       ...session.state,
-      error: 'Game process ownership could not be verified, so the protected launch gate did not release the project script. Gauntlet Loop is stopping the app-owned wrapper; Play and Export remain blocked until it exits.',
+      error: 'Game process ownership could not be verified, so the protected launch gate did not release the project script. Gauntlet Gamesmith is stopping the app-owned wrapper; Play and Export remain blocked until it exits.',
     }
-    notifySession(loopId, session)
+    notifySession(buildId, session)
     try {
       session.child.kill('SIGINT')
     } catch {
@@ -370,11 +370,11 @@ export function stopPlay(loopId: string): void {
     }
     return
   }
-  stopVerifiedSession(loopId, session, 'Stopping the verified game process group…', null)
+  stopVerifiedSession(buildId, session, 'Stopping the verified game process group…', null)
 }
 
 export function stopAllPlay(): void {
-  for (const loopId of [...sessions.keys()]) stopPlay(loopId)
+  for (const buildId of [...sessions.keys()]) stopPlay(buildId)
 }
 
 export function hasActivePlay(): boolean {
@@ -408,7 +408,7 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
       ? (pkg.scripts as Record<string, unknown>)
       : null
     for (const script of ['dev', 'start', 'serve', 'preview']) {
-      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['run', script] }
+      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['build', script] }
     }
   } catch {
     /* no valid package.json — fall through */
@@ -427,7 +427,7 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
  * dotfiles from convention-following code, but Node version managers are
  * convention-following code too: volta, asdf and mise all resolve their
  * toolchain from `$HOME`, so a redirected home hid the user's Node along with
- * their secrets. A real run failed with exit 126 and `Volta error: Node is not
+ * their secrets. A real build failed with exit 126 and `Volta error: Node is not
  * available` — Play worked only for operators whose `npm` was a real binary
  * rather than a shim.
  *
@@ -461,7 +461,7 @@ export function playEnvironment(workspaceDir: string, source: NodeJS.ProcessEnv 
 }
 
 export function startPlay(
-  loopId: string,
+  buildId: string,
   workspaceDir: string,
   round: number | null,
   cleanupDir: string | null,
@@ -469,20 +469,20 @@ export function startPlay(
   overrides: Partial<PlayRuntime> = {},
   boundary?: { expectedWorkspace: WorkspaceRootIdentity; protectedRoots: readonly string[] },
 ): PlayState {
-  const existing = sessions.get(loopId)
+  const existing = sessions.get(buildId)
   const activeRuntime = { ...runtime, ...overrides }
   if (existing?.state.running && existing.workspaceDir === workspaceDir) {
-    if (existing.state.url) openSessionUrl(loopId, existing, existing.state.url)
+    if (existing.state.url) openSessionUrl(buildId, existing, existing.state.url)
     return existing.state
   }
   if (existing) {
-    stopPlay(loopId)
-    const stopping = sessions.get(loopId)
+    stopPlay(buildId)
+    const stopping = sessions.get(buildId)
     if (stopping) return stopping.state
   }
   const assertExpectedWorkspace = (): void => {
     if (!boundary) return
-    const verified = assertLoopWorkspaceIdentity(boundary.expectedWorkspace, boundary.protectedRoots)
+    const verified = assertBuildWorkspaceIdentity(boundary.expectedWorkspace, boundary.protectedRoots)
     if (verified !== path.resolve(workspaceDir)) throw new Error('Play root does not match the registered workspace identity.')
   }
   try {
@@ -530,7 +530,7 @@ export function startPlay(
     const message = `Could not start game process: ${redactedErrorMessage(error, 'Unknown spawn failure.')}`
     const state = { running: false, url: null, error: cleanupError ? `${message} ${cleanupError}` : message, round }
     try {
-      notify({ loopId, ...state })
+      notify({ buildId, ...state })
     } catch {
       /* renderer notification cannot turn a handled spawn failure into a crash */
     }
@@ -569,8 +569,8 @@ export function startPlay(
       error: ownershipVerified
         ? null
         : pidIsSafe
-          ? 'The protected Play wrapper launched, but its process ownership could not be verified. The project script was not released; Gauntlet Loop is stopping and supervising the wrapper without signaling a numeric PID.'
-          : 'The protected Play wrapper launched without a safe PID. The project script was not released; Gauntlet Loop is stopping and supervising the directly returned child handle until it exits.',
+          ? 'The protected Play wrapper launched, but its process ownership could not be verified. The project script was not released; Gauntlet Gamesmith is stopping and supervising the wrapper without signaling a numeric PID.'
+          : 'The protected Play wrapper launched without a safe PID. The project script was not released; Gauntlet Gamesmith is stopping and supervising the directly returned child handle until it exits.',
       round,
     },
     notify,
@@ -580,9 +580,9 @@ export function startPlay(
     stopTimers: [],
     terminating: false,
   }
-  const push = (): void => notifySession(loopId, session)
+  const push = (): void => notifySession(buildId, session)
   session.hardTimeout = activeRuntime.setTimer(() => {
-    if (sessions.get(loopId)?.child !== child) return
+    if (sessions.get(buildId)?.child !== child) return
     if (!ownershipVerified) {
       session.state = {
         ...session.state,
@@ -592,17 +592,17 @@ export function startPlay(
       return
     }
     stopVerifiedSession(
-      loopId,
+      buildId,
       session,
       `Game exceeded the ${Math.round(activeRuntime.timeoutMs / 60_000)} minute safety timeout; stopping its verified process group…`,
       `Game process stopped after the ${Math.round(activeRuntime.timeoutMs / 60_000)} minute safety timeout.`,
     )
   }, activeRuntime.timeoutMs)
   session.hardTimeout.unref?.()
-  sessions.set(loopId, session)
+  sessions.set(buildId, session)
   if (ownershipVerified) {
     session.identityTimer = activeRuntime.setInterval(() => {
-      if (sessions.get(loopId) === session) mergeVerifiedGroupIdentity(session)
+      if (sessions.get(buildId) === session) mergeVerifiedGroupIdentity(session)
     }, 1_000)
     session.identityTimer.unref?.()
   }
@@ -617,28 +617,28 @@ export function startPlay(
       const browserUrl = new URL(match[0])
       if (round != null) browserUrl.searchParams.set('gauntlet-round', String(round))
       session.state.url = browserUrl.toString()
-      openSessionUrl(loopId, session, session.state.url)
+      openSessionUrl(buildId, session, session.state.url)
       push()
     }
   }
   child.stdout?.on('data', scan)
   child.stderr?.on('data', scan)
   child.on('exit', (code) => {
-    if (sessions.get(loopId)?.child !== child) return
-    const finish = (): void => finishPlaySession(loopId, session, code ? `Game process exited (code ${code}).` : null)
+    if (sessions.get(buildId)?.child !== child) return
+    const finish = (): void => finishPlaySession(buildId, session, code ? `Game process exited (code ${code}).` : null)
     // A Stop/timeout shutdown already owns the verified group and its
     // escalation timers; the leader's exit must not cancel or duplicate it.
     if (session.terminating) return
     const finalGroup = ownershipVerified ? mergeVerifiedGroupIdentity(session) : 'absent'
     if (ownershipVerified && (finalGroup === 'unrelated' || finalGroup === 'unknown')) {
-      retainUnrelatedGroup(loopId, session, code ? `Game process exited (code ${code}).` : null)
+      retainUnrelatedGroup(buildId, session, code ? `Game process exited (code ${code}).` : null)
       return
     }
     if (finalGroup === 'owned') {
       stopVerifiedSession(
-        loopId,
+        buildId,
         session,
-        'The game launcher exited while a verified background server was still running. Gauntlet Loop is stopping that process group.',
+        'The game launcher exited while a verified background server was still running. Gauntlet Gamesmith is stopping that process group.',
         code ? `Game process exited (code ${code}).` : null,
       )
       return
@@ -646,24 +646,24 @@ export function startPlay(
     finish()
   })
   child.on('error', (error) => {
-    if (sessions.get(loopId)?.child !== child) return
+    if (sessions.get(buildId)?.child !== child) return
     if (session.terminating) return
     const failure = redactedErrorMessage(error, 'Game process failed.')
     const finalGroup = ownershipVerified ? mergeVerifiedGroupIdentity(session) : 'absent'
     if (ownershipVerified && (finalGroup === 'unrelated' || finalGroup === 'unknown')) {
-      retainUnrelatedGroup(loopId, session, failure)
+      retainUnrelatedGroup(buildId, session, failure)
       return
     }
     if (finalGroup === 'owned') {
       stopVerifiedSession(
-        loopId,
+        buildId,
         session,
-        `The game launcher failed while a verified background server was still running. Gauntlet Loop is stopping that process group. ${failure}`,
+        `The game launcher failed while a verified background server was still running. Gauntlet Gamesmith is stopping that process group. ${failure}`,
         failure,
       )
       return
     }
-    finishPlaySession(loopId, session, failure)
+    finishPlaySession(buildId, session, failure)
   })
   if (!ownershipVerified) {
     // The freshly returned ChildProcess handle is the only ownership evidence
@@ -675,7 +675,7 @@ export function startPlay(
       /* the exit/error handlers still supervise the returned child */
     }
     scheduleSessionTimer(session, () => {
-      if (sessions.get(loopId)?.child !== child || child.exitCode != null || child.signalCode != null) return
+      if (sessions.get(buildId)?.child !== child || child.exitCode != null || child.signalCode != null) return
       try {
         child.kill('SIGKILL')
       } catch {
@@ -689,7 +689,7 @@ export function startPlay(
       session.gateReleased = true
     } catch (error) {
       stopVerifiedSession(
-        loopId,
+        buildId,
         session,
         `The protected Play launch gate could not be released; stopping its verified wrapper. ${redactedErrorMessage(error, 'Unknown gate failure.')}`,
         'The game project was not started because its protected launch gate failed.',
