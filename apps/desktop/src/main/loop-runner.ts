@@ -1004,11 +1004,17 @@ export class LoopRunner {
           this.broadcast(loop.id)
           const gate: LogGate = { suppress: false }
           const childBoundary = recoverChildStreams(loop.workspaceDir, loop)
+          // Recovery must pick the reader the run was spawned with. Handing a
+          // codex stream to the claude protocol built claude workflow paths for
+          // a run that has none, and the throw failed the whole loop — so a
+          // codex implement run could never survive an app restart.
           const parser =
             active.role === 'reference'
               ? this.makeReferenceParser(loop, active, gate, childBoundary)
               : active.role === 'implement'
-                ? this.makeImplementParser(loop, active, gate, childBoundary, meta.workflowOffsets, meta.workflowIdentities)
+                ? harnessFor(loop.models.orchestratorModel) === 'claude'
+                  ? this.makeImplementParser(loop, active, gate, childBoundary, meta.workflowOffsets, meta.workflowIdentities)
+                  : this.makeCodexImplementParser(loop, active, gate, childBoundary)
                 : this.makeCritiqueParser(loop, active, gate)
           const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
           const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
