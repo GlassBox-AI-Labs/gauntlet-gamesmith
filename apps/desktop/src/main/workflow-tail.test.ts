@@ -352,4 +352,26 @@ describe('workflowTailDir', () => {
     fs.symlinkSync(outside, path.join(project, 'sess-1'))
     expect(() => workflowTailDir(home, '/workspace', 'sess-1')).toThrow(/symbolic link/)
   })
+
+  it('follows the shared projects link the app makes for an extra account', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-tail-account-'))
+    // The real layout: accounts.ts shares `projects` across accounts so a run
+    // can switch accounts between rounds and continue the same session.
+    const claudeTree = path.join(root, 'harnesses', 'claude')
+    const accountHome = path.join(claudeTree, 'accounts', 'account-2')
+    fs.mkdirSync(path.join(claudeTree, 'projects', '-workspace', 'sess-1', 'subagents', 'workflows'), { recursive: true })
+    fs.mkdirSync(accountHome, { recursive: true })
+    fs.symlinkSync('../../projects', path.join(accountHome, 'projects'))
+
+    expect(workflowTailDir(accountHome, '/workspace', 'sess-1')).toBe(
+      fs.realpathSync(path.join(claudeTree, 'projects', '-workspace', 'sess-1', 'subagents', 'workflows')),
+    )
+
+    // A link out of the harness tree is still refused.
+    const escape = path.join(root, 'outside')
+    fs.mkdirSync(escape)
+    fs.rmSync(path.join(claudeTree, 'projects', '-workspace', 'sess-1'), { recursive: true })
+    fs.symlinkSync(escape, path.join(claudeTree, 'projects', '-workspace', 'sess-1'))
+    expect(() => workflowTailDir(accountHome, '/workspace', 'sess-1')).toThrow(/symbolic link/)
+  })
 })
