@@ -27,6 +27,50 @@ afterEach(() => {
   dir = null
 })
 
+/** A ledger written before the Build rename: `loops`, `runs`, and their columns. */
+function seedPreRenameLedger(dbPath: string, workspaceDir: string, loopId: string, runId: string): void {
+  const legacy = new DatabaseSync(dbPath)
+  legacy.exec(`
+    CREATE TABLE loops (
+      id TEXT PRIMARY KEY, title TEXT, prompt TEXT NOT NULL, workspace_dir TEXT NOT NULL,
+      workspace_dev INTEGER, workspace_ino INTEGER, max_rounds INTEGER NOT NULL, budget_usd REAL,
+      models_json TEXT NOT NULL, status TEXT NOT NULL, round INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0, stop_reason TEXT, created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, play_trusted INTEGER NOT NULL DEFAULT 0,
+      execution_trusted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE runs (
+      id TEXT PRIMARY KEY, loop_id TEXT NOT NULL REFERENCES loops(id), round INTEGER NOT NULL,
+      role TEXT NOT NULL, harness TEXT NOT NULL, status TEXT NOT NULL, prompt TEXT NOT NULL,
+      model TEXT, effort TEXT, cli_version TEXT, price_table_version TEXT, cost_source TEXT,
+      prompt_sha256 TEXT, account_label TEXT, machine_label TEXT, auth_mode TEXT,
+      process_ownership_json TEXT, summary TEXT, verdict_json TEXT, metrics_json TEXT,
+      cost_usd REAL, input_tokens INTEGER, output_tokens INTEGER, num_turns INTEGER,
+      duration_ms INTEGER, session_id TEXT, revision TEXT, error TEXT, created_at TEXT NOT NULL,
+      started_at TEXT, finished_at TEXT
+    );
+    CREATE TABLE events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, loop_id TEXT NOT NULL, run_id TEXT, ts TEXT NOT NULL,
+      kind TEXT NOT NULL, text TEXT NOT NULL, agent_id TEXT, round INTEGER, role TEXT, channel TEXT
+    );
+    CREATE INDEX idx_runs_loop ON runs(loop_id, created_at);
+    CREATE INDEX idx_events_loop ON events(loop_id, seq);
+  `)
+  legacy.prepare(
+    `INSERT INTO loops
+     (id, prompt, workspace_dir, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(loopId, 'old prompt', workspaceDir, 2, null, JSON.stringify(models), 'stopped', 1, 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+  legacy.prepare(
+    `INSERT INTO runs (id, loop_id, round, role, harness, status, prompt, process_ownership_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(runId, loopId, 1, 'implement', 'claude', 'succeeded', 'old run', '{"pid":4242}', '2026-01-01T00:00:00.000Z')
+  legacy.prepare(
+    `INSERT INTO events (loop_id, run_id, ts, kind, text) VALUES (?, ?, ?, ?, ?)`,
+  ).run(loopId, runId, '2026-01-01T00:00:00.000Z', 'system', 'carried across the rename')
+  legacy.close()
+}
+
 describe('Ledger', () => {
   it('bounds inactive portable-ledger handles without evicting an active mirror transaction', () => {
     const ledger = makeLedger()
@@ -175,7 +219,7 @@ describe('Ledger', () => {
       `WITH RECURSIVE sequence(n) AS (
          VALUES(1) UNION ALL SELECT n + 1 FROM sequence WHERE n < ?
        )
-       INSERT INTO runs (id, loop_id, round, role, harness, status, prompt, created_at)
+       INSERT INTO phase_attempts (id, build_id, round, role, harness, status, prompt, created_at)
        SELECT printf('00000000-0000-4000-8000-%012d', n), ?, 1, 'implement', 'claude', 'succeeded', 'bounded', '2026-01-01T00:00:00.000Z'
        FROM sequence`,
     ).run(MAX_MATERIALIZED_RUN_HISTORY + 1, loop.id)
@@ -405,8 +449,8 @@ describe('Ledger', () => {
     const migrated = new DatabaseSync(dbPath, { readOnly: true })
     const columns = (table: string): string[] =>
       (migrated.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((column) => column.name)
-    expect(columns('loops')).toEqual(expect.arrayContaining(['title', 'play_trusted', 'workspace_dev', 'workspace_ino']))
-    expect(columns('runs')).toEqual(
+    expect(columns("builds")).toEqual(expect.arrayContaining(['title', 'play_trusted', 'workspace_dev', 'workspace_ino']))
+    expect(columns("phase_attempts")).toEqual(
       expect.arrayContaining([
         'revision',
         'effort',
@@ -420,11 +464,11 @@ describe('Ledger', () => {
       ]),
     )
     expect(columns('events')).toEqual(expect.arrayContaining(['agent_id', 'round', 'role', 'channel']))
-    const adopted = migrated.prepare('SELECT workspace_dev, workspace_ino FROM loops WHERE id = ?').get(loopId)
+    const adopted = migrated.prepare('SELECT workspace_dev, workspace_ino FROM builds WHERE id = ?').get(loopId)
     migrated.close()
 
     const portable = new DatabaseSync(path.join(metadataDir, 'ledger.db'), { readOnly: true })
-    expect(portable.prepare('SELECT workspace_dev, workspace_ino FROM loops WHERE id = ?').get(loopId)).toEqual(adopted)
+    expect(portable.prepare('SELECT workspace_dev, workspace_ino FROM builds WHERE id = ?').get(loopId)).toEqual(adopted)
     portable.close()
 
     const reopened = new Ledger(dbPath)
@@ -435,6 +479,68 @@ describe('Ledger', () => {
     reopened.close()
   })
 
+  it('renames the pre-Build vocabulary once, keeps every row, and backs the file up first', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-ledger-rename-'))
+    const dbPath = path.join(dir, 'ledger.db')
+    const loopId = '33333333-3333-4333-8333-333333333333'
+    const runId = '44444444-4444-4444-8444-444444444444'
+    seedPreRenameLedger(dbPath, fs.realpathSync(workspace()), loopId, runId)
+
+    const ledger = new Ledger(dbPath)
+    expect(ledger.getLoop(loopId)?.prompt).toBe('old prompt')
+    expect(ledger.getRun(runId)?.role).toBe('implement')
+    // Later entries are this fixture's missing portable mirror, not the rename.
+    expect(ledger.eventsForLoop(loopId)[0]?.text).toBe('carried across the rename')
+    ledger.close()
+
+    // The pre-migration copy is the only undo, so it must exist and still read.
+    const backupPath = `${dbPath}.pre-build-rename`
+    expect(fs.existsSync(backupPath)).toBe(true)
+    const backup = new DatabaseSync(backupPath, { readOnly: true })
+    expect(backup.prepare('SELECT id FROM runs').get()).toEqual({ id: runId })
+    backup.close()
+
+    const migrated = new DatabaseSync(dbPath, { readOnly: true })
+    const tables = (migrated.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as unknown as { name: string }[])
+      .map((table) => table.name)
+    expect(tables).toEqual(expect.arrayContaining(['builds', 'phase_attempts']))
+    expect(tables).not.toContain('loops')
+    expect(tables).not.toContain('runs')
+    const indexes = (migrated.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name NOT LIKE 'sqlite_%'").all() as unknown as { name: string }[])
+      .map((index) => index.name)
+    expect(indexes.sort()).toEqual(['idx_attempts_build', 'idx_events_build'])
+    expect(migrated.prepare('SELECT build_id FROM phase_attempts WHERE id = ?').get(runId)).toEqual({ build_id: loopId })
+    // Recovery reads process ownership off this column; the rename must not lose it.
+    expect(migrated.prepare('SELECT process_ownership_json FROM phase_attempts WHERE id = ?').get(runId))
+      .toEqual({ process_ownership_json: '{"pid":4242}' })
+    expect(migrated.prepare('SELECT build_id, attempt_id FROM events').get()).toEqual({ build_id: loopId, attempt_id: runId })
+    migrated.close()
+
+    // Reopening must be a no-op: no second migration, no second backup.
+    const reopened = new Ledger(dbPath)
+    expect(reopened.getRun(runId)?.role).toBe('implement')
+    reopened.close()
+    expect(fs.readdirSync(dir).filter((name) => name.startsWith('ledger.db.pre-build-rename'))).toEqual(['ledger.db.pre-build-rename'])
+  })
+
+  it('rejects a ledger that mixes pre-rename and current table names', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-ledger-mixed-'))
+    const sourceWorkspace = workspace('mixed')
+    const ledger = new Ledger(path.join(dir, 'source.db'))
+    const loop = ledger.createLoop({ prompt: 'p', workspaceDir: sourceWorkspace, maxRounds: 1, budgetUsd: null, models })
+    ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
+    ledger.prepareRunFolder(loop.id)
+    ledger.close()
+
+    const folder = new DatabaseSync(path.join(sourceWorkspace, '.gauntlet-gamesmith', 'ledger.db'))
+    folder.exec('CREATE TABLE loops (id TEXT PRIMARY KEY)')
+    folder.close()
+
+    const target = new Ledger(path.join(dir, 'target.db'))
+    expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/mixes pre-rename and current table names/)
+    target.close()
+  })
+
   it('leaves legacy workspace identity unavailable when the portable history does not match', () => {
     const ledger = makeLedger()
     const workspaceDir = workspace()
@@ -442,10 +548,10 @@ describe('Ledger', () => {
     ledger.close()
 
     const registry = new DatabaseSync(path.join(dir!, 'ledger.db'))
-    registry.prepare('UPDATE loops SET workspace_dev = NULL, workspace_ino = NULL, play_trusted = 0 WHERE id = ?').run(loop.id)
+    registry.prepare('UPDATE builds SET workspace_dev = NULL, workspace_ino = NULL, play_trusted = 0 WHERE id = ?').run(loop.id)
     registry.close()
     const portable = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'))
-    portable.prepare('UPDATE loops SET prompt = ? WHERE id = ?').run('different project history', loop.id)
+    portable.prepare('UPDATE builds SET prompt = ? WHERE id = ?').run('different project history', loop.id)
     portable.close()
 
     const reopened = new Ledger(path.join(dir!, 'ledger.db'))
@@ -473,8 +579,8 @@ describe('Ledger', () => {
     expect(ledger.getLoop(loop.id)?.status).toBe('running')
     expect(ledger.runsForLoop(loop.id)).toEqual([])
     const folder = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(folder.prepare('SELECT status FROM loops WHERE id = ?').get(loop.id)).toEqual({ status: 'running' })
-    expect(folder.prepare('SELECT COUNT(*) AS count FROM runs').get()).toEqual({ count: 0 })
+    expect(folder.prepare('SELECT status FROM builds WHERE id = ?').get(loop.id)).toEqual({ status: 'running' })
+    expect(folder.prepare('SELECT COUNT(*) AS count FROM phase_attempts').get()).toEqual({ count: 0 })
     folder.close()
     ledger.close()
   })
@@ -491,9 +597,9 @@ describe('Ledger', () => {
     })
 
     const folder = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(folder.prepare('SELECT round FROM loops WHERE id = ?').get(loop.id)).toEqual({ round: 1 })
-    expect(folder.prepare('SELECT id FROM runs WHERE loop_id = ?').get(loop.id)).toEqual({ id: runId })
-    expect(folder.prepare('SELECT text FROM events WHERE loop_id = ?').get(loop.id)).toEqual({ text: 'queued atomically' })
+    expect(folder.prepare('SELECT round FROM builds WHERE id = ?').get(loop.id)).toEqual({ round: 1 })
+    expect(folder.prepare('SELECT id FROM phase_attempts WHERE build_id = ?').get(loop.id)).toEqual({ id: runId })
+    expect(folder.prepare('SELECT text FROM events WHERE build_id = ?').get(loop.id)).toEqual({ text: 'queued atomically' })
     folder.close()
     ledger.close()
   })
@@ -548,7 +654,7 @@ describe('Ledger', () => {
       expect(ledger.getLoop(loop.id)?.title).toBe('canonical survived')
       expect(ledger.eventsForLoop(loop.id).some((event) => event.kind === 'mirror-repair' && event.text.includes('synthetic portable commit failure'))).toBe(true)
       const repaired = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-      expect(repaired.prepare('SELECT title FROM loops WHERE id = ?').get(loop.id)).toEqual({ title: 'canonical survived' })
+      expect(repaired.prepare('SELECT title FROM builds WHERE id = ?').get(loop.id)).toEqual({ title: 'canonical survived' })
       repaired.close()
     } finally {
       portable.mockRestore()
@@ -569,7 +675,7 @@ describe('Ledger', () => {
 
     expect(ledger.getLoop(loop.id)?.status).toBe('running')
     const folder = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(folder.prepare('SELECT status FROM loops WHERE id = ?').get(loop.id)).toEqual({ status: 'running' })
+    expect(folder.prepare('SELECT status FROM builds WHERE id = ?').get(loop.id)).toEqual({ status: 'running' })
     folder.close()
     ledger.close()
   })
@@ -582,12 +688,12 @@ describe('Ledger', () => {
 
     const folderPath = path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db')
     const ahead = new DatabaseSync(folderPath)
-    ahead.prepare("UPDATE loops SET status = 'passed', prompt = 'ahead mirror' WHERE id = ?").run(loop.id)
+    ahead.prepare("UPDATE builds SET status = 'passed', prompt = 'ahead mirror' WHERE id = ?").run(loop.id)
     ahead.close()
 
     const reopened = new Ledger(path.join(dir!, 'ledger.db'))
     const repaired = new DatabaseSync(folderPath, { readOnly: true })
-    expect(repaired.prepare('SELECT status, prompt FROM loops WHERE id = ?').get(loop.id)).toEqual({
+    expect(repaired.prepare('SELECT status, prompt FROM builds WHERE id = ?').get(loop.id)).toEqual({
       status: 'running',
       prompt: 'canonical',
     })
@@ -621,7 +727,7 @@ describe('Ledger', () => {
 
     const rebuilt = new Ledger(path.join(dir!, 'ledger.db'))
     const portable = new DatabaseSync(folderPath, { readOnly: true })
-    expect(portable.prepare('SELECT prompt FROM loops WHERE id = ?').get(loop.id)).toEqual({ prompt: 'canonical' })
+    expect(portable.prepare('SELECT prompt FROM builds WHERE id = ?').get(loop.id)).toEqual({ prompt: 'canonical' })
     portable.close()
     rebuilt.close()
 
@@ -678,7 +784,7 @@ describe('Ledger', () => {
     expect(ledger.runProcessOwnership(run.id)).toEqual(ownership)
     expect(ledger.runsWithProcessOwnership()).toEqual([{ run: ledger.getRun(run.id), ownership }])
     const mirror = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(mirror.prepare('SELECT process_ownership_json FROM runs WHERE id = ?').get(run.id)).toEqual({
+    expect(mirror.prepare('SELECT process_ownership_json FROM phase_attempts WHERE id = ?').get(run.id)).toEqual({
       process_ownership_json: JSON.stringify(ownership),
     })
     mirror.close()
@@ -785,7 +891,7 @@ describe('Ledger', () => {
     expect(() => ledger.patchRun(run.id, { promptSha256: 'not-a-hash' })).toThrow(/prompt hash is invalid/)
 
     const folder = new DatabaseSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(JSON.stringify(folder.prepare('SELECT model, cli_version, cost_source, account_label, machine_label FROM runs WHERE id = ?').get(run.id))).not.toContain(secret)
+    expect(JSON.stringify(folder.prepare('SELECT model, cli_version, cost_source, account_label, machine_label FROM phase_attempts WHERE id = ?').get(run.id))).not.toContain(secret)
     folder.close()
     ledger.close()
   })
@@ -803,7 +909,7 @@ describe('Ledger', () => {
 
     const dbPath = path.join(dir!, 'ledger.db')
     const raw = new DatabaseSync(dbPath)
-    raw.prepare('UPDATE runs SET session_id = ? WHERE id = ?').run('../legacy/private/transcript', run.id)
+    raw.prepare('UPDATE phase_attempts SET session_id = ? WHERE id = ?').run('../legacy/private/transcript', run.id)
     raw.close()
     const reopened = new Ledger(dbPath)
     expect(reopened.getRun(run.id)?.sessionId).toBeNull()
@@ -817,7 +923,7 @@ describe('Ledger', () => {
     ledger.close()
     const dbPath = path.join(dir!, 'ledger.db')
     const raw = new DatabaseSync(dbPath)
-    raw.prepare('UPDATE runs SET metrics_json = ? WHERE id = ?').run(
+    raw.prepare('UPDATE phase_attempts SET metrics_json = ? WHERE id = ?').run(
       JSON.stringify({
         agents: [{ id: 'orchestrator', label: 'orchestrator', model: null, messages: 1, tokens: { input: 2, output: 1 }, firstTs: null, lastTs: null }],
         perModel: {},
@@ -830,7 +936,7 @@ describe('Ledger', () => {
     reopened.close()
 
     const malformed = new DatabaseSync(dbPath)
-    malformed.prepare('UPDATE runs SET verdict_json = ? WHERE id = ?').run(
+    malformed.prepare('UPDATE phase_attempts SET verdict_json = ? WHERE id = ?').run(
       JSON.stringify({ score: '0.9', pass: true, summary: 'coercion must fail', findings: [] }),
       run.id,
     )
@@ -851,7 +957,7 @@ describe('Ledger', () => {
     expect(ledger.getLoop(second.id)?.workspaceDir).toBe(fs.realpathSync(real))
     ledger.prepareRunFolder(second.id)
     const folder = new DatabaseSync(path.join(real, '.gauntlet-gamesmith', 'ledger.db'), { readOnly: true })
-    expect(folder.prepare('SELECT id FROM loops ORDER BY created_at, rowid').all()).toEqual([{ id: first.id }, { id: second.id }])
+    expect(folder.prepare('SELECT id FROM builds ORDER BY created_at, rowid').all()).toEqual([{ id: first.id }, { id: second.id }])
     folder.close()
     ledger.close()
   })

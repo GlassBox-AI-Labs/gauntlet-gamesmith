@@ -65,12 +65,12 @@ describe('run folder transfer', () => {
     ledger.prepareRunFolder(loop.id)
 
     const folderDb = new DatabaseSync(runLedgerPath(workspace), { readOnly: true })
-    const mirroredLoop = folderDb.prepare('SELECT * FROM loops WHERE id = ?').get(loop.id) as Record<string, unknown>
-    const mirroredRun = folderDb.prepare('SELECT * FROM runs WHERE id = ?').get(run.id) as Record<string, unknown>
-    const mirroredEvent = folderDb.prepare('SELECT * FROM events WHERE loop_id = ?').get(loop.id) as Record<string, unknown>
+    const mirroredLoop = folderDb.prepare('SELECT * FROM builds WHERE id = ?').get(loop.id) as Record<string, unknown>
+    const mirroredRun = folderDb.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(run.id) as Record<string, unknown>
+    const mirroredEvent = folderDb.prepare('SELECT * FROM events WHERE build_id = ?').get(loop.id) as Record<string, unknown>
     expect(mirroredLoop).toMatchObject({ id: loop.id, workspace_dir: fs.realpathSync(workspace), prompt: 'Build the game' })
-    expect(mirroredRun).toMatchObject({ id: run.id, loop_id: loop.id, status: 'succeeded', finished_at: finishedAt })
-    expect(mirroredEvent).toMatchObject({ loop_id: loop.id, run_id: run.id, kind: 'done', text: 'Finished exactly once' })
+    expect(mirroredRun).toMatchObject({ id: run.id, build_id: loop.id, status: 'succeeded', finished_at: finishedAt })
+    expect(mirroredEvent).toMatchObject({ build_id: loop.id, attempt_id: run.id, kind: 'done', text: 'Finished exactly once' })
     folderDb.close()
     ledger.close()
   })
@@ -120,7 +120,7 @@ describe('run folder transfer', () => {
     target.appendEvent({ loopId: sourceLoop.id, runId: sourceRun.id, ts: eventTs, kind: 'done', text: 'Continued on teammate machine' })
 
     const importedFolderDb = new DatabaseSync(runLedgerPath(exportedWorkspace), { readOnly: true })
-    expect(importedFolderDb.prepare('SELECT workspace_dir FROM loops WHERE id = ?').get(sourceLoop.id)).toEqual({ workspace_dir: fs.realpathSync(exportedWorkspace) })
+    expect(importedFolderDb.prepare('SELECT workspace_dir FROM builds WHERE id = ?').get(sourceLoop.id)).toEqual({ workspace_dir: fs.realpathSync(exportedWorkspace) })
     expect(importedFolderDb.prepare('SELECT seq, text FROM events ORDER BY seq').all()).toEqual([
       { seq: 1, text: 'Score 0.72' },
       { seq: 2, text: 'Continued on teammate machine' },
@@ -184,8 +184,8 @@ describe('run folder transfer', () => {
     expect(snapshot.runs.find((run) => run.id === running.id)).toMatchObject({ status: 'interrupted' })
     expect(target.runProcessOwnership(running.id)).toBeNull()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace), { readOnly: true })
-    expect(folder.prepare('SELECT play_trusted, status FROM loops WHERE id = ?').get(loop.id)).toEqual({ play_trusted: 0, status: 'stopped' })
-    expect(folder.prepare('SELECT status FROM runs ORDER BY created_at, rowid').all()).toEqual([{ status: 'interrupted' }, { status: 'interrupted' }])
+    expect(folder.prepare('SELECT play_trusted, status FROM builds WHERE id = ?').get(loop.id)).toEqual({ play_trusted: 0, status: 'stopped' })
+    expect(folder.prepare('SELECT status FROM phase_attempts ORDER BY created_at, rowid').all()).toEqual([{ status: 'interrupted' }, { status: 'interrupted' }])
     folder.close()
     target.close()
   })
@@ -242,7 +242,7 @@ describe('run folder transfer', () => {
       expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/post-publish directory fsync failure/)
       expect(target.getLoop(loop.id)).toBeNull()
       const restored = new DatabaseSync(runLedgerPath(sourceWorkspace), { readOnly: true })
-      expect(restored.prepare('SELECT prompt FROM loops WHERE id = ?').get(loop.id)).toEqual({ prompt: 'exact source' })
+      expect(restored.prepare('SELECT prompt FROM builds WHERE id = ?').get(loop.id)).toEqual({ prompt: 'exact source' })
       restored.close()
     } finally {
       open.mockRestore()
@@ -264,7 +264,7 @@ describe('run folder transfer', () => {
     expect(ledger.getLoop(loop.id)).toMatchObject({ status: 'running', playTrusted: true })
     expect(ledger.getRun(run.id)?.status).toBe('running')
     const unchanged = new DatabaseSync(runLedgerPath(localWorkspace), { readOnly: true })
-    expect(unchanged.prepare('SELECT status, play_trusted FROM loops WHERE id = ?').get(loop.id)).toEqual({ status: 'running', play_trusted: 1 })
+    expect(unchanged.prepare('SELECT status, play_trusted FROM builds WHERE id = ?').get(loop.id)).toEqual({ status: 'running', play_trusted: 1 })
     unchanged.close()
 
     ledger.transaction(() => {
@@ -272,14 +272,14 @@ describe('run folder transfer', () => {
       ledger.patchLoop(loop.id, { status: 'stopped' })
     })
     const tampered = new DatabaseSync(runLedgerPath(localWorkspace))
-    tampered.prepare('UPDATE runs SET prompt = ?, session_id = ? WHERE id = ?').run('execute mirror payload', 'attacker_session', run.id)
+    tampered.prepare('UPDATE phase_attempts SET prompt = ?, session_id = ? WHERE id = ?').run('execute mirror payload', 'attacker_session', run.id)
     tampered.close()
 
     expect(() => ledger.importRunFolder(localWorkspace)).toThrow(/already registered as trusted local history/)
     expect(ledger.getLoop(loop.id)).toMatchObject({ status: 'stopped', playTrusted: true })
     expect(ledger.getRun(run.id)).toMatchObject({ prompt: 'build', sessionId: null })
     const stillTampered = new DatabaseSync(runLedgerPath(localWorkspace), { readOnly: true })
-    expect(stillTampered.prepare('SELECT prompt, session_id FROM runs WHERE id = ?').get(run.id)).toEqual({
+    expect(stillTampered.prepare('SELECT prompt, session_id FROM phase_attempts WHERE id = ?').get(run.id)).toEqual({
       prompt: 'execute mirror payload',
       session_id: 'attacker_session',
     })
@@ -297,7 +297,7 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(loop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
-    folder.prepare('UPDATE runs SET verdict_json = ? WHERE id = ?').run(
+    folder.prepare('UPDATE phase_attempts SET verdict_json = ? WHERE id = ?').run(
       JSON.stringify({ score: '0.9', pass: true, summary: 'invalid', findings: [] }),
       run.id,
     )
@@ -307,7 +307,7 @@ describe('run folder transfer', () => {
     expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/verdict contract/)
     expect(target.loops()).toEqual([])
     const unchanged = new DatabaseSync(runLedgerPath(sourceWorkspace), { readOnly: true })
-    expect(unchanged.prepare('SELECT workspace_dir, play_trusted, status FROM loops WHERE id = ?').get(loop.id)).toEqual({
+    expect(unchanged.prepare('SELECT workspace_dir, play_trusted, status FROM builds WHERE id = ?').get(loop.id)).toEqual({
       workspace_dir: fs.realpathSync(sourceWorkspace),
       play_trusted: 1,
       status: 'running',
@@ -326,7 +326,7 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(loop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
-    folder.prepare('UPDATE runs SET session_id = ? WHERE id = ?').run('../../private/session', run.id)
+    folder.prepare('UPDATE phase_attempts SET session_id = ? WHERE id = ?').run('../../private/session', run.id)
     folder.close()
 
     const target = new Ledger(path.join(root, 'target-session.db'))
@@ -348,12 +348,12 @@ describe('run folder transfer', () => {
     const secret = `ghp_${'a'.repeat(36)}`
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
     folder.prepare('UPDATE events SET text = ?').run(`event ${secret}`)
-    folder.prepare('UPDATE loops SET models_json = ? WHERE id = ?').run(JSON.stringify({
+    folder.prepare('UPDATE builds SET models_json = ? WHERE id = ?').run(JSON.stringify({
       ...MODELS,
       orchestratorModel: `gpt-${secret}`,
       subagentModel: `claude-${secret}`,
     }), loop.id)
-    folder.prepare('UPDATE runs SET verdict_json = ?, metrics_json = ?, model = ?, cli_version = ?, cost_source = ?, account_label = ?, machine_label = ? WHERE id = ?').run(
+    folder.prepare('UPDATE phase_attempts SET verdict_json = ?, metrics_json = ?, model = ?, cli_version = ?, cost_source = ?, account_label = ?, machine_label = ? WHERE id = ?').run(
       JSON.stringify({ score: 0.5, pass: false, summary: `summary ${secret}`, findings: [{ severity: 'major', text: `finding ${secret}` }] }),
       JSON.stringify({
         agents: [{
@@ -397,7 +397,7 @@ describe('run folder transfer', () => {
     expect(JSON.stringify(snapshot.loop.models)).not.toContain(secret)
     const rewritten = new DatabaseSync(runLedgerPath(sourceWorkspace), { readOnly: true })
     expect(rewritten.prepare('SELECT text FROM events').get()).toEqual({ text: 'event [REDACTED]' })
-    const persistedRun = rewritten.prepare('SELECT verdict_json, metrics_json, model, cli_version, cost_source, account_label, machine_label FROM runs WHERE id = ?').get(run.id) as {
+    const persistedRun = rewritten.prepare('SELECT verdict_json, metrics_json, model, cli_version, cost_source, account_label, machine_label FROM phase_attempts WHERE id = ?').get(run.id) as {
       verdict_json: string
       metrics_json: string
       model: string
@@ -412,8 +412,8 @@ describe('run folder transfer', () => {
   })
 
   it.each([
-    ['loops', 'created_at'],
-    ['runs', 'created_at'],
+    ['builds', 'created_at'],
+    ['phase_attempts', 'created_at'],
     ['events', 'ts'],
   ] as const)('rejects a malformed imported %s.%s timestamp', (table, column) => {
     const root = tempDir()
@@ -445,7 +445,7 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(loop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
-    folder.exec('DROP INDEX idx_runs_loop; CREATE INDEX idx_runs_loop ON runs(substr(prompt, 1, 1));')
+    folder.exec('DROP INDEX idx_attempts_build; CREATE INDEX idx_attempts_build ON phase_attempts(substr(prompt, 1, 1));')
     folder.close()
 
     const target = new Ledger(path.join(root, 'target.db'))
@@ -465,17 +465,17 @@ describe('run folder transfer', () => {
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
     folder.exec(`
-      DROP INDEX idx_runs_loop;
-      CREATE TABLE runs_without_pk AS SELECT * FROM runs;
-      DROP TABLE runs;
-      ALTER TABLE runs_without_pk RENAME TO runs;
-      INSERT INTO runs SELECT * FROM runs;
-      CREATE INDEX idx_runs_loop ON runs(loop_id, created_at);
+      DROP INDEX idx_attempts_build;
+      CREATE TABLE attempts_without_pk AS SELECT * FROM phase_attempts;
+      DROP TABLE phase_attempts;
+      ALTER TABLE attempts_without_pk RENAME TO phase_attempts;
+      INSERT INTO phase_attempts SELECT * FROM phase_attempts;
+      CREATE INDEX idx_attempts_build ON phase_attempts(build_id, created_at);
     `)
     folder.close()
 
     const target = new Ledger(path.join(root, 'target.db'))
-    expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/runs\.id primary-key constraint is missing/)
+    expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/phase_attempts\.id primary-key constraint is missing/)
     expect(target.loops()).toEqual([])
     target.close()
   })
@@ -490,7 +490,7 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(loop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
-    folder.exec('ALTER TABLE runs ADD COLUMN expansion BLOB GENERATED ALWAYS AS (zeroblob(268435456)) VIRTUAL')
+    folder.exec('ALTER TABLE phase_attempts ADD COLUMN expansion BLOB GENERATED ALWAYS AS (zeroblob(268435456)) VIRTUAL')
     folder.close()
 
     const target = new Ledger(path.join(root, 'target-generated.db'))
@@ -508,14 +508,14 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(loop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(sourceWorkspace))
-    folder.prepare('UPDATE loops SET id = ? WHERE id = ?').run('forged:loop', loop.id)
+    folder.prepare('UPDATE builds SET id = ? WHERE id = ?').run('forged:loop', loop.id)
     folder.close()
 
     const target = new Ledger(path.join(root, 'target.db'))
     expect(() => target.importRunFolder(sourceWorkspace)).toThrow(/Loop id has an invalid format/)
     expect(target.loops()).toEqual([])
     const unchanged = new DatabaseSync(runLedgerPath(sourceWorkspace), { readOnly: true })
-    expect(unchanged.prepare('SELECT id, play_trusted, status FROM loops').get()).toEqual({
+    expect(unchanged.prepare('SELECT id, play_trusted, status FROM builds').get()).toEqual({
       id: 'forged:loop',
       play_trusted: 1,
       status: 'running',
@@ -541,7 +541,7 @@ describe('run folder transfer', () => {
     source.prepareRunFolder(transferLoop.id)
     source.close()
     const folder = new DatabaseSync(runLedgerPath(transferWorkspace))
-    folder.prepare('UPDATE loops SET id = ? WHERE id = ?').run(localLoop.id, transferLoop.id)
+    folder.prepare('UPDATE builds SET id = ? WHERE id = ?').run(localLoop.id, transferLoop.id)
     folder.close()
 
     expect(() => target.importRunFolder(transferWorkspace)).toThrow(/collides with history owned by another workspace/)
@@ -618,8 +618,8 @@ describe('run folder transfer', () => {
     const migrated = new DatabaseSync(runLedgerPath(workspace), { readOnly: true })
     const names = (table: string): string[] =>
       (migrated.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((column) => column.name)
-    expect(names('loops')).toEqual(expect.arrayContaining(['title', 'play_trusted']))
-    expect(names('runs')).toEqual(
+    expect(names('builds')).toEqual(expect.arrayContaining(['title', 'play_trusted']))
+    expect(names('phase_attempts')).toEqual(
       expect.arrayContaining(['revision', 'effort', 'cli_version', 'price_table_version', 'cost_source', 'process_ownership_json']),
     )
     expect(names('events')).toEqual(expect.arrayContaining(['agent_id', 'round', 'role', 'channel']))
@@ -821,7 +821,7 @@ describe('run folder transfer', () => {
     const snapshot = snapshotRunLedger(workspace)
     const portablePath = runLedgerPath(workspace)
     const changed = new DatabaseSync(portablePath)
-    changed.prepare('UPDATE loops SET prompt = ? WHERE id = ?').run('operator changed this source', loop.id)
+    changed.prepare('UPDATE builds SET prompt = ? WHERE id = ?').run('operator changed this source', loop.id)
     changed.close()
     const internal = ledger as unknown as {
       publishWorkspaceFolderAtomically(workspaceDir: string, expected: typeof snapshot.sourceIdentities): void
@@ -830,7 +830,7 @@ describe('run folder transfer', () => {
     try {
       expect(() => internal.publishWorkspaceFolderAtomically(workspace, snapshot.sourceIdentities)).toThrow(/changed after its import snapshot/)
       const preserved = new DatabaseSync(portablePath, { readOnly: true })
-      expect(preserved.prepare('SELECT prompt FROM loops WHERE id = ?').get(loop.id)).toEqual({ prompt: 'operator changed this source' })
+      expect(preserved.prepare('SELECT prompt FROM builds WHERE id = ?').get(loop.id)).toEqual({ prompt: 'operator changed this source' })
       preserved.close()
     } finally {
       snapshot.cleanup()
