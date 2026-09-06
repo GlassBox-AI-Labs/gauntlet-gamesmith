@@ -15,6 +15,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@gauntlet/ui/sheet'
+import { PublisherAccountForm } from './PublisherAccountForm'
 import appLogo from '../../../../build/icon.png'
 export function PublishDialog({
   loopId,
@@ -34,9 +35,6 @@ export function PublishDialog({
   const [preview, setPreview] = useState<PublicationPreview | null>(null),
     [history, setHistory] = useState<ReleaseHistory | null>(null),
     [tab, setTab] = useState<'build' | 'releases'>('build')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [signingIn, setSigningIn] = useState(false)
   const [draft, setDraft] = useState({
     title,
     slug: title
@@ -132,84 +130,13 @@ export function PublishDialog({
             </p>
           )}
           {!status?.connected ? (
-            <form
-              className="space-y-4"
-              onSubmit={(event) => {
-                event.preventDefault()
-                setSigningIn(true)
-                void work(async () => {
-                  try {
-                    const result = await window.publishing.signIn({
-                      email,
-                      password,
-                    })
-                    if (!result.ok) throw new Error(result.error)
-                    setStatus(result.value)
-                    await refresh()
-                  } finally {
-                    setPassword('')
-                    setSigningIn(false)
-                  }
-                })
+            <PublisherAccountForm
+              onBusyChange={setBusy}
+              onConnected={async (connected) => {
+                await refresh()
+                setStatus(connected)
               }}
-            >
-              <p className="text-sm text-muted-foreground">
-                Sign in with your provisioned developer account. Creating and
-                playing games locally needs no publisher account.
-              </p>
-              <label className="grid gap-2 text-sm">
-                Email
-                <Input
-                  data-testid="publishing-email"
-                  type="email"
-                  autoComplete="username"
-                  required
-                  maxLength={254}
-                  disabled={busy}
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </label>
-              <label className="grid gap-2 text-sm">
-                Password
-                <Input
-                  data-testid="publishing-password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  maxLength={200}
-                  disabled={busy}
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-              </label>
-              <div className="flex gap-3">
-                <Button
-                  data-testid="publishing-sign-in"
-                  type="submit"
-                  disabled={busy}
-                >
-                  {signingIn ? 'Signing in…' : 'Sign in to publish'}
-                </Button>
-                {signingIn && (
-                  <Button
-                    data-testid="publishing-cancel-sign-in"
-                    type="button"
-                    variant="outline"
-                    onClick={() =>
-                      void window.publishing
-                        .cancelSignIn()
-                        .then((result) => {
-                          if (!result.ok) setError(result.error)
-                        })
-                        .catch(() => setError('Unable to cancel sign-in.'))
-                    }
-                  >
-                    Cancel sign-in
-                  </Button>
-                )}
-              </div>
-            </form>
+            />
           ) : (
             <>
               <div className="flex items-center justify-between gap-4">

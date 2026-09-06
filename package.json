@@ -36,6 +36,8 @@
     "db:migrate": "pnpm --filter @gauntlet/db db:migrate",
     "db:up": "pnpm --filter @gauntlet/db db:up",
     "db:schema": "pnpm --filter @gauntlet/db db:schema",
-    "db:types": "pnpm --filter @gauntlet/db db:types"
+    "db:types": "pnpm --filter @gauntlet/db db:types",
+    "catalog:verify:accounts": "pnpm --filter @gauntlet/web exec tsx scripts/verify-accounts.ts",
+    "db:test": "supabase test db --workdir packages/db"
   }
 }

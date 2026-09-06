@@ -161,6 +161,33 @@ end $$;
 ALTER FUNCTION "public"."promote_game"("actor" "uuid", "target_game" "uuid", "target_release" "uuid", "expected_generation" integer) OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."publisher_for_user"("actor" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $_$
+declare p public.publishers; u auth.users; eligible boolean;
+begin
+  select * into u from auth.users where id = actor;
+  if not found then return null; end if;
+  eligible := u.email_confirmed_at is not null
+    and lower(coalesce(u.email, '')) ~ '^[^@[:space:]]+@challenger\.gauntletai\.com$';
+  select * into p from public.publishers where id = actor;
+  if not found then
+    if not eligible then return null; end if;
+    insert into public.publishers(id, handle, display_name, email_domain_access)
+      values(actor, 'challenger-' || replace(actor::text, '-', ''),
+        coalesce(nullif(left(btrim(u.raw_user_meta_data->>'publisher_name'), 80), ''), 'Challenger'), true)
+      on conflict(id) do nothing;
+    select * into p from public.publishers where id = actor;
+  end if;
+  if not p.enabled or (p.email_domain_access and not eligible) then return null; end if;
+  return jsonb_build_object('id',p.id,'handle',p.handle,'display_name',p.display_name);
+end $_$;
+
+
+ALTER FUNCTION "public"."publisher_for_user"("actor" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."publisher_studio"("actor" "uuid") RETURNS "jsonb"
     LANGUAGE "sql" STABLE
     SET "search_path" TO 'public', 'pg_temp'
@@ -203,6 +230,7 @@ CREATE TABLE IF NOT EXISTS "public"."publishers" (
     "handle" "text" NOT NULL,
     "display_name" "text" NOT NULL,
     "enabled" boolean DEFAULT true NOT NULL,
+    "email_domain_access" boolean DEFAULT false NOT NULL,
     CONSTRAINT "publishers_display_name_check" CHECK ((("length"("display_name") >= 1) AND ("length"("display_name") <= 80))),
     CONSTRAINT "publishers_handle_check" CHECK ((("handle" ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::"text") AND ("length"("handle") <= 64)))
 );
@@ -486,6 +514,11 @@ GRANT ALL ON TABLE "public"."games" TO "service_role";
 
 REVOKE ALL ON FUNCTION "public"."promote_game"("actor" "uuid", "target_game" "uuid", "target_release" "uuid", "expected_generation" integer) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."promote_game"("actor" "uuid", "target_game" "uuid", "target_release" "uuid", "expected_generation" integer) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."publisher_for_user"("actor" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."publisher_for_user"("actor" "uuid") TO "service_role";
 
 
 

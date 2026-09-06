@@ -13,21 +13,38 @@ This deployment does not change packaging UX or add multiplayer.
 | Catalog | Vercel `glassbox3` Hobby team; `glassbox-arcade` (`prj_9s1HO1s9K3qWbr1YMMHnasM5Ma0H`); root `apps/web`; Next.js; Node 22; `iad1` |
 | Games | Same Hobby team; `glassbox-games` (`prj_SNLaAftPWyGfpqyjt7bEms21c00V`); root `apps/game-host`; Next.js Route Handlers; Node 22; `iad1` |
 
-Initial rollout is in progress. Supabase has been provisioned and the four migrations
-through `20260906152854_remove_browser_auth.sql` have been applied. Public signup is
-disabled, the email provider remains enabled, and a provisioned developer's password
-login has been verified. Both Vercel projects have production-only server environments,
-outside-root workspace access, Node 22, and Virginia functions configured. The game
-project's assigned production domain is `glassbox-games.vercel.app`. GitHub connection
-and the first deployments remain pending; no hosted game playback has been verified.
+The public catalog is live at **https://gauntletgamesmith.com**. The Vercel-managed
+domain belongs to the GlassBox team and points to `glassbox-arcade`; game execution
+uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all four
+migrations through `20260906152854_remove_browser_auth.sql`. Public signup is disabled
+and the email provider remains enabled. Both Vercel projects use production-only
+server environments, outside-root workspace access, Node 22, and Virginia functions.
+
+Initial production deployments on 2026-09-06 were built directly from GitHub commit
+`cf294436600e033e62bb8d256e8d1f7c47bf564c` on `codex/game-catalog-publishing`:
+
+| Project | Deployment | Result |
+| --- | --- | --- |
+| Games | `dpl_H6kmxBk3UgYjDhf4GixEP7bPoyTq` | Ready, `iad1` |
+| Catalog | `dpl_BSypmAdud46mNEJVD8nrZ71iZTQu` | Ready, custom domain and HTTPS active |
+
+The initial hosted read-only smoke passed with an empty catalog, and the provisioned
+developer signed in through the production API and Electron. No game was uploaded
+or published during that check; hosted gameplay and large-asset streaming are still
+unverified. The operator took over deployment after this point. The Challenger signup
+change below is tested locally and **has not been applied to hosted Supabase or Vercel**.
 
 Deployment ownership is the GlassBox account: Vercel user `glassboxailabs-7530`, team
-`glassbox3` (`team_Xdj5d9SOU4rIrCYN4lxD4hGe`). Connect its Git integration to the
-GlassBox GitHub identity before deployment.
+`glassbox3` (`team_Xdj5d9SOU4rIrCYN4lxD4hGe`). Its connected GitHub identity is
+`glassboxailabs`, with repository Maintain access. The deployment records name this
+Vercel creator and the original GitHub source commit; commit authors are preserved.
 Stay on **Vercel Hobby and Supabase Free**. The public
 `GlassBox-AI-Labs/gauntlet-gamesmith` repository is eligible for Hobby Git integration;
 private organization repositories require a different plan. Do not change repository
 visibility or upgrade plans as part of this rollout.
+Hobby permits personal, noncommercial use; free repository collaboration does not
+override that usage restriction. Individual game publishers need only their platform
+account in Electron, never a Vercel account or paid seat.
 
 Keep **Include source files outside of the Root Directory** enabled in both Vercel
 projects so workspace packages and the root lockfile are available. Each app's
@@ -76,9 +93,11 @@ needs its own Supabase project and signing secret before it is enabled.
    supabase db push --workdir packages/db --db-url "$CATALOG_DATABASE_URL"
    ```
 
-4. Disable **Allow new users to sign up** in Authentication settings. Keep the email
-   provider enabled for provisioned publisher email/password login. The website has
-   no signup, callback, or account routes. Guest play needs no Supabase user.
+4. For Challenger enrollment, apply `20260906225000_challenger_publishers.sql`, then
+   enable **Allow new users to sign up** and the email provider. Keep **Confirm email**
+   enabled. Configure email delivery and the confirmation template as described below
+   before exposing signup. The website has no signup, callback, or account pages.
+   Guest play needs no Supabase user.
 5. The `game-artifacts` bucket remains private. Uploads use scoped signed URLs;
    only server code reads completed envelopes. Do not turn it into a public bucket.
 
@@ -106,15 +125,50 @@ and `vercel teams ls` before linking. A developer's default CLI account may belo
 to another organization. Use a separate CLI global-config directory if needed;
 do not overwrite another project's login. Never commit `.vercel/` or environment files.
 
-Create/link the two Vercel projects from the **monorepo root**, then set their root
-directories and environments as above. Deploy the game project first, set its
-stable production URL as the catalog's `GAME_ORIGIN`, then deploy the catalog.
-The following variables select the existing project without repeatedly relinking:
+Create the two Vercel projects from the **monorepo root**, then set their root
+directories and environments as above. Deploy the game project first, set its stable
+production URL as the catalog's `GAME_ORIGIN`, then deploy the catalog. The initial
+rollout used explicit Git-source deployments through Vercel's API. Save this request
+to a local JSON file, substituting the selected project and the tested, pushed commit:
+
+```json
+{
+  "name": "glassbox-games",
+  "project": "prj_SNLaAftPWyGfpqyjt7bEms21c00V",
+  "target": "production",
+  "gitSource": {
+    "type": "github",
+    "org": "GlassBox-AI-Labs",
+    "repo": "gauntlet-gamesmith",
+    "ref": "codex/game-catalog-publishing",
+    "sha": "TESTED_PUSHED_COMMIT"
+  }
+}
+```
 
 ```sh
-VERCEL_ORG_ID="$CATALOG_VERCEL_ORG_ID" VERCEL_PROJECT_ID="$CATALOG_GAME_PROJECT_ID" vercel --prod
-VERCEL_ORG_ID="$CATALOG_VERCEL_ORG_ID" VERCEL_PROJECT_ID="$CATALOG_WEB_PROJECT_ID" vercel --prod
+vercel api /v13/deployments -X POST --input "$CATALOG_DEPLOY_REQUEST" \
+  --scope glassbox3 --global-config "$CATALOG_VERCEL_CONFIG" --raw
+vercel inspect "$CATALOG_DEPLOYMENT_URL" \
+  --scope glassbox3 --global-config "$CATALOG_VERCEL_CONFIG"
 ```
+
+Repeat with the catalog name/project ID. Verify `Ready`, source SHA, creator, aliases,
+and function region before testing the stable domain. The initial CLI global-config
+directory is `~/.gauntlet-catalog/hosted/vercel-cli`; keep it private. API responses may
+contain environment metadata and must not be copied wholesale into PRs.
+
+Automatic deploy-on-push is **not enabled**. `vercel git connect` additionally needs
+the Vercel GitHub application installed for the organization; the connected account
+can request but cannot approve that organization installation. Explicit Git-source
+deployments work without that project link and were used for this rollout. Enable
+automatic deployment only after an organization owner installs the application for
+this repository and the feature is merged; use `main` for production then. Do not
+rewrite commits or impersonate the hosting account to satisfy an author check.
+
+The custom domain was attached with `vercel domains add gauntletgamesmith.com
+glassbox-arcade` under the same scope/config. Vercel manages its DNS and certificate.
+Retain `GAME_ORIGIN=https://glassbox-games.vercel.app` when changing the catalog domain.
 
 Disable Vercel Authentication **for the public production URLs** of these two
 projects. Otherwise guest browsing and Electron's publishing requests hit Vercel's
@@ -125,7 +179,8 @@ game serving and its service identity route, never the catalog's publisher API.
 Launch the developer Electron app with the catalog URL:
 
 ```sh
-GAUNTLET_CATALOG_URL=https://YOUR-CATALOG.vercel.app pnpm dev
+GAUNTLET_CATALOG_URL=https://gauntletgamesmith.com \
+GAUNTLET_GAME_ORIGIN=https://glassbox-games.vercel.app pnpm dev
 ```
 
 Desktop publisher sessions and pending jobs are isolated by catalog origin, so
@@ -133,16 +188,63 @@ local and hosted accounts do not overwrite one another. No Supabase server key
 belongs on the desktop. Publish a saved round normally after verifying its private
 preview. Do not upload export archives or manually select files from the web.
 
-## Provision a publisher
+## Challenger signup and email delivery
 
-Verify the person has developer/monorepo access. Load the production
+Anyone who verifies an email at the exact domain `challenger.gauntletai.com` can
+create a publisher account in Electron. The drawer offers **Create a Challenger
+account**, a public publisher name, email/password, and an email-code form. Verification
+signs them in inside Electron. Resend and **I have a verification code** let them
+resume after closing the app. No browser authentication surface is needed.
+
+Deploy this change yourself in this order:
+
+1. Apply the pending Challenger migration without resetting the hosted database.
+   Regenerated `schema.sql` and types are references; the versioned migration is the input.
+2. In Supabase Authentication → Email, configure a **custom SMTP sender** and a verified
+   sender address. Supabase's built-in sender only sends to authorized project-team
+   addresses, so it cannot serve all Challenger users. Store SMTP credentials in
+   Supabase settings, never in the app, website bundle, or Git. Choose the sender/provider
+   and its quota as part of your deployment; no email service has been provisioned here.
+3. Copy `packages/db/supabase/templates/confirmation.html` into the **Confirm signup**
+   email template. It includes `{{ .Token }}` for entry inside Electron. Keep **Confirm
+   email** enabled and enable signups. Keep anonymous sign-in disabled. Preserve the
+   confirmation resend/verification rate limits; tune delivery quotas for the pilot.
+4. Deploy the tested feature commit to the catalog and use the matching Electron build.
+   Existing game-host code does not need a change for enrollment.
+5. Create an account with your own Challenger email in Electron, receive its code,
+   verify, and publish a saved round. Check the private preview before promotion.
+
+The privileged `publisher_for_user` RPC reads the current confirmed Auth email and
+enrolls eligible users atomically. It matches the domain exactly, ignores client claims
+of eligibility, and rechecks domain membership for every authenticated publishing
+request. New users get a stable generated publisher handle; their public name comes
+from signup. Parent domains, subdomains, and suffix lookalikes do not qualify. An admin
+can set `publishers.enabled=false`; signing in never re-enables that row. Existing
+manually provisioned accounts keep their explicit access. Changing an automatically
+enrolled account to an outside email removes its publishing access, without deleting
+its historical releases.
+
+For local testing, `pnpm catalog:db` uses the committed signup/confirmation settings
+and the confirmation template. After changing Supabase config, stop this project's
+local containers normally (preserving data), then run `pnpm catalog:db` to restart
+them with loopback-only bindings. Verification emails appear at
+`http://127.0.0.1:56324`. Run `pnpm db:test`, `pnpm catalog:verify:accounts`, and
+`pnpm catalog:verify` against the local catalog. The account verifier refuses hosted
+targets, tests email delivery/code exchange, and removes its temporary Auth/publisher
+records. It does not use real Challenger mailboxes.
+
+## Manually provision a publisher
+
+For an explicit developer exception outside the enrollment domain, verify monorepo
+access and load the production
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` into the admin command's environment:
 
 ```sh
 pnpm catalog:admin:hosted developer@example.com developer-handle Developer Name
 ```
 
-The command names its target hostname, creates an email-confirmed Supabase user
+This administrative exception bypasses self-service email verification. The command
+names its target hostname, creates an email-confirmed Supabase user
 and publisher profile, and writes random credentials to a private file under
 `~/.gauntlet-catalog/`. It prints only that file's path. Deliver credentials through
 an appropriate private channel. Do not publish them in PRs or deployment logs.
@@ -153,7 +255,7 @@ deferred; operators use Supabase administration.
 ## Verify each rollout
 
 ```sh
-pnpm catalog:smoke --catalog https://YOUR-CATALOG.vercel.app --games https://YOUR-GAMES.vercel.app
+pnpm catalog:smoke --catalog https://gauntletgamesmith.com --games https://glassbox-games.vercel.app
 ```
 
 This read-only check verifies the public catalog and database projection, guest
@@ -201,4 +303,6 @@ and any caveats in the PR or release record. Screenshots remain PR attachments.
 References: [Vercel monorepos](https://vercel.com/docs/monorepos),
 [Git deployment plan restrictions](https://vercel.com/docs/git),
 [function payloads and streaming](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions),
-[Supabase private downloads](https://supabase.com/docs/guides/storage/serving/downloads).
+[Supabase private downloads](https://supabase.com/docs/guides/storage/serving/downloads),
+[Supabase SMTP requirements](https://supabase.com/docs/guides/auth/auth-smtp),
+[confirmation templates](https://supabase.com/docs/guides/auth/auth-email-templates).

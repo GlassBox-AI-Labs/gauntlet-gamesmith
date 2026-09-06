@@ -118,18 +118,21 @@ export type Database = {
       publishers: {
         Row: {
           display_name: string
+          email_domain_access: boolean
           enabled: boolean
           handle: string
           id: string
         }
         Insert: {
           display_name: string
+          email_domain_access?: boolean
           enabled?: boolean
           handle: string
           id: string
         }
         Update: {
           display_name?: string
+          email_domain_access?: boolean
           enabled?: boolean
           handle?: string
           id?: string
@@ -239,6 +242,7 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      publisher_for_user: { Args: { actor: string }; Returns: Json }
       publisher_studio: { Args: { actor: string }; Returns: Json }
     }
     Enums: {

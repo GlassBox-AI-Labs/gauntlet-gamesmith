@@ -16,7 +16,12 @@ import { IPC } from '../shared/ipc'
 import { success, failure } from '../shared/result'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import type { LoopLogLine } from '../shared/loop'
-import { publisherCredentials } from './publishing-auth'
+import {
+  enrollmentEmail,
+  publisherCredentials,
+  publisherSignup,
+  publisherVerification,
+} from './publishing-auth'
 import type { PublicationPreview, ReleaseHistory } from '../shared/publishing'
 
 interface Session {
@@ -102,7 +107,7 @@ export class Publishing {
     input?: unknown,
     auth?: Session | null,
   ): Promise<any> {
-    const timeout = AbortSignal.timeout(route === 'login' ? 30000 : 120000)
+    const timeout = AbortSignal.timeout(this.signInAbort ? 30000 : 120000)
     const response = await fetch(`${this.catalogUrl}/api/${route}`, {
       method: input === undefined ? 'GET' : 'POST',
       headers: {
@@ -144,8 +149,7 @@ export class Publishing {
       publisherName: String(me.publisher.display_name),
     }
   }
-  async signIn(value: unknown) {
-    const credentials = publisherCredentials(value)
+  private async accountOperation<T>(operation: () => Promise<T>): Promise<T> {
     const endpoint = new URL(this.catalogUrl)
     if (
       endpoint.protocol !== 'https:' &&
@@ -160,23 +164,47 @@ export class Publishing {
     this.active = true
     this.signInAbort = new AbortController()
     try {
-      const result = await this.request('login', credentials)
-      // Never persist the password or return tokens through IPC.
-      this.signInAbort.signal.throwIfAborted()
-      this.session(result)
-      return {
-        connected: true,
-        catalogUrl: this.catalogUrl,
-        publisherName: boundedText(
-          object(result.publisher).display_name,
-          'publisher name',
-          200,
-        ),
-      }
+      return await operation()
     } finally {
       this.active = false
       this.signInAbort = null
     }
+  }
+  private completeSignIn(result: unknown) {
+    this.signInAbort?.signal.throwIfAborted()
+    const input = object(result)
+    const publisherName = boundedText(
+      object(input.publisher).display_name,
+      'publisher name',
+      200,
+    )
+    // Never persist passwords or codes, or return tokens through IPC.
+    this.session(input)
+    return { connected: true, catalogUrl: this.catalogUrl, publisherName }
+  }
+  async signIn(value: unknown) {
+    const input = publisherCredentials(value)
+    return this.accountOperation(async () =>
+      this.completeSignIn(await this.request('login', input)),
+    )
+  }
+  async signUp(value: unknown): Promise<void> {
+    const input = publisherSignup(value)
+    return this.accountOperation(async () => {
+      await this.request('signup', input)
+    })
+  }
+  async verifyEmail(value: unknown) {
+    const input = publisherVerification(value)
+    return this.accountOperation(async () =>
+      this.completeSignIn(await this.request('verify-email', input)),
+    )
+  }
+  async resendVerification(value: unknown): Promise<void> {
+    const input = enrollmentEmail(value)
+    return this.accountOperation(async () => {
+      await this.request('resend-verification', input)
+    })
   }
   cancelSignIn(): void {
     this.signInAbort?.abort(new Error('Publishing sign-in cancelled.'))
@@ -607,6 +635,11 @@ export function registerPublishingIpc(service: Publishing): void {
     })
   handle(IPC.publishing.status, () => service.status())
   handle(IPC.publishing.signIn, (input) => service.signIn(input))
+  handle(IPC.publishing.signUp, (input) => service.signUp(input))
+  handle(IPC.publishing.verifyEmail, (input) => service.verifyEmail(input))
+  handle(IPC.publishing.resendVerification, (input) =>
+    service.resendVerification(input),
+  )
   handle(IPC.publishing.signOut, () => service.signOut())
   handle(IPC.publishing.history, (value) => service.history(value))
   handle(IPC.publishing.previewRelease, (value) =>

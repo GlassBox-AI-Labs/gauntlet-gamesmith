@@ -1,5 +1,37 @@
 import { z } from 'zod'
-import { listing } from '@gauntlet/publishing'
+import {
+  isPublisherEmail,
+  listing,
+  PUBLISHER_EMAIL_DOMAIN,
+} from '@gauntlet/publishing'
+export const credentialsSchema = z
+  .object({
+    email: z.email().max(254).trim(),
+    password: z.string().min(1).max(200),
+  })
+  .strict()
+const enrollmentEmail = z
+  .email()
+  .max(254)
+  .trim()
+  .refine(
+    isPublisherEmail,
+    `Use your @${PUBLISHER_EMAIL_DOMAIN} email address.`,
+  )
+export const signupSchema = z
+  .object({
+    email: enrollmentEmail,
+    password: z.string().min(10).max(200),
+    displayName: z.string().trim().min(1).max(80),
+  })
+  .strict()
+export const verificationSchema = z
+  .object({
+    email: enrollmentEmail,
+    code: z.string().regex(/^\d{6,10}$/),
+  })
+  .strict()
+export const resendSchema = z.object({ email: enrollmentEmail }).strict()
 export const sourceSchema = z
   .object({
     loopId: z.uuid(),

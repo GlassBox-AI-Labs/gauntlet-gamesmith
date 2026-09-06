@@ -6,6 +6,7 @@
   "exports": {
     "./api/catalog": "./src/api/catalog.ts",
     "./api/game-server": "./src/api/game-server.ts",
+    "./api/publisher-auth": "./src/api/publisher-auth.ts",
     "./contracts": "./src/contracts.ts",
     "./errors": "./src/errors.ts"
   },

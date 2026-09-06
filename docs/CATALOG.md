@@ -34,7 +34,14 @@ the database for an ordinary update.
 
 ## Publisher accounts
 
-An administrator verifies monorepo access and provisions a local publisher:
+Anyone with a verified `@challenger.gauntletai.com` email can create a publisher
+account inside Electron. Choose **Create a Challenger account**, enter a public name
+and email/password, then enter the code from the confirmation email. Local email is
+captured at `http://127.0.0.1:56324`; hosted signup requires the SMTP/template setup in
+[DEPLOYMENT.md](DEPLOYMENT.md). Parent domains, subdomains, and suffix lookalikes are
+not eligible. Accounts disabled by an administrator stay disabled.
+
+An administrator can still verify monorepo access and provision a developer exception:
 
 ```sh
 pnpm catalog:admin you@example.com your-handle Your Name
@@ -43,14 +50,15 @@ pnpm catalog:admin you@example.com your-handle Your Name
 The command creates a Supabase Auth identity and publisher profile, then writes
 a random password to a private file in `~/.gauntlet-catalog/`. Only the file path
 is printed. These credentials are separate from harness authentication and must
-never be committed. Signup is closed. Membership synchronization and password
-reset UI are deferred; local admins use Supabase Auth administration.
+never be committed. Automatically enrolled accounts are checked against their current
+verified email on every publishing request. Password reset UI is deferred; local admins
+use Supabase Auth administration.
 
 ## Desktop workflow
 
 1. Open a run and click **Publish round N** for its latest completed saved round,
    or select a specific completed round and click **Publish**.
-2. Enter your developer email and password directly in the publishing drawer and
+2. Create and verify a Challenger account, or enter an existing publisher email and password in the publishing drawer and
    click **Sign in to publish**. Supabase authenticates the account without opening
    a browser. The password is cleared after each attempt and is never saved.
 3. Enter listing metadata and the relative shipping-output directory (default

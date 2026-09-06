@@ -40,6 +40,13 @@ export interface PublisherCredentials {
   email: string
   password: string
 }
+export interface PublisherSignup extends PublisherCredentials {
+  displayName: string
+}
+export interface PublisherVerification {
+  email: string
+  code: string
+}
 export interface PublishingApi {
   history(loopId: string): Promise<OperationResult<ReleaseHistory>>
   previewRelease(input: {
@@ -52,6 +59,11 @@ export interface PublishingApi {
   }): Promise<OperationResult<void>>
   status(): Promise<OperationResult<PublisherStatus>>
   signIn(input: PublisherCredentials): Promise<OperationResult<PublisherStatus>>
+  signUp(input: PublisherSignup): Promise<OperationResult<void>>
+  verifyEmail(
+    input: PublisherVerification,
+  ): Promise<OperationResult<PublisherStatus>>
+  resendVerification(input: { email: string }): Promise<OperationResult<void>>
   cancelSignIn(): Promise<OperationResult<void>>
   signOut(): Promise<OperationResult<void>>
   prepare(input: PublishDraft): Promise<OperationResult<PublicationPreview>>

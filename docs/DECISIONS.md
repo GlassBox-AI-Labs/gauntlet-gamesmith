@@ -604,3 +604,28 @@ must be monitored during this small pilot. Production secrets are server-only an
 are not shared with arbitrary preview deployments. Hosted rollout and rollback
 are documented in `DEPLOYMENT.md`. This supersedes the local-only hosting boundary
 in ADR-024/025; it does not change the publishing UI or add multiplayer.
+
+## ADR-027 — Verified Challenger email enrollment (2026-09-06)
+
+**Status:** accepted; supersedes the provisioned-only signup policy in ADR-023/025.
+
+**Decision.** Anyone who owns and verifies an email at the exact domain
+`challenger.gauntletai.com` can publish for the pilot. Electron owns signup,
+email/password login, email-code verification, and resend. The public website remains
+browse/play only. Supabase email confirmation must be enabled and its confirmation
+template displays an OTP; no browser callback or app deep link is required.
+
+The server validates Supabase identity and calls an administrative transaction that
+reads the current Auth email and confirmation timestamp. It enrolls eligible users
+idempotently and records domain-based access separately from existing provisioned
+developer exceptions. No client metadata grants privileges. Domain access is rechecked
+on authenticated publishing requests; disabled accounts are never re-enabled by login.
+Passwords and verification codes are transient and cleared after each attempt. Only
+tokens are stored in Electron main's existing OS-encrypted, origin-specific session.
+
+**Consequences.** Repository invitations and Vercel accounts are unnecessary for
+Challenger publishers. Hosted enrollment needs custom SMTP capable of mailing these
+addresses; Supabase's built-in project-team sender is insufficient. Local Supabase
+captures the same confirmation email for testing. Deployment of this policy is owned
+by the operator; the initially deployed provisioned-only version remains until they
+apply the migration, configure email confirmation/delivery, and deploy this change.
