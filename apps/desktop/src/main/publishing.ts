@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { app, ipcMain, safeStorage, shell, dialog } from 'electron'
-import { boundedText, listing, object, uuid } from '@gauntlet/publishing'
+import { boundedText, object, uuid } from '@gauntlet/publishing'
 import { packDirectory, validateArtifact } from '@gauntlet/publishing/node'
 import type { Ledger } from './ledger'
 import { checkoutRoundRevision, cleanupRoundCheckout } from './round-revision'
@@ -12,6 +12,8 @@ import {
   type BuildJob,
 } from './publication-build'
 import { playAccessError } from './play'
+import { publicationCover, publicationListing } from './publication-listing'
+import { readCatalogResponse } from './publishing-response'
 import { IPC } from '../shared/ipc'
 import { success, failure } from '../shared/result'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
@@ -119,12 +121,7 @@ export class Publishing {
         ? AbortSignal.any([timeout, this.signInAbort.signal])
         : timeout,
     })
-    const data = await response.json()
-    if (!response.ok)
-      throw new Error(
-        typeof data.error === 'string' ? data.error : 'Catalog request failed.',
-      )
-    return data
+    return readCatalogResponse(response, route)
   }
   private async authenticated(): Promise<Session> {
     const current = this.session()
@@ -292,10 +289,7 @@ export class Publishing {
       round = input.round
     if (!Number.isSafeInteger(round) || (round as number) < 1)
       throw new Error('Select a completed saved round.')
-    const metadata = listing(input),
-      output = boundedText(input.outputDir, 'build directory', 100)
-    if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(output))
-      throw new Error('Build directory must be a relative folder such as dist.')
+    const metadata = publicationListing(input)
     const loop = this.ledger.getLoop(loopId)
     if (!loop) throw new Error('Run not found.')
     const trustError = playAccessError(loop)
@@ -347,7 +341,7 @@ export class Publishing {
         round as number,
         revision,
       )
-      await buildPublication(
+      const buildDir = await buildPublication(
         checkout,
         (build) => {
           job.build = build
@@ -355,14 +349,17 @@ export class Publishing {
         },
         (text) => this.log(loopId, text),
       )
-      const buildDir = path.join(checkout, output),
-        canonical = fs.realpathSync(buildDir)
-      if (!canonical.startsWith(`${fs.realpathSync(checkout)}${path.sep}`))
-        throw new Error('Build output escaped the saved revision.')
-      const artifact = await packDirectory(buildDir, revision),
-        fingerprint = createHash('sha256')
-          .update(validateArtifact(artifact).digest + JSON.stringify(metadata))
-          .digest('hex')
+      const artifact = await packDirectory(buildDir, revision)
+      metadata.coverPath = publicationCover(artifact)
+      this.log(
+        loopId,
+        metadata.coverPath
+          ? `Using shipping cover: ${metadata.coverPath}.`
+          : 'No shipping cover found; the catalog will use its default artwork.',
+      )
+      const fingerprint = createHash('sha256')
+        .update(validateArtifact(artifact).digest + JSON.stringify(metadata))
+        .digest('hex')
       if (job.digest !== fingerprint) {
         job.requestKey = randomUUID()
         job.digest = fingerprint

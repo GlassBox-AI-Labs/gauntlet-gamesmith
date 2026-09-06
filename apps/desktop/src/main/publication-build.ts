@@ -5,11 +5,12 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { playEnvironment } from './play'
 import { readExactFileDescriptor } from './bounded-fd'
+import { trackPublicationOutput } from './publication-output'
 import { completeProcessMeta, interruptCapturedProcessGroup, prepareProcessMeta, processGroupIdentity, readProcessMeta, type RunProcessMeta } from './run-process'
 
 export interface BuildJob { directory: string; runId: string; status: 'starting' | 'running' | 'finished'; gateDir: string }
 /** A persisted, gated build; uses the existing exact-identity SIGINT supervisor. */
-export async function buildPublication(directory: string, record: (job: BuildJob) => void, log: (text: string) => void): Promise<void> {
+export async function buildPublication(directory: string, record: (job: BuildJob) => void, log: (text: string) => void): Promise<string> {
   const manifest = fs.openSync(path.join(directory, 'package.json'), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   let pkg
   try {
@@ -18,6 +19,7 @@ export async function buildPublication(directory: string, record: (job: BuildJob
     pkg = JSON.parse(readExactFileDescriptor(manifest, stat.size, 1024 * 1024, 'build manifest').toString('utf8'))
   } finally { fs.closeSync(manifest) }
   if (typeof pkg.scripts?.build !== 'string') throw new Error('This saved round needs a package.json build script.')
+  const output = await trackPublicationOutput(directory, log)
   const args = ['run', 'build', ...( /\bvite\s+build\b/.test(pkg.scripts.build) ? ['--', '--base=./'] : [])]
   const runId = randomUUID(), gateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-publish-gate-'))
   const job: BuildJob = { directory, runId, gateDir, status: 'starting' }
@@ -69,6 +71,7 @@ export async function buildPublication(directory: string, record: (job: BuildJob
     while ([out, err].some(fd => (offsets.get(fd) ?? 0) < fs.fstatSync(fd).size)) scan()
     record({ ...job, status: 'finished' })
     if (timedOut || code !== 0) throw new Error(timedOut ? 'Publishing build timed out.' : `Publishing build exited ${code}. See the run log.`)
+    return await output()
   } catch (error) {
     await interrupt()
     throw error

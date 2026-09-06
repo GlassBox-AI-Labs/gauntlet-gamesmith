@@ -629,3 +629,25 @@ addresses; Supabase's built-in project-team sender is insufficient. Local Supaba
 captures the same confirmation email for testing. Deployment of this policy is owned
 by the operator; the initially deployed provisioned-only version remains until they
 apply the migration, configure email confirmation/delivery, and deploy this change.
+
+## ADR-028 — Automatic saved-round packaging (2026-09-06)
+
+**Context.** Publishers should not need to know output directories or asset paths
+to share a game. Requiring listing prose also blocks a first preview unnecessarily.
+
+**Decision.** Electron compiles the selected immutable saved round and detects the
+one browser output produced by that compilation. A bounded scan compares files
+before and after compilation, excludes private/reference trees and links, and never
+selects the source root. Existing artifact validation remains authoritative. Missing,
+stale, or ambiguous output fails with details in the visible log. Packaging does not
+require an LLM or a manual directory input.
+
+The app prefills title and URL; description and controls are optional. Blank
+description receives a short branded default compatible with the initial hosted API.
+Recognizably named raster artwork within the validated artifact becomes the cover;
+otherwise the catalog uses its placeholder. No cover path field is exposed.
+
+**Consequences.** Publishers can proceed directly to **Preview game**, then publish
+the reviewed release. The compilation script must produce one static browser output
+below the source root; unsupported games need another implementation round. Output
+detection and cover selection appear in the existing run log.

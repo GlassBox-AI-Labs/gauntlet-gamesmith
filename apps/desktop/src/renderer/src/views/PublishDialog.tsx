@@ -44,8 +44,6 @@ export function PublishDialog({
       .slice(0, 64),
     description: '',
     controls: '',
-    coverPath: '',
-    outputDir: 'dist',
   })
   async function refresh() {
     const result = await window.publishing.history(loopId)
@@ -206,22 +204,15 @@ export function PublishDialog({
                     [
                       ['title', 'Title'],
                       ['slug', 'Game URL slug'],
-                      ['description', 'Description'],
-                      ['controls', 'Controls'],
-                      ['coverPath', 'Cover path inside build (optional)'],
-                      ['outputDir', 'Build output folder'],
+                      ['description', 'Description (optional)'],
+                      ['controls', 'Controls (optional)'],
                     ] as const
                   ).map(([key, label]) => (
                     <label key={key} className="grid gap-2 text-sm">
                       {label}
                       <Input
                         data-testid={`publishing-${key}`}
-                        required={[
-                          'title',
-                          'slug',
-                          'description',
-                          'outputDir',
-                        ].includes(key)}
+                        required={['title', 'slug'].includes(key)}
                         disabled={busy || !!preview}
                         value={draft[key]}
                         onChange={(event) =>
@@ -236,9 +227,7 @@ export function PublishDialog({
                       disabled={busy}
                       type="submit"
                     >
-                      {busy
-                        ? 'Building and uploading…'
-                        : 'Build & open private preview'}
+                      {busy ? 'Preparing preview…' : 'Preview game'}
                     </Button>
                   )}
                 </form>

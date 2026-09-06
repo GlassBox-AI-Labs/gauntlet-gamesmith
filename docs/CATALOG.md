@@ -61,11 +61,13 @@ use Supabase Auth administration.
 2. Create and verify a Challenger account, or enter an existing publisher email and password in the publishing drawer and
    click **Sign in to publish**. Supabase authenticates the account without opening
    a browser. The password is cleared after each attempt and is never saved.
-3. Enter listing metadata and the relative shipping-output directory (default
-   `dist`). An optional cover path must identify a raster image in that output.
-4. **Build & open private preview** builds the selected immutable saved revision
+3. Review the prefilled title and URL. Description and controls are optional;
+   an omitted description uses "Created with Gauntlet Gamesmith."
+4. **Preview game** compiles the selected immutable saved revision
    with its installed dependencies. Vite receives `--base=./`. Only validated
    shipping files are uploaded, directly to a scoped Supabase Storage URL.
+   The app detects the generated browser output and named cover artwork;
+   no folder or file path is requested. Missing artwork uses the catalog default.
 5. Play the private preview and explicitly **Publish this version**.
 6. In the same drawer, **Releases** lists that run's game history. Preview an
    older ready release before rolling back. **Unpublish** asks for confirmation
@@ -96,11 +98,16 @@ Private previews last 30 minutes and survive server restart with the same
 
 - Static browser games with `index.html`, relative assets, and installed build
   dependencies. No custom backend, networking, or persistent player saves.
+- The compilation script must produce one browser output below the source root.
+  Output detection scans at most 20,000 entries, excludes private/reference trees,
+  and requires files changed by this compilation. Stale, absent, or ambiguous
+  output fails with an explanation in the run log; the source root never ships.
 - Maximum 1,500 files and 24 MiB decoded shipping data (35 MiB envelope).
 - No links, hidden/private directories, reference/critique folders, source maps,
   source TypeScript, or unsupported types. The server verifies hashes, source
   revision, listing, and cover before marking a release ready.
-- PNG, JPEG, WebP, and GIF covers are part of the shipping artifact.
+- A PNG, JPEG, WebP, or GIF named `cover`, `thumbnail`, `preview`, or `screenshot`
+  at the output root or in `assets/` is selected automatically when present.
 - Games use an opaque sandbox origin: no account credentials, persistent browser
   storage, external fetches, forms, or top-level navigation. Bundle assets locally.
 

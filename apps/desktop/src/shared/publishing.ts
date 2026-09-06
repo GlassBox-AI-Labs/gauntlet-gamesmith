@@ -4,10 +4,8 @@ export interface PublishDraft {
   round: number
   title: string
   slug: string
-  description: string
-  controls: string
-  coverPath: string
-  outputDir: string
+  description?: string
+  controls?: string
 }
 export interface PublicationPreview {
   releaseId: string
