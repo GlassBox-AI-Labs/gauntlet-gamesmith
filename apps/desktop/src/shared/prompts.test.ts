@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from './models'
 import { markResumePrompt } from './build'
-import { ASSET_WAVE_SIZE, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from './prompts'
+import { ASSET_WAVE_SIZE, MACOS_BROWSER_SANDBOX_RULE, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
 const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
@@ -75,6 +75,18 @@ describe('build prompts', () => {
     expect(prompt).toContain('./reference/build-123/story.md')
     expect(prompt).toContain('extract the same ordered journey shots from attributable video evidence')
     expect(prompt).toContain("args: ['--single-process', '--disable-features=UseDBus,MacSystemNetworkContext']")
+  })
+
+  it('tells every browser role the app already supplied Chromium and where not to look for one', () => {
+    // Agents used to install Playwright into /tmp and then import a directory a
+    // different run had left there, pinned to a browser build that had never
+    // been downloaded on this machine.
+    expect(MACOS_BROWSER_SANDBOX_RULE).toContain('PLAYWRIGHT_BROWSERS_PATH')
+    expect(MACOS_BROWSER_SANDBOX_RULE).toContain('/tmp')
+    expect(MACOS_BROWSER_SANDBOX_RULE).toContain('executablePath')
+    // PROMPT-001: prompts carry workspace-relative paths only. The cache lives
+    // in app data, and its location reaches the agent through the environment.
+    expect(MACOS_BROWSER_SANDBOX_RULE).not.toMatch(/(^|\s)\/(Users|home|private|Applications)\//)
   })
 
   it('makes the first implementer consume the completed pack', () => {

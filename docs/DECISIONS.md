@@ -559,3 +559,45 @@ though the record is a build.
 agrees with it. Reviewers should reject a new `phases` table, any reintroduction of `run` as a noun
 for either the job or an attempt, and any use of "build" as a bare noun for compilation in
 operator-visible text.
+
+## ADR-021 — The app owns one Playwright browser cache for every agent (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The prompts told agents to use Playwright's bundled browsers but the app never supplied
+one, so each agent improvised. In one implement round the agent imported Playwright out of
+`/tmp/gauntletron-pw` — a scratch directory a different game's run had left there the day before —
+whose pinned browser build had never been downloaded on this machine. Playwright fetches browsers at
+*install* time, never at launch, so that copy had been broken since it was created and said so only
+when `chromium.launch()` failed. Four such directories were on the machine; two had no `playwright`
+package at all and one had only `playwright-core`, which never downloads a browser. A fresh
+`npm install` is not a reliable fix either, because a skipped or blocked postinstall reproduces the
+same silent breakage.
+
+**Decision.** The app supplies the browser. `PLAYWRIGHT_BROWSERS_PATH` is set for every child CLI and
+points at one app-managed cache under the app's data directory, and the app downloads a pinned
+Chromium into it with `npx playwright install chromium` before the first phase of the first build.
+`MACOS_BROWSER_SANDBOX_RULE` now states that Chromium is already installed and reached through that
+variable, and forbids `executablePath`, temp-directory installs, and importing Playwright from
+`/tmp`.
+
+The cache *path* is computed without touching the disk and is handed to every child regardless of how
+the download went; only the pre-download is deferred. A machine with no Node on `PATH` cannot run the
+installer, which is a normal outcome under ADR-014 and never fails a build: the agent installs
+Playwright itself, and because the variable is inherited, its postinstall fills the same shared cache
+instead of another temp directory. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` is deliberately **not** set —
+skipping the download is what makes a version mismatch permanent, and letting an agent's own install
+fetch its matching build is what makes a mismatch heal.
+
+**Rejected.** Pinning `playwright` in `apps/desktop/package.json`, as the report proposed. A plain
+`pnpm install` runs its postinstall without `PLAYWRIGHT_BROWSERS_PATH` set, so the browser lands in
+the user's default cache rather than the app's; the packaged app ships only `out/**` and would not
+carry the package anyway; and it puts a ~150MB download in the path of every install and CI run for
+no gain over installing on demand.
+
+**Consequences.** Every agent in every build resolves the same browser binary, and the first build on
+a machine downloads it once instead of once per scratch directory. The download and any failure are
+logged into the build (VIS-001), the failure as an error naming the installer's own output. The
+pinned version lives in one constant in `main/browser.ts`; raising it re-downloads on the next build
+because the cache stamp no longer matches. Anything that clears the app's data directory costs one
+re-download.

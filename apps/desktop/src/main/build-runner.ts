@@ -36,7 +36,8 @@ import { cliExecutable, validatedExecutableEnv } from './cli-executable'
 import { delegationRules, GAUNTLET_IMPLEMENTER_AGENT_PREFIX, implementerAgentDefinition, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { browserCacheDir, ensureBrowser, cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { browserNotice, type BrowserInstall } from './browser'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
 import { defaultBuildTitle, type Ledger, type AttemptProcessOwnership } from './ledger'
@@ -169,6 +170,8 @@ export interface BuildRunnerDeps {
   subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
   cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
   validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
+  browsersDir(): string
+  ensureBrowser(): Promise<BrowserInstall>
   prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
 }
@@ -201,6 +204,8 @@ const DEFAULT_DEPS: BuildRunnerDeps = {
   subscriptionReady: (kind, cwd, home) => subscriptionReadiness(kind, cwd, home),
   cliExecutable,
   validatedExecutableEnv,
+  browsersDir: browserCacheDir,
+  ensureBrowser,
 }
 
 function buildImplementPrompt(
@@ -247,6 +252,10 @@ export class BuildRunner {
   /** Renderer/report refreshes requested during a transaction build only after commit. */
   private broadcastBuffer: Set<string> | null = null
   private deps: BuildRunnerDeps
+  /** The one Chromium download, started on the first attempt and never repeated. */
+  private browserInstall: Promise<BrowserInstall> | null = null
+  /** Its outcome, held until an attempt is on hand to log it against. */
+  private browserNotice: { channel: 'system' | 'error'; text: string } | null = null
 
   constructor(
     private ledger: Ledger,
@@ -706,6 +715,35 @@ export class BuildRunner {
     return [build.workspaceDir, ...this.deps.protectedRoots()]
   }
 
+  /**
+   * Fill the app-managed browser cache, once, for every build this app runs.
+   *
+   * Deliberately not awaited. The cache *path* is known without downloading
+   * anything and is handed to every child regardless, because sharing one cache
+   * is what stops agents importing Playwright out of another run's `/tmp`. The
+   * download only decides whether the first agent to want a browser waits for
+   * one. A machine without Node on `PATH` cannot download at all, which is a
+   * normal outcome (ADR-014) and never fails a build.
+   *
+   * Its outcome is logged against the next attempt to reach this point rather
+   * than from the promise, so nothing writes to the ledger outside the run loop.
+   */
+  private prepareBrowser(build: BuildRecord, attempt: PhaseAttempt): void {
+    this.browserInstall ??= this.deps.ensureBrowser().then((install) => {
+      this.browserNotice = browserNotice(install)
+      return install
+    }, (error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error)
+      const failed: BrowserInstall = { dir: this.deps.browsersDir(), status: 'unavailable', detail }
+      this.browserNotice = browserNotice(failed)
+      return failed
+    })
+    const notice = this.browserNotice
+    if (!notice) return
+    this.browserNotice = null
+    this.log(build.id, attempt.id, notice.channel, notice.text)
+  }
+
   /** Resolve and pin every CLI this phase may execute, including workers. */
   private executableEnvironment(build: BuildRecord, attempt: PhaseAttempt, planEnv: Record<string, string>): { command: string; env: Record<string, string> } {
     const roots = this.executableRoots(build)
@@ -713,7 +751,7 @@ export class BuildRunner {
       this.requiredHarnesses(build, attempt.role, attempt.harness).map((harness) => [harness, this.deps.cliExecutable(harness, roots)]),
     )
     const env = {
-      ...subscriptionEnv(planEnv, process.env, attempt.harness, roots),
+      ...subscriptionEnv({ ...planEnv, PLAYWRIGHT_BROWSERS_PATH: this.deps.browsersDir() }, process.env, attempt.harness, roots),
       ...this.deps.validatedExecutableEnv(executables, roots),
     }
     return {
@@ -1660,6 +1698,7 @@ export class BuildRunner {
         this.stopForSubscription(build, attempt, subscriptionBlock.harness, subscriptionBlock.readiness)
         return
       }
+      this.prepareBrowser(build, attempt)
       // Authentication/status probes are external calls. Re-check immediately
       // before handing the project path to a role in case it changed meanwhile.
       if (!this.verifyWorkspaceBoundary(build)) return

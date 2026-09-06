@@ -59,6 +59,25 @@ describe('subscriptionEnv', () => {
     })
   })
 
+  it('points the child at the app-owned browser cache and ignores one the operator set', () => {
+    // Agents were importing Playwright out of another run's /tmp directory and
+    // launching a browser build that had never been downloaded. The cache the
+    // app filled is the only one a child may resolve through, so the plan
+    // field wins over whatever the surrounding shell happened to export.
+    const env = subscriptionEnv(
+      { CLAUDE_CONFIG_DIR: '/private/claude', PLAYWRIGHT_BROWSERS_PATH: '/private/browsers' },
+      { PATH: '/usr/bin', PLAYWRIGHT_BROWSERS_PATH: '/tmp/pw-scratch' },
+      'claude',
+    )
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      CLAUDE_CONFIG_DIR: '/private/claude',
+      PLAYWRIGHT_BROWSERS_PATH: '/private/browsers',
+      NO_COLOR: '1',
+    })
+  })
+
   it('keeps the real home so macOS can find the login keychain', () => {
     // Claude Code stores subscription credentials in the macOS login keychain,
     // which the Security framework locates through HOME. Pointing HOME at the

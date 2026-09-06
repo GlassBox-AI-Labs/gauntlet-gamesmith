@@ -42,6 +42,9 @@ function setup(
       return home
     },
     cliVersion: () => 'test-cli 1.2.3',
+    // No fixture may spawn the real Chromium installer.
+    browsersDir: () => path.join(root, 'playwright-browsers'),
+    ensureBrowser: async () => ({ dir: path.join(root, 'playwright-browsers'), status: 'current' as const }),
     accountLabel: (kind) => `${kind}:test-account@example.com`,
     hostname: () => 'test-host',
     protectedRoots,
@@ -2004,6 +2007,26 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(command).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CODEX_BIN).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CLAUDE_BIN).toBe('/trusted/bin/claude')
+  })
+
+  it('hands every phase the app-managed browser cache, download or no download', async () => {
+    let env: Record<string, string> = {}
+    const { ledger, runner, workspaceDir } = setup({
+      browsersDir: () => '/app-data/playwright-browsers',
+      // A machine with no Node cannot pre-download anything. Sharing one cache
+      // is still what stops agents importing Playwright from another run's /tmp,
+      // so the path is supplied regardless of how the download went.
+      ensureBrowser: async () => ({ dir: '/app-data/playwright-browsers', status: 'unavailable', detail: 'npx: command not found' }),
+      spawnChild: (_command, _args, options) => {
+        env = options.env
+        throw new Error('stop after browser inspection')
+      },
+    })
+
+    expect(runner.start(input(workspaceDir)).ok).toBe(true)
+    await waitFor(() => Object.keys(env).length > 0 || ledger.latestBuild()?.status === 'failed')
+
+    expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe('/app-data/playwright-browsers')
   })
 
   it('resumes only the same-round session with the complete effective prompt', () => {
