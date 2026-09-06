@@ -1,10 +1,12 @@
 import type { AgentMetric, LoopRecord, RunMetrics, RunRecord, TokenTotals } from '../../shared/loop'
 import { normalizeSessionId } from '../../shared/session-id'
+import { isMissingLeadSession } from '../../shared/lead'
 import { isCrossHarness } from '../../shared/models'
 import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
 import { parseChildStreamName } from '../child-stream-name'
 import { buildImplementMetrics, hasCliModelCost } from '../implement-metrics'
 import type { Ledger } from '../ledger'
+import { LeadContinuity } from '../lead-continuity'
 import { estimateCostUsd, PRICE_TABLE_VERSION } from '../pricing'
 import { normalizeStreamUsage, translateClaudeLine } from '../streams/claude-stream'
 import { readWorkflowProgress, workflowDir, type WorkflowRunSummary } from '../workflow-progress'
@@ -126,10 +128,13 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
   const childParents = new Map<string, string>()
   const msgUsage = new Map<string, { agentKey: string; model: string | null; usage: Record<string, number>; ts: string }>()
   let result: Record<string, unknown> | null = null
+  let didWork = false
+  let missingSession = false
   let fallbackId = 0
   let lastTokenFlush = runtime.now()
   let liveCostEstimate: number | null = null
   let sessionId: string | null = ledger.getRun(run.id)?.sessionId ?? null
+  const attemptStartMs = new LeadContinuity(ledger).state(loop.id).enabled ? Date.parse(ledger.getRun(run.id)?.startedAt ?? run.createdAt) : 0
   const workflowBaseline = (ledger.getRun(run.id)?.metrics?.agents ?? [])
     .filter((agent) => agent.source === 'workflow')
     .slice(0, MAX_IMPLEMENT_AGENT_IDS)
@@ -150,10 +155,11 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       initialWorkflowOffsets,
       claudeHome,
       initialWorkflowIdentities,
+      attemptStartMs,
     )
     const { agents: live, events } = tail.pollWithEvents()
     for (const event of events) plog(event.kind, event.text, event.agentId)
-    const progress = readWorkflowProgress(workflowDir(claudeHome, loop.workspaceDir, sessionId))
+    const progress = readWorkflowProgress(workflowDir(claudeHome, loop.workspaceDir, sessionId), attemptStartMs)
     const progressWarning = progress.warning?.slice(0, 1_000)
     if (progressWarning && !loggedWorkflowWarnings.has(progressWarning)) {
       if (loggedWorkflowWarnings.size < MAX_IMPLEMENT_WORKFLOW_KEYS) loggedWorkflowWarnings.add(progressWarning)
@@ -273,6 +279,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       return
     }
     const type = obj.type as string
+    if (type === 'assistant' || type === 'user') didWork = true
     const parentId = streamId(obj.parent_tool_use_id)
     const agentKey = parentId ?? 'orchestrator'
     const who = parentId ? (agentLabels.get(parentId)?.label ?? `agent-${parentId.slice(-6)}`) : 'orchestrator'
@@ -288,6 +295,9 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
         plog('error', 'Claude init reported an invalid session id; workflow paths and resume state will ignore it.')
       }
       sessionId = reportedSession ?? sessionId
+      if (reportedSession && new LeadContinuity(ledger).sessionStarted(run, reportedSession)) {
+        plog('system', 'The CLI started a different lead session; this turn uses saved memory instead of the previous conversation.')
+      }
       if (model || sessionId) ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
       plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
       return
@@ -439,8 +449,10 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
         costSource,
         tokens: implementTokens(metrics.perModel, usage),
         numTurns: nonNegativeInteger(result?.num_turns),
-        sessionId: normalizeSessionId(result?.session_id),
+        sessionId: normalizeSessionId(result?.session_id) ?? sessionId,
         summary: typeof result?.result === 'string' ? result.result.slice(0, 4000) : null,
+        leadResponse: typeof result?.result === 'string' ? result.result : null,
+        sessionUnavailable: !didWork && (missingSession || isMissingLeadSession(typeof result?.result === 'string' ? result.result : '')),
         error: succeeded
           ? null
           : (exit.spawnError ??
@@ -473,7 +485,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
 
   return {
     onLine,
-    onStderr: (text) => plog('stderr', trunc(text, 400)),
+    onStderr: (text) => { missingSession ||= isMissingLeadSession(text); plog('stderr', trunc(text, 400)) },
     tick,
     progressAt: () => lastProgressAt,
     workflowOffsets: () => tail?.snapshot() ?? initialWorkflowOffsets,

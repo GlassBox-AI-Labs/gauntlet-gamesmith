@@ -1,3 +1,8 @@
+import { LeadContinuity } from './lead-continuity'
+import { SteeringAttachments } from './steering-attachments'
+import { SteeringService } from './steering'
+import { createConsultAgent } from './steering-agent'
+import { registerSteeringIpc } from './steering-ipc'
 import { trustExistingRun } from './trust-ipc'
 import { createRunAttachments } from './run-attachments'
 import { registerAttachmentIpc } from './attachment-ipc'
@@ -30,7 +35,7 @@ import {
   removeAccount,
   switchAccount,
 } from './accounts'
-import { cliHome, harnessesRoot } from './harness-env'
+import { subscriptionEnv, cliHome, harnessesRoot } from './harness-env'
 import { HarnessLoginManager } from './harness-login'
 import { subscriptionAuthError } from './harness-status'
 import {
@@ -82,6 +87,7 @@ import { configureAgentWritableRoots } from './cli-executable'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
+let steering: SteeringService | null = null
 let loopRunner: LoopRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
@@ -292,6 +298,14 @@ function registerLoopIpc(): void {
     const runOffset = parseRunPageOffset(offsetValue)
     const projection = ledger.recentRunProjectionForLoop(loop.id, 200, runOffset)
     return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), runOffset, detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
+  })
+  ipcMain.handle(IPC.loop.lead, (_event, value: unknown, offsetValue: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      return success(new LeadContinuity(ledger).state(assertLoopId(value), parseRunPageOffset(offsetValue)))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not load the lead notebook.'))
+    }
   })
   ipcMain.handle(IPC.loop.rename, (_event, loopId: unknown, value: unknown) => {
     try {
@@ -831,7 +845,7 @@ if (!hasSingleInstanceLock) {
 }
 
 if (hasSingleInstanceLock) {
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
     const attachments = createRunAttachments(protectedWorkspaceRoots)
@@ -852,6 +866,14 @@ if (hasSingleInstanceLock) {
         return null
       }
     }))
+    steering = new SteeringService(
+      ledger,
+      createConsultAgent(path.join(app.getPath('userData'), 'consults'), () => subscriptionEnv({ CODEX_HOME: cliHome('codex') }, process.env, 'codex')),
+      (channel, payload) => mainWindow?.webContents.send(channel, payload),
+      new SteeringAttachments(ledger, attachments),
+    )
+    await steering.recover()
+    registerSteeringIpc(steering)
     registerIpc()
     registerLoopIpc()
     registerReportIpc()
@@ -911,7 +933,8 @@ app.on('before-quit', (event) => {
   const stopAgents = choice === 1
   const settleAgents = stopAgents || forcedAgentSettlement
   const settlePlay = hasActivePlay()
-  if (!settleAgents && !settlePlay) return
+  const settleChat = steering?.hasUnfinished() ?? false
+  if (!settleAgents && !settlePlay && !settleChat) return
   // Play ownership is intentionally in-memory, and a requested agent stop
   // relies on timers that must finish before Electron exits. Hold the app
   // open until both identity-bound supervisors prove absence.
@@ -921,7 +944,13 @@ app.on('before-quit', (event) => {
     try {
       const settlement = await settleQuitSupervisors(
         async () => !settleAgents || !loopRunner || await loopRunner.stopForQuitAndWait(),
-        async () => { if (settlePlay) await stopAllPlayAndWait() },
+        async () => {
+          const results = await Promise.allSettled([
+            settlePlay ? stopAllPlayAndWait() : Promise.resolve(),
+            settleChat ? steering!.shutdown().then(settled => { if (!settled) throw new Error('Steering chat process ownership is unresolved.') }) : Promise.resolve(),
+          ])
+          for (const result of results) if (result.status === 'rejected') throw result.reason
+        },
       )
       if (!settlement.ok) {
         dialog.showErrorBox(`${APP_NAME} could not finish quitting safely`, settlement.error)

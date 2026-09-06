@@ -3,7 +3,7 @@ import type { TokenTotals } from '../shared/loop'
 import { codexTokens } from './codex-usage'
 import { rateLimitPause } from './rate-limit'
 import { translateClaudeLine } from './streams/claude-stream'
-import { translateCodexLine } from './streams/codex-stream'
+import { createCodexStream } from './streams/codex-stream'
 
 const MAX_TRACKED_CLAUDE_USAGE_MESSAGES = 2_048
 const MAX_STREAM_ID_CHARS = 256
@@ -54,6 +54,7 @@ function trunc(value: string, max: number): string {
  * rate-limit recognition, identity, and visible raw-event projection.
  */
 export function createArtifactPhaseStream(options: ArtifactPhaseStreamOptions): ArtifactPhaseStream {
+  const codexStream = createCodexStream()
   const tokens = emptyTokens()
   const usageByMessage = new Map<string, Record<string, number>>()
   let fallbackUsageId = 0
@@ -145,7 +146,7 @@ export function createArtifactPhaseStream(options: ArtifactPhaseStreamOptions): 
 
   const onCodexLine = (line: string): void => {
     lastProgressAt = options.now()
-    const translated = translateCodexLine(line)
+    const translated = codexStream.onLine(line)
     if (!translated) return
     if (translated.threadStarted !== undefined) {
       sessionId = translated.threadStarted ?? sessionId
@@ -164,11 +165,8 @@ export function createArtifactPhaseStream(options: ArtifactPhaseStreamOptions): 
       messages += 1
       options.onUsage()
     }
-    if (translated.error) {
-      failure = translated.error
-      if (rateLimitPause(failure, 0)) rateLimitNotice = failure
-      options.log('error', failure)
-    }
+    failure = codexStream.failure()
+    rateLimitNotice = failure && rateLimitPause(failure, 0) ? failure : null
   }
 
   const snapshot = (): ArtifactPhaseStreamState => ({

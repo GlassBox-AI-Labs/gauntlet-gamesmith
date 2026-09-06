@@ -1,3 +1,4 @@
+import { LeadPanel } from './LeadPanel'
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
@@ -55,6 +56,20 @@ function fmtDuration(ms: number | null | undefined): string {
 function fmtTs(iso: string): string {
   const date = new Date(iso)
   return Number.isNaN(date.getTime()) ? '' : date.toTimeString().slice(0, 8)
+}
+
+function sumAttempts(runs: RunRecord[], now: number) {
+  return runs.reduce(
+    (sum, run) => ({
+      costUsd: sum.costUsd + (run.costUsd ?? 0),
+      inputTokens: sum.inputTokens + (run.inputTokens ?? 0),
+      outputTokens: sum.outputTokens + (run.outputTokens ?? 0),
+      durationMs: sum.durationMs + (runtimeMs(run, now) ?? 0),
+      bestScore: Math.max(sum.bestScore, run.verdict?.score ?? 0),
+      hasScore: sum.hasScore || Boolean(run.verdict),
+    }),
+    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
+  )
 }
 
 function RunModelSummary({ models }: { models: LoopSnapshot['loop']['models'] }): React.JSX.Element {
@@ -281,13 +296,14 @@ export function RunDetail({
   const loop = snapshot.loop
   const running = loop.status === 'running'
   const now = useNow(running)
-  const liveRun = snapshot.runs.find((run) => run.status === 'running') ?? null
+  const liveRun = snapshot.runs.find((run) => run.role !== 'consult' && run.status === 'running') ?? null
   const referenceRuns = snapshot.runs.filter((run) => run.role === 'reference')
   const activeReferenceRun = referenceRuns.at(-1)
   const activeReferenceStudy = activeReferenceRun
     ? referenceStudies.get(activeReferenceRun.id)
     : [...referenceStudies.values()].at(-1)
   const visibleRuns = selectedRound == null ? snapshot.runs : snapshot.runs.filter((run) => run.round === selectedRound)
+  const tableRuns = visibleRuns.filter((run) => run.role !== 'consult')
   const visibleRunIds = new Set(visibleRuns.map((run) => run.id))
   const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.runId && visibleRunIds.has(line.runId))
   const rawStreams = loop.playTrusted ? rawStreamLinks(visibleRuns, visibleLines) : []
@@ -335,29 +351,20 @@ export function RunDetail({
   const critiqueRubric = exactCritiquePrompt ?? buildCriticPrompt(loop.prompt, 1, referenceRoot)
   const detailStatus = selectedRound == null
     ? loop.status
-    : visibleRuns.some((run) => run.status === 'running') ? 'running' : (visibleRuns.at(-1)?.status ?? 'queued')
+    : tableRuns.some((run) => run.status === 'running') ? 'running' : (tableRuns.at(-1)?.status ?? 'queued')
   const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
-  const visibleTotals = visibleRuns.reduce(
-    (sum, run) => ({
-      costUsd: sum.costUsd + (run.costUsd ?? 0),
-      inputTokens: sum.inputTokens + (run.inputTokens ?? 0),
-      outputTokens: sum.outputTokens + (run.outputTokens ?? 0),
-      durationMs: sum.durationMs + (runtimeMs(run, now) ?? 0),
-      bestScore: Math.max(sum.bestScore, run.verdict?.score ?? 0),
-      hasScore: sum.hasScore || Boolean(run.verdict),
-    }),
-    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
-  )
+  const visibleTotals = sumAttempts(visibleRuns, now)
+  const tableTotals = sumAttempts(tableRuns, now)
   const totals = selectedRound == null && snapshot.aggregate
     ? { ...visibleTotals, ...snapshot.aggregate }
-    : visibleTotals
-  const attemptCount = selectedRound == null ? (snapshot.totalRuns ?? visibleRuns.length) : visibleRuns.length
+    : selectedRound == null ? visibleTotals : tableTotals
+  const attemptCount = selectedRound == null ? (snapshot.aggregate?.phaseAttemptCount ?? tableRuns.length) : tableRuns.length
   const totalTokens = totals.inputTokens + totals.outputTokens
   const loopStartMs = Date.parse(loop.createdAt)
   const loopEndMs = running ? now : Date.parse(loop.updatedAt)
   const visibleElapsedMs = selectedRound == null && Number.isFinite(loopStartMs) && Number.isFinite(loopEndMs)
     ? Math.max(0, loopEndMs - loopStartMs)
-    : visibleRuns.reduce<number | null>((latest, run) => {
+    : tableRuns.reduce<number | null>((latest, run) => {
         const elapsed = elapsedThroughRunMs(loop.createdAt, run)
         return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
       }, null)
@@ -443,7 +450,7 @@ export function RunDetail({
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus] ?? ''}`}>{detailStatus}</Badge>
         <span className="text-sm text-[#ded9d6]">
-          {selectedRound == null ? liveRun?.role === 'reference' ? 'reference study · rounds not started' : `round ${loop.round}/${loop.maxRounds}` : visibleRuns.length === 1 ? '1 attempt' : `${visibleRuns.length} attempts`}
+          {selectedRound == null ? liveRun?.role === 'reference' ? 'reference study · rounds not started' : `round ${loop.round}/${loop.maxRounds}` : tableRuns.length === 1 ? '1 attempt' : `${tableRuns.length} attempts`}
         </span>
         <span className="font-mono text-sm text-[#9fb2c8]">${totals.costUsd.toFixed(2)} equivalent API cost</span>
         <span className="font-mono text-sm text-[#b7cbe0]" title={`${totalTokens.toLocaleString()} combined tokens`}>{fmtTokens(totalTokens)} tokens</span>
@@ -487,6 +494,7 @@ export function RunDetail({
       </div>
 
       {selectedRound == null && loop.stopReason && !running && <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>}
+      {selectedRound == null && <LeadPanel key={loop.id} loop={loop} active={liveRun} />}
       {play.error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>}
       {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported run folder.</p>}
@@ -494,7 +502,7 @@ export function RunDetail({
         <div className="mb-5 flex flex-wrap gap-2">
           {canLoadNewerRuns && <button type="button" onClick={onLoadNewestRuns} disabled={loadingOlderRuns} className="inline-flex items-center gap-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50">Newest attempts</button>}
           {canLoadOlderRuns && <button type="button" onClick={onLoadOlderRuns} disabled={loadingOlderRuns} className="inline-flex items-center gap-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50">{loadingOlderRuns && <LoaderCircle className="size-3.5 animate-spin" />}Load older attempts</button>}
-          <span className="self-center text-xs text-[#77706d]">Showing attempts {(snapshot.runOffset ?? 0) + 1}–{(snapshot.runOffset ?? 0) + snapshot.runs.length} of {snapshot.totalRuns ?? snapshot.runs.length}</span>
+          <span className="self-center text-xs text-[#77706d]">{tableRuns.length} phase attempts on this page</span>
         </div>
       )}
       {renameError && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{renameError}</p>}
@@ -573,7 +581,7 @@ export function RunDetail({
               <colgroup><col className="w-8" /><col className="w-[58px]" /><col className="w-[76px]" /><col className="w-[160px]" /><col className="w-[88px]" /><col className="w-[58px]" /><col className="w-[70px]" /><col className="w-[120px]" /><col className="w-[85px]" /></colgroup>
               <TableHeader><TableRow className="border-[#3b3636] hover:bg-transparent"><TableHead className="w-8 px-1" /><TableHead className="px-2 text-[11px] text-[#68615f]">Round</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Role</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Model</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Status</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="Equivalent API cost estimate">API cost</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">Runtime</TableHead></TableRow></TableHeader>
               <TableBody className="text-xs">
-                {visibleRuns.map((run) => (
+                {tableRuns.map((run) => (
                   <RunRow
                     key={run.id}
                     run={run}
@@ -585,11 +593,11 @@ export function RunDetail({
                   />
                 ))}
                 <TableRow className="border-t-2 border-[#4a4342] bg-[#181414] font-medium hover:bg-[#181414]">
-                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">{canLoadOlderRuns && selectedRound == null ? 'Loaded page' : 'Total'} · {visibleRuns.length} attempts</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">{visibleTotals.hasScore ? `best ${visibleTotals.bestScore.toFixed(2)}` : '—'}</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${visibleTotals.costUsd.toFixed(2)}</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title={`${(visibleTotals.inputTokens + visibleTotals.outputTokens).toLocaleString()} combined tokens · ${visibleTotals.inputTokens.toLocaleString()} input (including cache) / ${visibleTotals.outputTokens.toLocaleString()} output`}><div>{fmtTokens(visibleTotals.inputTokens + visibleTotals.outputTokens)} total</div><div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(visibleTotals.inputTokens)} / {fmtTokens(visibleTotals.outputTokens)}</div></TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title="Sum of the runtimes of the loaded attempts">{fmtDuration(visibleTotals.durationMs)}</TableCell>
+                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">{canLoadOlderRuns && selectedRound == null ? 'Loaded page' : 'Total'} · {tableRuns.length} attempts</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">{tableTotals.hasScore ? `best ${tableTotals.bestScore.toFixed(2)}` : '—'}</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${tableTotals.costUsd.toFixed(2)}</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title={`${(tableTotals.inputTokens + tableTotals.outputTokens).toLocaleString()} combined tokens · ${tableTotals.inputTokens.toLocaleString()} input (including cache) / ${tableTotals.outputTokens.toLocaleString()} output`}><div>{fmtTokens(tableTotals.inputTokens + tableTotals.outputTokens)} total</div><div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(tableTotals.inputTokens)} / {fmtTokens(tableTotals.outputTokens)}</div></TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title="Sum of the runtimes of the loaded attempts">{fmtDuration(tableTotals.durationMs)}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>

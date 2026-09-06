@@ -23,7 +23,7 @@ export interface PlanContext {
   prompt: string
   claudeHome: string
   codexHome: string
-  /** Session/thread to continue, when the app is picking up an interrupted run. */
+  /** Session/thread to continue across implementation rounds or interrupted attempts. */
   resumeId?: string | null
   /** Optional Codex compatibility output; machine decisions never trust it. */
   outFile?: string | null
@@ -202,3 +202,8 @@ export function critiquePlan(ctx: PlanContext): SpawnPlan {
  * The claude model that fronts a codex worker. It writes no code — it hands the
  * slice to codex and reports back — so it is the cheapest one on the list.
  */
+
+/** A steering consult never resumes a phase session or receives write permissions. */
+export function consultPlan(model:string,schemaPath:string,imagePaths:string[] = []):string[] {
+  return ['exec','--ignore-user-config','--ephemeral','--sandbox','read-only','--skip-git-repo-check','--json','--output-schema',schemaPath,'--model',model,'-c','model_reasoning_effort="low"',...imagePaths.flatMap(file=>['--image',file]),'-']
+}

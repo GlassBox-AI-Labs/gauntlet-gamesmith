@@ -754,7 +754,7 @@ describe('Ledger', () => {
     const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
     expect(() => ledger.patchRun(run.id, { costUsd: Number.MAX_VALUE })).toThrow(/persisted safety range/)
     expect(() => ledger.patchRun(run.id, { inputTokens: 1_000_000_001 })).toThrow(/persisted safety range/)
-    expect(ledger.runAggregate(loop.id)).toEqual({ costUsd: 0, inputTokens: 0, outputTokens: 0 })
+    expect(ledger.runAggregate(loop.id)).toEqual({ costUsd: 0, inputTokens: 0, outputTokens: 0, phaseAttemptCount: 1 })
     ledger.close()
   })
 

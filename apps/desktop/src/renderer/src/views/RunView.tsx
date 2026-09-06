@@ -1,3 +1,4 @@
+import { SteeringSidebar } from './SteeringSidebar'
 import { newRunOrchestratorEffort } from '../../../shared/models'
 import { withExistingRunTrust } from '@/lib/trusted-action'
 import { DEFAULT_RUN_PACE } from '../../../shared/run-presets'
@@ -630,6 +631,7 @@ export function RunView({ onOpenAgents }: { onOpenAgents: () => void }): React.J
           )}
         </div>
       </main>
+      {loop && snapshot && !selectedReport && !composing && <SteeringSidebar key={loop.id} runId={loop.id} runName={loop.title} round={loop.round} loopStatus={loop.status}/>}
       <RunComposerDialog open={composing} busy={busy || attachmentBusy} onOpenChange={setComposing}>
             <RunForm
               settings={formSettings}

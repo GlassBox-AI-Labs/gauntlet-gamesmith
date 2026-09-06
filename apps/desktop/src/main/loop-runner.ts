@@ -1,3 +1,6 @@
+import { SteeringAttachments } from './steering-attachments'
+import { steeringCastWork } from './steering-assets'
+import { SteeringStore } from './steering-store'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -76,6 +79,7 @@ import { ChildStreamTailer } from './streams/child-tailer'
 import { prepareVerdictArtifact } from './verdict'
 import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
 import { boundedLoopSnapshot } from './ipc-projection'
+import { LeadContinuity } from './lead-continuity'
 
 /**
  * How long a run may make no progress before we call it stuck. This is idle
@@ -296,6 +300,14 @@ export class LoopRunner {
 
   /** Fail closed when a later phase sees a changed frozen Reference Pack. */
   private verifyReferenceBoundary(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      const requirements = new SteeringStore(this.ledger).requirementsForRun(run.id)
+      if (requirements) new SteeringAttachments(this.ledger).verify(loop.id, requirements.attachments ?? [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Steering attachment verification failed.'
+      this.failAttemptAndLoop(loop, run, message, message, terminalLog)
+      return false
+    }
     if (!this.verifySuppliedContext(loop, run, terminalLog)) return false
     if (loop.models.referenceMode === 'skip') return true
     const pack = scanReferencePack(loop.workspaceDir, this.referenceDir(loop.id), loop)
@@ -357,6 +369,14 @@ export class LoopRunner {
   }
 
   private ensureReferenceSourceBaseline(loop: LoopRecord, run: RunRecord, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      const requirements = new SteeringStore(this.ledger).requirementsForRun(run.id)
+      if (requirements) new SteeringAttachments(this.ledger).verify(loop.id, requirements.attachments ?? [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Steering attachment verification failed.'
+      this.failAttemptAndLoop(loop, run, message, message, terminalLog)
+      return false
+    }
     if (!this.verifySuppliedContext(loop, run, terminalLog)) return false
     try {
       if (run.revision) {
@@ -858,6 +878,7 @@ export class LoopRunner {
     try {
       loop = this.atomicLogs(() => {
         const created = this.ledger.createLoop({ prompt, workspaceDir, maxRounds, budgetUsd, models })
+        new LeadContinuity(this.ledger).enable(created.id)
         this.log(created.id, null, 'system', `Loop started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
         this.log(created.id, null, 'system', scaffold.created.length
           ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
@@ -1218,6 +1239,7 @@ export class LoopRunner {
     let earlyResult: StartLoopResult | null = null
     this.atomicLogs(() => {
       this.ledger.patchLoop(loopId, { status: 'running', stopReason: null })
+      new LeadContinuity(this.ledger).enable(loopId)
       if (resume.kind === 'continue-queued') {
         this.log(loopId, null, 'system', `Loop resumed by user — continuing the already queued round ${resume.run.round} ${resume.run.role}.`)
       } else if (resume.kind === 'retry') {
@@ -1234,6 +1256,7 @@ export class LoopRunner {
         })
         if (prior.revision) this.ledger.patchRun(retry.id, { revision: prior.revision })
         if (prior.role === 'implement') this.copyCritiqueTreeBaseline(prior.id, retry.id)
+        if (prior.role === 'implement') new SteeringStore(this.ledger).includePendingOnResume(retry.id)
         this.log(loopId, null, 'system', `Loop resumed by user — retrying round ${prior.round} ${prior.role}.`)
       } else if (resume.kind === 'queue-implement') {
         this.ledger.patchLoop(loopId, { round: resume.round })
@@ -2415,9 +2438,13 @@ export class LoopRunner {
   private async executeImplement(loop: LoopRecord, run: RunRecord): Promise<void> {
     const models = loop.models
     const harness = harnessFor(models.orchestratorModel)
+    const steering = new SteeringStore(this.ledger)
+    const effective = effectivePromptForRun(run.prompt)
+    steering.freezeRunRequirements(run.id, effective.prompt)
+    const requirements = steering.requirementsForRun(run.id)!
     if (!this.verifyReferenceBoundary(loop, run)) return
     if (!this.verifyCritiqueTreeBoundary(loop, run, true)) return
-    const wanted = this.wantedCast(loop, this.verdictForRound(loop.id, run.round - 1))
+    const wanted = models.assetModel ? steeringCastWork(requirements, this.wantedCast(loop, this.verdictForRound(loop.id, run.round - 1)), this.castFor(loop)) : []
     if (wanted.length > 0) {
       const skill = ensureSkill()
       if (!skill.dir) {
@@ -2460,22 +2487,27 @@ export class LoopRunner {
     const childBoundary = this.prepareChildStreams(loop, run)
 
     const priorSessionId = loop.playTrusted ? this.lastImplementSessionId(loop.id, run.round, run.id) : null
-    const effective = effectivePromptForRun(run.prompt)
     const isResume = effective.resumeRequested && priorSessionId != null
-    const prompt = effective.prompt
+    const assetRules = wanted.length && requirements.assetWork?.some(change => change.operation === 'sculpt') ? `\n\n${sculptorRules(models, this.referenceDir(loop.id))}` : ''
+    const frozenPrompt = steering.freezeRunRequirements(run.id, effective.prompt + assetRules).prompt
+    const lead = new LeadContinuity(this.ledger)
+    const continuing = lead.state(loop.id).enabled ? lead.prepare(run, frozenPrompt, harness === 'codex' ? this.deps.harnessHome('codex') : undefined) : null
+    const prompt = continuing?.prompt ?? frozenPrompt
+    if (continuing) this.log(loop.id, run.id, 'system', continuing.reason)
+    this.send(IPC.steering.update, new SteeringStore(this.ledger).steeringState(loop.id))
 
     this.log(
       loop.id,
       run.id,
       'system',
-      `● Round ${run.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
+      `● Round ${run.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${continuing ? continuing.resumeId ? ' — continuing run lead' : ' — starting lead session' : isResume ? ' — continuing interrupted session' : ''}`,
     )
     const plan = implementPlan({
       models,
       prompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
-      resumeId: isResume ? priorSessionId : null,
+      resumeId: continuing ? continuing.resumeId : isResume ? priorSessionId : null,
     })
     const executable = this.executableEnvironment(loop, run, plan.env)
     const gate: LogGate = { suppress: false }
@@ -2606,6 +2638,7 @@ export class LoopRunner {
       finishCancelled: (finalExit, reason, terminalLog) => this.finishCancelledAttempt(loop, run, finalExit, reason, terminalLog),
       verifyCritiqueTree: (terminalLog) => this.verifyCritiqueTreeBoundary(loop, run, false, terminalLog),
       retryRateLimit: (error, terminalLog) => this.retryRateLimit(loop, run, error, terminalLog),
+      copyRetryEvidence: retryId => this.copyCritiqueTreeBaseline(run.id, retryId),
       failAttempt: (error, reason, terminalLog) => { this.failAttemptAndLoop(loop, run, error, reason, terminalLog) },
       verifyReference: (terminalLog) => this.verifyReferenceBoundary(loop, run, terminalLog),
       persistLog: (kind, text) => { this.persistLog(loop.id, run.id, kind, text) },
@@ -2655,7 +2688,7 @@ export class LoopRunner {
       'system',
       `● Round ${run.round} — critique (${run.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
     )
-    const exactPrompt = buildCriticPrompt(
+    let exactPrompt = buildCriticPrompt(
       loop.prompt,
       run.round,
       this.referenceDir(loop.id),
@@ -2664,6 +2697,9 @@ export class LoopRunner {
       engineGateRules(),
       models.referenceMode,
     )
+    exactPrompt = new SteeringStore(this.ledger).freezeRunRequirements(run.id, exactPrompt).prompt
+    new SteeringAttachments(this.ledger).verify(loop.id, new SteeringStore(this.ledger).requirementsForRun(run.id)?.attachments ?? [])
+    this.send(IPC.steering.update, new SteeringStore(this.ledger).steeringState(loop.id))
     const plan = critiquePlan({
       models,
       prompt: exactPrompt,

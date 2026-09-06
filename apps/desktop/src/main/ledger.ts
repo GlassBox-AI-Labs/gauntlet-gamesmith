@@ -230,7 +230,7 @@ const EVENT_PROJECTION_COLUMNS = `
 
 const LOOP_STATUSES = new Set<LoopStatus>(['running', 'passed', 'exhausted', 'stopped', 'failed'])
 const RUN_STATUSES = new Set<RunStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
-const RUN_ROLES = new Set<RunRole>(['reference', 'implement', 'critique'])
+const RUN_ROLES = new Set<RunRole>(['reference', 'implement', 'critique', 'consult'])
 const LOG_CHANNELS = new Set<LogChannel>(['prompt', 'thought', 'tool', 'output', 'search', 'media', 'usage', 'error', 'system'])
 const REVISION = /^[0-9a-f]{40,64}$/
 const SHA256 = /^[0-9a-f]{64}$/
@@ -2036,17 +2036,18 @@ export class Ledger {
     return this.db.prepare('SELECT 1 FROM runs WHERE loop_id = ? AND role = ? LIMIT 1').get(loopId, role) !== undefined
   }
 
-  runAggregate(loopId: string): { costUsd: number; inputTokens: number; outputTokens: number } {
+  runAggregate(loopId: string): { costUsd: number; inputTokens: number; outputTokens: number; phaseAttemptCount: number } {
     const row = this.db.prepare(
       `SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd,
               COALESCE(SUM(input_tokens), 0) AS input_tokens,
-              COALESCE(SUM(output_tokens), 0) AS output_tokens
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COUNT(CASE WHEN role != 'consult' THEN 1 END) AS phase_attempt_count
        FROM runs WHERE loop_id = ?`,
-    ).get(loopId) as { cost_usd: number; input_tokens: number; output_tokens: number }
+    ).get(loopId) as { cost_usd: number; input_tokens: number; output_tokens: number; phase_attempt_count: number }
     if (!Number.isFinite(row.cost_usd) || row.cost_usd < 0 || !Number.isSafeInteger(row.input_tokens) || row.input_tokens < 0 || !Number.isSafeInteger(row.output_tokens) || row.output_tokens < 0) {
       throw new Error('Canonical run totals exceed their safe projection range.')
     }
-    return { costUsd: row.cost_usd, inputTokens: row.input_tokens, outputTokens: row.output_tokens }
+    return { costUsd: row.cost_usd, inputTokens: row.input_tokens, outputTokens: row.output_tokens, phaseAttemptCount: row.phase_attempt_count }
   }
 
   runCount(loopId: string): number {
@@ -2055,7 +2056,7 @@ export class Ledger {
   }
 
   latestRunForLoop(loopId: string): RunRecord | null {
-    const row = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(loopId) as RunRow | undefined
+    const row = this.db.prepare("SELECT * FROM runs WHERE loop_id = ? AND role != 'consult' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
@@ -2068,7 +2069,7 @@ export class Ledger {
 
   activeRunForLoop(loopId: string): RunRecord | null {
     const rows = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
+      "SELECT * FROM runs WHERE loop_id = ? AND role != 'consult' AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
     ).all(loopId) as unknown as RunRow[]
     if (rows.length > 1) throw new Error('A loop has multiple active runs; recovery stopped.')
     return rows[0] ? toRun(rows[0]) : null
@@ -2076,14 +2077,14 @@ export class Ledger {
 
   oldestQueuedRunForLoop(loopId: string): RunRecord | null {
     const row = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+      "SELECT * FROM runs WHERE loop_id = ? AND role != 'consult' AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
     ).get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
   latestInterruptedRunForLoop(loopId: string): RunRecord | null {
     const row = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT * FROM runs WHERE loop_id = ? AND role != 'consult' AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
@@ -2118,6 +2119,26 @@ export class Ledger {
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(loopId, round, excludedRunId) as { session_id: string } | undefined
     return normalizeSessionId(row?.session_id)
+  }
+
+  /** Bounded session candidates from strictly earlier implementations of this same run. */
+  priorLeadImplementations(runId: string): Array<Pick<RunRecord, 'id' | 'round' | 'harness' | 'model' | 'sessionId' | 'summary'>> {
+    const rows = this.db.prepare(`SELECT id, round, harness, model, session_id, substr(summary, 1, 4000) AS summary FROM runs
+      WHERE loop_id = (SELECT loop_id FROM runs WHERE id = ?) AND role = 'implement'
+        AND rowid < (SELECT rowid FROM runs WHERE id = ?)
+      ORDER BY rowid DESC LIMIT 1000`).all(runId, runId) as unknown as Array<{
+        id: string; round: number; harness: RunRecord['harness']; model: string | null; session_id: string | null; summary: string | null
+      }>
+    return rows.map(row => ({ id: row.id, round: row.round, harness: row.harness, model: row.model,
+      sessionId: normalizeSessionId(row.session_id), summary: row.summary }))
+  }
+
+  /** Full structured memory, independent of the truncated activity-log projection. */
+  leadEvents(loopId: string): LoopLogLine[] {
+    const size = this.db.prepare("SELECT count(*) AS count, coalesce(sum(length(CAST(text AS BLOB))),0) AS bytes FROM events WHERE loop_id=? AND kind LIKE 'lead-%'").get(loopId) as { count: number; bytes: number }
+    if (size.count > 10000 || size.bytes > 8 * 1024 * 1024) throw new Error('Lead history exceeds its size limit.')
+    const rows = this.db.prepare("SELECT * FROM events WHERE loop_id=? AND kind LIKE 'lead-%' ORDER BY seq LIMIT 10000").all(loopId) as unknown as EventRow[]
+    return rows.map(row => this.toLogLine(row, undefined))
   }
 
   previousImplementRevision(loopId: string, round: number): string | null {
@@ -2161,7 +2182,7 @@ export class Ledger {
 
   latestRunIdExcept(loopId: string, excludedRunId: string): string | null {
     const row = this.db.prepare(
-      'SELECT id FROM runs WHERE loop_id = ? AND id <> ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      "SELECT id FROM runs WHERE loop_id = ? AND id <> ? AND role != 'consult' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).get(loopId, excludedRunId) as { id: string } | undefined
     return row?.id ?? null
   }
@@ -2217,7 +2238,7 @@ export class Ledger {
 
   nextQueuedRun(loopId: string): RunRecord | null {
     const row = this.db
-      .prepare("SELECT * FROM runs WHERE loop_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
+      .prepare("SELECT * FROM runs WHERE loop_id = ? AND role != 'consult' AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
       .get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
@@ -2681,6 +2702,19 @@ export class Ledger {
       this.patchRun(replacement.id, { revision: run.revision })
       return this.getRun(replacement.id)!
     })
+  }
+
+  steeringEvents(loopId: string): LoopLogLine[] {
+    const size = this.db.prepare("SELECT count(*) AS count, coalesce(sum(length(CAST(text AS BLOB))),0) AS bytes FROM events WHERE loop_id=? AND kind LIKE 'steering-%'").get(loopId) as { count: number; bytes: number }
+    if (size.count > 10000 || size.bytes > 8 * 1024 * 1024) throw new Error('Steering history exceeds its size limit.')
+    const rows = this.db.prepare("SELECT * FROM events WHERE loop_id=? AND kind LIKE 'steering-%' ORDER BY seq LIMIT 10000").all(loopId) as unknown as EventRow[]
+    return rows.map(row => this.toLogLine(row, undefined))
+  }
+
+  unfinishedConsults(): RunRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runs WHERE role='consult' AND status IN ('queued','running') LIMIT 101").all() as unknown as RunRow[]
+    if (rows.length > 100) throw new Error('Too many unfinished steering chats; manual intervention is required.')
+    return rows.map(toRun)
   }
 
   close(): void {

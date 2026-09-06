@@ -502,3 +502,177 @@ Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
 Teammates must not reintroduce these modes through defaults, presets, or new model support.
 Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
 automatic harness orchestration requires a new product decision with explicit UI semantics.
+
+## ADR-020 — Run-scoped conversational steering (2026-09-05)
+
+**Status:** accepted.
+
+**Decision.** Steering is an initially empty conversation in a collapsible right
+sidebar at the run level. A separate, read-only Codex consult answers questions,
+consolidates related feedback, and batches material clarification questions into
+ordinary replies. Clear instructions queue without redundant confirmation;
+questions and tentative ideas alone do not change requirements. Schema-validated
+new directions must cite actual user messages, including the latest message.
+
+Directions persist across rounds. Later directions supersede earlier conflicts;
+undoing an included direction is another steer. Pending directions may be withdrawn.
+At the first implementation dispatch, freeze the cumulative directions for that
+logical round. Its critic and automatic retries receive the same immutable snapshot.
+ADR-026 adds an explicit Resume boundary for pending directions.
+Chat arriving after that boundary waits for the next implementation. No phase is
+interrupted or injected with new chat. Chat never restarts a stopped/completed loop.
+Historical implementations without a snapshot retain their original requirements.
+
+**Storage and lifecycle.** Messages, directions, withdrawals, and requirement
+snapshots are append-only events in the existing mirrored ledgers. Full event reads
+are separate from truncated log projections. No schema migration is needed. Export
+and import retain history, source IDs, snapshots, and consult attempts. Imported
+history remains read-only until the existing run/folder trust flow grants execution.
+Consults are excluded from phase scheduling, resume decisions, the rounds table,
+and phase-attempt counts. Run-wide cost/token totals and the activity log still
+include chat; table totals describe only its visible phase rows. The round attached
+to a consult records when the conversation happened, not when steering was applied.
+Each consult has
+its own attempt, exact prompt/hash, raw streams, session ID, model, CLI version,
+account/machine provenance, tokens, and equivalent API cost. Cancellation and quit
+settlement supervise its own captured process group. Incomplete process ownership
+quarantines chat; restart never automatically retries a conversation.
+
+**V1 limits.** Uses the app's Codex profile at low effort, defaulting to gpt-5.6-sol; a Codex
+connection is required even for Claude implementation runs. Conversations are bounded
+at 250,000 prompt characters and 24,000 cumulative direction characters; reaching a
+limit returns an explicit error rather than silently forgetting history. The frozen
+reference pack is evidence, not something chat edits. A passed run does not gain an
+automatic extra round. Supporting reference refreshes, larger conversations, or
+in-flight phase injection requires a separate design.
+
+
+## ADR-021 — Immutable attachments in run steering (2026-09-05)
+
+**Status:** accepted.
+
+**Decision.** Steering accepts files/images from the existing main-process picker
+and validated drop bridge. The composer shows removable draft chips and image
+previews; sent files remain on their message. Sending a file alone prompts for its
+purpose rather than silently making it a requirement. The consult distinguishes
+visual reference, a requested 3D sculpt, and direct use/replacement through normal
+conversation. New directions cite both source messages and attachment IDs; the
+main process verifies those relationships before accepting them.
+
+Selection snapshots source bytes through the existing bounded attachment module.
+Sending publishes immutable copies under `.gauntlet-gamesmith/steering/<loop-id>/`
+with unique file IDs, original names, sizes, and SHA-256 hashes in mirrored message
+events. The frozen Reference Pack is unchanged. File reads and previews are bound
+to the selected run, verified workspace/directory identities, and recorded hashes.
+Export/import preserves these files and their message references. Limits are ten
+files per message, 20 MB per file, and 100 files/100 MB per run. Supported raster
+images are supplied directly to the consult CLI; other files and earlier images
+remain available at their recorded read-only workspace paths.
+
+At implementation dispatch, the requirements snapshot includes only attachments
+referenced by confirmed, non-withdrawn directions. The paired critic and retries
+reuse the same snapshot. Verify the saved files at dispatch and completion; never
+silently replace a missing or changed copy with today's original. Newly confirmed
+asset requests join implementation's sculpting/integration work, with later
+requests for the same target taking precedence. Direct replacements suppress
+sculpting from the original cast. The first included round performs requested
+asset work; later rounds retain the desired result without unconditionally
+rebuilding it. No additional loop phase or consult table row is introduced.
+
+## ADR-022 — Per-run steering model selection (2026-09-05)
+
+**Status:** accepted.
+
+**Decision.** The Steering composer offers the supported Codex models from the
+shared model catalog. Selection is independent of implementation/critique models
+and saved per run in mirrored `steering-model` events, including export/import.
+Runs without a preference default to gpt-5.6-sol. Each consult captures its model
+at admission for CLI dispatch, attempt provenance, and equivalent API cost.
+Changing the selection during a reply applies to the next message. Selection
+does not start an attempt, create a rounds-table row, or clear conversation history.
+V1 remains on the app's Codex connection at low effort.
+
+
+
+## ADR-026 — Explicit Resume includes pending steering (2026-09-06)
+
+**Status:** accepted; refines ADR-020.
+
+**Context.** Repeated implementation failures can keep an operator's directions
+queued indefinitely when every retry inherits the first attempt's requirements.
+The operator requested that saved steering reach implementation immediately.
+
+**Decision.** Explicit Resume of a stopped or failed implementation includes
+pending directions in its new attempt, without advancing the round number or
+rewriting any historical prompt, snapshot, or result. Persist the cumulative
+directions, attachment versions, and unfinished asset work before launch, and
+record the inclusion in the steering conversation and run log. A retry with no
+pending directions retains its previous requirements. Chat alone still does not
+resume work or inject messages into a running process.
+
+Automatic recovery retains the most recently frozen implementation snapshot.
+Critique freezes the requirements of the successful implementation attempt it
+judges, including when an explicit retry introduced steering in the same round.
+Late messages remain queued; the original reference and evaluation criteria are
+unchanged except where the operator explicitly steers them.
+
+**Consequences.** Operators can stop, steer, and resume without waiting for a
+whole round to succeed first. Historical attempts remain reproducible, and the
+critic never evaluates against directions absent from its implementation.
+
+## ADR-027 — Continuing implementation lead with integrated steering (2026-09-06)
+
+**Status:** accepted.
+
+**Decision.** New runs retain one implementation lead session across rounds, with
+fresh independent research and critique sessions. Explicit Resume enables this
+behavior for an existing run; historical attempts and automatic recovery of
+unconverted runs keep their recorded behavior. Each implementation remains its
+own supervised process, immutable prompt, requirement snapshot, accounting record,
+and saved build. The app continues to own scheduling, process settlement, phase
+gates, round/budget limits, and termination.
+
+Before dispatch, persist the selected session, source attempt, continuation mode,
+exact effective prompt, and Codex cumulative usage baseline. Only locally trusted
+run history can authorize a private CLI session. Transferred runs recover from
+portable memory in fresh sessions; folder trust does not adopt session IDs.
+A CLI session lookup rejection before any observed agent work permits one fresh
+recovery attempt with identical frozen requirements. Authentication, rate limits,
+and failures after work retain their existing handling. Never search backwards
+through unrelated or successively older sessions after a rejection. A CLI that
+returns a different session ID is visibly treated as fresh, with fresh accounting.
+
+Each implementation requests a bounded, attempt-bound notebook in its final reply:
+plan, decisions, experiments, verification, and remaining work. Main validates it
+and stores an append-only checkpoint in both ledgers. Missing or malformed notes
+produce a visible warning and retain the attempt report and earlier notebook;
+they never become a successful verification claim or erase raw events. Checkpoints
+are saved at attempt completion, not continuously during work. The latest valid
+notebook and latest report accompany the next implementation, including a resumed
+session; they are untrusted working evidence subordinate to the current phase
+protocol and frozen operator requirements. These events use the existing portable
+schema, with bounded full reads separate from log projections.
+
+Steering remains the separate read-only consult defined by ADR-020. It receives
+the latest valid notebook and recent reports, explicitly speaks as the steering
+assistant, and queues clear directions without redundant confirmation. ADR-026's
+explicit Resume boundary still includes pending directions; automatic recovery
+and critique inherit their implementation's exact snapshot. Newer requirements
+explicitly supersede conflicting memories and prior conversation. Chat never
+injects into a running phase or starts a stopped run.
+
+The Run view shows the lead's current activity, whether its session continued or
+was recovered, and a paginated notebook history for inspecting decisions before
+steering. Attempts and full activity remain visible by round. This operator need
+justifies a compact run-level notebook under VIS-001; there is no new dashboard.
+Codex usage is cumulative for a resumed session: record the pre-launch baseline
+and charge only its delta, preserving repeated raw completion events without
+adding their usage twice. If no reliable baseline is available, use a fresh
+session with memory and explain why. Claude workflow transcripts and summaries
+are scoped to the current attempt so earlier workers are not charged again.
+
+**Limits.** This is continuity across implementation turns, not an always-running
+AI process or unlimited context. CLI compaction may still occur. Imported runs
+use notebook recovery, and direct conversational turns with the implementation
+lead remain a separate workflow change. The notebook does not alter critic inputs
+or grant the lead authority to override an app stop condition.

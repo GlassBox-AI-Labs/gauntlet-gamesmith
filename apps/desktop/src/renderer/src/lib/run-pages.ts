@@ -54,7 +54,7 @@ export function pruneVisibleRoundCounts(
 ): Record<string, number> {
   const roundCounts = new Map(snapshots.map((snapshot) => [
     snapshot.loop.id,
-    new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round)).size,
+    new Set(snapshot.runs.filter((run) => run.role !== 'consult' && run.round > 0).map((run) => run.round)).size,
   ]))
   let changed = false
   const next: Record<string, number> = {}

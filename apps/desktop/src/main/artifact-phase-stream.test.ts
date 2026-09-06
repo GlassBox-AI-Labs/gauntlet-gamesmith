@@ -2,6 +2,21 @@ import { describe, expect, it, vi } from 'vitest'
 import { createArtifactPhaseStream } from './artifact-phase-stream'
 
 describe('createArtifactPhaseStream', () => {
+  it.each(['reference', 'critique'] as const)('clears recovered Codex errors and rate pauses during %s', phase => {
+    const log = vi.fn()
+    const stream = createArtifactPhaseStream({
+      harness: 'codex', phase, defaultModel: 'gpt-5.6-sol', startedAtMs: 10,
+      now: () => 20, log, onIdentity: () => {}, onUsage: () => {},
+    })
+    const message = 'usage limit reached; retry after 30 seconds'
+    stream.onLine(JSON.stringify({ type: 'error', message }))
+    expect(stream.snapshot()).toMatchObject({ failure: message, rateLimitNotice: message })
+    stream.onLine(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 2 } }))
+    expect(stream.snapshot()).toMatchObject({ failure: null, rateLimitNotice: null, tokens: { input: 5, output: 2 } })
+    expect(log.mock.calls.some(([kind, text]) => kind === 'error' && text.includes(message))).toBe(true)
+    expect(log.mock.calls.some(([kind, text]) => kind === 'system' && text.includes('completed after recovering'))).toBe(true)
+  })
+
   it('deduplicates Claude message usage and exposes one harness-neutral snapshot', () => {
     const log = vi.fn()
     const onIdentity = vi.fn()

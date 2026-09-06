@@ -94,6 +94,9 @@ export function createRunAttachments(protectedRoots: () => string[]) {
       if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(entry.source) !== entry.source || stat.dev !== entry.dev || stat.ino !== entry.ino) throw new Error('The original folder moved or changed. Add it again.')
       return entry.source
     },
+    snapshot(value: unknown): { sourceId: string; name: string; bytes: Buffer }[] {
+      return ids(value).map(get).flatMap(entry => entry.files.map(file => ({ sourceId: entry.item.id, name: file.name, bytes: file.bytes })))
+    },
     prepare(value: unknown): PreparedContext | null {
       const selected = ids(value).map(get)
       if (!selected.length) return null

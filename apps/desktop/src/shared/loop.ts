@@ -2,7 +2,7 @@ import type { HarnessKind } from './harness'
 import type { DeleteRunsResult } from './reports'
 import type { OperationResult } from './result'
 
-export type RunRole = 'reference' | 'assets' | 'implement' | 'critique'
+export type RunRole = 'reference' | 'assets' | 'implement' | 'critique' | 'consult'
 
 /** Prefix on a requeued run's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
@@ -17,6 +17,7 @@ export function markResumePrompt(prompt: string): string {
 
 /** The heading a run's execution prompt is logged (and backfilled) under. */
 export function runPromptLabel(run: { role: RunRole; round: number }): string {
+  if (run.role === 'consult') return 'Steering chat execution prompt'
   if (run.role === 'reference') return 'Reference Study execution prompt'
   if (run.role === 'assets') return 'Asset Build execution prompt'
   return `Round ${run.round} ${run.role === 'implement' ? 'implementer' : 'critic'} execution prompt`
@@ -200,6 +201,8 @@ export interface LoopSnapshot {
   detailTruncated?: boolean
   projectionWarning?: string | null
   aggregate?: {
+    /** Loop work only; chat consults retain their cost without counting as phase attempts. */
+    phaseAttemptCount?: number
     costUsd: number
     inputTokens: number
     outputTokens: number
@@ -229,6 +232,12 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   shot: 'media',
   metric: 'usage',
   'raw-stream': 'system',
+  'lead-enabled': 'system',
+  'lead-dispatch': 'system',
+  'lead-checkpoint': 'output',
+  'lead-usage': 'usage',
+  'lead-session-unavailable': 'error',
+  'lead-session-reset': 'system',
   error: 'error',
   stderr: 'error',
   system: 'system',
@@ -395,6 +404,7 @@ export interface ReferenceStudy {
 }
 
 export interface LoopApi {
+  lead(loopId: string, offset?: number): Promise<OperationResult<import('./lead').LeadState>>
   list(offset?: number): Promise<LoopListPage>
   get(loopId: string, offset?: number): Promise<LoopSnapshot | null>
   rename(loopId: string, title: string): Promise<OperationResult<LoopRecord>>

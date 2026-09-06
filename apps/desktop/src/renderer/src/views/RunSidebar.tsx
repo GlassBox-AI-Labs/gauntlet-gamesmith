@@ -5,7 +5,7 @@ import type { ReportRecord } from '../../../shared/reports'
 export const RUN_ROUNDS_PAGE_SIZE = 3
 
 function roundNumbers(snapshot: LoopSnapshot): number[] {
-  return [...new Set(snapshot.runs.filter((run) => run.round > 0).map((run) => run.round))]
+  return [...new Set(snapshot.runs.filter((run) => run.role !== 'consult' && run.round > 0).map((run) => run.round))]
     .sort((a, b) => b - a)
 }
 
@@ -130,7 +130,7 @@ export function RunSidebar({
                 {open && (
                   <div id={`sidebar-rounds-${loopId}`} className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
                     {rounds.slice(0, limit).map((round) => {
-                      const records = item.runs.filter((run) => run.round === round)
+                      const records = item.runs.filter((run) => run.round === round && run.role !== 'consult')
                       const score = records.find((run) => run.verdict)?.verdict?.score
                       const active = records.some((run) => run.status === 'running' || run.status === 'queued')
                       return (

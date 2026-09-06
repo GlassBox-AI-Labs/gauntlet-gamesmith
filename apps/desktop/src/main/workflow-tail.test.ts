@@ -32,6 +32,14 @@ afterEach(() => {
 })
 
 describe('WorkflowTail', () => {
+  it('keeps workflows from earlier lead turns in their original accounting', () => {
+    const { dir, runDir } = makeRun()
+    fs.writeFileSync(path.join(runDir, 'agent-a1.jsonl'), `${assistant('m1', 10)}\n`)
+    const before = fs.statSync(runDir).birthtimeMs
+    expect(new WorkflowTail(dir).poll()).toHaveLength(1)
+    expect(new WorkflowTail(dir, {}, dir, {}, before + 1).poll()).toEqual([])
+    expect(new WorkflowTail(dir, {}, dir, {}, before).poll()).toHaveLength(1)
+  })
   it('emits each workflow brief, spawn, thought, tool, output, and completion with the workflow agent id', () => {
     const { dir, runDir } = makeRun()
     const agentLine = JSON.stringify({

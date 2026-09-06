@@ -33,6 +33,59 @@ Existing-folder execution consent does not grant private CLI transcript access o
 
 Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<loop-id>/` and their exact relative path is recorded in the loop log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
+### Steering a run
+
+New runs use a continuing **Run lead** across implementation rounds. Each round
+still has its own process, saved build, independent critic, and accounting. The
+Run view shows the lead's current activity and whether its CLI session continued
+or was recovered. Expand **Lead notebook** to inspect saved plans, decisions,
+failed approaches, verification, and remaining work, including older attempts.
+Notes are saved when an attempt ends. Missing notes are reported explicitly;
+the latest valid notebook and recent report remain available to the next turn.
+These notes are working evidence, and your included directions take precedence.
+
+Explicit **Resume loop** enables lead continuity for an existing run. Automatic
+recovery of historical runs retains their recorded behavior. Session lookup
+failures before any work can recover in a fresh session with the same frozen
+requirements. Imported runs use portable notebook recovery and fresh CLI sessions.
+The activity log records these changes. Codex continuation subtracts prior session
+usage so earlier rounds are not charged again; without a reliable baseline the
+app visibly starts a fresh session with saved memory.
+
+Each run has an initially empty **Steering** chat in a collapsible right sidebar.
+Connect Codex on the Agents tab, then ask questions or describe changes. Attach
+files/images with the paperclip or drop them into Steering. Image previews and
+file chips stay with each message. You can send a file without text and clarify
+its purpose in the next reply. The chat
+assistant can inspect the workspace, consolidates feedback, and asks related
+clarifying questions together. Clear directions queue automatically. Messages and
+directions persist across rounds, app restarts, and folder export/import.
+The steering assistant also receives the lead's latest valid notebook and recent
+attempt reports. It answers separately from the lead and can explain recorded
+decisions while the lead works. Questions alone do not change requirements.
+
+Directions enter at the next implementation dispatch. The implementation and its
+critic share an immutable requirements snapshot. Explicit **Resume loop** includes
+pending directions when retrying implementation, even in the same round. Automatic
+recovery keeps the interrupted attempt's snapshot; an active phase does not receive
+late messages. Included directions persist until newer steering changes them. Withdraw a
+pending direction before inclusion, or send another message to undo an included
+one. Chat does not resume stopped or passed loops. **Stop response** cancels only
+chat. Consults stay out of the rounds table and its attempt counts. Their prompts,
+tool events, and raw output remain in the run log; run-wide cost and token totals
+include chat. Attachments are saved as immutable copies outside the original
+Reference Pack. Confirmed directions name the copies to include at the next
+implementation boundary; the critic receives those same versions. Asset requests
+can schedule a 3D model rebuild or integrate a supplied replacement during
+implementation. A rebuild request is work for its first included round; its
+resulting requirement persists afterward. Originals remain available for history
+and export. Limits are 10 files per message, 20 MB per file, and 100 files/100 MB
+of steering attachments per run. Choose the steering model below the message box;
+the choice is saved per run and affects the next reply. An active reply keeps its
+original model and cost attribution. V1 offers the supported Codex models through
+the app's Codex profile, defaults to `gpt-5.6-sol`, and uses low effort independently
+of the run's implementation model.
+
 Run the TypeScript development app from the repository root:
 
 ```sh

@@ -1,5 +1,6 @@
 /** Canonical IPC channel names shared by main and preload. */
 export const IPC = {
+  steering: {setModel:'steering:set-model',preview:'steering:preview',history:'steering:history',send:'steering:send',cancel:'steering:cancel',withdraw:'steering:withdraw',update:'steering:update'},
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',
@@ -19,6 +20,7 @@ export const IPC = {
     terminalData: 'harness:terminal-data',
   },
   loop: {
+    lead: 'loop:lead',
     list: 'loop:list',
     get: 'loop:get',
     rename: 'loop:rename',
