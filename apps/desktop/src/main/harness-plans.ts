@@ -42,8 +42,10 @@ export function codexArgs(model: string, effort: string, outFile: string | null 
     // missing (verified live) — the classic shell path works everywhere.
     '--disable',
     'code_mode',
-    '-s',
-    'workspace-write',
+    // `codex exec resume` rejects `-s` outright ("unexpected argument '-s'
+    // found") and exits 2 before the model is ever reached. It still accepts
+    // `-c`, so the same sandbox is set through the config key the flag writes.
+    ...(resumeId ? ['-c', 'sandbox_mode=workspace-write'] : ['-s', 'workspace-write']),
     '-c',
     'sandbox_workspace_write.network_access=true',
     '-c',
