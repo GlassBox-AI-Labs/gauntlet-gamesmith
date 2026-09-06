@@ -1,0 +1,1 @@
+-- Accounts are provisioned explicitly with pnpm catalog:admin. No committed passwords.

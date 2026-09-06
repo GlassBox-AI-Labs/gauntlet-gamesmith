@@ -1,0 +1,74 @@
+import type { OperationResult } from './result'
+export interface PublishDraft {
+  buildId: string
+  round: number
+  title: string
+  slug: string
+  description?: string
+  controls?: string
+}
+export interface PublicationPreview {
+  releaseId: string
+  gameId: string
+  generation: number
+  gameUrl: string
+  previewUrl: string
+}
+export interface PublisherStatus {
+  connected: boolean
+  catalogUrl: string
+  publisherName: string | null
+}
+export interface PublishedRelease {
+  id: string
+  title: string
+  status: string
+  createdAt: string
+  round: number | null
+  revision: string | null
+}
+export interface ReleaseHistory {
+  gameId: string | null
+  currentReleaseId: string | null
+  generation: number
+  gameUrl: string | null
+  releases: PublishedRelease[]
+}
+export interface PublisherCredentials {
+  email: string
+  password: string
+}
+export interface PublisherSignup extends PublisherCredentials {
+  displayName: string
+}
+export interface PublisherVerification {
+  email: string
+  code: string
+}
+export interface PublishingApi {
+  history(buildId: string): Promise<OperationResult<ReleaseHistory>>
+  previewRelease(input: {
+    buildId: string
+    releaseId: string
+  }): Promise<OperationResult<PublicationPreview>>
+  unpublish(input: {
+    buildId: string
+    generation: number
+  }): Promise<OperationResult<void>>
+  status(): Promise<OperationResult<PublisherStatus>>
+  signIn(input: PublisherCredentials): Promise<OperationResult<PublisherStatus>>
+  signUp(input: PublisherSignup): Promise<OperationResult<void>>
+  verifyEmail(
+    input: PublisherVerification,
+  ): Promise<OperationResult<PublisherStatus>>
+  resendVerification(input: { email: string }): Promise<OperationResult<void>>
+  cancelSignIn(): Promise<OperationResult<void>>
+  signOut(): Promise<OperationResult<void>>
+  prepare(input: PublishDraft): Promise<OperationResult<PublicationPreview>>
+  publish(input: {
+    buildId: string
+    releaseId: string
+    gameId: string
+    generation: number
+  }): Promise<OperationResult<string>>
+}
