@@ -52,7 +52,7 @@ describe('existing-run trust boundary', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ id: loop.id }), expect.objectContaining({ kind: 'trust', channel: 'system', text: expect.stringContaining('Operator explicitly trusted') }))
     for (const file of [dbPath, portablePath]) {
       const db = new DatabaseSync(file, { readOnly: true })
-      expect(db.prepare('SELECT execution_trusted, play_trusted FROM loops WHERE id = ?').get(loop.id)).toMatchObject({ execution_trusted: 1, play_trusted: 0 })
+      expect(db.prepare('SELECT execution_trusted, play_trusted FROM builds WHERE id = ?').get(loop.id)).toMatchObject({ execution_trusted: 1, play_trusted: 0 })
       expect(db.prepare("SELECT text FROM events WHERE kind = 'trust'").get()?.text).toContain(loop.workspaceDir)
       db.close()
     }
@@ -85,16 +85,16 @@ describe('existing-run trust boundary', () => {
   it.each(['path', 'history', 'active', 'ownership', 'quarantine', 'protected', 'identity'])('rejects %s problems before prompting', async (kind) => {
     const protectedRoots: string[] = []
     const { ledger, loop, dbPath, portablePath, invoke } = setup(protectedRoots)
-    if (kind === 'path') sql(dbPath, "UPDATE loops SET workspace_dir = workspace_dir || '/moved'")
-    if (kind === 'history') sql(portablePath, "UPDATE loops SET prompt = 'replaced prompt'")
+    if (kind === 'path') sql(dbPath, "UPDATE builds SET workspace_dir = workspace_dir || '/moved'")
+    if (kind === 'history') sql(portablePath, "UPDATE builds SET prompt = 'replaced prompt'")
     if (kind === 'active') ledger.patchLoop(loop.id, { status: 'running' })
     if (kind === 'ownership' || kind === 'quarantine') {
       const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'go' })
-      if (kind === 'ownership') sql(dbPath, "UPDATE runs SET process_ownership_json = '{}'")
+      if (kind === 'ownership') sql(dbPath, "UPDATE phase_attempts SET process_ownership_json = '{}'")
       else ledger.patchRun(run.id, { error: 'Launch identity was not durably recorded before the app exited. unknown writer' })
     }
     if (kind === 'protected') protectedRoots.push(loop.workspaceDir)
-    if (kind === 'identity') sql(dbPath, 'UPDATE loops SET workspace_ino = workspace_ino + 1')
+    if (kind === 'identity') sql(dbPath, 'UPDATE builds SET workspace_ino = workspace_ino + 1')
     const { result, dialog } = invoke()
     expect(await result).toMatchObject({ ok: false })
     expect(dialog).not.toHaveBeenCalled()
@@ -105,11 +105,11 @@ describe('existing-run trust boundary', () => {
     const { ledger, loop, dbPath, portablePath, invoke } = setup()
     let activePlay = false
     const { result } = invoke(vi.fn(async () => {
-      if (kind === 'title') sql(dbPath, "UPDATE loops SET title = 'Different title'")
-      if (kind === 'history') sql(portablePath, "UPDATE loops SET max_rounds = 3")
+      if (kind === 'title') sql(dbPath, "UPDATE builds SET title = 'Different title'")
+      if (kind === 'history') sql(portablePath, "UPDATE builds SET max_rounds = 3")
       if (kind === 'script') fs.writeFileSync(path.join(loop.workspaceDir, 'game.js'), 'changed')
-      if (kind === 'path') sql(dbPath, "UPDATE loops SET workspace_dir = workspace_dir || '/changed'")
-      if (kind === 'identity') sql(dbPath, 'UPDATE loops SET workspace_ino = workspace_ino + 1')
+      if (kind === 'path') sql(dbPath, "UPDATE builds SET workspace_dir = workspace_dir || '/changed'")
+      if (kind === 'identity') sql(dbPath, 'UPDATE builds SET workspace_ino = workspace_ino + 1')
       if (kind === 'active') ledger.patchLoop(loop.id, { status: 'running' })
       if (kind === 'play') activePlay = true
       return { response: 1 }
@@ -120,9 +120,9 @@ describe('existing-run trust boundary', () => {
 
   it('rejects changed attempt/event history and executable portable schema', async () => {
     for (const mutation of [
-      "UPDATE runs SET session_id = 'another-private-session'",
+      "UPDATE phase_attempts SET session_id = 'another-private-session'",
       "UPDATE events SET text = 'changed history'",
-      "CREATE TRIGGER unexpected AFTER UPDATE ON loops BEGIN DELETE FROM events; END",
+      "CREATE TRIGGER unexpected AFTER UPDATE ON builds BEGIN DELETE FROM events; END",
     ]) {
       const { ledger, loop, portablePath, invoke } = setup()
       ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'go' })
@@ -182,7 +182,7 @@ describe('existing-run trust boundary', () => {
     expect(play).not.toHaveBeenCalled()
     expect(ledger.getLoop(loop.id)?.executionTrusted).toBe(false)
     const portable = new DatabaseSync(portablePath, { readOnly: true })
-    expect(portable.prepare('SELECT execution_trusted FROM loops').get()?.execution_trusted).toBe(0)
+    expect(portable.prepare('SELECT execution_trusted FROM builds').get()?.execution_trusted).toBe(0)
     portable.close()
     expect(ledger.eventsForLoop(loop.id).at(-1)?.text).toContain('execution trust was revoked')
   })
@@ -199,11 +199,11 @@ describe('existing-run trust boundary', () => {
   it('migrates the previous schema with execution trust denied in both ledgers', () => {
     const { ledger, loop, dbPath, portablePath } = setup()
     ledger.close(); ledgers.splice(ledgers.indexOf(ledger), 1)
-    for (const file of [dbPath, portablePath]) sql(file, 'ALTER TABLE loops DROP COLUMN execution_trusted')
+    for (const file of [dbPath, portablePath]) sql(file, 'ALTER TABLE builds DROP COLUMN execution_trusted')
     const migrated = new Ledger(dbPath); ledgers.push(migrated)
     expect(migrated.getLoop(loop.id)?.executionTrusted).toBe(false)
     const portable = new DatabaseSync(portablePath, { readOnly: true })
-    expect(portable.prepare('SELECT execution_trusted FROM loops').get()?.execution_trusted).toBe(0)
+    expect(portable.prepare('SELECT execution_trusted FROM builds').get()?.execution_trusted).toBe(0)
     portable.close()
   })
 

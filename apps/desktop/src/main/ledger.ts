@@ -31,7 +31,7 @@ import type { PromptLogRun } from './prompt-logs'
 import { normalizeReportRecord } from './reports'
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS loops (
+CREATE TABLE IF NOT EXISTS builds (
   id TEXT PRIMARY KEY,
   title TEXT,
   prompt TEXT NOT NULL,
@@ -50,9 +50,9 @@ CREATE TABLE IF NOT EXISTS loops (
   play_trusted INTEGER NOT NULL DEFAULT 0,
   execution_trusted INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS runs (
+CREATE TABLE IF NOT EXISTS phase_attempts (
   id TEXT PRIMARY KEY,
-  loop_id TEXT NOT NULL REFERENCES loops(id),
+  build_id TEXT NOT NULL REFERENCES builds(id),
   round INTEGER NOT NULL,
   role TEXT NOT NULL,
   harness TEXT NOT NULL,
@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  loop_id TEXT NOT NULL,
-  run_id TEXT,
+  build_id TEXT NOT NULL,
+  attempt_id TEXT,
   ts TEXT NOT NULL,
   kind TEXT NOT NULL,
   text TEXT NOT NULL,
@@ -102,8 +102,8 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_runs_loop ON runs(loop_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_loop ON events(loop_id, seq);
+CREATE INDEX IF NOT EXISTS idx_attempts_build ON phase_attempts(build_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_build ON events(build_id, seq);
 `
 
 function now(): string {
@@ -155,7 +155,7 @@ const LOOP_LIST_PROJECTION_COLUMNS = `
 
 interface RunRow {
   id: string
-  loop_id: string
+  build_id: string
   round: number
   role: string
   harness: string
@@ -192,7 +192,7 @@ interface RunProjectionRow extends RunRow {
 }
 
 const RUN_PROJECTION_COLUMNS = `
-  id, loop_id, round, role, harness, status,
+  id, build_id, round, role, harness, status,
   substr(prompt, 1, 65536) AS prompt,
   model, effort, cli_version, price_table_version, cost_source, prompt_sha256,
   account_label, machine_label, auth_mode,
@@ -207,8 +207,8 @@ const RUN_PROJECTION_COLUMNS = `
 
 interface EventRow {
   seq: number
-  loop_id: string
-  run_id: string | null
+  build_id: string
+  attempt_id: string | null
   ts: string
   kind: string
   text: string
@@ -223,7 +223,7 @@ interface EventProjectionRow extends EventRow {
 }
 
 const EVENT_PROJECTION_COLUMNS = `
-  seq, loop_id, run_id, ts, kind,
+  seq, build_id, attempt_id, ts, kind,
   CASE WHEN length(text) > 4096 THEN substr(text, 1, 4060) || '… [projection truncated]' ELSE text END AS text,
   agent_id, round, role, channel,
   CASE WHEN length(text) > 4096 THEN 1 ELSE 0 END AS _projection_truncated`
@@ -335,7 +335,7 @@ function normalizeLoopRow(value: unknown): LoopRow {
 function normalizeRunRow(value: unknown): RunRow {
   const row = record(value, 'Run row')
   const id = stringField(row, 'id', 128)!
-  const loopId = stringField(row, 'loop_id', 128)!
+  const loopId = stringField(row, 'build_id', 128)!
   if (!isRecordId(id) || !isRecordId(loopId)) throw new Error('Run id has an invalid format.')
   const role = stringField(row, 'role', 32)!
   const harness = stringField(row, 'harness', 32)!
@@ -369,7 +369,7 @@ function normalizeRunRow(value: unknown): RunRow {
   stringField(row, 'process_ownership_json', 8 * 1024, true)
   const normalized: RunRow = {
     id,
-    loop_id: loopId,
+    build_id: loopId,
     round: numberField(row, 'round', { integer: true, min: 0 })!,
     role,
     harness,
@@ -408,8 +408,8 @@ function normalizeRunRow(value: unknown): RunRow {
 
 function normalizeEventRow(value: unknown): EventRow {
   const row = record(value, 'Event row')
-  const loopId = stringField(row, 'loop_id', 128)!
-  const runId = stringField(row, 'run_id', 128, true)
+  const loopId = stringField(row, 'build_id', 128)!
+  const runId = stringField(row, 'attempt_id', 128, true)
   if (!isRecordId(loopId) || (runId && !isRecordId(runId))) throw new Error('Event id has an invalid format.')
   const role = stringField(row, 'role', 32, true)
   const channel = stringField(row, 'channel', 32, true)
@@ -417,8 +417,8 @@ function normalizeEventRow(value: unknown): EventRow {
   if (channel && !LOG_CHANNELS.has(channel as LogChannel)) throw new Error('Event has an invalid channel.')
   return {
     seq: numberField(row, 'seq', { integer: true, min: 1 })!,
-    loop_id: loopId,
-    run_id: runId,
+    build_id: loopId,
+    attempt_id: runId,
     ts: timestampField(row, 'ts')!,
     kind: stringField(row, 'kind', 64)!,
     text: redactLogText(stringField(row, 'text', 64 * 1024)!),
@@ -429,28 +429,71 @@ function normalizeEventRow(value: unknown): EventRow {
   }
 }
 
-function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE'): void {
+/**
+ * Rename the pre-Build vocabulary in place: `loops` → `builds`, `runs` →
+ * `phase_attempts`, and their foreign-key columns. Guarded on the old table
+ * still existing, so running it twice is a no-op (DATA-002). This must happen
+ * before `SCHEMA` executes, or the fresh empty tables would hide the old ones.
+ *
+ * Both ledgers reach this through `initializeSchema`, so the app registry and
+ * every project-folder mirror migrate at their existing open points.
+ */
+function migrateLegacyNames(db: DatabaseSync, backupPath: string | null): void {
+  const tables = new Set(
+    (db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as unknown as { name: string }[])
+      .map((table) => table.name),
+  )
+  if (!tables.has('loops') || tables.has('builds')) return
+
+  // The only irreversible step in the rename. VACUUM INTO writes a consistent
+  // copy through SQLite itself, so it is safe in WAL mode and cannot capture a
+  // torn page the way a file copy could. It refuses an existing target.
+  if (backupPath) {
+    let target = backupPath
+    if (fs.existsSync(target)) target = `${backupPath}.${Date.now()}`
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`)
+  }
+
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec('ALTER TABLE loops RENAME TO builds')
+    db.exec('ALTER TABLE runs RENAME TO phase_attempts')
+    db.exec('ALTER TABLE phase_attempts RENAME COLUMN loop_id TO build_id')
+    db.exec('ALTER TABLE events RENAME COLUMN loop_id TO build_id')
+    db.exec('ALTER TABLE events RENAME COLUMN run_id TO attempt_id')
+    // A renamed table keeps its old index names; SCHEMA recreates them.
+    db.exec('DROP INDEX IF EXISTS idx_runs_loop')
+    db.exec('DROP INDEX IF EXISTS idx_events_loop')
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function initializeSchema(db: DatabaseSync, journalMode: 'WAL' | 'DELETE', backupPath: string | null = null): void {
   db.exec(`PRAGMA journal_mode = ${journalMode};`)
+  migrateLegacyNames(db, backupPath)
   db.exec(SCHEMA)
   const additions = {
-    loops: [
-      ['title', 'ALTER TABLE loops ADD COLUMN title TEXT'],
-      ['execution_trusted', 'ALTER TABLE loops ADD COLUMN execution_trusted INTEGER NOT NULL DEFAULT 0'],
-      ['play_trusted', 'ALTER TABLE loops ADD COLUMN play_trusted INTEGER NOT NULL DEFAULT 0'],
-      ['workspace_dev', 'ALTER TABLE loops ADD COLUMN workspace_dev INTEGER'],
-      ['workspace_ino', 'ALTER TABLE loops ADD COLUMN workspace_ino INTEGER'],
+    builds: [
+      ['title', 'ALTER TABLE builds ADD COLUMN title TEXT'],
+      ['execution_trusted', 'ALTER TABLE builds ADD COLUMN execution_trusted INTEGER NOT NULL DEFAULT 0'],
+      ['play_trusted', 'ALTER TABLE builds ADD COLUMN play_trusted INTEGER NOT NULL DEFAULT 0'],
+      ['workspace_dev', 'ALTER TABLE builds ADD COLUMN workspace_dev INTEGER'],
+      ['workspace_ino', 'ALTER TABLE builds ADD COLUMN workspace_ino INTEGER'],
     ],
-    runs: [
-      ['revision', 'ALTER TABLE runs ADD COLUMN revision TEXT'],
-      ['effort', 'ALTER TABLE runs ADD COLUMN effort TEXT'],
-      ['cli_version', 'ALTER TABLE runs ADD COLUMN cli_version TEXT'],
-      ['price_table_version', 'ALTER TABLE runs ADD COLUMN price_table_version TEXT'],
-      ['cost_source', 'ALTER TABLE runs ADD COLUMN cost_source TEXT'],
-      ['prompt_sha256', 'ALTER TABLE runs ADD COLUMN prompt_sha256 TEXT'],
-      ['account_label', 'ALTER TABLE runs ADD COLUMN account_label TEXT'],
-      ['machine_label', 'ALTER TABLE runs ADD COLUMN machine_label TEXT'],
-      ['auth_mode', 'ALTER TABLE runs ADD COLUMN auth_mode TEXT'],
-      ['process_ownership_json', 'ALTER TABLE runs ADD COLUMN process_ownership_json TEXT'],
+    phase_attempts: [
+      ['revision', 'ALTER TABLE phase_attempts ADD COLUMN revision TEXT'],
+      ['effort', 'ALTER TABLE phase_attempts ADD COLUMN effort TEXT'],
+      ['cli_version', 'ALTER TABLE phase_attempts ADD COLUMN cli_version TEXT'],
+      ['price_table_version', 'ALTER TABLE phase_attempts ADD COLUMN price_table_version TEXT'],
+      ['cost_source', 'ALTER TABLE phase_attempts ADD COLUMN cost_source TEXT'],
+      ['prompt_sha256', 'ALTER TABLE phase_attempts ADD COLUMN prompt_sha256 TEXT'],
+      ['account_label', 'ALTER TABLE phase_attempts ADD COLUMN account_label TEXT'],
+      ['machine_label', 'ALTER TABLE phase_attempts ADD COLUMN machine_label TEXT'],
+      ['auth_mode', 'ALTER TABLE phase_attempts ADD COLUMN auth_mode TEXT'],
+      ['process_ownership_json', 'ALTER TABLE phase_attempts ADD COLUMN process_ownership_json TEXT'],
     ],
     events: [
       ['agent_id', 'ALTER TABLE events ADD COLUMN agent_id TEXT'],
@@ -480,18 +523,55 @@ interface ImportedRows {
   eventsByLoop: Map<string, EventRow[]>
 }
 
+/**
+ * A project folder written before the Build rename still names its tables
+ * `loops`/`runs`. Import validates whichever shape it finds, then migrates its
+ * own private snapshot copy, so everything downstream speaks current names.
+ */
+interface LedgerShape {
+  builds: string
+  attempts: string
+  buildId: string
+  attemptId: string
+  attemptsIndex: string
+  eventsIndex: string
+}
+
+const CURRENT_SHAPE: LedgerShape = {
+  builds: 'builds',
+  attempts: 'phase_attempts',
+  buildId: 'build_id',
+  attemptId: 'attempt_id',
+  attemptsIndex: 'idx_attempts_build',
+  eventsIndex: 'idx_events_build',
+}
+
+const LEGACY_SHAPE: LedgerShape = {
+  builds: 'loops',
+  attempts: 'runs',
+  buildId: 'loop_id',
+  attemptId: 'run_id',
+  attemptsIndex: 'idx_runs_loop',
+  eventsIndex: 'idx_events_loop',
+}
+
+/** Rewrite a current-shape column list into the names the given shape uses. */
+function shapedColumns(names: readonly string[], shape: LedgerShape): string[] {
+  return names.map((name) => (name === 'build_id' ? shape.buildId : name === 'attempt_id' ? shape.attemptId : name))
+}
+
 const IMPORT_COLUMNS = {
-  loops: {
+  builds: {
     required: ['id', 'prompt', 'workspace_dir', 'max_rounds', 'budget_usd', 'models_json', 'status', 'round', 'total_cost_usd', 'stop_reason', 'created_at', 'updated_at'],
     allowed: ['id', 'title', 'prompt', 'workspace_dir', 'workspace_dev', 'workspace_ino', 'max_rounds', 'budget_usd', 'models_json', 'status', 'round', 'total_cost_usd', 'stop_reason', 'created_at', 'updated_at', 'play_trusted', 'execution_trusted'],
   },
-  runs: {
-    required: ['id', 'loop_id', 'round', 'role', 'harness', 'status', 'prompt', 'model', 'summary', 'verdict_json', 'metrics_json', 'cost_usd', 'input_tokens', 'output_tokens', 'num_turns', 'duration_ms', 'session_id', 'error', 'created_at', 'started_at', 'finished_at'],
-    allowed: ['id', 'loop_id', 'round', 'role', 'harness', 'status', 'prompt', 'model', 'effort', 'cli_version', 'price_table_version', 'cost_source', 'prompt_sha256', 'account_label', 'machine_label', 'auth_mode', 'process_ownership_json', 'summary', 'verdict_json', 'metrics_json', 'cost_usd', 'input_tokens', 'output_tokens', 'num_turns', 'duration_ms', 'session_id', 'revision', 'error', 'created_at', 'started_at', 'finished_at'],
+  phase_attempts: {
+    required: ['id', 'build_id', 'round', 'role', 'harness', 'status', 'prompt', 'model', 'summary', 'verdict_json', 'metrics_json', 'cost_usd', 'input_tokens', 'output_tokens', 'num_turns', 'duration_ms', 'session_id', 'error', 'created_at', 'started_at', 'finished_at'],
+    allowed: ['id', 'build_id', 'round', 'role', 'harness', 'status', 'prompt', 'model', 'effort', 'cli_version', 'price_table_version', 'cost_source', 'prompt_sha256', 'account_label', 'machine_label', 'auth_mode', 'process_ownership_json', 'summary', 'verdict_json', 'metrics_json', 'cost_usd', 'input_tokens', 'output_tokens', 'num_turns', 'duration_ms', 'session_id', 'revision', 'error', 'created_at', 'started_at', 'finished_at'],
   },
   events: {
-    required: ['seq', 'loop_id', 'run_id', 'ts', 'kind', 'text'],
-    allowed: ['seq', 'loop_id', 'run_id', 'ts', 'kind', 'text', 'agent_id', 'round', 'role', 'channel'],
+    required: ['seq', 'build_id', 'attempt_id', 'ts', 'kind', 'text'],
+    allowed: ['seq', 'build_id', 'attempt_id', 'ts', 'kind', 'text', 'agent_id', 'round', 'role', 'channel'],
   },
   reports: {
     required: ['id', 'name', 'data_json', 'created_at', 'updated_at'],
@@ -499,21 +579,27 @@ const IMPORT_COLUMNS = {
   },
 } as const
 
-function validateImportSchema(db: DatabaseSync): void {
+/** Returns the vocabulary the validated ledger uses, current or pre-rename. */
+function validateImportSchema(db: DatabaseSync): LedgerShape {
   const objects = db
     .prepare("SELECT type, name, tbl_name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")
     .all() as unknown as { type: string; name: string; tbl_name: string }[]
-  const requiredTables = new Set(['loops', 'runs', 'events'])
-  const allowedTables = new Set([...requiredTables, 'reports'])
   const presentTables = new Set(objects.filter((object) => object.type === 'table').map((object) => object.name))
+  // A ledger holding both vocabularies is not something this app can write.
+  if (presentTables.has('builds') && presentTables.has('loops')) {
+    throw new Error('The folder ledger mixes pre-rename and current table names.')
+  }
+  const shape = presentTables.has('loops') ? LEGACY_SHAPE : CURRENT_SHAPE
+  const requiredTables = new Set([shape.builds, shape.attempts, 'events'])
+  const allowedTables = new Set([...requiredTables, 'reports'])
   for (const object of objects) {
     if (object.type === 'trigger' || object.type === 'view') throw new Error('The folder ledger contains executable or computed schema objects.')
     if (object.type === 'table' && !allowedTables.has(object.name)) throw new Error(`The folder ledger contains an unsupported table: ${object.name}.`)
     if (object.type === 'index') {
-      const expected = object.name === 'idx_runs_loop'
-        ? { table: 'runs', columns: ['loop_id', 'created_at'] }
-        : object.name === 'idx_events_loop'
-          ? { table: 'events', columns: ['loop_id', 'seq'] }
+      const expected = object.name === shape.attemptsIndex
+        ? { table: shape.attempts, columns: [shape.buildId, 'created_at'] }
+        : object.name === shape.eventsIndex
+          ? { table: 'events', columns: [shape.buildId, 'seq'] }
           : null
       if (!expected || object.tbl_name !== expected.table) {
         throw new Error(`The folder ledger contains an unsupported index: ${object.name}.`)
@@ -537,15 +623,22 @@ function validateImportSchema(db: DatabaseSync): void {
       throw new Error(`The folder ledger contains an unsupported schema object: ${object.name}.`)
     }
   }
-  for (const table of [...requiredTables, ...(presentTables.has('reports') ? ['reports'] : [])]) {
+  const specs: Array<[string, { required: readonly string[]; allowed: readonly string[] }]> = [
+    [shape.builds, IMPORT_COLUMNS.builds],
+    [shape.attempts, IMPORT_COLUMNS.phase_attempts],
+    ['events', IMPORT_COLUMNS.events],
+    ...(presentTables.has('reports') ? [['reports', IMPORT_COLUMNS.reports] as [string, typeof IMPORT_COLUMNS.reports]] : []),
+  ]
+  for (const [table, spec] of specs) {
     const columnInfo = db.prepare(`PRAGMA table_xinfo(${table})`).all() as unknown as { name: string; pk: number; hidden: number }[]
     if (columnInfo.some((column) => column.hidden !== 0)) {
       throw new Error(`The folder ledger ${table} table contains generated or hidden columns.`)
     }
     const columns = columnInfo.map((column) => column.name)
-    const spec = IMPORT_COLUMNS[table as keyof typeof IMPORT_COLUMNS]
-    if (spec.required.some((required) => !columns.includes(required))) throw new Error(`The folder ledger has an unsupported ${table} schema.`)
-    if (columns.some((column) => !(spec.allowed as readonly string[]).includes(column))) {
+    const required = shapedColumns(spec.required, shape)
+    const allowed = shapedColumns(spec.allowed, shape)
+    if (required.some((name) => !columns.includes(name))) throw new Error(`The folder ledger has an unsupported ${table} schema.`)
+    if (columns.some((column) => !allowed.includes(column))) {
       throw new Error(`The folder ledger was created by a newer, unsupported schema.`)
     }
     const primary = table === 'events' ? 'seq' : 'id'
@@ -557,22 +650,33 @@ function validateImportSchema(db: DatabaseSync): void {
   // may evaluate a virtual generated expression during quick_check.
   const integrity = db.prepare('PRAGMA quick_check(1)').get() as Record<string, unknown> | undefined
   if (!integrity || !Object.values(integrity).includes('ok')) throw new Error('The folder ledger failed SQLite integrity validation.')
+  return shape
 }
 
-function countRows(db: DatabaseSync, table: keyof typeof IMPORT_COLUMNS, maximum: number): void {
+function countRows(db: DatabaseSync, table: string, maximum: number): void {
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }
   if (!Number.isSafeInteger(row.count) || row.count > maximum) throw new Error(`The folder ledger contains too many ${table} rows.`)
 }
 
-function readImportedRows(db: DatabaseSync): ImportedRows {
+/**
+ * Prove the untrusted snapshot is inert, then rename it into current
+ * vocabulary. Validation stays first: it is what rejects triggers and views,
+ * and `ALTER TABLE` re-parses trigger bodies.
+ */
+function validateAndMigrateImport(db: DatabaseSync): void {
   validateImportSchema(db)
-  countRows(db, 'loops', MAX_IMPORT_LOOPS)
-  countRows(db, 'runs', MAX_IMPORT_RUNS)
+  migrateLegacyNames(db, null)
+}
+
+function readImportedRows(db: DatabaseSync): ImportedRows {
+  validateAndMigrateImport(db)
+  countRows(db, 'builds', MAX_IMPORT_LOOPS)
+  countRows(db, 'phase_attempts', MAX_IMPORT_RUNS)
   countRows(db, 'events', MAX_IMPORT_EVENTS)
   const reportTable = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'reports'").get()
   if (reportTable) countRows(db, 'reports', 10_000)
   const loops: LoopRow[] = []
-  for (const raw of db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC').iterate() as unknown as Iterable<unknown>) {
+  for (const raw of db.prepare('SELECT * FROM builds ORDER BY created_at DESC, rowid DESC').iterate() as unknown as Iterable<unknown>) {
     loops.push(normalizeLoopRow(raw))
   }
   if (loops.length === 0) throw new Error('The folder ledger does not contain any runs.')
@@ -580,12 +684,12 @@ function readImportedRows(db: DatabaseSync): ImportedRows {
   if (loopIds.size !== loops.length) throw new Error('The folder ledger contains duplicate loop ids.')
   const runLoop = new Map<string, string>()
   const runsByLoop = new Map<string, RunRow[]>(loops.map((loop) => [loop.id, []]))
-  for (const raw of db.prepare('SELECT * FROM runs ORDER BY created_at ASC, rowid ASC').iterate() as unknown as Iterable<unknown>) {
+  for (const raw of db.prepare('SELECT * FROM phase_attempts ORDER BY created_at ASC, rowid ASC').iterate() as unknown as Iterable<unknown>) {
     const run = normalizeRunRow(raw)
-    if (!loopIds.has(run.loop_id)) throw new Error(`Run ${run.id} refers to a missing loop.`)
+    if (!loopIds.has(run.build_id)) throw new Error(`Run ${run.id} refers to a missing loop.`)
     if (runLoop.has(run.id)) throw new Error(`The folder ledger contains duplicate run id ${run.id}.`)
-    runLoop.set(run.id, run.loop_id)
-    runsByLoop.get(run.loop_id)!.push(run)
+    runLoop.set(run.id, run.build_id)
+    runsByLoop.get(run.build_id)!.push(run)
   }
   const eventsByLoop = new Map<string, EventRow[]>(loops.map((loop) => [loop.id, []]))
   const eventSequences = new Set<number>()
@@ -593,9 +697,9 @@ function readImportedRows(db: DatabaseSync): ImportedRows {
     const event = normalizeEventRow(raw)
     if (eventSequences.has(event.seq)) throw new Error(`The folder ledger contains duplicate event sequence ${event.seq}.`)
     eventSequences.add(event.seq)
-    if (!loopIds.has(event.loop_id)) throw new Error(`Event ${event.seq} refers to a missing loop.`)
-    if (event.run_id && runLoop.get(event.run_id) !== event.loop_id) throw new Error(`Event ${event.seq} refers to a missing or unrelated run.`)
-    eventsByLoop.get(event.loop_id)!.push(event)
+    if (!loopIds.has(event.build_id)) throw new Error(`Event ${event.seq} refers to a missing loop.`)
+    if (event.attempt_id && runLoop.get(event.attempt_id) !== event.build_id) throw new Error(`Event ${event.seq} refers to a missing or unrelated run.`)
+    eventsByLoop.get(event.build_id)!.push(event)
   }
   return { loops, runsByLoop, eventsByLoop }
 }
@@ -607,18 +711,18 @@ function readImportedRows(db: DatabaseSync): ImportedRows {
  * keys before binding that directory's current filesystem identity.
  */
 function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: string, portableDb: DatabaseSync): void {
-  validateImportSchema(portableDb)
-  countRows(portableDb, 'loops', MAX_IMPORT_LOOPS)
-  countRows(portableDb, 'runs', MAX_IMPORT_RUNS)
+  validateAndMigrateImport(portableDb)
+  countRows(portableDb, 'builds', MAX_IMPORT_LOOPS)
+  countRows(portableDb, 'phase_attempts', MAX_IMPORT_RUNS)
   countRows(portableDb, 'events', MAX_IMPORT_EVENTS)
   const reportTable = portableDb.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'reports'").get()
   if (reportTable) countRows(portableDb, 'reports', 10_000)
 
   const registryLoops = db.prepare(
-    'SELECT id, prompt, created_at FROM loops WHERE workspace_dir = ? ORDER BY id',
+    'SELECT id, prompt, created_at FROM builds WHERE workspace_dir = ? ORDER BY id',
   ).all(workspaceDir) as unknown as Array<{ id: string; prompt: string; created_at: string }>
   const portableLoops = portableDb.prepare(
-    'SELECT id, prompt, created_at, workspace_dir FROM loops ORDER BY id',
+    'SELECT id, prompt, created_at, workspace_dir FROM builds ORDER BY id',
   ).all() as unknown as Array<{ id: string; prompt: string; created_at: string; workspace_dir: string }>
   if (registryLoops.length === 0 || registryLoops.length !== portableLoops.length) {
     throw new Error('The legacy folder ledger does not match the registered run histories.')
@@ -635,14 +739,14 @@ function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: st
   }
 
   const registryRuns = db.prepare(
-    `SELECT runs.id, runs.loop_id, runs.created_at
-     FROM runs JOIN loops ON loops.id = runs.loop_id
-     WHERE loops.workspace_dir = ?
-     ORDER BY runs.id`,
-  ).all(workspaceDir) as unknown as Array<{ id: string; loop_id: string; created_at: string }>
+    `SELECT phase_attempts.id, phase_attempts.build_id, phase_attempts.created_at
+     FROM phase_attempts JOIN builds ON builds.id = phase_attempts.build_id
+     WHERE builds.workspace_dir = ?
+     ORDER BY phase_attempts.id`,
+  ).all(workspaceDir) as unknown as Array<{ id: string; build_id: string; created_at: string }>
   const portableRuns = portableDb.prepare(
-    'SELECT id, loop_id, created_at FROM runs ORDER BY id',
-  ).all() as unknown as Array<{ id: string; loop_id: string; created_at: string }>
+    'SELECT id, build_id, created_at FROM phase_attempts ORDER BY id',
+  ).all() as unknown as Array<{ id: string; build_id: string; created_at: string }>
   if (registryRuns.length !== portableRuns.length) {
     throw new Error('The legacy folder ledger does not match the registered attempt histories.')
   }
@@ -651,7 +755,7 @@ function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: st
     const portable = portableRuns[index]
     if (
       registry.id !== portable.id
-      || registry.loop_id !== portable.loop_id
+      || registry.build_id !== portable.build_id
       || registry.created_at !== portable.created_at
     ) throw new Error('The legacy folder ledger does not match the registered attempt histories.')
   }
@@ -659,7 +763,7 @@ function assertLegacyWorkspaceMatchesRegistry(db: DatabaseSync, workspaceDir: st
 
 function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace_dir): void {
   db.prepare(
-    `INSERT OR REPLACE INTO loops
+    `INSERT OR REPLACE INTO builds
       (id, title, prompt, workspace_dir, workspace_dev, workspace_ino, max_rounds, budget_usd, models_json, status, round, total_cost_usd, stop_reason, created_at, updated_at, play_trusted, execution_trusted)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
@@ -685,15 +789,15 @@ function putLoopRow(db: DatabaseSync, row: LoopRow, workspaceDir = row.workspace
 
 function putRunRow(db: DatabaseSync, row: RunRow): void {
   db.prepare(
-    `INSERT OR REPLACE INTO runs
-      (id, loop_id, round, role, harness, status, prompt, model, effort, cli_version, price_table_version, cost_source,
+    `INSERT OR REPLACE INTO phase_attempts
+      (id, build_id, round, role, harness, status, prompt, model, effort, cli_version, price_table_version, cost_source,
        prompt_sha256, account_label, machine_label, auth_mode, process_ownership_json,
        summary, verdict_json, metrics_json, cost_usd,
        input_tokens, output_tokens, num_turns, duration_ms, session_id, revision, error, created_at, started_at, finished_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.id,
-    row.loop_id,
+    row.build_id,
     row.round,
     row.role,
     row.harness,
@@ -729,13 +833,13 @@ function putRunRow(db: DatabaseSync, row: RunRow): void {
 function putEventRow(db: DatabaseSync, row: EventRow, preserveSeq: boolean): void {
   if (preserveSeq) {
     db.prepare(
-      `INSERT OR REPLACE INTO events (seq, loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(row.seq, row.loop_id, row.run_id, row.ts, row.kind, row.text, row.agent_id ?? null, row.round ?? null, row.role ?? null, row.channel ?? null)
+      `INSERT OR REPLACE INTO events (seq, build_id, attempt_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.seq, row.build_id, row.attempt_id, row.ts, row.kind, row.text, row.agent_id ?? null, row.round ?? null, row.role ?? null, row.channel ?? null)
     return
   }
-  db.prepare(`INSERT INTO events (loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-    row.loop_id,
-    row.run_id,
+  db.prepare(`INSERT INTO events (build_id, attempt_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    row.build_id,
+    row.attempt_id,
     row.ts,
     row.kind,
     row.text,
@@ -759,7 +863,7 @@ export function defaultLoopTitle(prompt: string): string {
 
 function availableLoopTitle(db: DatabaseSync, prompt: string): string {
   const base = defaultLoopTitle(prompt)
-  const exists = db.prepare('SELECT 1 FROM loops WHERE title = ? LIMIT 1')
+  const exists = db.prepare('SELECT 1 FROM builds WHERE title = ? LIMIT 1')
   if (!exists.get(base)) return base
   for (let suffix = 2; suffix <= MAX_MATERIALIZED_LOOP_HISTORY + 1; suffix += 1) {
     const candidate = `${base} (${suffix})`
@@ -800,7 +904,7 @@ function toRun(row: RunRow): RunRecord {
   if (row.metrics_json && !metrics) throw new Error(`Run ${row.id} metrics do not match the stored metrics contract.`)
   return {
     id: row.id,
-    loopId: row.loop_id,
+    loopId: row.build_id,
     round: row.round,
     role: row.role as RunRole,
     harness: row.harness as 'claude' | 'codex',
@@ -974,7 +1078,9 @@ export class Ledger {
     this.protectedRoots = options.protectedRoots ?? (() => [])
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     this.db = new DatabaseSync(dbPath)
-    initializeSchema(this.db, 'WAL')
+    // Only the registry needs a pre-rename backup. A project-folder mirror is
+    // rebuilt from canonical rows, so there is nothing there to lose.
+    initializeSchema(this.db, 'WAL', `${dbPath}.pre-build-rename`)
     this.adoptLegacyWorkspaceIdentities()
     this.migrateRegisteredMetadataDirectories()
     this.repairExistingMirrors()
@@ -988,7 +1094,7 @@ export class Ledger {
   private adoptLegacyWorkspaceIdentities(): void {
     const page = this.db.prepare(
       `SELECT workspace_dir
-       FROM loops
+       FROM builds
        WHERE play_trusted = 0 AND workspace_dev IS NULL AND workspace_ino IS NULL
          AND (? IS NULL OR workspace_dir > ?)
        GROUP BY workspace_dir
@@ -997,7 +1103,7 @@ export class Ledger {
     )
     const conflictingIdentity = this.db.prepare(
       `SELECT 1
-       FROM loops
+       FROM builds
        WHERE workspace_dir = ? AND (
          (workspace_dev IS NULL AND workspace_ino IS NOT NULL)
          OR (workspace_dev IS NOT NULL AND workspace_ino IS NULL)
@@ -1006,15 +1112,15 @@ export class Ledger {
        LIMIT 1`,
     )
     const adopt = this.db.prepare(
-      `UPDATE loops SET workspace_dev = ?, workspace_ino = ?
+      `UPDATE builds SET workspace_dev = ?, workspace_ino = ?
        WHERE workspace_dir = ? AND play_trusted = 0 AND workspace_dev IS NULL AND workspace_ino IS NULL`,
     )
-    const loopsInWorkspace = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id')
+    const loopsInWorkspace = this.db.prepare('SELECT id FROM builds WHERE workspace_dir = ? ORDER BY id')
     const identityFailureExists = this.db.prepare(
-      "SELECT 1 FROM events WHERE loop_id = ? AND kind = 'workspace-identity' AND text = ? LIMIT 1",
+      "SELECT 1 FROM events WHERE build_id = ? AND kind = 'workspace-identity' AND text = ? LIMIT 1",
     )
     const insertIdentityFailure = this.db.prepare(
-      "INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'workspace-identity', ?, 'error')",
+      "INSERT INTO events (build_id, attempt_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'workspace-identity', ?, 'error')",
     )
     let cursor: string | null = null
     while (true) {
@@ -1034,11 +1140,13 @@ export class Ledger {
           )) throw new Error('Registered histories disagree about the workspace identity.')
 
           snapshot = snapshotRunLedger(workspaceDir)
-          const readOnly = new DatabaseSync(snapshot.ledgerPath, { readOnly: true })
+          // Writable because validation migrates pre-rename table names in this
+          // private temp copy. The user's file is never touched.
+          const portable = new DatabaseSync(snapshot.ledgerPath)
           try {
-            assertLegacyWorkspaceMatchesRegistry(this.db, workspaceDir, readOnly)
+            assertLegacyWorkspaceMatchesRegistry(this.db, workspaceDir, portable)
           } finally {
-            readOnly.close()
+            portable.close()
           }
 
           this.db.exec('BEGIN IMMEDIATE')
@@ -1072,7 +1180,7 @@ export class Ledger {
 
   /** Rename legacy metadata only after this registry has proved the workspace identity. */
   private migrateRegisteredMetadataDirectories(): void {
-    const workspaces = this.db.prepare('SELECT MIN(id) AS id, workspace_dir FROM loops GROUP BY workspace_dir')
+    const workspaces = this.db.prepare('SELECT MIN(id) AS id, workspace_dir FROM builds GROUP BY workspace_dir')
     for (const { id, workspace_dir: workspaceDir } of workspaces.iterate() as unknown as Iterable<{ id: string; workspace_dir: string }>) {
       try {
         this.assertLoopWorkspaceIdentity(id)
@@ -1086,8 +1194,8 @@ export class Ledger {
 
   /** Canonical registry wins after a crash between separate SQLite commits. */
   private repairExistingMirrors(): void {
-    const workspaces = this.db.prepare('SELECT MIN(id) AS id, workspace_dir FROM loops GROUP BY workspace_dir')
-    const loopIds = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id')
+    const workspaces = this.db.prepare('SELECT MIN(id) AS id, workspace_dir FROM builds GROUP BY workspace_dir')
+    const loopIds = this.db.prepare('SELECT id FROM builds WHERE workspace_dir = ? ORDER BY id')
     for (const { id, workspace_dir: workspaceDir } of workspaces.iterate() as unknown as Iterable<{ id: string; workspace_dir: string }>) {
       try {
         this.assertLoopWorkspaceIdentity(id)
@@ -1097,9 +1205,9 @@ export class Ledger {
       } catch (error) {
         const message = `Portable ledger repair failed: ${redactLogText(error instanceof Error ? error.message : String(error)).slice(0, 4_000)}`
         for (const loop of loopIds.iterate(workspaceDir) as unknown as Iterable<{ id: string }>) {
-          const exists = this.db.prepare("SELECT 1 FROM events WHERE loop_id = ? AND kind = 'mirror-repair' AND text = ? LIMIT 1").get(loop.id, message)
+          const exists = this.db.prepare("SELECT 1 FROM events WHERE build_id = ? AND kind = 'mirror-repair' AND text = ? LIMIT 1").get(loop.id, message)
           if (!exists) {
-            this.db.prepare("INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'mirror-repair', ?, 'error')")
+            this.db.prepare("INSERT INTO events (build_id, attempt_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'mirror-repair', ?, 'error')")
               .run(loop.id, now(), message)
           }
         }
@@ -1110,7 +1218,7 @@ export class Ledger {
   private openFolderDb(workspaceDir: string): DatabaseSync {
     workspaceDir = canonicalizePath(workspaceDir)
     assertWorkspaceBoundary(workspaceDir, this.protectedRoots())
-    const registered = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id LIMIT 1').get(workspaceDir) as { id: string } | undefined
+    const registered = this.db.prepare('SELECT id FROM builds WHERE workspace_dir = ? ORDER BY id LIMIT 1').get(workspaceDir) as { id: string } | undefined
     if (registered) this.assertLoopWorkspaceIdentity(registered.id)
     const metadataDir = safeWorkspaceMetadataDir(workspaceDir, [], true)
     const dbPath = path.join(metadataDir, 'ledger.db')
@@ -1172,12 +1280,12 @@ export class Ledger {
   }
 
   private rebuildFolderDb(folderDb: DatabaseSync, workspaceDir: string): void {
-    const loops = this.db.prepare('SELECT * FROM loops WHERE workspace_dir = ? ORDER BY created_at ASC, rowid ASC')
-    const runs = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at ASC, rowid ASC')
-    const events = this.db.prepare('SELECT * FROM events WHERE loop_id = ? ORDER BY seq ASC')
+    const loops = this.db.prepare('SELECT * FROM builds WHERE workspace_dir = ? ORDER BY created_at ASC, rowid ASC')
+    const runs = this.db.prepare('SELECT * FROM phase_attempts WHERE build_id = ? ORDER BY created_at ASC, rowid ASC')
+    const events = this.db.prepare('SELECT * FROM events WHERE build_id = ? ORDER BY seq ASC')
     folderDb.exec('BEGIN IMMEDIATE')
     try {
-      folderDb.exec('DELETE FROM events; DELETE FROM runs; DELETE FROM loops;')
+      folderDb.exec('DELETE FROM events; DELETE FROM phase_attempts; DELETE FROM builds;')
       for (const loop of loops.iterate(workspaceDir) as unknown as Iterable<LoopRow>) {
         putLoopRow(folderDb, loop)
         for (const run of runs.iterate(loop.id) as unknown as Iterable<RunRow>) putRunRow(folderDb, run)
@@ -1191,7 +1299,7 @@ export class Ledger {
   }
 
   private workspaceForLoop(loopId: string): string | null {
-    const row = this.db.prepare('SELECT workspace_dir FROM loops WHERE id = ?').get(loopId) as { workspace_dir: string } | undefined
+    const row = this.db.prepare('SELECT workspace_dir FROM builds WHERE id = ?').get(loopId) as { workspace_dir: string } | undefined
     return row?.workspace_dir ?? null
   }
 
@@ -1283,9 +1391,9 @@ export class Ledger {
         const failedRepairs: string[] = []
         for (const workspaceDir of affectedWorkspaces) {
           const message = `Portable ledger commit failed after the canonical registry committed; repair was required: ${detail}`
-          const loops = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id')
+          const loops = this.db.prepare('SELECT id FROM builds WHERE workspace_dir = ? ORDER BY id')
           for (const loop of loops.iterate(workspaceDir) as unknown as Iterable<{ id: string }>) {
-            this.db.prepare("INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'mirror-repair', ?, 'error')")
+            this.db.prepare("INSERT INTO events (build_id, attempt_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'mirror-repair', ?, 'error')")
               .run(loop.id, now(), message)
           }
           try {
@@ -1319,7 +1427,7 @@ export class Ledger {
   ): void {
     workspaceDir = canonicalizePath(workspaceDir)
     assertWorkspaceBoundary(workspaceDir, this.protectedRoots())
-    const registered = this.db.prepare('SELECT id FROM loops WHERE workspace_dir = ? ORDER BY id LIMIT 1').get(workspaceDir) as { id: string } | undefined
+    const registered = this.db.prepare('SELECT id FROM builds WHERE workspace_dir = ? ORDER BY id LIMIT 1').get(workspaceDir) as { id: string } | undefined
     if (registered) this.assertLoopWorkspaceIdentity(registered.id)
     const metadataDir = safeWorkspaceMetadataDir(workspaceDir, [], true)
     let recoveryFiles = 0
@@ -1535,7 +1643,7 @@ export class Ledger {
     // Validate the metadata boundary before canonical mutation, but do not
     // create a first portable database yet. Canonical commit must precede the
     // first mirror publication so a crash cannot leave an orphan ledger.
-    const registered = this.db.prepare('SELECT 1 FROM loops WHERE workspace_dir = ? LIMIT 1').get(workspaceDir)
+    const registered = this.db.prepare('SELECT 1 FROM builds WHERE workspace_dir = ? LIMIT 1').get(workspaceDir)
     if (!registered) {
       const metadataDir = safeWorkspaceMetadataDir(workspaceDir, [], true)
       const portablePath = path.join(metadataDir, 'ledger.db')
@@ -1551,7 +1659,7 @@ export class Ledger {
     }
     this.db
       .prepare(
-        `INSERT INTO loops (id, title, prompt, workspace_dir, workspace_dev, workspace_ino, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at, play_trusted)
+        `INSERT INTO builds (id, title, prompt, workspace_dir, workspace_dev, workspace_ino, max_rounds, budget_usd, models_json, status, round, total_cost_usd, created_at, updated_at, play_trusted)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, 0, ?, ?, 1)`,
       )
       .run(
@@ -1567,7 +1675,7 @@ export class Ledger {
         ts,
         ts,
       )
-    const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as unknown as LoopRow
+    const row = this.db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as unknown as LoopRow
     this.mirrorLoop(id, (folderDb) => putLoopRow(folderDb, row))
     return this.getLoop(id)!
   }
@@ -1582,20 +1690,20 @@ export class Ledger {
     if (patch.totalCostUsd !== undefined) (sets.push('total_cost_usd = ?'), values.push(patch.totalCostUsd))
     if (patch.stopReason !== undefined) (sets.push('stop_reason = ?'), values.push(patch.stopReason == null ? null : redactLogText(patch.stopReason)))
     if (patch.playTrusted !== undefined) (sets.push('play_trusted = ?'), values.push(patch.playTrusted ? 1 : 0))
-    this.db.prepare(`UPDATE loops SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
-    const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as LoopRow | undefined
+    this.db.prepare(`UPDATE builds SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+    const row = this.db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as LoopRow | undefined
     if (row) this.mirrorLoop(id, (folderDb) => putLoopRow(folderDb, row))
   }
 
   getLoop(id: string): LoopRecord | null {
-    const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as LoopRow | undefined
+    const row = this.db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as LoopRow | undefined
     return row ? toLoop(row) : null
   }
 
   /** Revalidate a canonical registry row before any execution or file access. */
   assertLoopWorkspaceIdentity(id: string): string {
     const row = this.db.prepare(
-      'SELECT workspace_dir, workspace_dev, workspace_ino FROM loops WHERE id = ?',
+      'SELECT workspace_dir, workspace_dev, workspace_ino FROM builds WHERE id = ?',
     ).get(id) as Pick<LoopRow, 'workspace_dir' | 'workspace_dev' | 'workspace_ino'> | undefined
     if (!row) throw new Error('Run not found.')
     return assertLoopWorkspaceIdentity({
@@ -1620,8 +1728,8 @@ export class Ledger {
     try {
       this.transaction(() => {
         this.assertLoopWorkspaceIdentity(id)
-        this.db.prepare('UPDATE loops SET execution_trusted = 1, updated_at = ? WHERE id = ?').run(now(), id)
-        const row = this.db.prepare('SELECT * FROM loops WHERE id = ?').get(id) as unknown as LoopRow
+        this.db.prepare('UPDATE builds SET execution_trusted = 1, updated_at = ? WHERE id = ?').run(now(), id)
+        const row = this.db.prepare('SELECT * FROM builds WHERE id = ?').get(id) as unknown as LoopRow
         this.mirrorLoop(id, (folderDb) => putLoopRow(folderDb, row))
         this.appendEvent({ loopId: id, runId: null, ts: now(), kind: 'trust', channel: 'system',
           text: `Operator explicitly trusted this existing run and folder for Play and Resume with local user permissions: ${redactLogText(loop.workspaceDir)}` })
@@ -1629,7 +1737,7 @@ export class Ledger {
       this.assertLoopWorkspaceIdentity(id)
     } catch (error) {
       // A post-canonical mirror failure must not leave execution enabled.
-      this.db.prepare('UPDATE loops SET execution_trusted = 0 WHERE id = ?').run(id)
+      this.db.prepare('UPDATE builds SET execution_trusted = 0 WHERE id = ?').run(id)
       this.insertCanonicalEvent({ loopId: id, runId: null, ts: now(), kind: 'error', channel: 'error',
         text: 'Existing-run trust could not be persisted safely; execution trust was revoked. Retry after repairing the folder ledger.' })
       try { this.syncWorkspaceFolder(loop.workspaceDir) } catch { /* canonical denial wins; existing repair event remains visible */ }
@@ -1639,12 +1747,12 @@ export class Ledger {
   }
 
   latestLoop(): LoopRecord | null {
-    const row = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC LIMIT 1').get() as LoopRow | undefined
+    const row = this.db.prepare('SELECT * FROM builds ORDER BY created_at DESC, rowid DESC LIMIT 1').get() as LoopRow | undefined
     return row ? toLoop(row) : null
   }
 
   loops(): LoopRecord[] {
-    const rows = this.db.prepare('SELECT * FROM loops ORDER BY created_at DESC, rowid DESC LIMIT ?').all(MAX_MATERIALIZED_LOOP_HISTORY + 1) as unknown as LoopRow[]
+    const rows = this.db.prepare('SELECT * FROM builds ORDER BY created_at DESC, rowid DESC LIMIT ?').all(MAX_MATERIALIZED_LOOP_HISTORY + 1) as unknown as LoopRow[]
     if (rows.length > MAX_MATERIALIZED_LOOP_HISTORY) {
       throw new Error(`Full loop history exceeds the administrative materialization limit of ${MAX_MATERIALIZED_LOOP_HISTORY}; use recentLoops() paging.`)
     }
@@ -1656,7 +1764,7 @@ export class Ledger {
    * these as agent-writable, so a binary planted in one is never spawned.
    */
   workspaceRoots(): string[] {
-    const rows = this.db.prepare('SELECT DISTINCT workspace_dir FROM loops').all() as unknown as Array<{ workspace_dir: string }>
+    const rows = this.db.prepare('SELECT DISTINCT workspace_dir FROM builds').all() as unknown as Array<{ workspace_dir: string }>
     return rows.map((row) => row.workspace_dir).filter((dir) => typeof dir === 'string' && dir.length > 0)
   }
 
@@ -1667,7 +1775,7 @@ export class Ledger {
     } catch {
       /* a missing workspace cannot match a registered executable root */
     }
-    const rows = this.db.prepare('SELECT * FROM loops WHERE workspace_dir = ? ORDER BY created_at DESC').all(canonical) as unknown as LoopRow[]
+    const rows = this.db.prepare('SELECT * FROM builds WHERE workspace_dir = ? ORDER BY created_at DESC').all(canonical) as unknown as LoopRow[]
     return rows.map(toLoop)
   }
 
@@ -1681,9 +1789,9 @@ export class Ledger {
     if (!workspaceDir) return false
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      this.db.prepare('DELETE FROM events WHERE loop_id = ?').run(loopId)
-      this.db.prepare('DELETE FROM runs WHERE loop_id = ?').run(loopId)
-      this.db.prepare('DELETE FROM loops WHERE id = ?').run(loopId)
+      this.db.prepare('DELETE FROM events WHERE build_id = ?').run(loopId)
+      this.db.prepare('DELETE FROM phase_attempts WHERE build_id = ?').run(loopId)
+      this.db.prepare('DELETE FROM builds WHERE id = ?').run(loopId)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -1722,18 +1830,18 @@ export class Ledger {
 
   recentLoops(limit: number, offset = 0): LoopRecord[] {
     const rows = this.db.prepare(
-      `SELECT ${LOOP_LIST_PROJECTION_COLUMNS} FROM loops ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
+      `SELECT ${LOOP_LIST_PROJECTION_COLUMNS} FROM builds ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
     ).all(limit, offset) as unknown as LoopRow[]
     return rows.map(toLoop)
   }
 
   loopCount(): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS count FROM loops').get() as { count: number }
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM builds').get() as { count: number }
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
   }
 
   runningLoop(): LoopRecord | null {
-    const row = this.db.prepare("SELECT * FROM loops WHERE status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as
+    const row = this.db.prepare("SELECT * FROM builds WHERE status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as
       | LoopRow
       | undefined
     return row ? toLoop(row) : null
@@ -1741,11 +1849,11 @@ export class Ledger {
 
   hasRunningActivity(): boolean {
     return this.db.prepare(
-      `SELECT 1 FROM loops WHERE status = 'running'
+      `SELECT 1 FROM builds WHERE status = 'running'
        UNION ALL
-       SELECT 1 FROM runs WHERE status = 'running'
+       SELECT 1 FROM phase_attempts WHERE status = 'running'
        UNION ALL
-       SELECT 1 FROM runs WHERE process_ownership_json IS NOT NULL
+       SELECT 1 FROM phase_attempts WHERE process_ownership_json IS NOT NULL
        LIMIT 1`,
     ).get() !== undefined
   }
@@ -1761,11 +1869,11 @@ export class Ledger {
     const id = crypto.randomUUID()
     this.db
       .prepare(
-        `INSERT INTO runs (id, loop_id, round, role, harness, status, prompt, created_at)
+        `INSERT INTO phase_attempts (id, build_id, round, role, harness, status, prompt, created_at)
          VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)`,
       )
       .run(id, input.loopId, input.round, input.role, input.harness, redactLogText(input.prompt), now())
-    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as unknown as RunRow
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as unknown as RunRow
     this.mirrorLoop(input.loopId, (folderDb) => putRunRow(folderDb, row))
     return this.getRun(id)!
   }
@@ -1841,15 +1949,15 @@ export class Ledger {
     if (patch.startedAt !== undefined) set('started_at', patch.startedAt)
     if (patch.finishedAt !== undefined) set('finished_at', patch.finishedAt)
     if (sets.length === 0) return
-    this.db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
-    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    this.db.prepare(`UPDATE phase_attempts SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as RunRow | undefined
     if (row) {
-      this.mirrorLoop(row.loop_id, (folderDb) => putRunRow(folderDb, row))
+      this.mirrorLoop(row.build_id, (folderDb) => putRunRow(folderDb, row))
     }
   }
 
   getRun(id: string): RunRecord | null {
-    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
@@ -1862,16 +1970,16 @@ export class Ledger {
     }
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const target = this.db.prepare('SELECT process_ownership_json FROM runs WHERE id = ?').get(id) as
+      const target = this.db.prepare('SELECT process_ownership_json FROM phase_attempts WHERE id = ?').get(id) as
         | { process_ownership_json: string | null }
         | undefined
       if (!target) throw new Error('Run process ownership target was not found.')
       if (target.process_ownership_json !== null) throw new Error('Run already retains canonical process ownership.')
       const conflict = this.db.prepare(
-        'SELECT id FROM runs WHERE process_ownership_json IS NOT NULL AND id <> ? LIMIT 1',
+        'SELECT id FROM phase_attempts WHERE process_ownership_json IS NOT NULL AND id <> ? LIMIT 1',
       ).get(id) as { id: string } | undefined
       if (conflict) throw new Error('Another run still retains canonical process ownership.')
-      const updated = this.db.prepare('UPDATE runs SET process_ownership_json = ? WHERE id = ?').run(JSON.stringify(normalized), id)
+      const updated = this.db.prepare('UPDATE phase_attempts SET process_ownership_json = ? WHERE id = ?').run(JSON.stringify(normalized), id)
       if (Number(updated.changes) !== 1) throw new Error('Run process ownership target was not found.')
       // Canonical commits first for this safety-critical field. A power loss
       // must never leave only the agent-writable portable mirror aware of a
@@ -1881,7 +1989,7 @@ export class Ledger {
       this.db.exec('ROLLBACK')
       throw error
     }
-    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as RunRow | undefined
     if (row) this.mirrorSafetyCriticalRunRow(row)
   }
 
@@ -1892,7 +2000,7 @@ export class Ledger {
     if (!normalizedGroup) throw new Error('Run process group identities are invalid.')
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const row = this.db.prepare('SELECT process_ownership_json FROM runs WHERE id = ?').get(id) as
+      const row = this.db.prepare('SELECT process_ownership_json FROM phase_attempts WHERE id = ?').get(id) as
         | { process_ownership_json: string | null }
         | undefined
       let ownership: RunProcessOwnership | null = null
@@ -1912,18 +2020,18 @@ export class Ledger {
       for (const identity of normalizedGroup) if (!previous.has(identity)) retainedGroup.push(identity)
       const advanced = normalizeRunProcessOwnership({ ...ownership, groupIdentities: retainedGroup })
       if (!advanced) throw new Error('Run process group identities exceed the canonical ownership safety limit.')
-      this.db.prepare('UPDATE runs SET process_ownership_json = ? WHERE id = ?').run(JSON.stringify(advanced), id)
+      this.db.prepare('UPDATE phase_attempts SET process_ownership_json = ? WHERE id = ?').run(JSON.stringify(advanced), id)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
     }
-    const updated = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    const updated = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as RunRow | undefined
     if (updated) this.mirrorSafetyCriticalRunRow(updated)
   }
 
   runProcessOwnership(id: string): RunProcessOwnership | null {
-    const row = this.db.prepare('SELECT process_ownership_json FROM runs WHERE id = ?').get(id) as
+    const row = this.db.prepare('SELECT process_ownership_json FROM phase_attempts WHERE id = ?').get(id) as
       | { process_ownership_json: string | null }
       | undefined
     if (!row?.process_ownership_json || Buffer.byteLength(row.process_ownership_json, 'utf8') > MAX_PROCESS_OWNERSHIP_BYTES) return null
@@ -1941,7 +2049,7 @@ export class Ledger {
    */
   runsWithProcessOwnership(): Array<{ run: RunRecord; ownership: RunProcessOwnership }> {
     const rows = this.db.prepare(
-      'SELECT * FROM runs WHERE process_ownership_json IS NOT NULL ORDER BY rowid ASC LIMIT 2',
+      'SELECT * FROM phase_attempts WHERE process_ownership_json IS NOT NULL ORDER BY rowid ASC LIMIT 2',
     ).all() as unknown as RunRow[]
     if (rows.length > 1) throw new Error('Multiple runs retain canonical process ownership; recovery stopped.')
     return rows.map((row) => {
@@ -1962,31 +2070,31 @@ export class Ledger {
     if (this.transactionDepth !== 0) throw new Error('Run process ownership must be committed outside a multi-row transaction.')
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const updated = this.db.prepare('UPDATE runs SET process_ownership_json = NULL WHERE id = ?').run(id)
+      const updated = this.db.prepare('UPDATE phase_attempts SET process_ownership_json = NULL WHERE id = ?').run(id)
       if (Number(updated.changes) !== 1) throw new Error('Run process ownership target was not found.')
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
     }
-    const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as RunRow | undefined
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE id = ?').get(id) as RunRow | undefined
     if (row) this.mirrorSafetyCriticalRunRow(row)
   }
 
   private mirrorSafetyCriticalRunRow(row: RunRow): void {
     try {
-      const workspaceDir = this.workspaceForLoop(row.loop_id)
+      const workspaceDir = this.workspaceForLoop(row.build_id)
       if (!workspaceDir) return
       putRunRow(this.openFolderDb(workspaceDir), row)
     } catch (error) {
       const message = `Portable process-ownership mirror update failed; canonical recovery state remains authoritative: ${redactLogText(error instanceof Error ? error.message : String(error)).slice(0, 3_000)}`
-      this.db.prepare("INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, ?, ?, 'mirror-repair', ?, 'error')")
-        .run(row.loop_id, row.id, now(), message)
+      this.db.prepare("INSERT INTO events (build_id, attempt_id, ts, kind, text, channel) VALUES (?, ?, ?, 'mirror-repair', ?, 'error')")
+        .run(row.build_id, row.id, now(), message)
     }
   }
 
   runsForLoop(loopId: string): RunRecord[] {
-    const rows = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?').all(loopId, MAX_MATERIALIZED_RUN_HISTORY + 1) as unknown as RunRow[]
+    const rows = this.db.prepare('SELECT * FROM phase_attempts WHERE build_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?').all(loopId, MAX_MATERIALIZED_RUN_HISTORY + 1) as unknown as RunRow[]
     if (rows.length > MAX_MATERIALIZED_RUN_HISTORY) {
       throw new Error(`Full run history exceeds the administrative materialization limit of ${MAX_MATERIALIZED_RUN_HISTORY}; use a paged or targeted query.`)
     }
@@ -1997,8 +2105,8 @@ export class Ledger {
     const rows = this.db.prepare(
       `SELECT * FROM (
          SELECT ${RUN_PROJECTION_COLUMNS}, rowid AS _projection_rowid
-         FROM runs
-         WHERE loop_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
+         FROM phase_attempts
+         WHERE build_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
        ) ORDER BY created_at ASC, _projection_rowid ASC`,
     ).all(loopId, limit, offset) as unknown as RunProjectionRow[]
     return { runs: rows.map(toRun), truncatedFields: rows.some((row) => row._projection_truncated === 1) }
@@ -2008,8 +2116,8 @@ export class Ledger {
     const rows = this.db.prepare(
       `SELECT * FROM (
          SELECT ${RUN_PROJECTION_COLUMNS}, rowid AS _projection_rowid
-         FROM runs
-         WHERE loop_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT ?
+         FROM phase_attempts
+         WHERE build_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT ?
        ) ORDER BY created_at ASC, _projection_rowid ASC`,
     ).all(loopId, role, limit) as unknown as RunProjectionRow[]
     return { runs: rows.map(toRun), truncatedFields: rows.some((row) => row._projection_truncated === 1) }
@@ -2020,7 +2128,7 @@ export class Ledger {
       `WITH ranked AS (
          SELECT ${RUN_PROJECTION_COLUMNS}, rowid AS _projection_rowid,
            ROW_NUMBER() OVER (PARTITION BY round ORDER BY created_at DESC, rowid DESC) AS _round_rank
-         FROM runs WHERE loop_id = ? AND role = ?
+         FROM phase_attempts WHERE build_id = ? AND role = ?
        )
        SELECT * FROM ranked WHERE _round_rank = 1 ORDER BY round ASC LIMIT ?`,
     ).all(loopId, role, limit) as unknown as RunProjectionRow[]
@@ -2028,12 +2136,12 @@ export class Ledger {
   }
 
   runCountByRole(loopId: string, role: RunRole): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS count FROM runs WHERE loop_id = ? AND role = ?').get(loopId, role) as { count: number }
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM phase_attempts WHERE build_id = ? AND role = ?').get(loopId, role) as { count: number }
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
   }
 
   hasRunRole(loopId: string, role: RunRole): boolean {
-    return this.db.prepare('SELECT 1 FROM runs WHERE loop_id = ? AND role = ? LIMIT 1').get(loopId, role) !== undefined
+    return this.db.prepare('SELECT 1 FROM phase_attempts WHERE build_id = ? AND role = ? LIMIT 1').get(loopId, role) !== undefined
   }
 
   runAggregate(loopId: string): { costUsd: number; inputTokens: number; outputTokens: number } {
@@ -2041,7 +2149,7 @@ export class Ledger {
       `SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd,
               COALESCE(SUM(input_tokens), 0) AS input_tokens,
               COALESCE(SUM(output_tokens), 0) AS output_tokens
-       FROM runs WHERE loop_id = ?`,
+       FROM phase_attempts WHERE build_id = ?`,
     ).get(loopId) as { cost_usd: number; input_tokens: number; output_tokens: number }
     if (!Number.isFinite(row.cost_usd) || row.cost_usd < 0 || !Number.isSafeInteger(row.input_tokens) || row.input_tokens < 0 || !Number.isSafeInteger(row.output_tokens) || row.output_tokens < 0) {
       throw new Error('Canonical run totals exceed their safe projection range.')
@@ -2050,25 +2158,25 @@ export class Ledger {
   }
 
   runCount(loopId: string): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS count FROM runs WHERE loop_id = ?').get(loopId) as { count: number }
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM phase_attempts WHERE build_id = ?').get(loopId) as { count: number }
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
   }
 
   latestRunForLoop(loopId: string): RunRecord | null {
-    const row = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(loopId) as RunRow | undefined
+    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE build_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
   latestRunForLoopByRole(loopId: string, role: RunRole): RunRecord | null {
     const row = this.db.prepare(
-      'SELECT * FROM runs WHERE loop_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      'SELECT * FROM phase_attempts WHERE build_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
     ).get(loopId, role) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
   activeRunForLoop(loopId: string): RunRecord | null {
     const rows = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
     ).all(loopId) as unknown as RunRow[]
     if (rows.length > 1) throw new Error('A loop has multiple active runs; recovery stopped.')
     return rows[0] ? toRun(rows[0]) : null
@@ -2076,36 +2184,36 @@ export class Ledger {
 
   oldestQueuedRunForLoop(loopId: string): RunRecord | null {
     const row = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
     ).get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
   latestInterruptedRunForLoop(loopId: string): RunRecord | null {
     const row = this.db.prepare(
-      "SELECT * FROM runs WHERE loop_id = ? AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
 
   firstSucceededRunIdForRole(loopId: string, role: RunRole): string | null {
     const row = this.db.prepare(
-      "SELECT id FROM runs WHERE loop_id = ? AND role = ? AND status = 'succeeded' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+      "SELECT id FROM phase_attempts WHERE build_id = ? AND role = ? AND status = 'succeeded' ORDER BY created_at ASC, rowid ASC LIMIT 1",
     ).get(loopId, role) as { id: string } | undefined
     return row?.id ?? null
   }
 
   failedRunCount(loopId: string, role: RunRole, round: number): number {
     const row = this.db.prepare(
-      "SELECT COUNT(*) AS count FROM runs WHERE loop_id = ? AND role = ? AND round = ? AND status = 'failed'",
+      "SELECT COUNT(*) AS count FROM phase_attempts WHERE build_id = ? AND role = ? AND round = ? AND status = 'failed'",
     ).get(loopId, role, round) as { count: number }
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
   }
 
   rateLimitPauseCount(loopId: string, role: RunRole, round: number): number {
     const row = this.db.prepare(
-      `SELECT COUNT(*) AS count FROM runs
-       WHERE loop_id = ? AND role = ? AND round = ? AND status = 'interrupted'
+      `SELECT COUNT(*) AS count FROM phase_attempts
+       WHERE build_id = ? AND role = ? AND round = ? AND status = 'interrupted'
          AND instr(lower(COALESCE(error, '')), 'retry scheduled for ') > 0`,
     ).get(loopId, role, round) as { count: number }
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
@@ -2113,8 +2221,8 @@ export class Ledger {
 
   latestImplementSessionId(loopId: string, round: number, excludedRunId: string): string | null {
     const row = this.db.prepare(
-      `SELECT session_id FROM runs
-       WHERE loop_id = ? AND role = 'implement' AND round = ? AND id <> ? AND session_id IS NOT NULL
+      `SELECT session_id FROM phase_attempts
+       WHERE build_id = ? AND role = 'implement' AND round = ? AND id <> ? AND session_id IS NOT NULL
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(loopId, round, excludedRunId) as { session_id: string } | undefined
     return normalizeSessionId(row?.session_id)
@@ -2122,8 +2230,8 @@ export class Ledger {
 
   previousImplementRevision(loopId: string, round: number): string | null {
     const row = this.db.prepare(
-      `SELECT revision FROM runs
-       WHERE loop_id = ? AND role = 'implement' AND round < ? AND revision IS NOT NULL
+      `SELECT revision FROM phase_attempts
+       WHERE build_id = ? AND role = 'implement' AND round < ? AND revision IS NOT NULL
        ORDER BY round DESC, created_at DESC, rowid DESC LIMIT 1`,
     ).get(loopId, round) as { revision: string } | undefined
     return row && REVISION.test(row.revision) ? row.revision : null
@@ -2132,13 +2240,13 @@ export class Ledger {
   bestVerdictScore(loopId: string): number {
     const row = this.db.prepare(
       `SELECT COALESCE(MAX(CAST(json_extract(verdict_json, '$.score') AS REAL)), 0) AS score
-       FROM runs WHERE loop_id = ? AND verdict_json IS NOT NULL`,
+       FROM phase_attempts WHERE build_id = ? AND verdict_json IS NOT NULL`,
     ).get(loopId) as { score: number }
     return Number.isFinite(row.score) && row.score >= 0 && row.score <= 1 ? row.score : 0
   }
 
   eventTextForLoopWithPrefix(loopId: string, prefix: string): string | null {
-    const row = this.db.prepare("SELECT substr(text, 1, 4096) AS text FROM events WHERE loop_id = ? AND kind = 'artifact' AND substr(text, 1, ?) = ? ORDER BY seq LIMIT 1").get(loopId, prefix.length, prefix) as { text: string } | undefined
+    const row = this.db.prepare("SELECT substr(text, 1, 4096) AS text FROM events WHERE build_id = ? AND kind = 'artifact' AND substr(text, 1, ?) = ? ORDER BY seq LIMIT 1").get(loopId, prefix.length, prefix) as { text: string } | undefined
     return row?.text ?? null
   }
 
@@ -2146,7 +2254,7 @@ export class Ledger {
     if (prefix.length === 0 || prefix.length > 1_024) throw new Error('Event prefix must be bounded.')
     const row = this.db.prepare(
       `SELECT substr(text, 1, 4096) AS text FROM events
-       WHERE run_id = ? AND kind IN ('artifact', 'system') AND substr(text, 1, ?) = ?
+       WHERE attempt_id = ? AND kind IN ('artifact', 'system') AND substr(text, 1, ?) = ?
        ORDER BY seq DESC LIMIT 1`,
     ).get(runId, prefix.length, prefix) as { text: string } | undefined
     return row?.text ? redactLogText(row.text) : null
@@ -2154,14 +2262,14 @@ export class Ledger {
 
   latestRunIdForRole(loopId: string, role: RunRole): string | null {
     const row = this.db.prepare(
-      'SELECT id FROM runs WHERE loop_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      'SELECT id FROM phase_attempts WHERE build_id = ? AND role = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
     ).get(loopId, role) as { id: string } | undefined
     return row?.id ?? null
   }
 
   latestRunIdExcept(loopId: string, excludedRunId: string): string | null {
     const row = this.db.prepare(
-      'SELECT id FROM runs WHERE loop_id = ? AND id <> ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      'SELECT id FROM phase_attempts WHERE build_id = ? AND id <> ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
     ).get(loopId, excludedRunId) as { id: string } | undefined
     return row?.id ?? null
   }
@@ -2170,16 +2278,16 @@ export class Ledger {
     if (prefix.length === 0 || prefix.length > 1_024) throw new Error('Run error prefix must be bounded.')
     return this.db.prepare(
       `SELECT 1
-       FROM runs JOIN loops ON loops.id = runs.loop_id
-       WHERE loops.workspace_dir = ? AND substr(runs.error, 1, ?) = ?
+       FROM phase_attempts JOIN builds ON builds.id = phase_attempts.build_id
+       WHERE builds.workspace_dir = ? AND substr(phase_attempts.error, 1, ?) = ?
        LIMIT 1`,
     ).get(workspaceDir, prefix.length, prefix) !== undefined
   }
 
   succeededImplementRevision(loopId: string, round: number): string | null {
     const row = this.db.prepare(
-      `SELECT revision FROM runs
-       WHERE loop_id = ? AND role = 'implement' AND round = ? AND status = 'succeeded' AND revision IS NOT NULL
+      `SELECT revision FROM phase_attempts
+       WHERE build_id = ? AND role = 'implement' AND round = ? AND status = 'succeeded' AND revision IS NOT NULL
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(loopId, round) as { revision: string } | undefined
     return row && REVISION.test(row.revision) ? row.revision : null
@@ -2187,29 +2295,29 @@ export class Ledger {
 
   promptRunForLog(runId: string): PromptLogRun | null {
     const row = this.db.prepare(
-      `SELECT id, loop_id, round, role, substr(prompt, 1, 524289) AS prompt,
+      `SELECT id, build_id, round, role, substr(prompt, 1, 524289) AS prompt,
               length(prompt) <= 524288 AS prompt_complete, created_at, started_at
-       FROM runs WHERE id = ?`,
+       FROM phase_attempts WHERE id = ?`,
     ).get(runId) as {
-      id: string; loop_id: string; round: number; role: RunRole; prompt: string
+      id: string; build_id: string; round: number; role: RunRole; prompt: string
       prompt_complete: number; created_at: string; started_at: string | null
     } | undefined
     return row ? {
-      id: row.id, loopId: row.loop_id, round: row.round, role: row.role,
+      id: row.id, loopId: row.build_id, round: row.round, role: row.role,
       prompt: row.prompt, promptComplete: row.prompt_complete === 1,
       createdAt: row.created_at, startedAt: row.started_at,
     } : null
   }
 
   latestPromptRunForLog(loopId: string): PromptLogRun | null {
-    const row = this.db.prepare('SELECT id FROM runs WHERE loop_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(loopId) as { id: string } | undefined
+    const row = this.db.prepare('SELECT id FROM phase_attempts WHERE build_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(loopId) as { id: string } | undefined
     return row ? this.promptRunForLog(row.id) : null
   }
 
   runPrompt(loopId: string, role: RunRole, round: number): { runId: string; prompt: string } | null {
     const row = this.db.prepare(
-      `SELECT id, prompt FROM runs
-       WHERE loop_id = ? AND role = ? AND round = ?
+      `SELECT id, prompt FROM phase_attempts
+       WHERE build_id = ? AND role = ? AND round = ?
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(loopId, role, round) as { id: string; prompt: string } | undefined
     return row ? { runId: row.id, prompt: row.prompt } : null
@@ -2217,7 +2325,7 @@ export class Ledger {
 
   nextQueuedRun(loopId: string): RunRecord | null {
     const row = this.db
-      .prepare("SELECT * FROM runs WHERE loop_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
+      .prepare("SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
       .get(loopId) as RunRow | undefined
     return row ? toRun(row) : null
   }
@@ -2225,8 +2333,8 @@ export class Ledger {
   private insertCanonicalEvent(line: LoopLogLine): EventRow {
     const row: EventRow = {
       seq: 0,
-      loop_id: line.loopId,
-      run_id: line.runId,
+      build_id: line.loopId,
+      attempt_id: line.runId,
       ts: line.ts,
       kind: line.kind,
       text: redactLogText(line.text),
@@ -2236,8 +2344,8 @@ export class Ledger {
       channel: line.channel ?? null,
     }
     this.db
-      .prepare('INSERT INTO events (loop_id, run_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(row.loop_id, row.run_id, row.ts, row.kind, row.text, row.agent_id, row.round, row.role, row.channel)
+      .prepare('INSERT INTO events (build_id, attempt_id, ts, kind, text, agent_id, round, role, channel) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(row.build_id, row.attempt_id, row.ts, row.kind, row.text, row.agent_id, row.round, row.role, row.channel)
     return row
   }
 
@@ -2291,17 +2399,17 @@ export class Ledger {
     if (!safeReason) throw new Error('Canonical run termination requires a reason.')
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const run = this.db.prepare('SELECT round, role, status FROM runs WHERE id = ? AND loop_id = ?').get(runId, loopId) as
+      const run = this.db.prepare('SELECT round, role, status FROM phase_attempts WHERE id = ? AND build_id = ?').get(runId, loopId) as
         | { round: number; role: RunRole; status: RunStatus }
         | undefined
       if (!run) throw new Error('Canonical run termination target was not found.')
       if (run.status !== 'running') throw new Error('Canonical run termination target is not running.')
       const runUpdate = this.db.prepare(
-        "UPDATE runs SET status = ?, error = ?, duration_ms = ?, finished_at = ? WHERE id = ? AND loop_id = ? AND status = 'running'",
+        "UPDATE phase_attempts SET status = ?, error = ?, duration_ms = ?, finished_at = ? WHERE id = ? AND build_id = ? AND status = 'running'",
       ).run(status, safeReason, durationMs, finishedAt, runId, loopId)
       if (Number(runUpdate.changes) !== 1) throw new Error('Canonical run termination lost its running-run guard.')
       const loopUpdate = this.db.prepare(
-        "UPDATE loops SET status = 'stopped', stop_reason = ?, updated_at = ? WHERE id = ?",
+        "UPDATE builds SET status = 'stopped', stop_reason = ?, updated_at = ? WHERE id = ?",
       ).run(safeReason, finishedAt, loopId)
       if (Number(loopUpdate.changes) !== 1) throw new Error('Canonical run termination loop was not found.')
       this.insertCanonicalEvent({
@@ -2334,8 +2442,8 @@ export class Ledger {
   /** Rows written before the schema grew derive channel from kind and round/role from their run. */
   private toLogLine(row: EventRow, run: { round: number; role: RunRole } | undefined): LoopLogLine {
     const line: LoopLogLine = {
-      loopId: row.loop_id,
-      runId: row.run_id,
+      loopId: row.build_id,
+      runId: row.attempt_id,
       ts: row.ts,
       kind: row.kind,
       text: redactLogText(row.text),
@@ -2350,19 +2458,19 @@ export class Ledger {
   }
 
   private runStamp(runId: string): { loopId: string; round: number; role: RunRole } | null {
-    const row = this.db.prepare('SELECT loop_id, round, role FROM runs WHERE id = ?').get(runId) as
-      | { loop_id: string; round: number; role: string }
+    const row = this.db.prepare('SELECT build_id, round, role FROM phase_attempts WHERE id = ?').get(runId) as
+      | { build_id: string; round: number; role: string }
       | undefined
     return row && RUN_ROLES.has(row.role as RunRole)
-      ? { loopId: row.loop_id, round: row.round, role: row.role as RunRole }
+      ? { loopId: row.build_id, round: row.round, role: row.role as RunRole }
       : null
   }
 
   eventsForRun(runId: string, kind?: string, limit = 500): LoopLogLine[] {
     const rows = (
       kind
-        ? this.db.prepare(`SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE run_id = ? AND kind = ? ORDER BY seq DESC LIMIT ?`).all(runId, kind, limit)
-        : this.db.prepare(`SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT ?`).all(runId, limit)
+        ? this.db.prepare(`SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE attempt_id = ? AND kind = ? ORDER BY seq DESC LIMIT ?`).all(runId, kind, limit)
+        : this.db.prepare(`SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE attempt_id = ? ORDER BY seq DESC LIMIT ?`).all(runId, limit)
     ) as unknown as EventProjectionRow[]
     let run: { loopId: string; round: number; role: RunRole } | null | undefined
     return rows.reverse().map((row) => {
@@ -2373,7 +2481,7 @@ export class Ledger {
 
   eventsForLoop(loopId: string, limit = 800): LoopLogLine[] {
     const candidates = this.db.prepare(
-      `SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE loop_id = ? ORDER BY seq DESC LIMIT ?`,
+      `SELECT ${EVENT_PROJECTION_COLUMNS} FROM events WHERE build_id = ? ORDER BY seq DESC LIMIT ?`,
     ).all(loopId, limit) as unknown as EventProjectionRow[]
     const rows: EventProjectionRow[] = []
     let remainingBytes = 2 * 1024 * 1024
@@ -2391,13 +2499,13 @@ export class Ledger {
     let runsById: Map<string, { loopId: string; round: number; role: RunRole }> | null = null
     const projected = rows.reverse().map((row) => {
       let run: { loopId: string; round: number; role: RunRole } | undefined
-      if (row.run_id && (row.round == null || row.role == null)) {
+      if (row.attempt_id && (row.round == null || row.role == null)) {
         runsById ??= new Map()
-        run = runsById.get(row.run_id)
+        run = runsById.get(row.attempt_id)
         if (!run) {
-          const candidate = this.runStamp(row.run_id)
+          const candidate = this.runStamp(row.attempt_id)
           if (candidate?.loopId === loopId) {
-            runsById.set(row.run_id, candidate)
+            runsById.set(row.attempt_id, candidate)
             run = candidate
           }
         }
@@ -2418,7 +2526,7 @@ export class Ledger {
   }
 
   runningLoops(): LoopRecord[] {
-    const rows = this.db.prepare("SELECT * FROM loops WHERE status = 'running' LIMIT ?").all(MAX_RUNNING_LOOP_RECOVERY + 1) as unknown as LoopRow[]
+    const rows = this.db.prepare("SELECT * FROM builds WHERE status = 'running' LIMIT ?").all(MAX_RUNNING_LOOP_RECOVERY + 1) as unknown as LoopRow[]
     if (rows.length > MAX_RUNNING_LOOP_RECOVERY) {
       throw new Error(`Running-loop recovery exceeds its safety limit of ${MAX_RUNNING_LOOP_RECOVERY}; manual intervention is required.`)
     }
@@ -2450,25 +2558,27 @@ export class Ledger {
     const snapshot = snapshotRunLedger(workspaceDir)
     try {
 
-    // Validate the supplied database without mutating it. Migrations and path
-    // rebinding happen only after every row and relationship has passed.
-    const readOnly = new DatabaseSync(snapshot.ledgerPath, { readOnly: true })
+    // Validate the supplied database before trusting it. The only mutation is
+    // the pre-rename table migration, applied to this private temp copy after
+    // validation passes. Path rebinding happens only after every row and
+    // relationship has passed.
+    const portable = new DatabaseSync(snapshot.ledgerPath)
     let importedRows: ImportedRows
     try {
-      importedRows = readImportedRows(readOnly)
+      importedRows = readImportedRows(portable)
     } finally {
-      readOnly.close()
+      portable.close()
     }
 
     // Import must never take ownership away from a live local process. A
     // detached child can outlive a rewritten run row, so reject the whole
     // physical workspace while either its loop or one of its attempts is live.
     const activeWorkspace = this.db.prepare(
-      `SELECT loops.id
-       FROM loops
-       LEFT JOIN runs ON runs.loop_id = loops.id
-         AND (runs.status = 'running' OR runs.process_ownership_json IS NOT NULL)
-       WHERE loops.workspace_dir = ? AND (loops.status = 'running' OR runs.id IS NOT NULL)
+      `SELECT builds.id
+       FROM builds
+       LEFT JOIN phase_attempts ON phase_attempts.build_id = builds.id
+         AND (phase_attempts.status = 'running' OR phase_attempts.process_ownership_json IS NOT NULL)
+       WHERE builds.workspace_dir = ? AND (builds.status = 'running' OR phase_attempts.id IS NOT NULL)
        LIMIT 1`,
     ).get(workspaceDir) as { id: string } | undefined
     if (activeWorkspace) throw new Error('Cannot import a workspace while one of its local runs is active.')
@@ -2480,7 +2590,7 @@ export class Ledger {
     // already registered to any other workspace is a collision, not consent
     // to delete and replace that project's history.
     for (const loop of importedRows.loops) {
-      const existing = this.db.prepare('SELECT workspace_dir, status, play_trusted, execution_trusted FROM loops WHERE id = ?').get(loop.id) as
+      const existing = this.db.prepare('SELECT workspace_dir, status, play_trusted, execution_trusted FROM builds WHERE id = ?').get(loop.id) as
         | { workspace_dir: string; status: string; play_trusted: number; execution_trusted: number }
         | undefined
       if (existing && canonicalizePath(existing.workspace_dir) !== workspaceDir) {
@@ -2495,11 +2605,11 @@ export class Ledger {
       }
       for (const run of importedRows.runsByLoop.get(loop.id) ?? []) {
         const existingRun = this.db
-          .prepare('SELECT runs.loop_id, loops.workspace_dir FROM runs JOIN loops ON loops.id = runs.loop_id WHERE runs.id = ?')
-          .get(run.id) as { loop_id: string; workspace_dir: string } | undefined
+          .prepare('SELECT phase_attempts.build_id, builds.workspace_dir FROM phase_attempts JOIN builds ON builds.id = phase_attempts.build_id WHERE phase_attempts.id = ?')
+          .get(run.id) as { build_id: string; workspace_dir: string } | undefined
         if (
           existingRun &&
-          (existingRun.loop_id !== loop.id || canonicalizePath(existingRun.workspace_dir) !== workspaceDir)
+          (existingRun.build_id !== loop.id || canonicalizePath(existingRun.workspace_dir) !== workspaceDir)
         ) {
           throw new Error(`Imported run ${run.id} collides with history owned by another loop or workspace.`)
         }
@@ -2512,15 +2622,15 @@ export class Ledger {
     this.folderDbs.delete(workspaceDir)
 
     const priorRows: Array<{ loop: LoopRow | undefined; runs: RunRow[]; events: EventRow[] }> = []
-    const priorRuns = this.db.prepare('SELECT * FROM runs WHERE loop_id = ? ORDER BY created_at ASC, rowid ASC')
-    const priorEvents = this.db.prepare('SELECT * FROM events WHERE loop_id = ? ORDER BY seq ASC')
+    const priorRuns = this.db.prepare('SELECT * FROM phase_attempts WHERE build_id = ? ORDER BY created_at ASC, rowid ASC')
+    const priorEvents = this.db.prepare('SELECT * FROM events WHERE build_id = ? ORDER BY seq ASC')
     for (const loop of importedRows.loops) {
       const runs: RunRow[] = []
       for (const run of priorRuns.iterate(loop.id) as unknown as Iterable<RunRow>) runs.push(run)
       const events: EventRow[] = []
       for (const event of priorEvents.iterate(loop.id) as unknown as Iterable<EventRow>) events.push(event)
       priorRows.push({
-        loop: this.db.prepare('SELECT * FROM loops WHERE id = ?').get(loop.id) as unknown as LoopRow | undefined,
+        loop: this.db.prepare('SELECT * FROM builds WHERE id = ?').get(loop.id) as unknown as LoopRow | undefined,
         runs,
         events,
       })
@@ -2552,8 +2662,8 @@ export class Ledger {
         })
         const events = importedRows.eventsByLoop.get(loop.id)!
 
-        this.db.prepare('DELETE FROM events WHERE loop_id = ?').run(loop.id)
-        this.db.prepare('DELETE FROM runs WHERE loop_id = ?').run(loop.id)
+        this.db.prepare('DELETE FROM events WHERE build_id = ?').run(loop.id)
+        this.db.prepare('DELETE FROM phase_attempts WHERE build_id = ?').run(loop.id)
         putLoopRow(this.db, safeLoop)
         for (const run of runs) putRunRow(this.db, run)
         // The registry assigns local sequence numbers because it may contain
@@ -2587,9 +2697,9 @@ export class Ledger {
       this.db.exec('BEGIN IMMEDIATE')
       try {
         for (const loop of importedRows.loops) {
-          this.db.prepare('DELETE FROM events WHERE loop_id = ?').run(loop.id)
-          this.db.prepare('DELETE FROM runs WHERE loop_id = ?').run(loop.id)
-          this.db.prepare('DELETE FROM loops WHERE id = ?').run(loop.id)
+          this.db.prepare('DELETE FROM events WHERE build_id = ?').run(loop.id)
+          this.db.prepare('DELETE FROM phase_attempts WHERE build_id = ?').run(loop.id)
+          this.db.prepare('DELETE FROM builds WHERE id = ?').run(loop.id)
         }
         for (const prior of priorRows) {
           if (!prior.loop) continue
@@ -2643,11 +2753,11 @@ export class Ledger {
       const timestamp = now()
       this.db.exec('BEGIN IMMEDIATE')
       try {
-        this.db.prepare("UPDATE runs SET status = 'interrupted', error = ?, finished_at = COALESCE(finished_at, ?) WHERE loop_id = ? AND status IN ('running', 'queued')")
+        this.db.prepare("UPDATE phase_attempts SET status = 'interrupted', error = ?, finished_at = COALESCE(finished_at, ?) WHERE build_id = ? AND status IN ('running', 'queued')")
           .run(redactLogText(reason), timestamp, loopId)
-        this.db.prepare("UPDATE loops SET status = 'stopped', stop_reason = ?, updated_at = ? WHERE id = ?")
+        this.db.prepare("UPDATE builds SET status = 'stopped', stop_reason = ?, updated_at = ? WHERE id = ?")
           .run(redactLogText(reason), timestamp, loopId)
-        this.db.prepare("INSERT INTO events (loop_id, run_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'workspace-boundary', ?, 'error')")
+        this.db.prepare("INSERT INTO events (build_id, attempt_id, ts, kind, text, channel) VALUES (?, NULL, ?, 'workspace-boundary', ?, 'error')")
           .run(loopId, timestamp, redactLogText(reason).slice(0, 4_000))
         this.db.exec('COMMIT')
       } catch (error) {

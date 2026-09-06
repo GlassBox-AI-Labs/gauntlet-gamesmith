@@ -42,31 +42,34 @@ export function captureExistingRunTrust(
   validateHistory: (registry: DatabaseSync, workspace: string, portable: DatabaseSync) => void,
 ): string {
   assertLoopWorkspaceIdentity(loop, protectedRoots)
-  const current = db.prepare('SELECT * FROM loops WHERE id = ?').get(loop.id)
+  const current = db.prepare('SELECT * FROM builds WHERE id = ?').get(loop.id)
   if (!current || current.workspace_dir !== loop.workspaceDir || current.workspace_dev !== loop.workspaceIdentity?.dev || current.workspace_ino !== loop.workspaceIdentity?.ino) {
     throw new Error('The registered workspace path or identity changed.')
   }
-  const active = db.prepare(`SELECT loops.id FROM loops LEFT JOIN runs ON runs.loop_id = loops.id
-    AND (runs.status = 'running' OR runs.process_ownership_json IS NOT NULL)
-    WHERE loops.workspace_dir = ? AND (loops.status = 'running' OR runs.id IS NOT NULL) LIMIT 1`).get(loop.workspaceDir)
+  const active = db.prepare(`SELECT builds.id FROM builds LEFT JOIN phase_attempts ON phase_attempts.build_id = builds.id
+    AND (phase_attempts.status = 'running' OR phase_attempts.process_ownership_json IS NOT NULL)
+    WHERE builds.workspace_dir = ? AND (builds.status = 'running' OR phase_attempts.id IS NOT NULL) LIMIT 1`).get(loop.workspaceDir)
   if (active) throw new Error('Active or unknown process ownership remains in this folder. Stop every run before trusting it.')
-  const quarantined = db.prepare(`SELECT runs.id FROM runs JOIN loops ON loops.id = runs.loop_id
-    WHERE loops.workspace_dir = ? AND substr(runs.error, 1, ?) = ? LIMIT 1`).get(loop.workspaceDir, UNKNOWN_OWNERSHIP.length, UNKNOWN_OWNERSHIP)
+  const quarantined = db.prepare(`SELECT phase_attempts.id FROM phase_attempts JOIN builds ON builds.id = phase_attempts.build_id
+    WHERE builds.workspace_dir = ? AND substr(phase_attempts.error, 1, ?) = ? LIMIT 1`).get(loop.workspaceDir, UNKNOWN_OWNERSHIP.length, UNKNOWN_OWNERSHIP)
   if (quarantined) throw new Error('This workspace is quarantined after unknown process ownership.')
   const before = folderFingerprint(loop.workspaceDir)
   const snapshot = snapshotRunLedger(loop.workspaceDir)
   try {
-    const portable = new DatabaseSync(snapshot.ledgerPath, { readOnly: true })
+    // Writable because validation migrates pre-rename table names in this
+    // private temp copy, so both sides of the comparison below speak the same
+    // vocabulary. The user's own file is never opened for writing.
+    const portable = new DatabaseSync(snapshot.ledgerPath)
     const hash = crypto.createHash('sha256')
     try {
       // Existing import validation rejects executable schemas and caps rows before queries below.
       validateHistory(db, loop.workspaceDir, portable)
-      for (const table of ['loops', 'runs', 'events'] as const) {
+      for (const table of ['builds', 'phase_attempts', 'events'] as const) {
         const columns = (portable.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
           .map(({ name }) => name).filter((name) => name !== 'seq').sort()
         const projection = columns.map((name) => `"${name}"`).join(', ')
-        const order = table === 'events' ? 'loop_id, seq' : 'id'
-        const where = table === 'loops' ? 'workspace_dir = ?' : 'loop_id IN (SELECT id FROM loops WHERE workspace_dir = ?)'
+        const order = table === 'events' ? 'build_id, seq' : 'id'
+        const where = table === 'builds' ? 'workspace_dir = ?' : 'build_id IN (SELECT id FROM builds WHERE workspace_dir = ?)'
         const expected = db.prepare(`SELECT ${projection} FROM ${table} WHERE ${where} ORDER BY ${order}`).iterate(loop.workspaceDir)
         const actual = portable.prepare(`SELECT ${projection} FROM ${table} ORDER BY ${order}`).iterate()
         for (;;) {
