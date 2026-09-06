@@ -12,7 +12,15 @@ export function config() {
   return { url, anon, key, secret }
 }
 export async function gameOrigin() {
-  if (process.env.GAME_ORIGIN) return new URL(process.env.GAME_ORIGIN).origin
+  if (process.env.GAME_ORIGIN) {
+    const url = new URL(process.env.GAME_ORIGIN)
+    if (process.env.VERCEL && url.protocol !== 'https:')
+      throw new Error('Hosted games require HTTPS.')
+    if (url.host === (await headers()).get('host'))
+      throw new Error('Games require a separate origin.')
+    return url.origin
+  }
+  if (process.env.VERCEL) throw new Error('GAME_ORIGIN is required on Vercel.')
   const host = (await headers()).get('host') ?? 'localhost:4310'
   if (!/^[a-zA-Z0-9.\-\[\]:]+$/.test(host)) throw new Error('Invalid host')
   const url = new URL(`http://${host}`)
@@ -20,7 +28,7 @@ export async function gameOrigin() {
   return url.origin
 }
 // Next may normalize request.url to localhost when bound to 0.0.0.0.
-// Preserve the actual authority for the local desktop/browser handoff.
+// Preserve the actual authority for local request-origin checks.
 export function requestOrigin(request: Request) {
   const host = request.headers.get('host')
   if (!host || !/^[a-zA-Z0-9.\-\[\]:]+$/.test(host))

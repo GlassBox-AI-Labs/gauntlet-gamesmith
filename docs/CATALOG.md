@@ -137,13 +137,16 @@ request body limit through scoped Storage upload URLs.
 
 ## Hosting boundary
 
-V1 is local. The website is a standard Next.js project with Vercel root
-`apps/web`, workspace install, and `next build`. Hosted runtime configuration
-requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, a stable
-64-character hex `CATALOG_SECRET` and `GAME_ORIGIN` on a separate
-HTTPS domain. Service credentials are server-only. A hosted game-content/CDN
-adapter and deployment configuration remain required before a cloud launch;
-the local Node game host is not a Vercel Function. No cloud resources are deployed.
+The hosted MVP uses `apps/web` for the catalog and `apps/game-host` for executable
+content, deployed as separate Next.js projects on Vercel. Both use the same Supabase
+project and preview-signing secret. The local Node adapter and hosted Route Handler
+share `@gauntlet/data/api/game-server`, including sandbox headers, access checks,
+bounded artifact caching, and streamed responses. Game responses are not publicly
+cached, preserving checks on every request.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for infrastructure, environment variables,
+migrations, account provisioning, deployment, smoke checks, and rollback. Local
+commands above remain available independently of cloud hosting.
 
 ## Verification
 

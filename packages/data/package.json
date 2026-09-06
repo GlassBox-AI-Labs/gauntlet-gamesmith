@@ -5,7 +5,7 @@
   "type": "module",
   "exports": {
     "./api/catalog": "./src/api/catalog.ts",
-    "./api/device": "./src/api/device.ts",
+    "./api/game-server": "./src/api/game-server.ts",
     "./contracts": "./src/contracts.ts",
     "./errors": "./src/errors.ts"
   },

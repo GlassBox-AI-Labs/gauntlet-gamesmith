@@ -3,8 +3,11 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
+import { createClient } from '@supabase/supabase-js'
+import type { Database } from '@gauntlet/db/types'
 import { localClient } from '../server/supabase'
-const [email, handle, ...name] = process.argv.slice(2)
+const hosted = process.argv[2] === '--hosted'
+const [email, handle, ...name] = process.argv.slice(hosted ? 3 : 2)
 const input = z
   .object({
     email: z.email(),
@@ -15,8 +18,20 @@ const input = z
     display_name: z.string().min(1).max(80),
   })
   .parse({ email, handle, display_name: name.join(' ') })
+function hostedClient() {
+  const url = process.env.SUPABASE_URL,
+    key = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !key || new URL(url).protocol !== 'https:')
+    throw new Error(
+      'Hosted provisioning requires an explicit HTTPS SUPABASE_URL and server key.',
+    )
+  console.log(`Provisioning publisher on ${new URL(url).hostname}`)
+  return createClient<Database>(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+}
 const password = randomBytes(24).toString('base64url'),
-  db = localClient()
+  db = hosted ? hostedClient() : localClient()
 const created = await db.auth.admin.createUser({
   email: input.email,
   password,

@@ -583,3 +583,24 @@ cookie clients, auth middleware, and durable device-handoff state. The website i
 exclusively browsing/play. The API authenticates Electron but creates no browser
 session. Existing encrypted desktop publisher sessions continue to refresh. V1
 still uses provisioned developer accounts; public signup remains deferred.
+
+## ADR-026 — Hosted catalog and a separate Vercel game origin (2026-09-06)
+
+**Decision.** Deploy the existing browse-only Next.js catalog and a separate
+Next.js game-content project on Vercel, backed by one dedicated Supabase Free
+project in Northern Virginia. Keep both function regions in `iad1`. Share game
+serving policy in `packages/data` with the local Node adapter; stream responses
+to support assets larger than the buffered function payload limit. Each request
+checks publication or preview expiry before using the process-local artifact cache.
+Game responses remain `no-store`; CDN caching with bounded revocation is deferred.
+
+**Reason.** The local HTTP server cannot run unchanged as a Vercel Function, and
+executable game content must not share the publisher API origin. The separate
+project makes the boundary explicit without adding another hosting vendor. Private
+Supabase artifact envelopes and existing release validation remain unchanged.
+
+**Consequences.** Cold game instances fetch the full artifact envelope; usage limits
+must be monitored during this small pilot. Production secrets are server-only and
+are not shared with arbitrary preview deployments. Hosted rollout and rollback
+are documented in `DEPLOYMENT.md`. This supersedes the local-only hosting boundary
+in ADR-024/025; it does not change the publishing UI or add multiplayer.

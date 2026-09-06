@@ -30,6 +30,8 @@
     "catalog:start": "pnpm --filter @gauntlet/web start",
     "catalog:admin": "pnpm --filter @gauntlet/web admin",
     "catalog:verify": "pnpm --filter @gauntlet/web exec tsx scripts/verify.ts",
+    "catalog:smoke": "node scripts/catalog-smoke.mjs",
+    "catalog:admin:hosted": "pnpm --filter @gauntlet/web exec tsx scripts/admin.ts --hosted",
     "catalog:up": "node scripts/catalog-up.mjs",
     "db:migrate": "pnpm --filter @gauntlet/db db:migrate",
     "db:up": "pnpm --filter @gauntlet/db db:up",

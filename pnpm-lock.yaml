@@ -99,6 +99,43 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13))
 
+  apps/game-host:
+    dependencies:
+      '@gauntlet/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@gauntlet/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@gauntlet/publishing':
+        specifier: workspace:*
+        version: link:../../packages/publishing
+      '@supabase/supabase-js':
+        specifier: 2.99.3
+        version: 2.99.3
+      next:
+        specifier: 16.2.12
+        version: 16.2.12(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+      server-only:
+        specifier: 0.0.1
+        version: 0.0.1
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   apps/web:
     dependencies:
       '@gauntlet/data':
