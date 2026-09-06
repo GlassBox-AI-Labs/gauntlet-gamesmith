@@ -89,6 +89,52 @@ describe('createArtifactPhaseStream', () => {
     })
   })
 
+  it('clears a reconnect the stream recovered from once the turn completes', () => {
+    const stream = createArtifactPhaseStream({
+      harness: 'codex',
+      phase: 'reference',
+      defaultModel: 'gpt-6-astra',
+      startedAtMs: 10,
+      now: () => 20,
+      log: () => {},
+      onIdentity: () => {},
+      onUsage: () => {},
+    })
+    // The real shape: codex burns all five reconnects, falls back to HTTPS, and
+    // works on for another half hour before finishing normally.
+    for (const attempt of [2, 3, 4, 5]) {
+      stream.onLine(JSON.stringify({
+        type: 'error',
+        message: `Reconnecting... ${attempt}/5 (stream disconnected before completion: websocket closed by server before response.completed)`,
+      }))
+    }
+    expect(stream.snapshot().failure).toMatch(/Reconnecting/)
+
+    stream.onLine(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Reference Pack complete.' } }))
+    stream.onLine(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 242906, cached_input_tokens: 209024, cache_write_input_tokens: 0, output_tokens: 1459 },
+    }))
+
+    expect(stream.snapshot()).toMatchObject({ failure: null, summary: 'Reference Pack complete.' })
+  })
+
+  it('still reports a failure that arrives after the turn completed', () => {
+    const stream = createArtifactPhaseStream({
+      harness: 'codex',
+      phase: 'reference',
+      defaultModel: 'gpt-6-astra',
+      startedAtMs: 10,
+      now: () => 20,
+      log: () => {},
+      onIdentity: () => {},
+      onUsage: () => {},
+    })
+    stream.onLine(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 1 } }))
+    stream.onLine(JSON.stringify({ type: 'turn.failed', error: { message: 'TypeError: renderer crashed' } }))
+    expect(stream.snapshot().failure).toBe('TypeError: renderer crashed')
+  })
+
   it('bounds lifetime Claude usage identities and reports omitted live accounting once', () => {
     const log = vi.fn()
     const stream = createArtifactPhaseStream({
