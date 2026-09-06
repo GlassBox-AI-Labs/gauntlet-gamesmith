@@ -50,7 +50,11 @@ export function chromiumReady(root: string): boolean {
   } catch {
     return false
   }
-  if (stamp !== PLAYWRIGHT_VERSION) return false
+  return stamp === PLAYWRIGHT_VERSION && hasChromium(root)
+}
+
+/** Playwright names each build `chromium-<revision>` and `chromium_headless_shell-<revision>`. */
+function hasChromium(root: string): boolean {
   try {
     return fs.readdirSync(root).some((entry) => entry.startsWith('chromium'))
   } catch {
@@ -97,9 +101,7 @@ export async function ensureChromium(root: string, run: BrowserInstallRunner = r
     if (code !== 0) return unavailable(root, output || `The installer exited with code ${code}.`)
     // A zero exit that downloaded nothing is the silent failure in the report:
     // trust the directory, not the status code.
-    if (!fs.readdirSync(root).some((entry) => entry.startsWith('chromium'))) {
-      return unavailable(root, output || 'The installer reported success but downloaded no browser.')
-    }
+    if (!hasChromium(root)) return unavailable(root, output || 'The installer reported success but downloaded no browser.')
     fs.writeFileSync(path.join(root, STAMP), `${PLAYWRIGHT_VERSION}\n`)
     return { dir: root, status: 'installed' }
   } catch (error) {
@@ -118,20 +120,33 @@ function unavailable(root: string, detail: string): BrowserInstall {
  * What the build log should say about an install, or nothing when a cache that
  * was already warm stayed warm.
  */
-export function browserNotice(install: BrowserInstall): { channel: 'system' | 'error'; text: string } | null {
+export function browserNotice(install: BrowserInstall): { kind: 'system' | 'error'; text: string } | null {
   if (install.status === 'current') return null
   if (install.status === 'installed') {
-    return { channel: 'system', text: `Downloaded Chromium for Playwright ${PLAYWRIGHT_VERSION} into the app-managed browser cache.` }
+    return { kind: 'system', text: `Downloaded Chromium for Playwright ${PLAYWRIGHT_VERSION} into the app-managed browser cache.` }
   }
   return {
-    channel: 'error',
+    kind: 'error',
     text: `Could not download Chromium into the app-managed browser cache: ${install.detail ?? 'the installer failed.'} Agents will have to install Playwright themselves, which downloads a browser into that same cache; nothing should reach for a temp directory.`,
   }
 }
 
-/** Merged rather than replaced: the installer needs the real PATH to find npx. */
-const runInstaller: BrowserInstallRunner = (command, args, env) => new Promise((resolve, reject) => {
-  const child = spawn(command, [...args], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+/**
+ * What npm needs to find its binary, its cache, and a scratch directory —
+ * and nothing else (PROC-002).
+ *
+ * `npx --yes` fetches and runs package code, so handing it the whole
+ * environment would hand it every provider key that happens to be exported.
+ */
+const INSTALLER_ENV_KEYS = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TMP', 'TEMP'] as const
+
+export const runInstaller: BrowserInstallRunner = (command, args, env) => new Promise((resolve, reject) => {
+  const inherited = Object.fromEntries(
+    INSTALLER_ENV_KEYS.flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
+  )
+  // The cache itself: a directory with no package.json and none of the app's
+  // own, so npx resolves the pinned version and nothing local.
+  const child = spawn(command, [...args], { cwd: env.PLAYWRIGHT_BROWSERS_PATH, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
   const collect = (chunk: Buffer): void => { output = (output + chunk.toString('utf8')).slice(-MAX_DETAIL_CHARS) }
   child.stdout.on('data', collect)

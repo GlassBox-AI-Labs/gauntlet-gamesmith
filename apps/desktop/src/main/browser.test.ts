@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { PLAYWRIGHT_VERSION, browserNotice, browsersDir, chromiumReady, ensureChromium } from './browser'
+import { PLAYWRIGHT_VERSION, browserNotice, browsersDir, chromiumReady, ensureChromium, runInstaller } from './browser'
 
 const roots: string[] = []
 
@@ -117,19 +117,47 @@ describe('browserNotice', () => {
 
   it('reports a download as ordinary progress', () => {
     const notice = browserNotice({ dir: '/cache', status: 'installed' })
-    expect(notice?.channel).toBe('system')
+    expect(notice?.kind).toBe('system')
     expect(notice?.text).toContain(PLAYWRIGHT_VERSION)
   })
 
   it('reports a failed download as an error that names the cause', () => {
     const notice = browserNotice({ dir: '/cache', status: 'unavailable', detail: 'npx: command not found' })
-    expect(notice?.channel).toBe('error')
+    expect(notice?.kind).toBe('error')
     expect(notice?.text).toContain('npx: command not found')
   })
 
   it('still reports a failure that arrived with no detail', () => {
     const notice = browserNotice({ dir: '/cache', status: 'unavailable' })
-    expect(notice?.channel).toBe('error')
+    expect(notice?.kind).toBe('error')
     expect(notice?.text).toContain('the installer failed')
+  })
+})
+
+describe('runInstaller', () => {
+  it('hands the installer only what npm needs, never the surrounding secrets', async () => {
+    // npx --yes fetches and runs package code. PROC-002: a deliberately
+    // constructed environment, not whatever happened to be exported.
+    process.env.ANTHROPIC_API_KEY = 'must-not-leak'
+    process.env.GITHUB_TOKEN = 'must-not-leak'
+    try {
+      const root = tempRoot()
+      const { code, output } = await runInstaller(
+        process.execPath,
+        ['-e', 'console.log(JSON.stringify({ keys: Object.keys(process.env).sort(), cwd: process.cwd() }))'],
+        { PLAYWRIGHT_BROWSERS_PATH: root },
+      )
+      const seen = JSON.parse(output) as { keys: string[]; cwd: string }
+
+      expect(code).toBe(0)
+      expect(seen.keys).not.toContain('ANTHROPIC_API_KEY')
+      expect(seen.keys).not.toContain('GITHUB_TOKEN')
+      expect(seen.keys).toContain('PLAYWRIGHT_BROWSERS_PATH')
+      expect(seen.keys).toContain('PATH')
+      expect(fs.realpathSync(seen.cwd)).toBe(fs.realpathSync(root))
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY
+      delete process.env.GITHUB_TOKEN
+    }
   })
 })

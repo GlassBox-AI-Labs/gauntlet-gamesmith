@@ -3,7 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
 import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
-import { browsersDir, ensureChromium, type BrowserInstall } from './browser'
+import { browsersDir, chromiumReady, ensureChromium, type BrowserInstall } from './browser'
 import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 
@@ -93,6 +93,11 @@ export function ensureSkill(): SkillInstall {
  */
 export function browserCacheDir(): string {
   return browsersDir(app.getPath('userData'))
+}
+
+/** Whether the cache is already filled, answered without downloading anything. */
+export function browserReady(): boolean {
+  return chromiumReady(browserCacheDir())
 }
 
 /** The Chromium every agent launches, downloaded once into app-managed state. */

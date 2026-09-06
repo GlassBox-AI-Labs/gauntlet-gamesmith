@@ -591,9 +591,16 @@ fetch its matching build is what makes a mismatch heal.
 
 **Rejected.** Pinning `playwright` in `apps/desktop/package.json`, as the report proposed. A plain
 `pnpm install` runs its postinstall without `PLAYWRIGHT_BROWSERS_PATH` set, so the browser lands in
-the user's default cache rather than the app's; the packaged app ships only `out/**` and would not
-carry the package anyway; and it puts a ~150MB download in the path of every install and CI run for
-no gain over installing on demand.
+the user's default cache rather than the app's — the app would still have to install into its own
+cache at run time, which is what this ADR does anyway. And it puts a ~150MB browser download in the
+path of every developer install and every CI run, for a browser most of those runs never launch.
+(Packaging is *not* a reason: electron-builder ships production dependencies' `node_modules`
+whatever the `files` list says, which is how `node-pty` reaches the packaged app.)
+
+**Also rejected.** Exporting `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, which the report proposed alongside
+the cache path. Skipping the download is precisely what makes a version mismatch permanent: it is
+the state `/tmp/pw-scratch` was already in. Leaving it unset is what lets an agent's own install heal
+a mismatch by fetching its matching build into the shared cache.
 
 **Consequences.** Every agent in every build resolves the same browser binary, and the first build on
 a machine downloads it once instead of once per scratch directory. The download and any failure are

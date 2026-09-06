@@ -42,8 +42,10 @@ function setup(
       return home
     },
     cliVersion: () => 'test-cli 1.2.3',
-    // No fixture may spawn the real Chromium installer.
+    // No fixture may spawn the real Chromium installer, and a warm cache is the
+    // ordinary case: the run loop reaches a phase without yielding.
     browsersDir: () => path.join(root, 'playwright-browsers'),
+    browserReady: () => true,
     ensureBrowser: async () => ({ dir: path.join(root, 'playwright-browsers'), status: 'current' as const }),
     accountLabel: (kind) => `${kind}:test-account@example.com`,
     hostname: () => 'test-host',
@@ -2013,6 +2015,7 @@ describe('LoopRunner lifecycle boundary', () => {
     let env: Record<string, string> = {}
     const { ledger, runner, workspaceDir } = setup({
       browsersDir: () => '/app-data/playwright-browsers',
+      browserReady: () => false,
       // A machine with no Node cannot pre-download anything. Sharing one cache
       // is still what stops agents importing Playwright from another run's /tmp,
       // so the path is supplied regardless of how the download went.
@@ -2027,6 +2030,37 @@ describe('LoopRunner lifecycle boundary', () => {
     await waitFor(() => Object.keys(env).length > 0 || ledger.latestBuild()?.status === 'failed')
 
     expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe('/app-data/playwright-browsers')
+    // The failure is on the attempt that tried, not on some later one a
+    // single-attempt build never reaches (VIS-001).
+    const events = ledger.eventsForBuild(ledger.latestBuild()!.id, 2_000)
+    expect(events.some((event) => event.text.includes('npx: command not found'))).toBe(true)
+  })
+
+  it('waits for a cold browser cache before starting the phase that launches a browser', async () => {
+    let downloadFinished = false
+    let spawnedAfterDownload: boolean | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      browserReady: () => false,
+      ensureBrowser: async () => {
+        // Long enough that a phase started without waiting would find the cache
+        // half-written, which is the reported failure.
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        downloadFinished = true
+        return { dir: '/app-data/playwright-browsers', status: 'installed' as const }
+      },
+      spawnChild: () => {
+        spawnedAfterDownload = downloadFinished
+        throw new Error('stop after browser inspection')
+      },
+    })
+
+    expect(runner.start(input(workspaceDir)).ok).toBe(true)
+    await waitFor(() => spawnedAfterDownload !== null || ledger.latestBuild()?.status === 'failed')
+
+    expect(spawnedAfterDownload).toBe(true)
+    const events = ledger.eventsForBuild(ledger.latestBuild()!.id, 2_000)
+    expect(events.some((event) => event.text.includes('Downloading Chromium'))).toBe(true)
+    expect(events.some((event) => event.text.includes('Downloaded Chromium'))).toBe(true)
   })
 
   it('resumes only the same-round session with the complete effective prompt', () => {
