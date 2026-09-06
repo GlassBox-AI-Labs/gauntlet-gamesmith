@@ -278,6 +278,26 @@ describe('Reference Pack', () => {
     expect(issues).toContain('manifest.json lacks attribution for 1 downloaded evidence file')
   })
 
+  it('does not demand a source URL for an agent-written note in an evidence directory', () => {
+    const dir = workspace()
+    const root = referencePackDir('loop-123')
+    fs.mkdirSync(path.join(dir, root, 'images'), { recursive: true })
+    fs.mkdirSync(path.join(dir, root, 'objects'), { recursive: true })
+    fs.writeFileSync(path.join(dir, root, 'images', 'still.jpg'), 'image')
+    // What the protocol asks for when no clean one-object shot exists.
+    fs.writeFileSync(path.join(dir, root, 'objects', 'README.md'), 'No isolated object reference was located.')
+    fs.writeFileSync(
+      path.join(dir, root, 'manifest.json'),
+      JSON.stringify({ title: 'Reference Game', sources: [{ url: 'https://example.com/still.jpg', file: 'images/still.jpg' }] }),
+    )
+    const issues = scanReferencePack(dir, root).issues
+    expect(issues).not.toContain('manifest.json lacks attribution for 1 downloaded evidence file')
+
+    // An actual downloaded file in the same directory still has to be attributed.
+    fs.writeFileSync(path.join(dir, root, 'objects', 'virus.jpg'), 'image')
+    expect(scanReferencePack(dir, root).issues).toContain('manifest.json lacks attribution for 1 downloaded evidence file')
+  })
+
   it('fails closed when the inventory exceeds its file-count cap', () => {
     const dir = workspace()
     const root = referencePackDir('loop-123')
