@@ -5,9 +5,9 @@ export const PRICE_TABLE_VERSION = '2026-09-02'
 
 // USD per MTok, list prices as of PRICE_TABLE_VERSION.
 // claude cacheWrite is priced at the 1h TTL (2x input — what subscription
-// Claude Code uses); gpt-5.6 cache writes bill at 1.25x input and cached input
-// at 10% of it. Sol's rate is the 2026-08-22 cut, promotional through at least
-// 2026-11-21 — revisit the table then.
+// Claude Code uses); gpt cache writes bill at 1.25x input and cached input at
+// 10% of it, which gpt-6-astra follows too. Sol's rate is the 2026-08-22 cut,
+// promotional through at least 2026-11-21 — revisit the table then.
 //
 // Cache reads are 10% of input on every model here EXCEPT Fable 5.1, which
 // Anthropic prices at 2.5% ($0.25/MTok against a $10 input) — the one place a
@@ -24,6 +24,7 @@ const PRICES: Record<string, { input: number; output: number; cacheRead: number;
   // since made it the standard price and cancelled the rise to $3/$15.
   [MODEL_IDS.claudeSonnet]: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4 },
   [MODEL_IDS.claudeHaiku]: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 2 },
+  [MODEL_IDS.codexAstra]: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   [MODEL_IDS.codexSol]: { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
   [MODEL_IDS.codexTerra]: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
   [MODEL_IDS.codexLuna]: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
