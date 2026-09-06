@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { harnessFor, resolveModels } from './models'
-import { DEFAULT_RUN_PACE, RUN_PACES, runPreset, type RunPace } from './run-presets'
+import { DEFAULT_RUN_PACE, RUN_PACES, presetSlices, runPreset, type RunPace } from './run-presets'
 
 const levels: RunPace[] = [0, 1, 2, 3, 4]
 
@@ -41,6 +41,18 @@ describe('five run presets', () => {
         expect(effective.referenceMode).toBe(referenceMode)
         expect(effective.researchModel).toBeNull()
       }
+    }
+  })
+
+  it('cuts the preset into groups that cannot overwrite each other', () => {
+    // The run form stores these four groups separately and merges them by
+    // spreading in this order. Any key shared between groups would let the last
+    // spread silently discard a hand-picked model.
+    for (const level of levels) {
+      const { impl, critic, research, assets } = presetSlices(level, { claude: true, codex: true }, true)
+      const groups = [impl, critic, research, assets].map((group) => Object.keys(group))
+      expect(groups.flat().sort()).toEqual([...new Set(groups.flat())].sort())
+      expect({ ...impl, ...critic, ...research, ...assets }).toEqual(runPreset(level, { claude: true, codex: true }, true))
     }
   })
 })
