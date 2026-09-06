@@ -8,7 +8,7 @@
   "scripts": {
     "db:migrate": "supabase migration new",
     "db:up": "supabase migration up --local",
-    "db:schema": "supabase db dump --local -f supabase/schema.sql",
-    "db:types": "supabase gen types typescript --local > types/supabase.ts"
+    "db:schema": "supabase db dump --local -f supabase/schema.sql && node scripts/normalize-generated.mjs supabase/schema.sql",
+    "db:types": "supabase gen types typescript --local > types/supabase.ts && node scripts/normalize-generated.mjs types/supabase.ts"
   }
 }
