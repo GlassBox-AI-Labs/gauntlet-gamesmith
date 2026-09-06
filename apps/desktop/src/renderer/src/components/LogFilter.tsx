@@ -1,4 +1,4 @@
-import type { LoopLogLine } from '../../../shared/loop'
+import type { BuildLogLine } from '../../../shared/build'
 import {
   PRIMARY_AGENT,
   roundChipLabel,
@@ -29,7 +29,7 @@ export function LogFilterStrip({
   showRounds = true,
   primaryLabel = 'orchestrator',
 }: {
-  lines: LoopLogLine[]
+  lines: BuildLogLine[]
   filter: LogFilterState
   onChange: (next: LogFilterState) => void
   showRounds?: boolean

@@ -8,15 +8,15 @@ import { parseVerdictArtifact, prepareVerdictArtifact, readVerdictArtifact, verd
 const REVISION = 'a'.repeat(40)
 const dirs: string[] = []
 
-function write(round: number, value: unknown): { workspace: string; file: string; runId: string } {
+function write(round: number, value: unknown): { workspace: string; file: string; attemptId: string } {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-verdict-'))
   dirs.push(workspace)
-  const runId = randomUUID()
+  const attemptId = randomUUID()
   const dir = path.join(workspace, 'critique', `round-${round}`)
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(workspace, verdictArtifactRelativePath(round, runId))
+  const file = path.join(workspace, verdictArtifactRelativePath(round, attemptId))
   fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value))
-  return { workspace, file, runId }
+  return { workspace, file, attemptId }
 }
 
 afterEach(() => {
@@ -57,43 +57,43 @@ describe('readVerdictArtifact', () => {
 
   it('accepts a fresh regular artifact from this attempt', () => {
     const startedAt = Date.now() - 1_000
-    const { workspace, runId } = write(2, valid)
-    expect(readVerdictArtifact(workspace, 2, runId, startedAt, REVISION).verdict?.score).toBeCloseTo(0.42)
+    const { workspace, attemptId } = write(2, valid)
+    expect(readVerdictArtifact(workspace, 2, attemptId, startedAt, REVISION).verdict?.score).toBeCloseTo(0.42)
   })
 
   it('rejects an artifact left by a prior attempt', () => {
-    const { workspace, file, runId } = write(2, valid)
+    const { workspace, file, attemptId } = write(2, valid)
     const old = new Date(Date.now() - 60_000)
     fs.utimesSync(file, old, old)
-    expect(readVerdictArtifact(workspace, 2, runId, Date.now(), REVISION).error).toContain('predates this critique attempt')
+    expect(readVerdictArtifact(workspace, 2, attemptId, Date.now(), REVISION).error).toContain('predates this critique attempt')
   })
 
   it('refuses to remove a prior artifact and rejects a future-dated attempt artifact', () => {
-    const { workspace, file, runId } = write(2, valid)
-    expect(() => prepareVerdictArtifact(workspace, 2, runId)).toThrow(/refusing to replace/)
+    const { workspace, file, attemptId } = write(2, valid)
+    expect(() => prepareVerdictArtifact(workspace, 2, attemptId)).toThrow(/refusing to replace/)
     expect(fs.readFileSync(file, 'utf8')).toBe(JSON.stringify(valid))
     const future = new Date(Date.now() + 60_000)
     fs.utimesSync(file, future, future)
-    expect(readVerdictArtifact(workspace, 2, runId, Date.now() - 1_000, REVISION, Date.now()).error).toContain('future-dated')
+    expect(readVerdictArtifact(workspace, 2, attemptId, Date.now() - 1_000, REVISION, Date.now()).error).toContain('future-dated')
   })
 
   it('rejects prose, missing files, symlinks, and hard links', () => {
     const prose = write(1, '```json\n{"score":0.9}\n```')
-    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('not valid JSON')
+    expect(readVerdictArtifact(prose.workspace, 1, prose.attemptId, 0, REVISION).error).toContain('not valid JSON')
     expect(readVerdictArtifact(prose.workspace, 3, randomUUID(), 0, REVISION).error).toContain('Missing')
     const target = path.join(prose.workspace, 'target.json')
     fs.writeFileSync(target, JSON.stringify(valid))
     fs.unlinkSync(prose.file)
     fs.symlinkSync(target, prose.file)
-    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('regular file')
+    expect(readVerdictArtifact(prose.workspace, 1, prose.attemptId, 0, REVISION).error).toContain('regular file')
     fs.unlinkSync(prose.file)
     fs.linkSync(target, prose.file)
-    expect(readVerdictArtifact(prose.workspace, 1, prose.runId, 0, REVISION).error).toContain('owned regular file')
+    expect(readVerdictArtifact(prose.workspace, 1, prose.attemptId, 0, REVISION).error).toContain('owned regular file')
   })
 
   it('rejects a regular-file swap between inspection and open without consuming replacement bytes', () => {
     const attempt = write(1, valid)
-    const canonicalAttemptFile = path.join(fs.realpathSync(attempt.workspace), verdictArtifactRelativePath(1, attempt.runId))
+    const canonicalAttemptFile = path.join(fs.realpathSync(attempt.workspace), verdictArtifactRelativePath(1, attempt.attemptId))
     const original = `${attempt.file}.original`
     const originalOpen = fs.openSync.bind(fs)
     let swapped = false
@@ -106,7 +106,7 @@ describe('readVerdictArtifact', () => {
       return originalOpen(target, flags, mode)
     }) as typeof fs.openSync)
 
-    expect(readVerdictArtifact(attempt.workspace, 1, attempt.runId, 0, REVISION).error).toMatch(/changed identity|not valid JSON/)
+    expect(readVerdictArtifact(attempt.workspace, 1, attempt.attemptId, 0, REVISION).error).toMatch(/changed identity|not valid JSON/)
     expect(fs.readFileSync(original, 'utf8')).toBe(JSON.stringify(valid))
     expect(fs.readFileSync(attempt.file, 'utf8')).toBe('operator replacement')
   })

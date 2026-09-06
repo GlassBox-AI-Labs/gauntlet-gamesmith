@@ -65,7 +65,7 @@ snapshot of every round, so you can go back to an earlier version of your game.
 
 ---
 
-## First run
+## First launch
 
 The first time you open the app, it walks you through setup:
 
@@ -76,12 +76,12 @@ The first time you open the app, it walks you through setup:
    never reads or copies your login. If the tool is not installed yet, press
    **Install** and the app runs its official installer for you, showing every
    line of what it does. On Windows it shows the command to paste instead.
-3. **How it works** — four cards covering what happens during a run.
+3. **How it works** — four cards covering what happens during a build.
 
 You can skip setup, and you can bring the tour back later from the Agents tab
 ("Show the tour again").
 
-After that you land on the **Run** tab. Pick a folder for your game, describe
+After that you land on the **Build** tab. Pick a folder for your game, describe
 the game you want, and press start. Watch the rounds go by. The app stops on
 its own when the critic approves the game, when it hits the round limit, when
 it hits the spending limit you set, or when you press stop.
@@ -91,9 +91,9 @@ connect to.
 
 ---
 
-## Sharing a run with someone else
+## Sharing a build with someone else
 
-Stop the run first. Then use **Export** to copy the whole run — the game code,
+Stop the build first. Then use **Export** to copy the whole build — the game code,
 the reference material it downloaded, the criticism, and the full history — into
 one folder you can send. The other person uses **Import** to open that folder.
 Nothing is renumbered or lost in the move.
@@ -103,10 +103,10 @@ Two things to know before you send a folder to anyone:
 - **Check it first.** The export includes the raw output of the coding tools,
   exactly as they printed it. If one of them happened to echo something private
   from your computer, it is in there. Have a look before you share.
-- **Imported runs are read-only.** The person you send it to can read the whole
-  history, but cannot press Play or continue the run. That is on purpose: the
+- **Imported builds are read-only.** The person you send it to can read the whole
+  history, but cannot press Play or continue the build. That is on purpose: the
   app has no way to confirm that a folder from someone else is safe to execute.
-  They can start a new run of their own.
+  They can start a new build of their own.
 
 ---
 
@@ -142,7 +142,7 @@ terminal while the app was open, quit the app fully and open it again.
 **The game won't preview.** Node.js is missing. Install it from
 [nodejs.org](https://nodejs.org/), then restart the app.
 
-**A run pauses and mentions a rate limit.** You've used up your subscription's
+**A build pauses and mentions a rate limit.** You've used up your subscription's
 allowance for now. This is a pause, not a failure — the app waits and picks up
 where it left off.
 

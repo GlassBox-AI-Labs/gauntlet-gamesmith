@@ -90,7 +90,7 @@ describe('leaving the connect step', () => {
     expect(connectedHarness(states('logged_out', 'logged_out'))).toBeNull()
   })
 
-  it('warns plainly that runs cannot start without an agent', () => {
+  it('warns plainly that builds cannot start without an agent', () => {
     expect(connectFooterNote(states('logged_out', 'logged_out'))).toContain('cannot start')
     expect(connectFooterNote(states('logged_in', 'logged_out'))).toContain(HARNESS_LABELS.claude)
   })

@@ -26,7 +26,7 @@ export function ImageLightbox({ file, name, load, children }: { file?: File; nam
         <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/85 backdrop-blur-sm" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-[61] flex max-h-[92vh] w-[min(1100px,92vw)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 rounded-xl border border-white/15 bg-[#171313] p-5 shadow-2xl">
           <Dialog.Title className="break-all pr-10 text-sm font-medium text-[#eee8e4]">{imageName}</Dialog.Title>
-          <Dialog.Description className="sr-only">Image attached to this run’s context. Press Escape to close.</Dialog.Description>
+          <Dialog.Description className="sr-only">Image attached to this build’s context. Press Escape to close.</Dialog.Description>
           {failed ? <p role="status" className="py-16 text-center text-sm text-[#bdb2ac]">This image format could not be previewed. The original file is still in context.</p> : src ? <img src={src} alt={imageName} onError={() => setFailed(true)} className="min-h-0 max-h-[76vh] w-full object-contain" /> : <p role="status" className="py-16 text-center text-sm text-[#bdb2ac]">Loading image…</p>}
           <Dialog.Close aria-label="Close image preview" className="absolute right-3 top-3 rounded-md p-2 text-[#bbb1ab] hover:bg-white/10 focus-visible:outline focus-visible:outline-2"><X className="size-4" /></Dialog.Close>
         </Dialog.Content>

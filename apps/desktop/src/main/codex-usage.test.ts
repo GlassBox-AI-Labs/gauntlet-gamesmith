@@ -68,7 +68,7 @@ describe('readCodexUsage', () => {
     expect(agents[0].done).toBe(false)
   })
 
-  it('ignores sessions that started before the run', () => {
+  it('ignores sessions that started before the build', () => {
     expect(readCodexUsage(home, Date.now() + 60_000, 'gpt-5.6-sol')).toEqual([])
     rollout('rollout-2020-01-01T10-00-00-oldoldoldold.jsonl', [{ input: 9_000, cached: 0, output: 900 }])
     expect(readCodexUsage(home, Date.now() - 60_000, 'gpt-5.6-sol')).toHaveLength(1)

@@ -21,7 +21,7 @@ describe('rate limit policy', () => {
     expect(rateLimitPause('Claude rate limit; reset at: 2026-09-02T12:30:00.000Z', 0, Date.parse('2026-09-02T12:29:00.000Z'))?.delayMs).toBe(60_000)
   })
 
-  it('recovers a durable retry time from the interrupted run error', () => {
+  it('recovers a durable retry time from the interrupted build error', () => {
     expect(retryAtFromError('Rate limited; retry scheduled for 2026-09-02T12:30:00.000Z.')).toBe(Date.parse('2026-09-02T12:30:00.000Z'))
     expect(retryAtFromError('ordinary error')).toBeNull()
   })

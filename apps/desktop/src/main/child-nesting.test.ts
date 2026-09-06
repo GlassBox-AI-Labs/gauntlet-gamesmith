@@ -38,12 +38,12 @@ describe('delegated workers', () => {
       JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 50 } }) + '\n',
     )
     const ledger = new Ledger(path.join(dir, 'ledger.db'))
-    const loop = ledger.createLoop({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
-    const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
+    const build = ledger.createBuild({ prompt: 'build it', workspaceDir, maxRounds: 1, budgetUsd: null, models })
+    const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
     const parser = createClaudeImplementProtocol({
       ledger,
-      loop,
-      run,
+      build,
+      attempt,
       gate: { suppress: false },
       childBoundary: recoverChildStreams(workspaceDir),
       now: Date.now,
@@ -73,7 +73,7 @@ describe('delegated workers', () => {
     vi.advanceTimersByTime(20_000)
     parser.onLine(JSON.stringify({ type: 'assistant', message: { id: 'flush', model: 'claude-fable-5', usage: { input_tokens: 1, output_tokens: 1 }, content: [] } }))
 
-    const agents = ledger.getRun(run.id)?.metrics?.agents ?? []
+    const agents = ledger.getAttempt(attempt.id)?.metrics?.agents ?? []
     const child = agents.find((a) => a.id === 'child:core')
     expect(child?.parentId).toBe(TOOL_ID)
     expect(agents.findIndex((a) => a.id === 'child:core')).toBe(agents.findIndex((a) => a.id === TOOL_ID) + 1)

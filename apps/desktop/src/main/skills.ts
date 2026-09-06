@@ -14,7 +14,7 @@ import path from 'node:path'
  * sculptor brief says "using the `img2threejs` skill" and then calls
  * `forge/state.py`; with nothing to load, the agent cannot run the pipeline, so
  * it hand-writes a model shaped like the skill's output instead — 18,531 lines
- * of it across the three runs in `docs/ASSET-PHASE.md`, with zero `Skill` calls
+ * of it across the three builds in `docs/ASSET-PHASE.md`, with zero `Skill` calls
  * behind them. Nothing downstream could tell the difference.
  */
 
@@ -54,7 +54,7 @@ function isUsable(dir: string): boolean {
 export interface SkillInstall {
   /** Where the CLI will find it, or null when there was nothing to install. */
   dir: string | null
-  /** What happened, for the run log. */
+  /** What happened, for the build log. */
   status: 'installed' | 'replaced' | 'current' | 'missing-source'
 }
 
@@ -64,7 +64,7 @@ export interface SkillInstall {
  *
  * The app owns that path now. A hand-made symlink or an older copy is replaced
  * rather than trusted: the version that ships is the version the sculptor brief
- * was written against, and a run that silently used a different one is the bug
+ * was written against, and an attempt that silently used a different one is the bug
  * this whole module is here to prevent.
  */
 export function installSkill(claudeHome: string, sourceDir: string | null): SkillInstall {

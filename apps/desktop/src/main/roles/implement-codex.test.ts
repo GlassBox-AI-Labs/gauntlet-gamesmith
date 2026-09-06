@@ -2,8 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { RESUME_PREFIX } from '../../shared/loop'
-import type { LoopRecord, RunMetrics, RunRecord } from '../../shared/loop'
+import { RESUME_PREFIX } from '../../shared/build'
+import type { BuildRecord, AttemptMetrics, PhaseAttempt } from '../../shared/build'
 import { resolveModels } from '../../shared/models'
 import type { ChildStreamBoundary } from '../child-agents'
 import type { Ledger } from '../ledger'
@@ -27,25 +27,25 @@ function rollout(input: number, cached: number, output: number): void {
 }
 
 /** `steps` run in order: a string is a stream line, a function mutates the rollout. */
-function orchestratorAfter(prompt: string, steps: (string | (() => void))[]): RunMetrics['agents'][number] {
+function orchestratorAfter(prompt: string, steps: (string | (() => void))[]): AttemptMetrics['agents'][number] {
   return driveProtocol(prompt, steps).orchestrator()
 }
 
 function driveProtocol(prompt: string, steps: (string | (() => void))[]): {
-  orchestrator: () => RunMetrics['agents'][number]
+  orchestrator: () => AttemptMetrics['agents'][number]
   outcomeError: () => Promise<string | null>
 } {
-  let metrics: RunMetrics | null = null
+  let metrics: AttemptMetrics | null = null
   let outcome: { error: string | null } | null = null
   let clock = 1_000_000
-  const run = { id: 'run-1', round: 1, role: 'implement', prompt, createdAt: new Date(clock).toISOString() } as RunRecord
+  const attempt = { id: 'build-1', round: 1, role: 'implement', prompt, createdAt: new Date(clock).toISOString() } as PhaseAttempt
   const parser = createCodexImplementProtocol({
     ledger: {
-      getRun: () => run,
-      patchRun: (_id: string, patch: { metrics?: RunMetrics }) => { if (patch.metrics) metrics = patch.metrics },
+      getAttempt: () => attempt,
+      patchAttempt: (_id: string, patch: { metrics?: AttemptMetrics }) => { if (patch.metrics) metrics = patch.metrics },
     } as unknown as Ledger,
-    loop: { id: 'loop-1', models: resolveModels({ orchestratorModel: 'gpt-6-astra', subagentModel: 'gpt-5.6-sol' }, null) } as LoopRecord,
-    run,
+    build: { id: 'build-1', models: resolveModels({ orchestratorModel: 'gpt-6-astra', subagentModel: 'gpt-5.6-sol' }, null) } as BuildRecord,
+    attempt,
     gate: { suppress: true },
     childBoundary: {} as ChildStreamBoundary,
     now: () => clock,
@@ -76,13 +76,13 @@ const threadStarted = JSON.stringify({ type: 'thread.started', thread_id: THREAD
 describe('codex orchestrator accounting', () => {
   it('reports live usage from the session log before any turn completes', () => {
     // 24.6M tokens of real work; the stream will not report a byte of it until
-    // the invocation ends, and a killed run never reports it at all.
+    // the invocation ends, and a killed attempt never reports it at all.
     rollout(24_555_090, 24_170_368, 58_149)
     const orchestrator = orchestratorAfter('fresh prompt', [threadStarted])
     expect(orchestrator.tokens).toEqual({ input: 384_722, output: 58_149, cacheRead: 24_170_368, cacheWrite: 0 })
   })
 
-  it('does not bill a resumed run for the tokens the interrupted run already carried', () => {
+  it('does not bill a resumed build for the tokens the interrupted build already carried', () => {
     rollout(1_000_000, 400_000, 20_000)
     const orchestrator = orchestratorAfter(`${RESUME_PREFIX}resumed prompt`, [
       threadStarted,
@@ -98,7 +98,7 @@ describe('codex orchestrator accounting', () => {
     expect(orchestrator.tokens).toEqual({ input: 400_000, output: 9_000, cacheRead: 100_000, cacheWrite: 0 })
   })
 
-  it('does not report a reconnect the stream recovered from as the run failure', async () => {
+  it('does not report a reconnect the stream recovered from as the build failure', async () => {
     rollout(1_000, 0, 100)
     const driven = driveProtocol('fresh prompt', [
       threadStarted,

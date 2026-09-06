@@ -1,4 +1,4 @@
-export interface RunAttachment {
+export interface BuildAttachment {
   id: string
   name: string
   kind: 'image' | 'file' | 'folder'
@@ -8,8 +8,8 @@ export interface RunAttachment {
 }
 export type AttachmentResult<T> = { ok: true; value: T } | { ok: false; error: string }
 export interface AttachmentApi {
-  addFiles(files: File[]): Promise<AttachmentResult<RunAttachment[]>>
-  pick(): Promise<AttachmentResult<RunAttachment[]>>
+  addFiles(files: File[]): Promise<AttachmentResult<BuildAttachment[]>>
+  pick(): Promise<AttachmentResult<BuildAttachment[]>>
   preview(id: string): Promise<AttachmentResult<string>>
   openFolder(id: string): Promise<AttachmentResult<null>>
   remove(id: string): Promise<AttachmentResult<null>>

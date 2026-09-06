@@ -167,7 +167,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): Rea
     return result.ok
   }
 
-  const runAccountChange = async (change: () => Promise<AccountsResult>): Promise<void> => {
+  const attemptAccountChange = async (change: () => Promise<AccountsResult>): Promise<void> => {
     if (actionBusy) return
     setActionBusy(true)
     try {
@@ -203,7 +203,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): Rea
     }
   }
 
-  /** Puts the first-run flow back and hands the screen over to it. */
+  /** Puts the first-build flow back and hands the screen over to it. */
   const replayTour = async (): Promise<void> => {
     if (replaying) return
     setReplaying(true)
@@ -275,7 +275,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): Rea
         <Select
           value={account.accounts.some((entry) => entry.id === account.activeId) ? account.activeId : undefined}
           onValueChange={(value) => {
-            if (value !== account.activeId) void runAccountChange(() => window.harnesses.switchAccount(activeKind, value))
+            if (value !== account.activeId) void attemptAccountChange(() => window.harnesses.switchAccount(activeKind, value))
           }}
           disabled={accountsLocked || account.accounts.length === 0}
         >
@@ -286,17 +286,17 @@ export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): Rea
             {account.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{accountLabel(entry)}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Button variant="ghost" className="text-[#b5afac] hover:bg-white/5 hover:text-white" disabled={accountsLocked} onClick={() => void runAccountChange(() => window.harnesses.addAccount(activeKind))}>
+        <Button variant="ghost" className="text-[#b5afac] hover:bg-white/5 hover:text-white" disabled={accountsLocked} onClick={() => void attemptAccountChange(() => window.harnesses.addAccount(activeKind))}>
           <UserPlus /> Add account
         </Button>
         {account.activeId !== PRIMARY_ACCOUNT_ID && (
-          <Button variant="ghost" className="text-[#b5afac] hover:bg-white/5 hover:text-white" disabled={accountsLocked} onClick={() => void runAccountChange(() => window.harnesses.removeAccount(activeKind, account.activeId))}>
+          <Button variant="ghost" className="text-[#b5afac] hover:bg-white/5 hover:text-white" disabled={accountsLocked} onClick={() => void attemptAccountChange(() => window.harnesses.removeAccount(activeKind, account.activeId))}>
             <Trash2 /> Remove
           </Button>
         )}
       </div>
       <p className="mt-2.5 text-xs text-[#7d7772]">
-        Accounts share run history. A usage-limited run rotates to the next available account and retries automatically.
+        Accounts share attempt history. A usage-limited attempt rotates to the next available account and retries automatically.
       </p>
       {onReplayTour && <Button
         variant="ghost"
@@ -352,7 +352,7 @@ export function AgentsView({ onReplayTour }: { onReplayTour?: () => void }): Rea
           disabled={!harness.found || actionBusy}
           onClick={() => void startLogin()}
         >
-          {actionBusy ? <LoaderCircle className="animate-spin" /> : <Play className="fill-current" />} Run {HARNESS_LABELS[activeKind]} login
+          {actionBusy ? <LoaderCircle className="animate-spin" /> : <Play className="fill-current" />} Attempt {HARNESS_LABELS[activeKind]} login
         </Button>
       )}
 

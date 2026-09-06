@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { cliHomeEnv, runsDir, safeCliHome, sanitizedExecutablePath, subscriptionEnv } from './harness-env'
+import { cliHomeEnv, attemptsDir, safeCliHome, sanitizedExecutablePath, subscriptionEnv } from './harness-env'
 
 it('keeps harness-home environment keys canonical', () => {
   expect(cliHomeEnv('claude', '/private/claude')).toEqual({ CLAUDE_CONFIG_DIR: '/private/claude' })
@@ -109,12 +109,12 @@ describe('subscriptionEnv', () => {
   })
 })
 
-it('refuses to create the run directory through a planted metadata symlink', () => {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-runs-workspace-'))
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-runs-outside-'))
+it('refuses to create the build directory through a planted metadata symlink', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-builds-workspace-'))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-builds-outside-'))
   fs.symlinkSync(outside, path.join(workspace, '.gauntlet-gamesmith'))
   try {
-    expect(() => runsDir(workspace)).toThrow(/must be a real directory/)
+    expect(() => attemptsDir(workspace)).toThrow(/must be a real directory/)
     expect(fs.readdirSync(outside)).toEqual([])
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true })

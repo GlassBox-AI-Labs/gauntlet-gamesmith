@@ -1,7 +1,7 @@
 import path from 'node:path'
 import fs from 'node:fs'
-import type { LoopRecord } from '../shared/loop'
-import { canonicalizePath } from './run-transfer'
+import type { BuildRecord } from '../shared/build'
+import { canonicalizePath } from './build-transfer'
 
 function contains(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate)
@@ -44,22 +44,22 @@ export function captureWorkspaceIdentity(
 }
 
 /** Revalidate both protected-root separation and the exact registered root. */
-export function assertLoopWorkspaceIdentity(
-  loop: WorkspaceRootIdentity | Pick<LoopRecord, 'workspaceDir' | 'workspaceIdentity'>,
+export function assertBuildWorkspaceIdentity(
+  build: WorkspaceRootIdentity | Pick<BuildRecord, 'workspaceDir' | 'workspaceIdentity'>,
   protectedRoots: readonly string[],
 ): string {
-  const canonical = assertWorkspaceBoundary(loop.workspaceDir, protectedRoots)
-  const identity = loop.workspaceIdentity
-  if (!identity || canonical !== path.resolve(loop.workspaceDir)) {
+  const canonical = assertWorkspaceBoundary(build.workspaceDir, protectedRoots)
+  const identity = build.workspaceIdentity
+  if (!identity || canonical !== path.resolve(build.workspaceDir)) {
     throw new Error('Workspace identity is unavailable or its canonical path changed; execution and file access are blocked.')
   }
-  const stat = fs.lstatSync(loop.workspaceDir)
+  const stat = fs.lstatSync(build.workspaceDir)
   if (
     !stat.isDirectory()
     || stat.isSymbolicLink()
     || stat.dev !== identity.dev
     || stat.ino !== identity.ino
-    || fs.realpathSync(loop.workspaceDir) !== loop.workspaceDir
+    || fs.realpathSync(build.workspaceDir) !== build.workspaceDir
   ) throw new Error('Workspace root changed identity; execution and file access are blocked.')
   return canonical
 }

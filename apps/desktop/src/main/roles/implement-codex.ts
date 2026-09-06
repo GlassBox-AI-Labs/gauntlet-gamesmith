@@ -1,6 +1,6 @@
-import type { AgentMetric, LoopRecord, RunMetrics, RunRecord, TokenTotals } from '../../shared/loop'
+import type { AgentMetric, BuildRecord, AttemptMetrics, PhaseAttempt, TokenTotals } from '../../shared/build'
 import { isCrossHarness } from '../../shared/models'
-import { effectivePromptForRun } from '../../shared/prompts'
+import { effectivePromptForAttempt } from '../../shared/prompts'
 import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
 import { codexTokens, readCodexUsage, usageForThread } from '../codex-usage'
 import type { Ledger } from '../ledger'
@@ -12,8 +12,8 @@ import type { ExitInfo, LogGate, StreamParser } from './types'
 
 interface CodexImplementRuntime {
   ledger: Ledger
-  loop: LoopRecord
-  run: RunRecord
+  build: BuildRecord
+  attempt: PhaseAttempt
   gate: LogGate
   childBoundary: ChildStreamBoundary
   now(): number
@@ -28,7 +28,7 @@ function emptyTokens(): TokenTotals {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 }
 
-function implementTokens(perModel: RunMetrics['perModel']): { input: number; output: number } | null {
+function implementTokens(perModel: AttemptMetrics['perModel']): { input: number; output: number } | null {
   const models = Object.values(perModel)
   if (!models.length) return null
   return {
@@ -39,12 +39,12 @@ function implementTokens(perModel: RunMetrics['perModel']): { input: number; out
 
 /** Owns Codex implement stream parsing, live worker accounting, and outcome construction. */
 export function createCodexImplementProtocol(runtime: CodexImplementRuntime): StreamParser {
-  const { ledger, loop, run, gate } = runtime
+  const { ledger, build, attempt, gate } = runtime
   const plog = (kind: string, text: string, agentId?: string): void => {
     if (!gate.suppress) runtime.log(kind, text, agentId)
   }
-  const models = loop.models
-  const startedAtMs = Date.parse(ledger.getRun(run.id)?.startedAt ?? run.createdAt)
+  const models = build.models
+  const startedAtMs = Date.parse(ledger.getAttempt(attempt.id)?.startedAt ?? attempt.createdAt)
   const tokens = emptyTokens()
   let threadId: string | null = null
   let lastAgentMessage = ''
@@ -53,20 +53,20 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
   let turns = 0
   /**
    * Codex reports the orchestrator's own usage exactly once, in the
-   * `turn.completed` that ends the whole invocation. Mid-run the row therefore
-   * reads zero however hard the agent is working, and a run that is killed
-   * loses the figure for good — one real 43-minute run finished recording its
+   * `turn.completed` that ends the whole invocation. Mid-attempt the row therefore
+   * reads zero however hard the agent is working, and an attempt that is killed
+   * loses the figure for good — one real 43-minute attempt finished recording its
    * orchestrator as 0 messages and 0 tokens. The session log carries a running
    * count the whole time, which is already how every worker is counted.
    */
   let liveTokens: TokenTotals | null = null
   /**
-   * A resumed run appends to the earlier attempt's rollout, so the session's
-   * cumulative count opens with tokens an earlier run already reported.
-   * Subtract that inheritance instead of billing it to both runs. A fresh
+   * A resumed attempt appends to the earlier attempt's rollout, so the session's
+   * cumulative count opens with tokens an earlier attempt already reported.
+   * Subtract that inheritance instead of billing it to both attempts. A fresh
    * session inherits nothing.
    */
-  let inherited: TokenTotals | null = effectivePromptForRun(run.prompt).resumeRequested ? null : emptyTokens()
+  let inherited: TokenTotals | null = effectivePromptForAttempt(attempt.prompt).resumeRequested ? null : emptyTokens()
   let workers: AgentMetric[] = []
   let workerLimitReported = false
   let lastFlush = runtime.now()
@@ -100,7 +100,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
     workers = combined.slice(0, 511)
   }
 
-  const metricsNow = (): RunMetrics => {
+  const metricsNow = (): AttemptMetrics => {
     // The session log is cumulative and always current; the stream's own total
     // only exists once the final turn lands, so it is the fallback.
     const own = liveTokens ?? tokens
@@ -114,7 +114,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
       lastTs: runtime.nowIso(),
       costUsd: estimateCostUsd(models.orchestratorModel, own),
     }
-    const perModel: RunMetrics['perModel'] = {}
+    const perModel: AttemptMetrics['perModel'] = {}
     for (const agent of [orchestrator, ...workers]) {
       const key = agent.model ?? models.orchestratorModel
       const entry = perModel[key] ?? { costUsd: 0, tokens: emptyTokens() }
@@ -134,7 +134,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
     pollWorkers()
     const metrics = metricsNow()
     const totals = implementTokens(metrics.perModel)
-    ledger.patchRun(run.id, {
+    ledger.patchAttempt(attempt.id, {
       metrics,
       inputTokens: totals?.input,
       outputTokens: totals?.output,
@@ -151,9 +151,9 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
     if (!translated) return
     if (translated.threadStarted !== undefined) {
       threadId = translated.threadStarted
-      ledger.patchRun(run.id, { sessionId: threadId })
+      ledger.patchAttempt(attempt.id, { sessionId: threadId })
       // Capture the inheritance here rather than at the first poll: nothing of
-      // this run has been spent yet when its thread is announced.
+      // this attempt has been spent yet when its thread is announced.
       if (inherited === null && threadId) inherited = usageForThread(runtime.harnessHome('codex'), threadId)
       plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
     }

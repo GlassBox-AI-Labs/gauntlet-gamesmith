@@ -7,13 +7,13 @@ import { MAX_CHILD_ACCOUNTING_FILE_BYTES, parseChildStreamName } from './child-s
 import { readExactFileDescriptor } from './bounded-fd'
 import type { WorkspaceRootIdentity } from './workspace-boundary'
 
-/** Move completed child streams under their owning run instead of deleting evidence. */
+/** Move completed child streams under their owning attempt instead of deleting evidence. */
 export function archiveChildStreams(
   workspaceDir: string,
-  ownerRunId: string,
+  ownerAttemptId: string,
   expectedWorkspace?: WorkspaceRootIdentity,
 ): number {
-  if (!isRecordId(ownerRunId)) throw new Error('Invalid owner run id for child stream archive.')
+  if (!isRecordId(ownerAttemptId)) throw new Error('Invalid owner attempt id for child stream archive.')
   let boundary: ReturnType<typeof recoverChildStreams>
   try {
     boundary = recoverChildStreams(workspaceDir, expectedWorkspace)
@@ -26,10 +26,10 @@ export function archiveChildStreams(
   }
   const root = assertChildStreamBoundary(boundary)
   const inventory = childStreamInventory(root)
-  if (inventory.overflow) throw new Error('Delegated stream archive exceeds its bounded inventory; refusing to leave live streams for the next run.')
+  if (inventory.overflow) throw new Error('Delegated stream archive exceeds its bounded inventory; refusing to leave live streams for the next attempt.')
   const streams = inventory.files
   if (!streams.length) return 0
-  const destination = path.join(root, ownerRunId)
+  const destination = path.join(root, ownerAttemptId)
   try {
     fs.mkdirSync(destination, { mode: 0o700 })
   } catch (error) {
@@ -120,7 +120,7 @@ export function archiveChildStreams(
   }
   const remaining = childStreamInventory(root)
   if (remaining.overflow || remaining.files.length > 0) {
-    throw new Error('Delegated stream archive did not drain every valid live stream; refusing to start the next run.')
+    throw new Error('Delegated stream archive did not drain every valid live stream; refusing to start the next attempt.')
   }
   return streams.length
 }

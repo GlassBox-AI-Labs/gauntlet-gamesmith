@@ -56,10 +56,10 @@ describe('harness login state', () => {
     state = reduceHarness(state, { type: 'detected', found: true, version: '2.1.251' })
     state = reduceHarness(state, { type: 'probe_finished', loggedIn: true, details: [['Email', 'first@example.com']] })
     state = reduceHarness(state, { type: 'logout_started' })
-    state = reduceHarness(state, { type: 'logout_failed', error: 'Stop the running loop before signing out.' })
+    state = reduceHarness(state, { type: 'logout_failed', error: 'Stop the running build before signing out.' })
 
     expect(state.phase).toBe('logged_in')
-    expect(state.error).toBe('Stop the running loop before signing out.')
+    expect(state.error).toBe('Stop the running build before signing out.')
     expect(state.details).toEqual([['Email', 'first@example.com']])
   })
 })

@@ -20,19 +20,19 @@ describe('archiveChildStreams', () => {
     expect(fs.existsSync(agentsDir(dir))).toBe(false)
   })
 
-  it('preserves valid prior streams under the owning run', () => {
+  it('preserves valid prior streams under the owning build', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-archive-'))
     const root = agentsDir(dir)
     fs.mkdirSync(root, { recursive: true })
     fs.writeFileSync(path.join(root, 'gameplay.codex.jsonl'), 'evidence')
 
-    const runId = randomUUID()
-    expect(archiveChildStreams(dir, runId)).toBe(1)
-    const archived = fs.readdirSync(path.join(root, runId))
+    const attemptId = randomUUID()
+    expect(archiveChildStreams(dir, attemptId)).toBe(1)
+    const archived = fs.readdirSync(path.join(root, attemptId))
     expect(archived).toHaveLength(2)
     const projected = archived.find((name) => name.endsWith('.archived'))!
     expect(projected).toMatch(/^gameplay\.codex\.jsonl\..+\.archived$/)
-    expect(fs.readFileSync(path.join(root, runId, projected), 'utf8')).toBe('evidence')
+    expect(fs.readFileSync(path.join(root, attemptId, projected), 'utf8')).toBe('evidence')
   })
 
   it('rejects planted non-stream metadata before moving evidence', () => {
@@ -42,10 +42,10 @@ describe('archiveChildStreams', () => {
     fs.writeFileSync(path.join(root, 'gameplay.codex.jsonl'), 'evidence')
     fs.writeFileSync(path.join(root, 'notes.txt'), 'planted')
 
-    const runId = randomUUID()
-    expect(() => archiveChildStreams(dir!, runId)).toThrow(/Unexpected entry/)
+    const attemptId = randomUUID()
+    expect(() => archiveChildStreams(dir!, attemptId)).toThrow(/Unexpected entry/)
     expect(fs.readFileSync(path.join(root, 'gameplay.codex.jsonl'), 'utf8')).toBe('evidence')
-    expect(fs.existsSync(path.join(root, runId))).toBe(false)
+    expect(fs.existsSync(path.join(root, attemptId))).toBe(false)
   })
 
   it('refuses an archive destination symlink', () => {
@@ -54,10 +54,10 @@ describe('archiveChildStreams', () => {
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-archive-outside-'))
     fs.mkdirSync(root, { recursive: true })
     fs.writeFileSync(path.join(root, 'gameplay.codex.jsonl'), 'evidence')
-    const runId = randomUUID()
-    fs.symlinkSync(outside, path.join(root, runId))
+    const attemptId = randomUUID()
+    fs.symlinkSync(outside, path.join(root, attemptId))
     try {
-      expect(() => archiveChildStreams(dir!, runId)).toThrow(/Unexpected entry|archive destination must be a real directory/)
+      expect(() => archiveChildStreams(dir!, attemptId)).toThrow(/Unexpected entry|archive destination must be a real directory/)
       expect(fs.readdirSync(outside)).toEqual([])
     } finally {
       fs.rmSync(outside, { recursive: true, force: true })
@@ -72,9 +72,9 @@ describe('archiveChildStreams', () => {
       fs.writeFileSync(path.join(root, `worker-${String(index).padStart(3, '0')}.codex.jsonl`), 'evidence')
     }
 
-    const runId = randomUUID()
-    expect(() => archiveChildStreams(dir!, runId)).toThrow(/bounded inventory/)
-    expect(fs.existsSync(path.join(root, runId))).toBe(false)
+    const attemptId = randomUUID()
+    expect(() => archiveChildStreams(dir!, attemptId)).toThrow(/bounded inventory/)
+    expect(fs.existsSync(path.join(root, attemptId))).toBe(false)
     expect(fs.readdirSync(root).filter((name) => name.endsWith('.jsonl'))).toHaveLength(257)
   })
 
@@ -93,13 +93,13 @@ describe('archiveChildStreams', () => {
   it('preserves a preplanted canonical archive file while moving new evidence to a unique path', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-archive-collision-'))
     const root = agentsDir(dir)
-    const runId = randomUUID()
-    const archive = path.join(root, runId)
+    const attemptId = randomUUID()
+    const archive = path.join(root, attemptId)
     fs.mkdirSync(archive, { recursive: true })
     fs.writeFileSync(path.join(root, 'gameplay.codex.jsonl'), 'actual evidence')
     fs.writeFileSync(path.join(archive, 'gameplay.codex.jsonl'), 'planted evidence')
 
-    expect(archiveChildStreams(dir!, runId)).toBe(1)
+    expect(archiveChildStreams(dir!, attemptId)).toBe(1)
     expect(fs.readFileSync(path.join(archive, 'gameplay.codex.jsonl'), 'utf8')).toBe('planted evidence')
     const unique = fs.readdirSync(archive).find((name) => name.endsWith('.archived'))!
     expect(fs.readFileSync(path.join(archive, unique), 'utf8')).toBe('actual evidence')
@@ -108,7 +108,7 @@ describe('archiveChildStreams', () => {
   it('never deletes a replacement moved by a source-path race', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-archive-race-'))
     const root = agentsDir(dir)
-    const runId = randomUUID()
+    const attemptId = randomUUID()
     fs.mkdirSync(root, { recursive: true })
     const source = path.join(root, 'gameplay.codex.jsonl')
     fs.writeFileSync(source, 'original evidence')
@@ -121,22 +121,22 @@ describe('archiveChildStreams', () => {
       originalRename(from, to)
     })
     try {
-      expect(() => archiveChildStreams(dir!, runId)).toThrow(/changed while its source entry was retained/)
+      expect(() => archiveChildStreams(dir!, attemptId)).toThrow(/changed while its source entry was retained/)
     } finally {
       spy.mockRestore()
     }
     expect(fs.readFileSync(`${source}.original`, 'utf8')).toBe('original evidence')
-    const files = fs.readdirSync(path.join(root, runId))
+    const files = fs.readdirSync(path.join(root, attemptId))
     const archived = files.find((name) => name.endsWith('.archived'))!
     const retained = files.find((name) => name.endsWith('.retained'))!
-    expect(fs.readFileSync(path.join(root, runId, archived), 'utf8')).toBe('original evidence')
-    expect(fs.readFileSync(path.join(root, runId, retained), 'utf8')).toBe('operator replacement')
+    expect(fs.readFileSync(path.join(root, attemptId, archived), 'utf8')).toBe('original evidence')
+    expect(fs.readFileSync(path.join(root, attemptId, retained), 'utf8')).toBe('operator replacement')
   })
 
   it('uses an exclusive archive target and preserves a concurrent claimant', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-archive-target-race-'))
     const root = agentsDir(dir)
-    const runId = randomUUID()
+    const attemptId = randomUUID()
     fs.mkdirSync(root, { recursive: true })
     const source = path.join(root, 'gameplay.codex.jsonl')
     fs.writeFileSync(source, 'original evidence')
@@ -156,7 +156,7 @@ describe('archiveChildStreams', () => {
       return originalOpen(file, flags, mode)
     }) as typeof fs.openSync)
     try {
-      expect(() => archiveChildStreams(dir!, runId)).toThrow()
+      expect(() => archiveChildStreams(dir!, attemptId)).toThrow()
     } finally {
       spy.mockRestore()
     }

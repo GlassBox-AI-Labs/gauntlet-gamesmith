@@ -37,7 +37,7 @@ function canonical(value: string): string {
 }
 
 /**
- * The directories agents can write into: every run folder the app manages, plus
+ * The directories agents can write into: every build folder the app manages, plus
  * the parent it creates new ones in.
  *
  * This used to be "any directory under a git checkout", which rejected the real
@@ -60,7 +60,7 @@ export function clearAgentWritableRootsForTest(): void {
 /**
  * Callers name the roots they know about; this adds the ones the app tracks
  * globally. A provider that fails must not make every CLI unresolvable, so its
- * failure falls back to the caller's own roots — which on the run path already
+ * failure falls back to the caller's own roots — which on the build path already
  * include the workspace being built.
  */
 function effectiveRoots(unsafeRoots: readonly string[]): string[] {
@@ -113,7 +113,7 @@ export function resolveCliExecutable(
 
 /**
  * Search PATH once, pin the installed launcher path, then revalidate it for
- * every later status/login/run spawn. This removes all bare-name PATH lookups
+ * every later status/login/attempt spawn. This removes all bare-name PATH lookups
  * after an agent has had a chance to write executable project content, while
  * still following the CLI's own updater: `claude update` repoints
  * ~/.local/bin/claude at a new version file, and pinning the version file

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { readExactFileDescriptor } from './bounded-fd'
 import { workflowAgentMetricId } from '../shared/agent-id'
-import type { AgentMetric } from '../shared/loop'
+import type { AgentMetric } from '../shared/build'
 import { safeWorkflowRuntimePath } from './workflow-path'
 
 /**
@@ -17,7 +17,7 @@ import { safeWorkflowRuntimePath } from './workflow-path'
 const MAX_WORKFLOW_RUNS = 128
 const MAX_WORKFLOW_AGENTS = 512
 const MAX_DIRECTORY_ENTRIES = 1_024
-const MAX_RUN_FILE_BYTES = 1024 * 1024
+const MAX_ATTEMPT_FILE_BYTES = 1024 * 1024
 const MAX_TOTAL_READ_BYTES = 2 * 1024 * 1024
 const MAX_TOTAL_AGENTS = 512
 const MAX_TEXT_LENGTH = 1_000
@@ -118,14 +118,14 @@ export function readWorkflowProgress(dir: string): WorkflowProgress {
       // write. A failed parse just means "try again on the next poll".
       descriptor = fs.openSync(path.join(dir, file), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
       const stat = fs.fstatSync(descriptor)
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_RUN_FILE_BYTES) continue
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_ATTEMPT_FILE_BYTES) continue
       if (stat.size > remainingBytes) {
         warning = `Workflow progress projection reached its ${MAX_TOTAL_READ_BYTES}-byte aggregate read limit; remaining summaries were omitted this poll.`
         continue
       }
       remainingBytes -= stat.size
       const parsed: unknown = JSON.parse(
-        readExactFileDescriptor(descriptor, stat.size, MAX_RUN_FILE_BYTES, `Workflow progress ${file}`).toString('utf8'),
+        readExactFileDescriptor(descriptor, stat.size, MAX_ATTEMPT_FILE_BYTES, `Workflow progress ${file}`).toString('utf8'),
       )
       if (!isRecord(parsed)) continue
       run = parsed
@@ -136,16 +136,16 @@ export function readWorkflowProgress(dir: string): WorkflowProgress {
     }
     const runId = file.slice(0, -'.json'.length)
     const name = text(run.workflowName) ?? runId
-    const runTokens = count(run.totalTokens)
+    const attemptTokens = count(run.totalTokens)
     runs.push({
       runId,
       name,
       status: text(run.status, 128) ?? 'unknown',
       agentCount: count(run.agentCount),
-      totalTokens: runTokens,
+      totalTokens: attemptTokens,
       totalToolCalls: count(run.totalToolCalls),
     })
-    totalTokens = Math.min(Number.MAX_SAFE_INTEGER, totalTokens + runTokens)
+    totalTokens = Math.min(Number.MAX_SAFE_INTEGER, totalTokens + attemptTokens)
 
     const allProgress = Array.isArray(run.workflowProgress) ? run.workflowProgress : []
     const workflowProgress = allProgress.slice(0, Math.min(MAX_WORKFLOW_AGENTS, remainingAgents))

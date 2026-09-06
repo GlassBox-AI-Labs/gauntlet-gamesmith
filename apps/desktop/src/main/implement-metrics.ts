@@ -1,5 +1,5 @@
 import { parseAgentMetricId } from '../shared/agent-id'
-import type { AgentMetric, LoopModels, RunMetrics, TokenTotals } from '../shared/loop'
+import type { AgentMetric, BuildModels, AttemptMetrics, TokenTotals } from '../shared/build'
 import { canonicalModelId, DISPATCHER_MODEL_ID, isCrossHarness } from '../shared/models'
 import { estimateCostUsd } from './pricing'
 import { normalizeStreamUsage } from './streams/claude-stream'
@@ -16,7 +16,7 @@ export interface ImplementMessageUsage {
 }
 
 export interface ImplementMetricInput {
-  models: LoopModels
+  models: BuildModels
   agentLabels: Map<string, { label: string; model: string | null }>
   messageUsage: Map<string, ImplementMessageUsage>
   result: Record<string, unknown> | null
@@ -55,7 +55,7 @@ export function hasCliModelCost(result: Record<string, unknown> | null): boolean
 }
 
 /** Build one deterministic, normalized accounting tree from every worker source. */
-export function buildImplementMetrics(input: ImplementMetricInput): RunMetrics {
+export function buildImplementMetrics(input: ImplementMetricInput): AttemptMetrics {
   const {
     models,
     agentLabels,
@@ -108,7 +108,7 @@ export function buildImplementMetrics(input: ImplementMetricInput): RunMetrics {
     if (!agent.lastTs || ts > agent.lastTs) agent.lastTs = ts
   }
 
-  const perModel: RunMetrics['perModel'] = Object.create(null) as RunMetrics['perModel']
+  const perModel: AttemptMetrics['perModel'] = Object.create(null) as AttemptMetrics['perModel']
   const modelUsage = result?.modelUsage
   if (modelUsage && typeof modelUsage === 'object' && !Array.isArray(modelUsage)) {
     const maxCliModels = MAX_PERSISTED_MODELS - (childAgents.length && models.subagentModel ? 1 : 0)

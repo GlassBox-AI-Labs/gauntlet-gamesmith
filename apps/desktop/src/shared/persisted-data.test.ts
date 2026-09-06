@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeRunMetrics, normalizeVerdict } from './persisted-data'
+import { normalizeAttemptMetrics, normalizeVerdict } from './persisted-data'
 
 describe('normalizeVerdict', () => {
   const valid = {
@@ -56,7 +56,7 @@ describe('normalizeVerdict', () => {
 
 describe('normalizeRunMetrics', () => {
   it('normalizes additive cache token fields for an old row', () => {
-    const metrics = normalizeRunMetrics({
+    const metrics = normalizeAttemptMetrics({
       agents: [
         {
           id: 'orchestrator',
@@ -75,8 +75,8 @@ describe('normalizeRunMetrics', () => {
     expect(metrics?.perModel['claude-opus-5'].tokens).toEqual({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0 })
   })
 
-  it('preserves bounded historical model labels without hiding the run', () => {
-    const metrics = normalizeRunMetrics({
+  it('preserves bounded historical model labels without hiding the build', () => {
+    const metrics = normalizeAttemptMetrics({
       agents: [
         {
           id: 'synthetic',
@@ -108,7 +108,7 @@ describe('normalizeRunMetrics', () => {
   })
 
   it('normalizes a bounded durable transcript projection cursor', () => {
-    const metrics = normalizeRunMetrics({
+    const metrics = normalizeAttemptMetrics({
       agents: [],
       perModel: {},
       projection: {
@@ -138,7 +138,7 @@ describe('normalizeRunMetrics', () => {
 
   it('redacts free-form agent fields without changing accounting data', () => {
     const secret = `ghp_${'a'.repeat(36)}`
-    const metrics = normalizeRunMetrics({
+    const metrics = normalizeAttemptMetrics({
       agents: [{
         id: 'child:worker',
         label: `worker ${secret}`,
@@ -174,7 +174,7 @@ describe('normalizeRunMetrics', () => {
 
   it('redacts credential-shaped model identifiers without losing per-model accounting', () => {
     const secretModel = `ghp_${'b'.repeat(36)}`
-    const metrics = normalizeRunMetrics({
+    const metrics = normalizeAttemptMetrics({
       agents: [{
         id: 'orchestrator', label: 'orchestrator', model: secretModel, messages: 1,
         tokens: { input: 19, output: 3, cacheRead: 2, cacheWrite: 1 }, firstTs: null, lastTs: null,
@@ -194,7 +194,7 @@ describe('normalizeRunMetrics', () => {
 
   it('redacts a credential-shaped agent identifier while preserving the row', () => {
     const secretId = `sk-proj-${'e'.repeat(24)}`
-    const metrics = normalizeRunMetrics({
+    const metrics = normalizeAttemptMetrics({
       agents: [{
         id: secretId, label: 'provider agent', model: null, messages: 1,
         tokens: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, firstTs: null, lastTs: null,
@@ -217,6 +217,6 @@ describe('normalizeRunMetrics', () => {
     { agents: [], perModel: {}, projection: { loggedOutLines: 1, loggedErrLines: 0, childOffsets: { '../escape': 1 }, workflowOffsets: {} } },
     { agents: [], perModel: {}, projection: { loggedOutLines: 1, loggedErrLines: 0, childOffsets: {}, workflowOffsets: { 'wf_x/journal.jsonl': -1 } } },
   ])('rejects malformed metrics %#', (value) => {
-    expect(normalizeRunMetrics(value)).toBeNull()
+    expect(normalizeAttemptMetrics(value)).toBeNull()
   })
 })

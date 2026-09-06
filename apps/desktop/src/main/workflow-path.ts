@@ -14,7 +14,7 @@ function contained(root: string, target: string): boolean {
  * symlinks that account's `projects` back to `<kind>/projects` so switching
  * accounts between rounds still continues the same session (see accounts.ts
  * SHARED_ENTRIES). Resolving only against the account dir therefore rejected a
- * link the app had just created, and an implement run on any account but the
+ * link the app had just created, and an implement attempt on any account but the
  * primary died on its first workflow poll. Returns null for a home that is not
  * under a `harnesses` root — an injected test home keeps the stricter bound.
  */

@@ -1,14 +1,14 @@
-import type { LoopRecord, RunMetrics, RunRecord } from '../../shared/loop'
+import type { BuildRecord, AttemptMetrics, PhaseAttempt } from '../../shared/build'
 import { buildCriticPrompt } from '../../shared/prompts'
 import { harnessFor } from '../../shared/models'
 import type { Ledger } from '../ledger'
 import { planCompletion } from '../round-planner'
 import { captureRoundRevision } from '../round-revision'
-import { commitRunningAttempt } from '../run-transition'
+import { commitRunningAttempt } from '../attempt-transition'
 import type { ExitInfo } from './types'
 
 export interface ImplementOutcome {
-  metrics: RunMetrics
+  metrics: AttemptMetrics
   costUsd: number | null
   costSource: string | null
   tokens: { input: number; output: number } | null
@@ -26,8 +26,8 @@ interface TerminalLog {
 
 export interface ImplementFinalizeRuntime {
   ledger: Ledger
-  loop: LoopRecord
-  run: RunRecord
+  build: BuildRecord
+  attempt: PhaseAttempt
   now(): number
   nowIso(): string
   referenceDir: string
@@ -40,8 +40,8 @@ export interface ImplementFinalizeRuntime {
   verifyReference(terminalLog: TerminalLog): boolean
   persistLog(kind: string, text: string): void
   notifyPersistedLog(kind: string, text: string): void
-  persistLoopTerminal(status: 'exhausted' | 'stopped', reason: string): void
-  finishLoop(status: 'exhausted' | 'stopped', reason: string): void
+  persistBuildTerminal(status: 'exhausted' | 'stopped', reason: string): void
+  finishBuild(status: 'exhausted' | 'stopped', reason: string): void
   broadcast(): void
 }
 
@@ -88,81 +88,81 @@ export async function finalizeImplement(
   exit: ExitInfo,
   collect: () => ImplementOutcome,
 ): Promise<void> {
-  const { ledger, loop, run } = runtime
-  if (ledger.getRun(run.id)?.status !== 'running') return
+  const { ledger, build, attempt } = runtime
+  if (ledger.getAttempt(attempt.id)?.status !== 'running') return
   let outcome = collect()
   if (!outcome.error && !runtime.isStopRequested() && !exit.timedOut) {
     await runtime.awaitChildren()
     outcome = collect()
   }
-  const projection = ledger.getRun(run.id)?.metrics?.projection
-  ledger.patchRun(run.id, {
+  const projection = ledger.getAttempt(attempt.id)?.metrics?.projection
+  ledger.patchAttempt(attempt.id, {
     metrics: { ...outcome.metrics, ...(projection ? { projection } : {}) },
     costUsd: outcome.costUsd,
     costSource: outcome.costSource,
     inputTokens: outcome.tokens?.input,
     outputTokens: outcome.tokens?.output,
     numTurns: outcome.numTurns,
-    durationMs: runtime.now() - Date.parse(ledger.getRun(run.id)?.startedAt ?? run.createdAt),
+    durationMs: runtime.now() - Date.parse(ledger.getAttempt(attempt.id)?.startedAt ?? attempt.createdAt),
     sessionId: outcome.sessionId,
     summary: outcome.summary,
     finishedAt: runtime.nowIso(),
   })
   const terminalMetric = { kind: 'metric', text: metricsText(outcome) }
 
-  if (runtime.finishCancelled(exit, 'Implement run timed out.', terminalMetric)) return
+  if (runtime.finishCancelled(exit, 'Implement attempt timed out.', terminalMetric)) return
   if (!runtime.verifyCritiqueTree(terminalMetric)) return
   if (outcome.error) {
     if (await runtime.retryRateLimit(outcome.error, terminalMetric)) return
-    runtime.failAttempt(outcome.error, `Implement run failed: ${outcome.error}`, terminalMetric)
+    runtime.failAttempt(outcome.error, `Implement build failed: ${outcome.error}`, terminalMetric)
     return
   }
   if (!runtime.verifyReference(terminalMetric)) return
 
   let revision: string
   try {
-    const parentRevision = ledger.previousImplementRevision(loop.id, run.round)
-    revision = captureRoundRevision({ workspaceDir: loop.workspaceDir, loopId: loop.id, round: run.round, parentRevision })
+    const parentRevision = ledger.previousImplementRevision(build.id, attempt.round)
+    revision = captureRoundRevision({ workspaceDir: build.workspaceDir, buildId: build.id, round: attempt.round, parentRevision })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     runtime.failAttempt(
       `Could not commit round revision: ${message}`,
-      `Round ${run.round} finished, but its Git revision could not be saved: ${message}`,
+      `Round ${attempt.round} finished, but its Git revision could not be saved: ${message}`,
       terminalMetric,
     )
     return
   }
 
-  const latestLoop = ledger.getLoop(loop.id)
-  const projectedCost = (latestLoop?.totalCostUsd ?? 0) + (outcome.costUsd ?? 0)
-  const budgetExceeded = !!latestLoop?.budgetUsd && projectedCost >= latestLoop.budgetUsd
-  const plan = planCompletion({ role: 'implement', round: run.round, maxRounds: loop.maxRounds, budgetExceeded })
+  const latestBuild = ledger.getBuild(build.id)
+  const projectedCost = (latestBuild?.totalCostUsd ?? 0) + (outcome.costUsd ?? 0)
+  const budgetExceeded = !!latestBuild?.budgetUsd && projectedCost >= latestBuild.budgetUsd
+  const plan = planCompletion({ role: 'implement', round: attempt.round, maxRounds: build.maxRounds, budgetExceeded })
   const terminalReason = plan.kind === 'finish-budget'
-    ? `Budget ceiling hit: $${projectedCost.toFixed(2)} of $${latestLoop!.budgetUsd!.toFixed(2)} (equivalent API cost).`
+    ? `Budget ceiling hit: $${projectedCost.toFixed(2)} of $${latestBuild!.budgetUsd!.toFixed(2)} (equivalent API cost).`
     : plan.kind === 'finish-exhausted'
-      ? `Max rounds (${loop.maxRounds}) reached after round ${run.round} — no critique, since no round is left for it to gate.`
+      ? `Max rounds (${build.maxRounds}) reached after round ${attempt.round} — no critique, since no round is left for it to gate.`
       : null
-  const revisionMessage = `Round ${run.round} committed at revision ${revision}.`
-  const applied = commitRunningAttempt(ledger, loop.id, run.id, { status: 'succeeded', revision }, () => {
+  const revisionMessage = `Round ${attempt.round} committed at revision ${revision}.`
+  const applied = commitRunningAttempt(ledger, build.id, attempt.id, { status: 'succeeded', revision }, () => {
     runtime.persistLog(terminalMetric.kind, terminalMetric.text)
     runtime.persistLog('artifact', revisionMessage)
     if (plan.kind === 'queue-critique') {
-      const critique = ledger.createRun({
-        loopId: loop.id,
+      const critique = ledger.createAttempt({
+        buildId: build.id,
         round: plan.round,
         role: 'critique',
-        harness: harnessFor(loop.models.criticModel),
-        prompt: buildCriticPrompt(loop.prompt, plan.round, runtime.referenceDir, revision),
+        harness: harnessFor(build.models.criticModel),
+        prompt: buildCriticPrompt(build.prompt, plan.round, runtime.referenceDir, revision),
       })
-      ledger.patchRun(critique.id, { revision })
+      ledger.patchAttempt(critique.id, { revision })
     } else if (terminalReason) {
-      runtime.persistLoopTerminal(plan.kind === 'finish-exhausted' ? 'exhausted' : 'stopped', terminalReason)
+      runtime.persistBuildTerminal(plan.kind === 'finish-exhausted' ? 'exhausted' : 'stopped', terminalReason)
     }
   })
   if (!applied) return
   runtime.notifyPersistedLog(terminalMetric.kind, terminalMetric.text)
   runtime.notifyPersistedLog('artifact', revisionMessage)
-  if (plan.kind === 'finish-budget') runtime.finishLoop('stopped', terminalReason!)
-  else if (plan.kind === 'finish-exhausted') runtime.finishLoop('exhausted', terminalReason!)
+  if (plan.kind === 'finish-budget') runtime.finishBuild('stopped', terminalReason!)
+  else if (plan.kind === 'finish-exhausted') runtime.finishBuild('exhausted', terminalReason!)
   else runtime.broadcast()
 }

@@ -6,7 +6,7 @@ const homes = { claudeHome: '/homes/claude', codexHome: '/homes/codex' }
 const ctx = (models: ReturnType<typeof resolveModels>) => ({ models, prompt: 'build it', ...homes })
 
 describe('implementPlan', () => {
-  it('runs claude for a claude orchestrator, pinning the subagent model', () => {
+  it('builds claude for a claude orchestrator, pinning the subagent model', () => {
     const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'claude-fable-5', subagentModel: 'claude-opus-5' }, null)))
     expect(plan.bin).toBe('claude')
     expect(plan.args).toContain('--dangerously-skip-permissions')
@@ -21,7 +21,7 @@ describe('implementPlan', () => {
     expect(Number(plan.env.BASH_MAX_TIMEOUT_MS)).toBeGreaterThan(60 * 60_000)
   })
 
-  it('runs codex with only its own login when no cross-harness worker is configured', () => {
+  it('builds codex with only its own login when no cross-harness worker is configured', () => {
     const plan = implementPlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol', orchestratorEffort: 'ultra', subagentModel: null }, null, null, { assetModel: null })))
     expect(plan.bin).toBe('codex')
     expect(plan.args).toContain('exec')
@@ -49,7 +49,7 @@ describe('implementPlan', () => {
     // `exec resume` has no `-s`; passing it exits 2 before the model is reached.
     expect(codex.args).not.toContain('-s')
     expect(codex.args).toContain('sandbox_mode=workspace-write')
-    // A fresh run still uses the flag, and never the config key.
+    // A fresh build still uses the flag, and never the config key.
     const fresh = implementPlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol' }, null)))
     expect(fresh.args).toContain('-s')
     expect(fresh.args).not.toContain('sandbox_mode=workspace-write')

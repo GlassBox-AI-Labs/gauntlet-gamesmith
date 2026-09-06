@@ -19,7 +19,7 @@ function workspace(): string {
 }
 
 afterEach(() => {
-  stopPlay('loop-1')
+  stopPlay('build-1')
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -35,7 +35,7 @@ describe('play safety', () => {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'attacker' } }))
     const spawn = vi.fn()
 
-    const state = startPlay('loop-1', dir, null, null, vi.fn(), { spawn: spawn as never }, {
+    const state = startPlay('build-1', dir, null, null, vi.fn(), { spawn: spawn as never }, {
       expectedWorkspace,
       protectedRoots: [],
     })
@@ -52,7 +52,7 @@ describe('play safety', () => {
   it('uses a bounded package file and a fixed npm argv', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'attacker controlled command' } }))
-    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['run', 'dev'] })
+    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['build', 'dev'] })
 
     fs.writeFileSync(path.join(dir, 'package.json'), ' '.repeat(1024 * 1024 + 1))
     expect(detectLaunch(dir)).toEqual({ error: expect.stringContaining('Nothing launchable') })
@@ -139,7 +139,7 @@ describe('play safety', () => {
       .mockReturnValueOnce(true)
       .mockReturnValue(false)
 
-    startPlay('loop-1', dir, null, null, notify, {
+    startPlay('build-1', dir, null, null, notify, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start'],
@@ -160,7 +160,7 @@ describe('play safety', () => {
     expect(kill).not.toHaveBeenCalledWith(-4242, 'SIGTERM')
     expect(playEnvironment(dir)).not.toHaveProperty('GITHUB_TOKEN')
     expect(notify).toHaveBeenLastCalledWith(
-      expect.objectContaining({ loopId: 'loop-1', running: false, error: expect.stringContaining('safety timeout') }),
+      expect.objectContaining({ buildId: 'build-1', running: false, error: expect.stringContaining('safety timeout') }),
     )
   })
 
@@ -173,7 +173,7 @@ describe('play safety', () => {
     const fakeTimer = (): NodeJS.Timeout => ({ unref: () => fakeTimer() }) as unknown as NodeJS.Timeout
     const kill = vi.fn()
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start'],
@@ -184,7 +184,7 @@ describe('play safety', () => {
       }) as typeof setTimeout,
       clearTimer: vi.fn(),
     })
-    stopPlay('loop-1')
+    stopPlay('build-1')
     child.emit('exit', 0)
 
     expect(callbacks).toHaveLength(1)
@@ -200,7 +200,7 @@ describe('play safety', () => {
     let probeFails = true
     const kill = vi.fn()
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start'],
@@ -214,16 +214,16 @@ describe('play safety', () => {
       }) as typeof setTimeout,
       clearTimer: vi.fn(),
     })
-    stopPlay('loop-1')
+    stopPlay('build-1')
 
-    expect(playState('loop-1')).toEqual(expect.objectContaining({
+    expect(playState('build-1')).toEqual(expect.objectContaining({
       running: true,
       error: expect.stringContaining('could not be checked'),
     }))
     expect(kill).not.toHaveBeenCalled()
     probeFails = false
     callbacks[1]()
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
   })
 
   it('keeps bounded escalation for descendants after the npm leader exits', () => {
@@ -239,7 +239,7 @@ describe('play safety', () => {
       .mockReturnValueOnce(true)
       .mockReturnValue(false)
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start', '4243:child-start'],
@@ -250,7 +250,7 @@ describe('play safety', () => {
       }) as typeof setTimeout,
       clearTimer: vi.fn(),
     })
-    stopPlay('loop-1')
+    stopPlay('build-1')
     child.emit('exit', 0)
     callbacks[1]()
     callbacks[2]()
@@ -273,7 +273,7 @@ describe('play safety', () => {
       .mockReturnValueOnce(true)
       .mockReturnValue(false)
 
-    startPlay('loop-1', dir, null, null, notify, {
+    startPlay('build-1', dir, null, null, notify, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:launcher', '4243:server'],
@@ -286,13 +286,13 @@ describe('play safety', () => {
     })
     child.emit('exit', 0)
 
-    expect(playState('loop-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('background server') }))
+    expect(playState('build-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('background server') }))
     expect(kill).toHaveBeenCalledWith(-4242, 'SIGINT')
     callbacks[1]()
     expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL')
     callbacks[2]()
-    expect(playState('loop-1').running).toBe(false)
-    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ loopId: 'loop-1', running: false }))
+    expect(playState('build-1').running).toBe(false)
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ buildId: 'build-1', running: false }))
   })
 
   it('retains a late-forked server identity after the launcher exits', () => {
@@ -313,7 +313,7 @@ describe('play safety', () => {
       groupPresent && identities.includes('4243:server')
     ))
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: ((command: string, args: readonly string[]) => {
         expect(command).toBe('/bin/sh')
         expect(args[1]).toContain('exec "$@"')
@@ -339,13 +339,13 @@ describe('play safety', () => {
     ;(refresh as (() => void) | null)?.()
     child.emit('exit', 0)
 
-    expect(playState('loop-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('background server') }))
+    expect(playState('build-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('background server') }))
     expect(groupAlive.mock.calls.some((call) => call[1].includes('4243:server'))).toBe(true)
     expect(kill).toHaveBeenCalledWith(-4242, 'SIGINT')
 
     groupPresent = false
     callbacks[1]()
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
   })
 
   it('blocks a replacement session until verified shutdown actually settles', () => {
@@ -361,7 +361,7 @@ describe('play safety', () => {
       .mockReturnValue(false)
     const secondSpawn = vi.fn()
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill: vi.fn(),
       groupIdentity: () => ['4242:launcher', '4243:server'],
@@ -372,16 +372,16 @@ describe('play safety', () => {
       }) as typeof setTimeout,
       clearTimer: vi.fn(),
     })
-    stopPlay('loop-1')
-    const blocked = startPlay('loop-1', dir, null, null, vi.fn(), { spawn: secondSpawn as typeof import('node:child_process').spawn })
+    stopPlay('build-1')
+    const blocked = startPlay('build-1', dir, null, null, vi.fn(), { spawn: secondSpawn as typeof import('node:child_process').spawn })
     expect(blocked.running).toBe(true)
     expect(secondSpawn).not.toHaveBeenCalled()
 
     callbacks[1]()
     callbacks[2]()
-    expect(playState('loop-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('survived SIGKILL') }))
+    expect(playState('build-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('survived SIGKILL') }))
     callbacks[3]()
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
   })
 
   it('keeps only the current descendant-settlement poll timer retained', () => {
@@ -393,7 +393,7 @@ describe('play safety', () => {
     let alive = true
     const clearTimer = vi.fn()
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill: vi.fn(),
       groupIdentity: () => ['4242:launcher', '4243:server'],
@@ -411,7 +411,7 @@ describe('play safety', () => {
     alive = false
     callbacks[53]()
 
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
     // Cleanup clears the hard timeout, not all 52 already-fired escalation
     // and polling handles.
     expect(clearTimer).toHaveBeenCalledTimes(1)
@@ -433,7 +433,7 @@ describe('play safety', () => {
       .mockReturnValueOnce(true)
       .mockReturnValue(false)
 
-    startPlay('loop-1', dir, 1, checkout, notify, {
+    startPlay('build-1', dir, 1, checkout, notify, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start'],
@@ -446,7 +446,7 @@ describe('play safety', () => {
     })
     fs.rmSync(checkout, { recursive: true })
     fs.symlinkSync(outside, checkout)
-    stopPlay('loop-1')
+    stopPlay('build-1')
     callbacks[1]()
     callbacks[2]()
 
@@ -481,7 +481,7 @@ describe('play safety', () => {
       .mockReturnValueOnce(['4242:unrelated-reuse'])
       .mockReturnValueOnce([])
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity,
@@ -496,13 +496,13 @@ describe('play safety', () => {
     })
     child.emit('exit', 0)
 
-    expect(playState('loop-1')).toEqual(expect.objectContaining({
+    expect(playState('build-1')).toEqual(expect.objectContaining({
       running: true,
       error: expect.stringContaining('possibly unrelated group'),
     }))
     expect(kill).not.toHaveBeenCalled()
     callbacks[1]()
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
   })
 
   it.each(['exit', 'error'] as const)('keeps Play blocked when the %s callback cannot re-probe group identity', (event) => {
@@ -516,7 +516,7 @@ describe('play safety', () => {
       .mockImplementationOnce(() => { throw new Error('ps unavailable') })
       .mockReturnValue([])
     const kill = vi.fn()
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity,
@@ -530,13 +530,13 @@ describe('play safety', () => {
     })
 
     expect(() => event === 'exit' ? child.emit('exit', 0) : child.emit('error', new Error('launcher failed'))).not.toThrow()
-    expect(playState('loop-1')).toEqual(expect.objectContaining({
+    expect(playState('build-1')).toEqual(expect.objectContaining({
       running: true,
       error: expect.stringContaining('possibly unrelated group'),
     }))
     expect(kill).not.toHaveBeenCalled()
     callbacks[1]()
-    expect(playState('loop-1').running).toBe(false)
+    expect(playState('build-1').running).toBe(false)
   })
 
   it('reports a failed browser open without losing the running Play session', async () => {
@@ -547,7 +547,7 @@ describe('play safety', () => {
     Object.assign(child, { pid: 4242, stdout, stderr: new PassThrough() })
     const notify = vi.fn()
 
-    startPlay('loop-1', dir, null, null, notify, {
+    startPlay('build-1', dir, null, null, notify, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       groupIdentity: () => ['4242:original-start'],
       openExternal: vi.fn(async () => { throw new Error('browser denied') }),
@@ -566,12 +566,12 @@ describe('play safety', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }))
     const notify = vi.fn()
-    const state = startPlay('loop-1', dir, null, null, notify, {
+    const state = startPlay('build-1', dir, null, null, notify, {
       spawn: (() => { throw new Error('spawn denied') }) as typeof import('node:child_process').spawn,
     })
 
     expect(state).toEqual(expect.objectContaining({ running: false, error: expect.stringContaining('spawn denied') }))
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ loopId: 'loop-1', running: false }))
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ buildId: 'build-1', running: false }))
   })
 
   it('supervises and stops a returned child that has no safe numeric PID', () => {
@@ -582,7 +582,7 @@ describe('play safety', () => {
     Object.assign(child, { pid: undefined, exitCode: null, signalCode: null, stdout: new PassThrough(), stderr: new PassThrough(), kill: childKill })
     const notify = vi.fn()
     const timers: Array<() => void> = []
-    const state = startPlay('loop-1', dir, null, null, notify, {
+    const state = startPlay('build-1', dir, null, null, notify, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       setTimer: ((callback: () => void) => {
         timers.push(callback)
@@ -595,7 +595,7 @@ describe('play safety', () => {
     timers.at(-1)?.()
     expect(childKill).toHaveBeenCalledWith('SIGKILL')
     expect(() => child.emit('error', new Error('asynchronous spawn failure'))).not.toThrow()
-    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ loopId: 'loop-1', running: false }))
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ buildId: 'build-1', running: false }))
   })
 
   it('does not signal a reused process group whose launch identity is gone', () => {
@@ -606,13 +606,13 @@ describe('play safety', () => {
     Object.assign(child, { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough(), kill: childKill })
     const kill = vi.fn()
 
-    startPlay('loop-1', dir, null, null, vi.fn(), {
+    startPlay('build-1', dir, null, null, vi.fn(), {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       kill,
       groupIdentity: () => ['4242:original-start'],
       groupAlive: () => false,
     })
-    stopPlay('loop-1')
+    stopPlay('build-1')
 
     expect(kill).not.toHaveBeenCalled()
   })
@@ -627,7 +627,7 @@ describe('play safety', () => {
     const timers: Array<() => void> = []
     const notify = vi.fn()
     let gateFile = ''
-    const state = startPlay('loop-1', dir, null, null, notify, {
+    const state = startPlay('build-1', dir, null, null, notify, {
       spawn: ((command: string, args: readonly string[]) => {
         expect(command).toBe('/bin/sh')
         gateFile = args[3]
@@ -647,8 +647,8 @@ describe('play safety', () => {
     expect(childKill).toHaveBeenCalledWith('SIGINT')
     timers.at(-1)?.()
     expect(childKill).toHaveBeenCalledWith('SIGKILL')
-    stopPlay('loop-1')
-    expect(playState('loop-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('launch gate') }))
+    stopPlay('build-1')
+    expect(playState('build-1')).toEqual(expect.objectContaining({ running: true, error: expect.stringContaining('launch gate') }))
     expect(kill).not.toHaveBeenCalled()
     let settled = false
     const wait = stopAllPlayAndWait().then(() => { settled = true })
@@ -658,8 +658,8 @@ describe('play safety', () => {
     await wait
     expect(settled).toBe(true)
     expect(hasActivePlay()).toBe(false)
-    expect(playState('loop-1').running).toBe(false)
-    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ loopId: 'loop-1', running: false }))
+    expect(playState('build-1').running).toBe(false)
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ buildId: 'build-1', running: false }))
   })
 
   it('signals and settles a verified Stop even when renderer notification throws', async () => {
@@ -670,7 +670,7 @@ describe('play safety', () => {
     const callbacks: Array<() => void> = []
     const kill = vi.fn()
     const groupAlive = vi.fn().mockReturnValueOnce(true).mockReturnValue(false)
-    startPlay('loop-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
+    startPlay('build-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
       spawn: (() => child) as typeof import('node:child_process').spawn,
       groupIdentity: () => ['4242:owned'],
       groupAlive,
@@ -681,7 +681,7 @@ describe('play safety', () => {
       }) as typeof setTimeout,
     })
 
-    expect(() => stopPlay('loop-1')).not.toThrow()
+    expect(() => stopPlay('build-1')).not.toThrow()
     expect(kill).toHaveBeenCalledWith(-4242, 'SIGINT')
     const settled = stopAllPlayAndWait()
     callbacks.at(-1)?.()
@@ -697,7 +697,7 @@ describe('play safety', () => {
     const callbacks: Array<() => void> = []
     const kill = vi.fn()
     const groupAlive = vi.fn().mockReturnValueOnce(true).mockReturnValue(false)
-    startPlay('loop-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
+    startPlay('build-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
       spawn: (() => verified) as typeof import('node:child_process').spawn,
       groupIdentity: () => ['4242:owned'],
       groupAlive,
@@ -716,7 +716,7 @@ describe('play safety', () => {
     const unverified = new EventEmitter() as ChildProcess
     const directKill = vi.fn()
     Object.assign(unverified, { pid: undefined, exitCode: null, signalCode: null, stdout: new PassThrough(), stderr: new PassThrough(), kill: directKill })
-    startPlay('loop-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
+    startPlay('build-1', dir, null, null, () => { throw new Error('renderer destroyed') }, {
       spawn: (() => unverified) as typeof import('node:child_process').spawn,
       setTimer: ((callback: () => void) => {
         callbacks.push(callback)

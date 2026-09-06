@@ -33,7 +33,7 @@ export interface HarnessConnections {
  * The shared "is this CLI here, and is it signed in" wiring: one detect and
  * probe per harness on mount, plus the login and terminal event subscriptions.
  *
- * Both the Agents tab and the first-run flow need exactly this, and the login
+ * Both the Agents tab and the first-build flow need exactly this, and the login
  * phases only make sense if one reducer owns them, so it lives here instead of
  * being rebuilt in each view.
  */

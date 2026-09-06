@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { LoopLogLine, RunRecord } from '../shared/loop'
+import type { BuildLogLine, PhaseAttempt } from '../shared/build'
 import { withPromptLogs } from './prompt-logs'
 
-function run(prompt: string): RunRecord {
+function attempt(prompt: string): PhaseAttempt {
   return {
     id: '11111111-1111-4111-8111-111111111111',
-    loopId: '22222222-2222-4222-8222-222222222222',
+    buildId: '22222222-2222-4222-8222-222222222222',
     round: 1,
     role: 'implement',
     harness: 'claude',
@@ -39,10 +39,10 @@ function run(prompt: string): RunRecord {
 
 describe('withPromptLogs', () => {
   it('projects the complete persisted prompt when legacy history has no prompt event', () => {
-    const record = run('build the game')
-    const event: LoopLogLine = {
-      loopId: record.loopId,
-      runId: record.id,
+    const record = attempt('build the game')
+    const event: BuildLogLine = {
+      buildId: record.buildId,
+      attemptId: record.id,
       ts: record.createdAt,
       kind: 'system',
       channel: 'system',
@@ -53,20 +53,20 @@ describe('withPromptLogs', () => {
   })
 
   it('projects one timestamped raw-stream entry for a legacy started attempt', () => {
-    const record = { ...run('build the game'), startedAt: '2026-09-03T00:01:00.000Z' }
+    const record = { ...attempt('build the game'), startedAt: '2026-09-03T00:01:00.000Z' }
     const projected = withPromptLogs([record], [])
     expect(projected.filter((line) => line.kind === 'raw-stream')).toEqual([expect.objectContaining({
-      runId: record.id,
+      attemptId: record.id,
       ts: record.startedAt,
       text: 'Raw output stream opened for this attempt.',
     })])
   })
 
   it('replaces a partial bounded-tail projection with every prompt chunk', () => {
-    const record = run('x'.repeat(7_500))
-    const partial: LoopLogLine = {
-      loopId: record.loopId,
-      runId: record.id,
+    const record = attempt('x'.repeat(7_500))
+    const partial: BuildLogLine = {
+      buildId: record.buildId,
+      attemptId: record.id,
       ts: record.createdAt,
       kind: 'prompt',
       channel: 'prompt',
@@ -79,29 +79,29 @@ describe('withPromptLogs', () => {
   })
 
   it('redacts before chunking so a secret cannot straddle projected records', () => {
-    const record = run(`goal\nAWS_SECRET_ACCESS_KEY=${'s'.repeat(4_000)}`)
+    const record = attempt(`goal\nAWS_SECRET_ACCESS_KEY=${'s'.repeat(4_000)}`)
     const projected = withPromptLogs([record], [])
     expect(projected).toHaveLength(1)
     expect(projected[0].text).toContain('[REDACTED]')
     expect(projected[0].text).not.toContain('s'.repeat(100))
   })
 
-  it('does not materialize prompts for runs outside the bounded event response', () => {
+  it('does not materialize prompts for builds outside the bounded event response', () => {
     const records = Array.from({ length: 100 }, (_, index) => ({
-      ...run('x'.repeat(100_000)),
+      ...attempt('x'.repeat(100_000)),
       id: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111`,
     }))
     expect(withPromptLogs(records, [])).toEqual([])
   })
 
-  it('caps reconstruction across represented runs and points to the Prompt browser', () => {
+  it('caps reconstruction across represented builds and points to the Prompt browser', () => {
     const records = [
-      { ...run('a'.repeat(300_000)), id: '11111111-1111-4111-8111-111111111111' },
-      { ...run('b'.repeat(300_000)), id: '33333333-3333-4333-8333-333333333333' },
+      { ...attempt('a'.repeat(300_000)), id: '11111111-1111-4111-8111-111111111111' },
+      { ...attempt('b'.repeat(300_000)), id: '33333333-3333-4333-8333-333333333333' },
     ]
-    const source = records.map((record): LoopLogLine => ({
-      loopId: record.loopId,
-      runId: record.id,
+    const source = records.map((record): BuildLogLine => ({
+      buildId: record.buildId,
+      attemptId: record.id,
       ts: record.createdAt,
       kind: 'system',
       channel: 'system',

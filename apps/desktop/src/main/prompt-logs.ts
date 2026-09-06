@@ -1,68 +1,68 @@
-import { runPromptLabel, type LoopLogLine, type RunRole } from '../shared/loop'
+import { attemptPromptLabel, type BuildLogLine, type PhaseRole } from '../shared/build'
 import { redactLogText } from '../shared/redact-log'
 
 const PROMPT_CHUNK_SIZE = 3_600
 const MAX_SYNTHETIC_PROMPT_BYTES = 512 * 1024
 
-export interface PromptLogRun {
+export interface PromptLogAttempt {
   id: string
-  loopId: string
+  buildId: string
   round: number
-  role: RunRole
+  role: PhaseRole
   prompt: string
   promptComplete?: boolean
   createdAt: string
   startedAt: string | null
 }
 
-function projectedPrompt(run: PromptLogRun, prompt: string): LoopLogLine[] {
+function projectedPrompt(attempt: PromptLogAttempt, prompt: string): BuildLogLine[] {
   const count = Math.max(1, Math.ceil(prompt.length / PROMPT_CHUNK_SIZE))
   return Array.from({ length: count }, (_, index) => ({
-    loopId: run.loopId,
-    runId: run.id,
-    ts: run.startedAt ?? run.createdAt,
+    buildId: attempt.buildId,
+    attemptId: attempt.id,
+    ts: attempt.startedAt ?? attempt.createdAt,
     kind: 'prompt',
     channel: 'prompt',
-    round: run.round,
-    role: run.role,
-    text: `${runPromptLabel(run)}${count > 1 ? ` (${index + 1}/${count})` : ''}:\n${prompt.slice(index * PROMPT_CHUNK_SIZE, (index + 1) * PROMPT_CHUNK_SIZE)}`,
+    round: attempt.round,
+    role: attempt.role,
+    text: `${attemptPromptLabel(attempt)}${count > 1 ? ` (${index + 1}/${count})` : ''}:\n${prompt.slice(index * PROMPT_CHUNK_SIZE, (index + 1) * PROMPT_CHUNK_SIZE)}`,
   }))
 }
 
-function projectedRawStream(run: PromptLogRun): LoopLogLine | null {
-  if (!run.startedAt) return null
+function projectedRawStream(attempt: PromptLogAttempt): BuildLogLine | null {
+  if (!attempt.startedAt) return null
   return {
-    loopId: run.loopId,
-    runId: run.id,
-    ts: run.startedAt,
+    buildId: attempt.buildId,
+    attemptId: attempt.id,
+    ts: attempt.startedAt,
     kind: 'raw-stream',
     channel: 'system',
-    round: run.round,
-    role: run.role,
+    round: attempt.round,
+    role: attempt.role,
     text: 'Raw output stream opened for this attempt.',
   }
 }
 
 /**
- * Ensure a bounded log response contains one complete effective prompt per run.
+ * Ensure a bounded log response contains one complete effective prompt per build.
  * A tail query can retain only the final chunk of a long prompt; any partial or
- * legacy projection is replaced from the canonical run row rather than being
+ * legacy projection is replaced from the canonical attempt row rather than being
  * mistaken for a complete prompt.
  */
-export function withPromptLogs(runs: PromptLogRun[], source: LoopLogLine[]): LoopLogLine[] {
+export function withPromptLogs(attempts: PromptLogAttempt[], source: BuildLogLine[]): BuildLogLine[] {
   let lines = [...source]
-  const representedRuns = new Set(source.flatMap((line) => line.runId ? [line.runId] : []))
+  const representedBuilds = new Set(source.flatMap((line) => line.attemptId ? [line.attemptId] : []))
   let remainingBytes = MAX_SYNTHETIC_PROMPT_BYTES
   let omitted = false
-  const candidates = runs.filter((run) => runs.length === 1 || representedRuns.has(run.id))
+  const candidates = attempts.filter((attempt) => attempts.length === 1 || representedBuilds.has(attempt.id))
   if (candidates.length > 64) omitted = true
   // Spend the bounded reconstruction budget on the newest visible attempts.
-  for (const run of candidates.slice(-64).reverse()) {
-    if (run.promptComplete === false) {
+  for (const attempt of candidates.slice(-64).reverse()) {
+    if (attempt.promptComplete === false) {
       omitted = true
       continue
     }
-    const prompt = redactLogText(run.prompt)
+    const prompt = redactLogText(attempt.prompt)
     const count = Math.max(1, Math.ceil(prompt.length / PROMPT_CHUNK_SIZE))
     // Check the aggregate budget before allocating the chunk/event array.
     const projectedBytes = Buffer.byteLength(prompt, 'utf8') + count * 256
@@ -70,28 +70,28 @@ export function withPromptLogs(runs: PromptLogRun[], source: LoopLogLine[]): Loo
       omitted = true
       continue
     }
-    const expected = projectedPrompt(run, prompt)
-    const existing = lines.filter((line) => line.runId === run.id && line.kind === 'prompt')
+    const expected = projectedPrompt(attempt, prompt)
+    const existing = lines.filter((line) => line.attemptId === attempt.id && line.kind === 'prompt')
     if (existing.length === expected.length && existing.every((line, index) => line.text === expected[index].text)) continue
     remainingBytes -= projectedBytes
 
-    lines = lines.filter((line) => line.runId !== run.id || line.kind !== 'prompt')
-    const firstRunLine = lines.findIndex((line) => line.runId === run.id)
-    lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, ...expected)
+    lines = lines.filter((line) => line.attemptId !== attempt.id || line.kind !== 'prompt')
+    const firstAttemptLine = lines.findIndex((line) => line.attemptId === attempt.id)
+    lines.splice(firstAttemptLine < 0 ? lines.length : firstAttemptLine, 0, ...expected)
   }
   // Histories launched before raw-stream navigation shipped still get the
   // same event-log-first presentation without mutating their stored history.
-  for (const run of candidates.slice(-64)) {
-    const rawStream = projectedRawStream(run)
-    if (!rawStream || lines.some((line) => line.runId === run.id && line.kind === 'raw-stream')) continue
-    const firstRunLine = lines.findIndex((line) => line.runId === run.id)
-    lines.splice(firstRunLine < 0 ? lines.length : firstRunLine, 0, rawStream)
+  for (const attempt of candidates.slice(-64)) {
+    const rawStream = projectedRawStream(attempt)
+    if (!rawStream || lines.some((line) => line.attemptId === attempt.id && line.kind === 'raw-stream')) continue
+    const firstAttemptLine = lines.findIndex((line) => line.attemptId === attempt.id)
+    lines.splice(firstAttemptLine < 0 ? lines.length : firstAttemptLine, 0, rawStream)
   }
-  if (omitted && runs[0]) {
+  if (omitted && attempts[0]) {
     lines.push({
-      loopId: runs[0].loopId,
-      runId: null,
-      ts: source.at(-1)?.ts ?? runs[0].createdAt,
+      buildId: attempts[0].buildId,
+      attemptId: null,
+      ts: source.at(-1)?.ts ?? attempts[0].createdAt,
       kind: 'system',
       channel: 'system',
       text: 'Some full prompts were omitted from this bounded log response; select a round and use its Prompt browser to inspect the canonical persisted prompt.',

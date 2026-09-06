@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
-import type { LoopModels, LoopSnapshot, LoopStatus, RunRecord, RunStatus } from '../shared/loop'
-import { elapsedThroughRunMs, runtimeMs } from '../shared/run-timing'
+import type { BuildModels, BuildSnapshot, BuildStatus, PhaseAttempt, AttemptStatus } from '../shared/build'
+import { elapsedThroughAttemptMs, runtimeMs } from '../shared/attempt-timing'
 import { modelLabel, normalizeModels } from '../shared/models'
 import { isIsoTimestamp } from '../shared/persisted-data'
 import {
@@ -14,28 +14,28 @@ import {
   type ReportFile,
   type ReportRecord,
   type ReportRoundRow,
-  type ReportRunRow,
+  type ReportBuildRow,
 } from '../shared/reports'
 import { PRICE_TABLE_VERSION } from './pricing'
 
-/** Two runs of the same brief share this, which is the point of showing it. */
+/** Two builds of the same brief share this, which is the point of showing it. */
 export function hashPrompt(prompt: string): string {
   return crypto.createHash('sha256').update(normalizePrompt(prompt), 'utf8').digest('hex')
 }
 
 /** Worst news first: a round that is still going, then one that broke, then whatever ended last. */
-function roundStatus(runs: readonly RunRecord[]): RunStatus {
-  if (runs.some((run) => run.status === 'running')) return 'running'
-  if (runs.some((run) => run.status === 'failed')) return 'failed'
-  return runs.at(-1)?.status ?? 'queued'
+function roundStatus(attempts: readonly PhaseAttempt[]): AttemptStatus {
+  if (attempts.some((attempt) => attempt.status === 'running')) return 'running'
+  if (attempts.some((attempt) => attempt.status === 'failed')) return 'failed'
+  return attempts.at(-1)?.status ?? 'queued'
 }
 
-function sumCacheTokens(runs: readonly RunRecord[]): { cacheRead: number | null; cacheWrite: number | null } {
+function sumCacheTokens(attempts: readonly PhaseAttempt[]): { cacheRead: number | null; cacheWrite: number | null } {
   let cacheRead = 0
   let cacheWrite = 0
   let known = false
-  for (const run of runs) {
-    for (const usage of Object.values(run.metrics?.perModel ?? {})) {
+  for (const attempt of attempts) {
+    for (const usage of Object.values(attempt.metrics?.perModel ?? {})) {
       known = true
       cacheRead += usage.tokens.cacheRead
       cacheWrite += usage.tokens.cacheWrite
@@ -44,69 +44,69 @@ function sumCacheTokens(runs: readonly RunRecord[]): { cacheRead: number | null;
   return known ? { cacheRead, cacheWrite } : { cacheRead: null, cacheWrite: null }
 }
 
-function buildRoundRow(loopCreatedAt: string, round: number, runs: readonly RunRecord[]): ReportRoundRow {
-  const verdictRun = [...runs].reverse().find((run) => run.verdict)
-  const cache = sumCacheTokens(runs)
+function buildRoundRow(buildCreatedAt: string, round: number, attempts: readonly PhaseAttempt[]): ReportRoundRow {
+  const verdictAttempt = [...attempts].reverse().find((attempt) => attempt.verdict)
+  const cache = sumCacheTokens(attempts)
   return {
     round,
-    attempts: runs.length,
-    status: roundStatus(runs),
-    score: verdictRun?.verdict?.score ?? null,
-    pass: verdictRun?.verdict?.pass ?? false,
-    costUsd: runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0),
-    inputTokens: runs.reduce((sum, run) => sum + (run.inputTokens ?? 0), 0),
-    outputTokens: runs.reduce((sum, run) => sum + (run.outputTokens ?? 0), 0),
+    attempts: attempts.length,
+    status: roundStatus(attempts),
+    score: verdictAttempt?.verdict?.score ?? null,
+    pass: verdictAttempt?.verdict?.pass ?? false,
+    costUsd: attempts.reduce((sum, attempt) => sum + (attempt.costUsd ?? 0), 0),
+    inputTokens: attempts.reduce((sum, attempt) => sum + (attempt.inputTokens ?? 0), 0),
+    outputTokens: attempts.reduce((sum, attempt) => sum + (attempt.outputTokens ?? 0), 0),
     cacheReadTokens: cache.cacheRead,
     cacheWriteTokens: cache.cacheWrite,
-    activeMs: runs.reduce((sum, run) => sum + (runtimeMs(run) ?? 0), 0),
-    elapsedMs: runs.reduce<number | null>((latest, run) => {
-      const elapsed = elapsedThroughRunMs(loopCreatedAt, run)
+    activeMs: attempts.reduce((sum, attempt) => sum + (runtimeMs(attempt) ?? 0), 0),
+    elapsedMs: attempts.reduce<number | null>((latest, attempt) => {
+      const elapsed = elapsedThroughAttemptMs(buildCreatedAt, attempt)
       return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
     }, null),
-    revision: runs.find((run) => run.role === 'implement' && run.revision)?.revision ?? null,
+    revision: attempts.find((attempt) => attempt.role === 'implement' && attempt.revision)?.revision ?? null,
   }
 }
 
-/** Freeze one run into a report row, copying in everything a reader needs. */
-export function buildReportRow(snapshot: LoopSnapshot): ReportRunRow {
-  const { loop } = snapshot
-  const runs = snapshot.runs.filter((run) => run.status !== 'queued')
-  const byRound = new Map<number, RunRecord[]>()
-  for (const run of runs) byRound.set(run.round, [...(byRound.get(run.round) ?? []), run])
+/** Freeze one build into a report row, copying in everything a reader needs. */
+export function buildReportRow(snapshot: BuildSnapshot): ReportBuildRow {
+  const { build } = snapshot
+  const attempts = snapshot.attempts.filter((attempt) => attempt.status !== 'queued')
+  const byRound = new Map<number, PhaseAttempt[]>()
+  for (const attempt of attempts) byRound.set(attempt.round, [...(byRound.get(attempt.round) ?? []), attempt])
   const rounds = [...byRound.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([round, roundRuns]) => buildRoundRow(loop.createdAt, round, roundRuns))
+    .map(([round, roundAttempts]) => buildRoundRow(build.createdAt, round, roundAttempts))
 
   const scored = rounds.filter((round) => round.score != null)
-  const lastFinished = runs.reduce<string | null>(
-    (last, run) => (run.finishedAt && (!last || run.finishedAt > last) ? run.finishedAt : last),
+  const lastFinished = attempts.reduce<string | null>(
+    (last, attempt) => (attempt.finishedAt && (!last || attempt.finishedAt > last) ? attempt.finishedAt : last),
     null,
   )
-  const cache = sumCacheTokens(runs)
+  const cache = sumCacheTokens(attempts)
 
   return {
-    loopId: loop.id,
-    title: loop.title,
-    prompt: loop.prompt,
-    promptHash: hashPrompt(loop.prompt),
-    workspaceDir: loop.workspaceDir,
-    models: loop.models,
-    status: loop.status,
-    stopReason: loop.stopReason,
+    buildId: build.id,
+    title: build.title,
+    prompt: build.prompt,
+    promptHash: hashPrompt(build.prompt),
+    workspaceDir: build.workspaceDir,
+    models: build.models,
+    status: build.status,
+    stopReason: build.stopReason,
     roundsUsed: rounds.length,
-    maxRounds: loop.maxRounds,
-    budgetUsd: loop.budgetUsd,
+    maxRounds: build.maxRounds,
+    budgetUsd: build.budgetUsd,
     bestScore: scored.length > 0 ? Math.max(...scored.map((round) => round.score!)) : null,
     finalScore: scored.at(-1)?.score ?? null,
     passedAtRound: rounds.find((round) => round.pass)?.round ?? null,
-    costUsd: runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0),
-    inputTokens: runs.reduce((sum, run) => sum + (run.inputTokens ?? 0), 0),
-    outputTokens: runs.reduce((sum, run) => sum + (run.outputTokens ?? 0), 0),
+    costUsd: attempts.reduce((sum, attempt) => sum + (attempt.costUsd ?? 0), 0),
+    inputTokens: attempts.reduce((sum, attempt) => sum + (attempt.inputTokens ?? 0), 0),
+    outputTokens: attempts.reduce((sum, attempt) => sum + (attempt.outputTokens ?? 0), 0),
     cacheReadTokens: cache.cacheRead,
     cacheWriteTokens: cache.cacheWrite,
-    wallClockMs: lastFinished ? Math.max(0, new Date(lastFinished).getTime() - new Date(loop.createdAt).getTime()) : null,
-    activeMs: runs.reduce((sum, run) => sum + (runtimeMs(run) ?? 0), 0),
-    createdAt: loop.createdAt,
+    wallClockMs: lastFinished ? Math.max(0, new Date(lastFinished).getTime() - new Date(build.createdAt).getTime()) : null,
+    activeMs: attempts.reduce((sum, attempt) => sum + (runtimeMs(attempt) ?? 0), 0),
+    createdAt: build.createdAt,
     finishedAt: lastFinished,
     rounds,
   }
@@ -131,13 +131,13 @@ function fmtUsd(value: number | null | undefined): string {
   return value == null ? '—' : `$${value.toFixed(2)}`
 }
 
-function describeImplementer(row: ReportRunRow): string {
+function describeImplementer(row: ReportBuildRow): string {
   return row.models.subagentModel
     ? `${modelLabel(row.models.subagentModel)} · ${row.models.subagentEffort}`
     : 'solo, no subagents'
 }
 
-function outcome(row: ReportRunRow): string {
+function outcome(row: ReportBuildRow): string {
   return row.stopReason ? `${row.status} — ${row.stopReason}` : row.status
 }
 
@@ -155,21 +155,21 @@ export function renderReportMarkdown(report: ReportRecord): string {
   lines.push(`# ${report.name}`)
   lines.push('')
   lines.push(
-    `${rows.length} ${rows.length === 1 ? 'run' : 'runs'} · captured ${report.capturedAt} · equivalent cost ${fmtUsd(totals.costUsd)} · ${fmtTokens(totals.inputTokens + totals.outputTokens)} tokens`,
+    `${rows.length} ${rows.length === 1 ? 'build' : 'builds'} · captured ${report.capturedAt} · equivalent cost ${fmtUsd(totals.costUsd)} · ${fmtTokens(totals.inputTokens + totals.outputTokens)} tokens`,
   )
   lines.push('')
   if (rows.length === 0) {
-    lines.push('_This report has no runs in it yet._')
+    lines.push('_This report has no builds in it yet._')
     return lines.join('\n')
   }
   if (hasMixedPrompts(rows)) {
-    lines.push('> **These runs used different prompts.** The prompt hash column differs, so compare rows one at a time rather than reading the totals as a like-for-like race.')
+    lines.push('> **These builds used different prompts.** The prompt hash column differs, so compare rows one at a time rather than reading the totals as a like-for-like race.')
     lines.push('')
   }
 
   lines.push('## Setup')
   lines.push('')
-  lines.push('| Run | Prompt | Orchestrator | Implementer | Critic | Max rounds | Budget |')
+  lines.push('| Build | Prompt | Orchestrator | Implementer | Critic | Max rounds | Budget |')
   lines.push('|---|---|---|---|---|---|---|')
   for (const row of rows) {
     lines.push(
@@ -180,7 +180,7 @@ export function renderReportMarkdown(report: ReportRecord): string {
 
   lines.push('## Results')
   lines.push('')
-  lines.push('| Run | Outcome | Best score | Passed at | Rounds | Cost | Total tokens | In / Out | Wall clock | Active |')
+  lines.push('| Build | Outcome | Best score | Passed at | Rounds | Cost | Total tokens | In / Out | Wall clock | Active |')
   lines.push('|---|---|---|---|---|---|---|---|---|---|')
   for (const row of rows) {
     lines.push(
@@ -216,7 +216,7 @@ export function renderReportMarkdown(report: ReportRecord): string {
   }
 
   lines.push(
-    `_Input tokens include cache reads and writes, so total tokens is input plus output. Costs are equivalent API cost estimates (price table ${PRICE_TABLE_VERSION}); runs themselves use subscription logins._`,
+    `_Input tokens include cache reads and writes, so total tokens is input plus output. Costs are equivalent API cost estimates (price table ${PRICE_TABLE_VERSION}); builds themselves use subscription logins._`,
   )
   return lines.join('\n')
 }
@@ -228,8 +228,8 @@ export function toReportFile(report: ReportRecord, exportedAt: string): ReportFi
 const MAX_REPORT_FILE_BYTES = 8 * 1024 * 1024
 const MAX_REPORT_ROWS = 1_000
 const MAX_REPORT_ROUNDS = 1_000
-const LOOP_STATUSES = new Set<LoopStatus>(['running', 'passed', 'exhausted', 'stopped', 'failed'])
-const RUN_STATUSES = new Set<RunStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
+const BUILD_STATUSES = new Set<BuildStatus>(['running', 'passed', 'exhausted', 'stopped', 'failed'])
+const ATTEMPT_STATUSES = new Set<AttemptStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -274,15 +274,15 @@ function nullableString(value: unknown, label: string, maximum: number): string 
 
 function normalizeReportRound(value: unknown, title: string): ReportRoundRow {
   const round = record(value)
-  if (!round) throw new Error(`Run "${title}" has a malformed round.`)
-  if (typeof round.status !== 'string' || !RUN_STATUSES.has(round.status as RunStatus)) {
-    throw new Error(`Run "${title}" has a round with an invalid status.`)
+  if (!round) throw new Error(`Build "${title}" has a malformed round.`)
+  if (typeof round.status !== 'string' || !ATTEMPT_STATUSES.has(round.status as AttemptStatus)) {
+    throw new Error(`Build "${title}" has a round with an invalid status.`)
   }
-  if (typeof round.pass !== 'boolean') throw new Error(`Run "${title}" has a round with an invalid pass flag.`)
+  if (typeof round.pass !== 'boolean') throw new Error(`Build "${title}" has a round with an invalid pass flag.`)
   return {
     round: counter(round.round, 'Report round number'),
     attempts: counter(round.attempts, 'Report round attempts'),
-    status: round.status as RunStatus,
+    status: round.status as AttemptStatus,
     score: nullableFinite(round.score, 'Report round score', 1),
     pass: round.pass,
     costUsd: finite(round.costUsd, 'Report round cost'),
@@ -296,27 +296,33 @@ function normalizeReportRound(value: unknown, title: string): ReportRoundRow {
   }
 }
 
-function normalizeReportRow(value: unknown): ReportRunRow {
+function normalizeReportRow(value: unknown): ReportBuildRow {
   const row = record(value)
-  if (!row || typeof row.loopId !== 'string' || typeof row.title !== 'string' || typeof row.promptHash !== 'string') {
-    throw new Error('A run row in that file is missing its id, title, or prompt hash.')
+  // Format 1 called a build a run and carried `loopId`. Accept it as `buildId`;
+  // nothing else about the row changed in format 2.
+  if (row && typeof row.buildId !== 'string' && typeof row.loopId === 'string') {
+    row.buildId = row.loopId
+    delete row.loopId
   }
-  if (!Array.isArray(row.rounds)) throw new Error(`Run "${row.title}" in that file has no rounds list.`)
-  if (row.rounds.length > MAX_REPORT_ROUNDS) throw new Error(`Run "${row.title}" contains too many rounds.`)
-  if (!/^[a-f0-9]{64}$/.test(row.promptHash)) throw new Error(`Run "${row.title}" has an invalid prompt hash.`)
-  if (typeof row.status !== 'string' || !LOOP_STATUSES.has(row.status as LoopStatus)) throw new Error(`Run "${row.title}" has an invalid status.`)
-  if (!record(row.models)) throw new Error(`Run "${row.title}" has no valid model selection.`)
-  if (row.finishedAt !== null && !isIsoTimestamp(row.finishedAt)) throw new Error(`Run "${row.title}" has an invalid finish timestamp.`)
+  if (!row || typeof row.buildId !== 'string' || typeof row.title !== 'string' || typeof row.promptHash !== 'string') {
+    throw new Error('A build row in that file is missing its id, title, or prompt hash.')
+  }
+  if (!Array.isArray(row.rounds)) throw new Error(`Build "${row.title}" in that file has no rounds list.`)
+  if (row.rounds.length > MAX_REPORT_ROUNDS) throw new Error(`Build "${row.title}" contains too many rounds.`)
+  if (!/^[a-f0-9]{64}$/.test(row.promptHash)) throw new Error(`Build "${row.title}" has an invalid prompt hash.`)
+  if (typeof row.status !== 'string' || !BUILD_STATUSES.has(row.status as BuildStatus)) throw new Error(`Build "${row.title}" has an invalid status.`)
+  if (!record(row.models)) throw new Error(`Build "${row.title}" has no valid model selection.`)
+  if (row.finishedAt !== null && !isIsoTimestamp(row.finishedAt)) throw new Error(`Build "${row.title}" has an invalid finish timestamp.`)
   const stopReason = nullableString(row.stopReason, 'Report stop reason', 8_000)
-  const title = boundedString(row.title, 'Report run title', 1_000)
+  const title = boundedString(row.title, 'Report build title', 1_000)
   return {
-    loopId: boundedString(row.loopId, 'Report run id', 256),
+    buildId: boundedString(row.buildId, 'Report build id', 256),
     title,
     prompt: boundedString(row.prompt, 'Report prompt', 100_000, true),
     promptHash: row.promptHash,
     workspaceDir: boundedString(row.workspaceDir, 'Report workspace path', 32_768),
-    models: normalizeModels(row.models as Partial<LoopModels>),
-    status: row.status as LoopStatus,
+    models: normalizeModels(row.models as Partial<BuildModels>),
+    status: row.status as BuildStatus,
     stopReason,
     roundsUsed: counter(row.roundsUsed, 'Report rounds used'),
     maxRounds: counter(row.maxRounds, 'Report maximum rounds'),
@@ -331,7 +337,7 @@ function normalizeReportRow(value: unknown): ReportRunRow {
     cacheWriteTokens: nullableCounter(row.cacheWriteTokens, 'Report cache-write tokens'),
     wallClockMs: nullableCounter(row.wallClockMs, 'Report wall-clock time'),
     activeMs: counter(row.activeMs, 'Report active time'),
-    createdAt: timestamp(row.createdAt, 'Report run creation time'),
+    createdAt: timestamp(row.createdAt, 'Report build creation time'),
     finishedAt: row.finishedAt as string | null,
     rounds: row.rounds.map((item) => normalizeReportRound(item, title)),
   }
@@ -341,9 +347,9 @@ function normalizeReportRow(value: unknown): ReportRunRow {
 export function normalizeReportRecord(value: unknown): ReportRecord {
   const report = record(value)
   if (!report || typeof report.name !== 'string' || !Array.isArray(report.rows)) {
-    throw new Error('That report file has no name or no runs in it.')
+    throw new Error('That report file has no name or no builds in it.')
   }
-  if (report.rows.length > MAX_REPORT_ROWS) throw new Error('That report contains too many runs.')
+  if (report.rows.length > MAX_REPORT_ROWS) throw new Error('That report contains too many builds.')
   return {
     id: boundedString(report.id, 'Report id', 256),
     name: boundedString(report.name.trim(), 'Report name', 80),

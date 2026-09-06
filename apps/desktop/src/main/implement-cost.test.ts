@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { implementCostUsd, implementTokens } from './loop-runner'
-import type { RunMetrics } from '../shared/loop'
+import { implementCostUsd, implementTokens } from './build-runner'
+import type { AttemptMetrics } from '../shared/build'
 
-const perModel = (entries: Record<string, number | null>): RunMetrics['perModel'] =>
+const perModel = (entries: Record<string, number | null>): AttemptMetrics['perModel'] =>
   Object.fromEntries(
     Object.entries(entries).map(([model, costUsd]) => [
       model,
@@ -12,7 +12,7 @@ const perModel = (entries: Record<string, number | null>): RunMetrics['perModel'
 
 describe('implementCostUsd', () => {
   it('sums modelUsage rather than trusting total_cost_usd', () => {
-    // The real round-1 numbers: the CLI reported $5.11 for a run whose own
+    // The real round-1 numbers: the CLI reported $5.11 for an attempt whose own
     // per-model accounting came to $14.39, because the workflow fan-out is
     // missing from total_cost_usd.
     const cost = implementCostUsd(perModel({ 'claude-opus-5': 14.2078105, 'claude-haiku-4-5-20251001': 0.177872 }), 5.112152, null)
@@ -29,7 +29,7 @@ describe('implementCostUsd', () => {
     expect(implementCostUsd({}, 5.11, 2.0)).toBe(5.11)
   })
 
-  it('falls back to the live estimate when the run reported no cost at all', () => {
+  it('falls back to the live estimate when the build reported no cost at all', () => {
     expect(implementCostUsd({}, null, 2.0)).toBe(2.0)
   })
 
