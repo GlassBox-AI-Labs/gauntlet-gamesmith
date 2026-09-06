@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { childAgentMetricId } from '../shared/agent-id'
-import type { AgentMetric, TokenTotals } from '../shared/loop'
+import type { AgentMetric, TokenTotals } from '../shared/build'
 import { isRecordId } from '../shared/record-id'
 import { codexTokens, usageForThread } from './codex-usage'
 import { CHILD_PROCESS_EXIT_EVENT, parseChildProcessExit } from './child-process-exit'
@@ -13,12 +13,12 @@ import {
   parseChildStreamName,
 } from './child-stream-name'
 import { estimateCostUsd } from './pricing'
-import { RUN_METADATA_DIR } from './run-transfer'
+import { BUILD_METADATA_DIR } from './build-transfer'
 import { readExactFileDescriptor } from './bounded-fd'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 import { normalizeStreamUsage } from './streams/claude-stream'
 import {
-  assertLoopWorkspaceIdentity,
+  assertBuildWorkspaceIdentity,
   captureWorkspaceIdentity,
   type WorkspaceRootIdentity,
 } from './workspace-boundary'
@@ -88,21 +88,21 @@ export function childStreamInventory(dir: string): ChildStreamInventory {
 }
 
 /**
- * Workers a run delegated to the other CLI.
+ * Workers an attempt delegated to the other CLI.
  *
- * Neither harness can host the other's model, so a cross-harness run has the
+ * Neither harness can host the other's model, so a cross-harness attempt has the
  * orchestrator start the other CLI as a command. The app never owns that
  * process, so it would see none of its tokens — unless the child's own
  * structured stream is written where the app can read it. Every delegation
  * prompt therefore redirects the child into:
  *
- *   <workspace>/<run metadata dir>/agents/<slice>.<harness>.jsonl
+ *   <workspace>/<build metadata dir>/agents/<slice>.<harness>.jsonl
  *
  * which is the same stream the app parses when it starts that CLI itself. One
  * parser per harness, serving both roles and delegated children alike.
  */
 export function agentsDir(workspaceDir: string): string {
-  return path.join(workspaceDir, RUN_METADATA_DIR, 'agents')
+  return path.join(workspaceDir, BUILD_METADATA_DIR, 'agents')
 }
 
 /** Resolve the agent-stream root without following workspace-planted directory symlinks. */
@@ -118,7 +118,7 @@ function childStreamBoundary(
 ): ChildStreamBoundary {
   const captured = expectedWorkspace
     ? {
-        workspaceDir: assertLoopWorkspaceIdentity(expectedWorkspace, []),
+        workspaceDir: assertBuildWorkspaceIdentity(expectedWorkspace, []),
         workspaceIdentity: expectedWorkspace.workspaceIdentity!,
       }
     : captureWorkspaceIdentity(workspaceDir, [])
@@ -127,7 +127,7 @@ function childStreamBoundary(
     throw new Error('Delegated worker workspace does not match its expected root identity.')
   }
   const dir = safeAgentsDir(canonicalWorkspace, create)
-  assertLoopWorkspaceIdentity(captured, [])
+  assertBuildWorkspaceIdentity(captured, [])
   const inventory = childStreamInventory(dir)
   if (inventory.overflow) {
     throw new Error('Delegated worker preflight exceeded its bounded inventory.')
@@ -154,18 +154,18 @@ export function observeChildStreams(workspaceDir: string, expectedWorkspace?: Wo
   return childStreamBoundary(workspaceDir, expectedWorkspace, true, true)
 }
 
-/** Reclaim the exact existing agents directory while attaching a durable run. */
+/** Reclaim the exact existing agents directory while attaching a durable attempt. */
 export function recoverChildStreams(workspaceDir: string, expectedWorkspace?: WorkspaceRootIdentity): ChildStreamBoundary {
   return childStreamBoundary(workspaceDir, expectedWorkspace, false, false)
 }
 
 export function assertChildStreamBoundary(boundary: ChildStreamBoundary): string {
-  assertLoopWorkspaceIdentity({
+  assertBuildWorkspaceIdentity({
     workspaceDir: boundary.workspaceDir,
     workspaceIdentity: { dev: boundary.workspaceDev, ino: boundary.workspaceIno },
   }, [])
   const dir = safeAgentsDir(boundary.workspaceDir)
-  assertLoopWorkspaceIdentity({
+  assertBuildWorkspaceIdentity({
     workspaceDir: boundary.workspaceDir,
     workspaceIdentity: { dev: boundary.workspaceDev, ino: boundary.workspaceIno },
   }, [])

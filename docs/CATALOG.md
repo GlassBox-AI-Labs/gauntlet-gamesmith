@@ -56,7 +56,7 @@ use Supabase Auth administration.
 
 ## Desktop workflow
 
-1. Open a run and click **Publish round N** for its latest completed saved round,
+1. Open a build and click **Publish round N** for its latest completed saved round,
    or select a specific completed round and click **Publish**.
 2. Create and verify a Challenger account, or enter an existing publisher email and password in the publishing drawer and
    click **Sign in to publish**. Supabase authenticates the account without opening
@@ -69,7 +69,7 @@ use Supabase Auth administration.
    The app detects the generated browser output and named cover artwork;
    no folder or file path is requested. Missing artwork uses the catalog default.
 5. Play the private preview and explicitly **Publish this version**.
-6. In the same drawer, **Releases** lists that run's game history. Preview an
+6. In the same drawer, **Releases** lists that build's game history. Preview an
    older ready release before rolling back. **Unpublish** asks for confirmation
    in a native dialog. **Sign out** clears the desktop publisher session.
 
@@ -79,8 +79,8 @@ Unpublishing removes the game and denies supported public asset URLs, but cannot
 recall bytes already downloaded. V1 retains drafts, superseded releases, and
 pending upload objects; automatic storage retention is deferred.
 
-The local publication job records run, round, saved revision, request identity,
-and progress. Build output and failures appear in the run log. Builds use a
+The local publication job records build, round, saved revision, request identity,
+and progress. Compilation output and failures appear in the build log. Compilation uses a
 two-minute timeout and the existing exact-process-identity SIGINT supervisor.
 The app blocks quitting during an active publishing operation. Incomplete launch
 ownership fails closed for inspection; safe upload retry survives restart.
@@ -101,7 +101,7 @@ Private previews last 30 minutes and survive server restart with the same
 - The compilation script must produce one browser output below the source root.
   Output detection scans at most 20,000 entries, excludes private/reference trees,
   and requires files changed by this compilation. Stale, absent, or ambiguous
-  output fails with an explanation in the run log; the source root never ships.
+  output fails with an explanation in the build log; the source root never ships.
 - Maximum 1,500 files and 24 MiB decoded shipping data (35 MiB envelope).
 - No links, hidden/private directories, reference/critique folders, source maps,
   source TypeScript, or unsupported types. The server verifies hashes, source

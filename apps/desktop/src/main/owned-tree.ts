@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { readExactFileDescriptor } from './bounded-fd'
-import { assertLoopWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
+import { assertBuildWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
 
 interface DirectoryComponentIdentity {
   path: string
@@ -34,7 +34,7 @@ export function captureOwnedDirectory(
 ): OwnedDirectoryBoundary {
   const resolvedOwnerInput = path.resolve(ownerRoot)
   const canonicalRoot = expectedOwner
-    ? assertLoopWorkspaceIdentity(expectedOwner, [])
+    ? assertBuildWorkspaceIdentity(expectedOwner, [])
     : fs.realpathSync(ownerRoot)
   if (expectedOwner && canonicalRoot !== resolvedOwnerInput) {
     throw new Error('Owned directory root does not match the expected workspace identity.')

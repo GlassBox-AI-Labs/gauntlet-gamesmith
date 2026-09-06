@@ -5,7 +5,7 @@ export const USER_DATA_SWITCH = '--gauntlet-user-data'
 /**
  * An explicit profile directory, passed as `--gauntlet-user-data=/some/path`.
  *
- * Everything the app owns — the run registry, the harness logins, round
+ * Everything the app owns — the build registry, the harness logins, round
  * revisions, and the single-instance lock — lives under the user-data
  * directory. Pointing at a different one therefore gives a genuinely separate
  * instance that can run beside the normal app instead of being refused by the

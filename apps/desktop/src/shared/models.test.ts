@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, newRunOrchestratorEffort, resolveModels } from './models'
+import { DEFAULT_CRITIC, DEFAULT_IMPLEMENTER, harnessFor, normalizeModels, newBuildOrchestratorEffort, resolveModels } from './models'
 
 describe('defaults', () => {
   it('starts on Opus 5 at high over Opus 5 subagents', () => {
@@ -131,11 +131,11 @@ describe('normalizeModels critic harness', () => {
     expect(models.assetEffort).toBe('high')
   })
 
-  it('runs the phase for a loop written before it existed, rather than reading silence as off', () => {
+  it('builds the phase for a build written before it existed, rather than reading silence as off', () => {
     expect(normalizeModels({ criticModel: 'claude-opus-5' }).assetModel).toBe('claude-opus-5')
   })
 
-  it('keeps the phase off for a loop that stored it off', () => {
+  it('keeps the phase off for a build that stored it off', () => {
     expect(normalizeModels({ criticModel: 'claude-opus-5', assetModel: null }).assetModel).toBeNull()
   })
 
@@ -205,5 +205,5 @@ describe('Astra', () => {
 
 it.each([['ultra', 'gpt-6-astra', 'max'], ['ultracode', 'claude-opus-5', 'xhigh']])('preserves historical %s but removes automatic delegation from copied drafts', (effort, model, copied) => {
   expect(normalizeModels({ orchestratorModel: model, orchestratorEffort: effort }).orchestratorEffort).toBe(effort)
-  expect(newRunOrchestratorEffort(effort)).toBe(copied)
+  expect(newBuildOrchestratorEffort(effort)).toBe(copied)
 })

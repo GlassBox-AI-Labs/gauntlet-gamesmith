@@ -1,6 +1,6 @@
 import type { OperationResult } from './result'
 export interface PublishDraft {
-  loopId: string
+  buildId: string
   round: number
   title: string
   slug: string
@@ -46,13 +46,13 @@ export interface PublisherVerification {
   code: string
 }
 export interface PublishingApi {
-  history(loopId: string): Promise<OperationResult<ReleaseHistory>>
+  history(buildId: string): Promise<OperationResult<ReleaseHistory>>
   previewRelease(input: {
-    loopId: string
+    buildId: string
     releaseId: string
   }): Promise<OperationResult<PublicationPreview>>
   unpublish(input: {
-    loopId: string
+    buildId: string
     generation: number
   }): Promise<OperationResult<void>>
   status(): Promise<OperationResult<PublisherStatus>>
@@ -66,7 +66,7 @@ export interface PublishingApi {
   signOut(): Promise<OperationResult<void>>
   prepare(input: PublishDraft): Promise<OperationResult<PublicationPreview>>
   publish(input: {
-    loopId: string
+    buildId: string
     releaseId: string
     gameId: string
     generation: number

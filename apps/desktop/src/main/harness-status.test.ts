@@ -34,7 +34,7 @@ describe('harness status parsing', () => {
     expect(parseCodexStatus(false, '', 'Not logged in', null).error).toBeNull()
   })
 
-  it('rejects API-key and unknown billing modes for subscription-only runs', () => {
+  it('rejects API-key and unknown billing modes for subscription-only builds', () => {
     const claudeApi = parseClaudeStatus(
       '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty"}',
       '',

@@ -1,20 +1,20 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, LoaderCircle } from 'lucide-react'
 import { AgentsView } from '@/views/AgentsView'
-import { RunFormPrototype } from '@/views/RunFormPrototype'
+import { BuildFormPrototype } from '@/views/BuildFormPrototype'
 import { OnboardingView } from '@/views/OnboardingView'
-import { RunView } from '@/views/RunView'
+import { BuildView } from '@/views/BuildView'
 
-type View = 'run' | 'agents'
+type View = 'build' | 'agents'
 
 export default function App(): React.JSX.Element {
-  const [view, setView] = useState<View>('run')
-  // Null until the main process answers, so the app never flashes the Runs
+  const [view, setView] = useState<View>('build')
+  // Null until the main process answers, so the app never flashes the Builds
   // view at a first-time user before the flow appears.
   const [onboarded, setOnboarded] = useState<boolean | null>(null)
 
   useEffect(() => {
-    if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') return
+    if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'build-form') return
     let disposed = false
     void window.onboarding.get()
       .then((state) => { if (!disposed) setOnboarded(state.completed) })
@@ -25,8 +25,8 @@ export default function App(): React.JSX.Element {
     return () => { disposed = true }
   }, [])
 
-  if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'run-form') {
-    return <RunFormPrototype />
+  if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('prototype') === 'build-form') {
+    return <BuildFormPrototype />
   }
 
   if (onboarded === null) {
@@ -41,7 +41,7 @@ export default function App(): React.JSX.Element {
   if (!onboarded) return <OnboardingView onDone={() => setOnboarded(true)} />
 
 
-  if (view === 'run') return <RunView onOpenAgents={() => setView('agents')} />
+  if (view === 'build') return <BuildView onOpenAgents={() => setView('agents')} />
 
   return (
     <div className="min-h-screen">
@@ -49,10 +49,10 @@ export default function App(): React.JSX.Element {
         <div className="mx-auto flex w-[min(980px,calc(100%-48px))] items-center py-2.5 max-sm:w-[calc(100%-28px)]">
           <button
             type="button"
-            onClick={() => setView('run')}
+            onClick={() => setView('build')}
             className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] text-[#96908d] hover:bg-white/[0.04] hover:text-[#ded9d6]"
           >
-            <ArrowLeft className="size-3.5" /> Runs
+            <ArrowLeft className="size-3.5" /> Builds
           </button>
         </div>
       </nav>

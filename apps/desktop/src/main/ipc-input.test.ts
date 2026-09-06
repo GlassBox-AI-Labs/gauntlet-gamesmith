@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertHarnessKind,
-  assertLoopId,
+  assertBuildId,
   parseLogLimit,
-  parseLoopListOffset,
-  parseRunPageOffset,
-  parseRunPromptRequest,
+  parseBuildListOffset,
+  parseAttemptPageOffset,
+  parseAttemptPromptRequest,
   parseOptionalRound,
   parseRenameInput,
-  parseStartLoopInput,
+  parseStartBuildInput,
   parseTerminalInput,
   parseTerminalResize,
   renameTrustError,
 } from './ipc-input'
 
-const loopId = '123e4567-e89b-42d3-a456-426614174000'
+const buildId = '123e4567-e89b-42d3-a456-426614174000'
 const validStart = {
   prompt: 'Build it',
   workspaceDir: '/tmp/game',
@@ -33,39 +33,39 @@ const validStart = {
 }
 
 describe('IPC input validation', () => {
-  it('accepts only declared harnesses and UUID loop ids', () => {
+  it('accepts only declared harnesses and UUID build ids', () => {
     expect(assertHarnessKind('claude')).toBe('claude')
-    expect(assertLoopId(loopId)).toBe(loopId)
+    expect(assertBuildId(buildId)).toBe(buildId)
     expect(() => assertHarnessKind('bash')).toThrow('Unsupported harness')
-    expect(() => assertLoopId('../loop')).toThrow('Invalid loop id')
+    expect(() => assertBuildId('../build')).toThrow('Invalid build id')
   })
 
-  it('parses a complete loop start without coercing values', () => {
-    expect(parseStartLoopInput(validStart)).toEqual(validStart)
-    expect(() => parseStartLoopInput({ ...validStart, maxRounds: '5' })).toThrow('Max rounds')
-    expect(() => parseStartLoopInput({ ...validStart, budgetUsd: Number.POSITIVE_INFINITY })).toThrow('Budget')
-    expect(() => parseStartLoopInput({ ...validStart, criticModel: 'unknown-model' })).toThrow('Critic model')
-    expect(() => parseStartLoopInput({ ...validStart, prompt: '' })).toThrow('Goal')
-    expect(parseStartLoopInput({ ...validStart, prompt: '  Build it exactly.\n' }).prompt).toBe('  Build it exactly.\n')
-    expect(() => parseStartLoopInput({ ...validStart, prompt: ' \n\t ' })).toThrow('Goal')
+  it('parses a complete build start without coercing values', () => {
+    expect(parseStartBuildInput(validStart)).toEqual(validStart)
+    expect(() => parseStartBuildInput({ ...validStart, maxRounds: '5' })).toThrow('Max rounds')
+    expect(() => parseStartBuildInput({ ...validStart, budgetUsd: Number.POSITIVE_INFINITY })).toThrow('Budget')
+    expect(() => parseStartBuildInput({ ...validStart, criticModel: 'unknown-model' })).toThrow('Critic model')
+    expect(() => parseStartBuildInput({ ...validStart, prompt: '' })).toThrow('Goal')
+    expect(parseStartBuildInput({ ...validStart, prompt: '  Build it exactly.\n' }).prompt).toBe('  Build it exactly.\n')
+    expect(() => parseStartBuildInput({ ...validStart, prompt: ' \n\t ' })).toThrow('Goal')
   })
 
   it('bounds titles, limits, and rounds', () => {
-    expect(parseRenameInput(loopId, ' New name ')).toEqual({ loopId, title: 'New name' })
+    expect(parseRenameInput(buildId, ' New name ')).toEqual({ buildId, title: 'New name' })
     expect(parseLogLimit(99)).toBe(99)
     expect(() => parseLogLimit(9_999)).toThrow('between 1 and 2000')
     expect(() => parseLogLimit(0)).toThrow('between 1 and 2000')
-    expect(parseLoopListOffset(undefined)).toBe(0)
-    expect(parseLoopListOffset(100)).toBe(100)
-    expect(() => parseLoopListOffset(-1)).toThrow('Loop-list offset')
-    expect(() => parseLoopListOffset(Number.MAX_SAFE_INTEGER)).toThrow('Loop-list offset')
-    expect(parseRunPageOffset(undefined)).toBe(0)
-    expect(parseRunPageOffset(200)).toBe(200)
-    expect(() => parseRunPageOffset(50_001)).toThrow('Run-page offset')
-    expect(parseRunPromptRequest(loopId, 'implement', 2)).toEqual({ loopId, role: 'implement', round: 2 })
-    expect(parseRunPromptRequest(loopId, 'reference', 0)).toEqual({ loopId, role: 'reference', round: 0 })
-    expect(() => parseRunPromptRequest(loopId, 'shell', 1)).toThrow('Invalid run role')
-    expect(() => parseRunPromptRequest(loopId, 'critique', 0)).toThrow('must be positive')
+    expect(parseBuildListOffset(undefined)).toBe(0)
+    expect(parseBuildListOffset(100)).toBe(100)
+    expect(() => parseBuildListOffset(-1)).toThrow('Build-list offset')
+    expect(() => parseBuildListOffset(Number.MAX_SAFE_INTEGER)).toThrow('Build-list offset')
+    expect(parseAttemptPageOffset(undefined)).toBe(0)
+    expect(parseAttemptPageOffset(200)).toBe(200)
+    expect(() => parseAttemptPageOffset(50_001)).toThrow('Build-page offset')
+    expect(parseAttemptPromptRequest(buildId, 'implement', 2)).toEqual({ buildId, role: 'implement', round: 2 })
+    expect(parseAttemptPromptRequest(buildId, 'reference', 0)).toEqual({ buildId, role: 'reference', round: 0 })
+    expect(() => parseAttemptPromptRequest(buildId, 'shell', 1)).toThrow('Invalid build role')
+    expect(() => parseAttemptPromptRequest(buildId, 'critique', 0)).toThrow('must be positive')
     expect(parseOptionalRound(null)).toBeNull()
     expect(parseOptionalRound(2)).toBe(2)
     expect(() => parseOptionalRound(1.5)).toThrow('Round')
@@ -86,6 +86,6 @@ describe('IPC input validation', () => {
 })
 
 
-it.each(['ultra', 'ultracode'])('rejects %s for new runs', (orchestratorEffort) => {
-  expect(() => parseStartLoopInput({ ...validStart, orchestratorEffort })).toThrow()
+it.each(['ultra', 'ultracode'])('rejects %s for new builds', (orchestratorEffort) => {
+  expect(() => parseStartBuildInput({ ...validStart, orchestratorEffort })).toThrow()
 })

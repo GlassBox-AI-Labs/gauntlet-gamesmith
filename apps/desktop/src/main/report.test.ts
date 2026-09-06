@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { LoopRecord, RunRecord } from '../shared/loop'
+import type { BuildRecord, PhaseAttempt } from '../shared/build'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { buildReport, scanCritiqueArtifacts } from './report'
 
@@ -12,7 +12,7 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
-const loop: LoopRecord = {
+const build: BuildRecord = {
   id: 'l1',
   title: 'Pac-man',
   prompt: 'Build Pac-Man at AAA quality',
@@ -29,10 +29,10 @@ const loop: LoopRecord = {
   updatedAt: '2026-08-30T21:00:00.000Z',
 }
 
-function run(partial: Partial<RunRecord>): RunRecord {
+function attempt(partial: Partial<PhaseAttempt>): PhaseAttempt {
   return {
     id: 'r',
-    loopId: 'l1',
+    buildId: 'l1',
     round: 1,
     role: 'implement',
     harness: 'claude',
@@ -66,10 +66,10 @@ function run(partial: Partial<RunRecord>): RunRecord {
 }
 
 describe('buildReport', () => {
-  it('sums cost and tokens across finished runs and shows the score trend', () => {
-    const report = buildReport(loop, [
-      run({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 8 * 60_000 }),
-      run({
+  it('sums cost and tokens across finished builds and shows the score trend', () => {
+    const report = buildReport(build, [
+      attempt({ id: 'a', costUsd: 10, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 8 * 60_000 }),
+      attempt({
         id: 'b',
         role: 'critique',
         harness: 'codex',
@@ -78,27 +78,27 @@ describe('buildReport', () => {
         outputTokens: 10_000,
         verdict: { score: 0.42, pass: false, summary: 'Not AAA yet', findings: [{ severity: 'major', text: 'flat lighting' }] },
       }),
-      run({ id: 'c', round: 2, status: 'queued', costUsd: 999 }),
+      attempt({ id: 'c', round: 2, status: 'queued', costUsd: 999 }),
     ])
     expect(report).toContain('**Equivalent API cost:** $10.00 of $100.00 budget')
     expect(report).toContain('in 2.00M / out 100.0k')
     expect(report).toContain('| Runtime | Score |')
-    // Per-attempt runtime, not time-since-loop-start: this run took 8m of the 30m elapsed.
+    // Per-attempt runtime, not time-since-build-start: this attempt took 8m of the 30m elapsed.
     expect(report).toContain('| 8m00s |')
     expect(report).toContain('0.42')
     expect(report).toContain('flat lighting')
   })
 
-  it('handles a loop with no verdicts yet', () => {
-    const report = buildReport(loop, [run({ id: 'a', status: 'running' })])
+  it('handles a build with no verdicts yet', () => {
+    const report = buildReport(build, [attempt({ id: 'a', status: 'running' })])
     expect(report).toContain('Gauntlet Gamesmith report')
     expect(report).not.toContain('Score trend')
   })
 
   it('redacts credential-shaped strings at the complete report projection boundary', () => {
     const report = buildReport(
-      { ...loop, title: 'DATABASE_URL=postgres://user:password@db.example/app' },
-      [run({
+      { ...build, title: 'DATABASE_URL=postgres://user:password@db.example/app' },
+      [attempt({
         role: 'critique',
         summary: 'AWS_SESSION_TOKEN=session-secret',
         verdict: {
@@ -117,7 +117,7 @@ describe('buildReport', () => {
   })
 
   it('shows the Reference Study as a pre-round result', () => {
-    const report = buildReport(loop, [run({ role: 'reference', round: 0 })], [], {
+    const report = buildReport(build, [attempt({ role: 'reference', round: 0 })], [], {
       root: 'reference/l1',
       ready: true,
       issues: [],

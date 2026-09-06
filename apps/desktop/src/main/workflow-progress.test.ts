@@ -6,7 +6,7 @@ import { readWorkflowProgress, workflowDir } from './workflow-progress'
 
 let dir: string | null = null
 
-function withRun(run: unknown): string {
+function withAttempt(run: unknown): string {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-wf-'))
   fs.writeFileSync(path.join(dir, 'wf_abc123-def.json'), JSON.stringify(run))
   return dir
@@ -59,7 +59,7 @@ const runFile = {
 
 describe('readWorkflowProgress', () => {
   it('turns workflow agents into metric rows', () => {
-    const progress = readWorkflowProgress(withRun(runFile))
+    const progress = readWorkflowProgress(withAttempt(runFile))
     expect(progress.runs).toEqual([
       { runId: 'wf_abc123-def', name: 'build-the-game', status: 'running', agentCount: 3, totalTokens: 900, totalToolCalls: 40 },
     ])
@@ -85,7 +85,7 @@ describe('readWorkflowProgress', () => {
   })
 
   it('gives every agent an id unique across workflows', () => {
-    const progress = readWorkflowProgress(withRun(runFile))
+    const progress = readWorkflowProgress(withAttempt(runFile))
     expect(new Set(progress.agents.map((a) => a.id)).size).toBe(progress.agents.length)
   })
 
@@ -94,7 +94,7 @@ describe('readWorkflowProgress', () => {
   })
 
   it('skips a file caught mid-write instead of throwing', () => {
-    const d = withRun(runFile)
+    const d = withAttempt(runFile)
     fs.writeFileSync(path.join(d, 'wf_partial-write.json'), '{"runId":"wf_partial","workflowProg')
     const progress = readWorkflowProgress(d)
     expect(progress.runs).toHaveLength(1)
@@ -102,7 +102,7 @@ describe('readWorkflowProgress', () => {
   })
 
   it('rejects unsafe files and normalizes hostile fields before arithmetic', () => {
-    const d = withRun({
+    const d = withAttempt({
       workflowName: 42,
       status: { unsafe: true },
       agentCount: -1,
@@ -155,7 +155,7 @@ describe('readWorkflowProgress', () => {
       label: `slice ${index}`,
       state: 'progress',
     }))
-    const progress = readWorkflowProgress(withRun({ ...runFile, workflowProgress }))
+    const progress = readWorkflowProgress(withAttempt({ ...runFile, workflowProgress }))
 
     expect(progress.agents).toHaveLength(512)
     expect(progress.warning).toContain('512-agent aggregate limit')

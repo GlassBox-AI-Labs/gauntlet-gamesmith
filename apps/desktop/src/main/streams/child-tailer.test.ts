@@ -58,7 +58,7 @@ describe('ChildStreamTailer', () => {
     ])
   })
 
-  it('emits only appended lines on later polls, and streams that appear mid-run', () => {
+  it('emits only appended lines on later polls, and streams that appear mid-build', () => {
     const agents = makeDir()
     writeBrief(agents, 'claude', 'renderer')
     fs.writeFileSync(path.join(agents, 'renderer.claude.jsonl'), `${claudeLine}\n`)
@@ -85,7 +85,7 @@ describe('ChildStreamTailer', () => {
     expect(tailer.poll()).toHaveLength(2)
   })
 
-  it('skips streams left over from before the run started', () => {
+  it('skips streams left over from before the build started', () => {
     const agents = makeDir()
     fs.writeFileSync(path.join(agents, 'stale.claude.jsonl'), `${claudeLine}\n`)
     const tailer = new ChildStreamTailer(agents, Date.now() + 60_000)

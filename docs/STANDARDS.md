@@ -80,21 +80,21 @@ validator such as the raw-stream resolver) before using it.
 **What IPC is in this app.** Electron runs two processes. Main is Node: it owns the daemon, SQLite,
 the child CLIs, and the filesystem. The renderer is a Chromium page running React with no Node
 access. Inter-process communication (IPC) is how the page asks main to do things and how main pushes
-state back. The preload script exposes two typed objects, `window.harnesses` and `window.loops`,
+state back. The preload script exposes two typed objects, `window.harnesses` and `window.builds`,
 through `contextBridge`; each method forwards to a named channel that main handles.
 
 Channel conventions:
 
-- Names are `area:verb` (`loop:start`, `harness:probe`, `play:state`). One area per main-process
+- Names are `area:verb` (`build:start`, `harness:probe`, `play:state`). One area per main-process
   module.
 - Request/response uses `ipcMain.handle` in main and `ipcRenderer.invoke` in preload. Reserve
   fire-and-forget `send` for high-frequency input such as terminal keystrokes.
-- Main-to-renderer pushes (`loop:update`, `loop:log`, `play:state`) are events; the preload wraps
+- Main-to-renderer pushes (`build:update`, `build:log`, `play:state`) are events; the preload wraps
   them in an `onX(listener)` method that returns the unsubscribe function.
 - Adding a channel touches four places: the contract type in `shared/`, the preload method, the
   main handler with its validation, and the renderer call. A PR that adds only some of them is
   incomplete.
-- Handlers return `{ ok, error }` style results for expected failures (`loop:start` does this);
+- Handlers return `{ ok, error }` style results for expected failures (`build:start` does this);
   they throw only for programmer errors.
 
 ### ARCH-003 — Put behavior behind deep modules
@@ -107,7 +107,7 @@ Channel conventions:
   setters that callers must coordinate correctly.
 - Add an adapter seam only where behavior really varies or where a true external dependency needs a
   production adapter and a test fake. Keep test-only internal seams out of the public interface.
-- When adding a substantial responsibility to `apps/desktop/src/main/index.ts`, `loop-runner.ts`,
+- When adding a substantial responsibility to `apps/desktop/src/main/index.ts`, `build-runner.ts`,
   `ledger.ts`, or a large renderer view, first extract a coherent module instead of growing another independent control flow inside
   the file.
 
@@ -130,14 +130,14 @@ Channel conventions:
 
 - Spawn the unmodified Claude Code or Codex binary under the user's own local login. App-controlled
   code never opens, reads, copies, parses, transmits, or intermediates credential-store files or
-  subscription tokens. A run receives only the app-managed harness-home paths its selected primary
+  subscription tokens. A build receives only the app-managed harness-home paths its selected primary
   and cross-harness workers actually require.
 - Keep each harness home private to the user (`0700` where supported). Never inspect or expose
   credential-bearing files, expose the directory itself to the renderer, or include the directory
-  in exports. A run may read the CLI's documented, non-credential transcript files from its own
+  in exports. A build may read the CLI's documented, non-credential transcript files from its own
   isolated harness home to surface delegated-agent activity required by VIS-001; copy only bounded,
   parsed events into the ledger and apply the same token/secret redaction as every other log source.
-- Subscription runs must remove `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CODEX_API_KEY` from the
+- Subscription launches must remove `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CODEX_API_KEY` from the
   child environment so a local shell setting cannot silently change the billing path.
 - SQLite history, renderer projections, errors, events, and reports must not contain tokens,
   complete environments, or credential-file contents. Apply the shared secret redactor before
@@ -175,7 +175,7 @@ Channel conventions:
   post-spawn/pre-identity-commit crash window; an incomplete starting marker must quarantine the
   attempt and forbid automatic requeue or Resume. Eliminating that residual requires a separately
   designed launch wrapper/handshake that does not start the CLI until durable ownership exists.
-- A run must have deterministic terminal states. Completion, error, timeout, cancellation, app quit,
+- An attempt must have deterministic terminal states. Completion, error, timeout, cancellation, app quit,
   and machine restart must not leave it permanently `running` or cause duplicate advancement.
 - Preserve session/thread IDs and the last valid result needed to recover or resume. Recovery must be
   idempotent.
@@ -197,11 +197,11 @@ Channel conventions:
 - Deduplicate cumulative or repeated usage events before computing tokens or cost. Record which
   source produced each estimate.
 - A model's prose is not a durable verdict. Require and validate a machine-readable artifact or
-  schema-constrained result before changing loop or review state.
-- Pin or record the CLI version used for a run. Any parser change needs representative fixtures from
+  schema-constrained result before changing build or review state.
+- Pin or record the CLI version used for an attempt. Any parser change needs representative fixtures from
   the affected version.
 
-## Storage and portable run history
+## Storage and portable build history
 
 ### DATA-001 — SQLite stays in the main process
 
@@ -211,7 +211,7 @@ Channel conventions:
 - Multi-row state transitions and import/synchronization operations are transactions with rollback.
 - Prepared statements carry values. Never build SQL with user-controlled interpolation.
 - Close databases and replace cached handles deliberately before copying, importing, or deleting a
-  run folder.
+  build folder.
 
 ### DATA-002 — Stored history is backward compatible
 
@@ -221,14 +221,14 @@ Channel conventions:
   immediately previous schema, not only from an empty database.
 - Decode persisted JSON through a canonical normalizer/validator. Preserve historical model names,
   costs, IDs, timestamps, and event order unless a documented migration explicitly changes them.
-- Additive fields need safe defaults for old rows. Never silently reinterpret an old run as if it
+- Additive fields need safe defaults for old rows. Never silently reinterpret an old build as if it
   used today's settings.
 
 ### DATA-003 — The project-folder ledger is a complete portable mirror
 
 **Default severity:** Blocker.
 
-- Every mutation that affects a run's durable history must be reflected in both the app registry and
+- Every mutation that affects a build's durable history must be reflected in both the app registry and
   its project-folder ledger according to one canonical synchronization path.
 - Export must produce an exact stopped snapshot. Import must validate before registration, preserve
   identity/history, rebind only machine-local paths, and roll back atomically on failure.
@@ -256,12 +256,12 @@ Channel conventions:
 - Limit file sizes, counts, text lengths, and parsed collection sizes before sending them over IPC or
   rendering them.
 - Validate imported SQLite/JSON and machine-generated artifacts before using them. A file existing is
-  not proof that it has the expected shape or belongs to the current run.
+  not proof that it has the expected shape or belongs to the current build.
 - Do not automatically execute package scripts or binaries from a repository the operator did not
-  choose. This applies to imported run history, the PR reviewer's checkout, and any future path that
+  choose. This applies to imported build history, the PR reviewer's checkout, and any future path that
   opens third-party code. Any such mode must be an explicit trusted-repository setting with a
   sanitized environment, timeout, and documented local-machine risk.
-- Loop runs are different: the operator picks the workspace, and the generator/critic agents
+- Builds are different: the operator picks the workspace, and the generator/critic agents
   intentionally run with broad permissions (`--dangerously-skip-permissions`, Codex workspace-write
   with network). That is the product, not a violation. Changes to those permission flags or to the
   child environment are reviewed under PROC-001 and PROC-002.
@@ -284,7 +284,7 @@ Channel conventions:
 
 - Persist exact model, effort, harness, CLI version, prompt/version hash, source revision, timing, and
   cost basis for consequential agent results.
-- Run provenance includes the exact prompt SHA-256, model, effort, harness CLI version, account and
+- Attempt provenance includes the exact prompt SHA-256, model, effort, harness CLI version, account and
   machine labels, authentication mode, source revision, price-table version, and cost source. Old
   rows migrate with explicit nulls rather than inheriting today's settings.
 - Bind a critic or reviewer to immutable inputs. Before publishing or advancing state, verify that the
@@ -307,14 +307,14 @@ Channel conventions:
 
 **Default severity:** Major.
 
-- Every log line is a `LoopLogLine` from `apps/desktop/src/shared/loop.ts`: loop ID, run ID, ISO
+- Every log line is a `BuildLogLine` from `apps/desktop/src/shared/build.ts`: build ID, attempt ID, ISO
   timestamp, `kind`, `text`, and optional `agentId`, `round`, `role`, `channel`. `kind` names the
   specific event (`verdict`, `shot`, `metric`, `stderr`, ...). `channel` is the renderer's filter
   bucket and is derived from `kind` through `channelForKind`; a new kind must be added to that map or
   it silently lands in `system`.
-- The exact execution prompt is logged once per run, round-labelled, before the process spawns. The
+- The exact execution prompt is logged once per attempt, round-labelled, before the process spawns. The
   log alone must tell the full story of what each agent was asked to do.
-- Raw CLI output is the evidence and lives on disk: `.gauntlet-gamesmith/runs/<runId>.out.ndjson`
+- Raw CLI output is the evidence and lives on disk: `.gauntlet-gamesmith/runs/<attemptId>.out.ndjson`
   and `.err.log` for primary agents, and `.gauntlet-gamesmith/agents/<slug>.<harness>.jsonl` for
   delegated children. A validated legacy `.gauntlet-loop/` directory is migrated to the current
   name. If the current directory already exists, the legacy tree is retained beneath it before the
@@ -341,8 +341,8 @@ Channel conventions:
   `system` with its raw kind so the operator can see that something unhandled happened. It is never
   dropped.
 - The model's thought text is shown as the CLI delivers it. The app never reconstructs, paraphrases,
-  or filters reasoning. If a CLI or effort setting emits no thinking for a run, the UI should say the
-  channel is unavailable for that run rather than showing an empty filter.
+  or filters reasoning. If a CLI or effort setting emits no thinking for an attempt, the UI should say the
+  channel is unavailable for that attempt rather than showing an empty filter.
 - Delegated agents are first-class. Subagents and cross-harness workers are tailed from their stream
   files and shown nested under the agent that launched them, with their own `agentId`, tool calls,
   tokens, and cost. A worker that runs for an hour with no visible activity is a bug, not a quiet
@@ -352,10 +352,10 @@ Channel conventions:
   control merely because it exists. Promote it out of the log only when a distinct operator workflow
   justifies the additional UI; focused detail may open from an event-log link in a transient drawer.
 - Truncation is for the projection only. Log lines cap thought text and tool inputs, but the raw
-  stream file for every run and every child stays complete on disk, and the UI must let the operator
+  stream file for every attempt and every child stays complete on disk, and the UI must let the operator
   inspect it from a timestamped event-log link. Do not lower a truncation limit to make the log
   tidier or dump byte-complete, potentially sensitive raw output into the projected event log.
-- The exact execution prompt for every run, including delegated briefs written to
+- The exact execution prompt for every attempt, including delegated briefs written to
   `.gauntlet-gamesmith/` (or validated legacy `.gauntlet-loop/` metadata), is visible in the log
   (LOG-001).
 - All channels are visible by default. Hiding is an operator choice made in the filter strip, and
@@ -396,63 +396,63 @@ Channel conventions:
 - Never claim a check passed when it did not run, lacked dependencies, timed out, or covered only a
   substitute implementation.
 
-## Loop phases and prompts
+## Build phases and prompts
 
-The loop today is: **reference** (round 0, when Reference Study is enabled) → **implement**
+A build today is: **reference** (round 0, when Reference Study is enabled) → **implement**
 (round n, including optional asset sculpting) → **critique** (round n) → implement (round n+1,
 fed the critic's findings). Skip mode begins directly with implementation. Completing the last
-allowed implementation exhausts the loop without another critique; budget limits, a passing
+allowed implementation exhausts the build without another critique; budget limits, a passing
 critic, failures, and operator stop can also terminate execution (ADR-005).
 
-New loops do not queue a separate asset phase. The legacy `assets` role remains for old-attempt
+New builds do not queue a separate asset phase. The legacy `assets` role remains for old-attempt
 recovery; sculpting is now dispatched inside implementation when the cast needs work. See
-[`ARCHITECTURE.md`](ARCHITECTURE.md#loop-execution) for the current lifecycle and
+[`ARCHITECTURE.md`](ARCHITECTURE.md#build-execution) for the current lifecycle and
 [`ASSET-PHASE.md` §2b](ASSET-PHASE.md#2b-the-merge--sculpting-moves-inside-implement) for the migration.
 
 ### PHASE-001 — A phase is a role with a complete contract
 
-**Default severity:** Major; Blocker when a phase can leave the loop permanently `running`.
+**Default severity:** Major; Blocker when a phase can leave the build permanently `running`.
 
 Adding or materially changing a phase touches all of the following. A PR that does some of them is
 incomplete.
 
-1. **Role.** Add it to `RunRole` in `apps/desktop/src/shared/loop.ts`, give it a `runPromptLabel`,
+1. **Role.** Add it to `PhaseRole` in `apps/desktop/src/shared/build.ts`, give it a `runPromptLabel`,
    and register any new log kinds in the channel map (LOG-001).
 2. **Prompt.** One builder in `apps/desktop/src/shared/prompts.ts` (PROMPT-001). Harness-specific
    delegation text comes from `main/delegation.ts` and is passed in as a parameter, never inlined.
-3. **Queueing.** The previous phase's `finalize` enqueues the next run with `ledger.createRun`,
+3. **Queueing.** The previous phase's `finalize` enqueues the next attempt with `ledger.createAttempt`,
    deriving the harness from the model (ARCH-004) and checking `overBudget` first. `executeNext`
-   dispatches by role. `resumeLoop` and `recoverAll` have per-role branches and must learn the new
+   dispatches by role. `resumeBuild` and `recoverAll` have per-role branches and must learn the new
    role; this is the step most often missed.
-4. **Execution.** Keep the `executeX` orchestration adapter in `loop-runner.ts`, but put any
+4. **Execution.** Keep the `executeX` orchestration adapter in `build-runner.ts`, but put any
    substantial parser/protocol in a public `main/roles/` factory. The role module owns its bounded
    stream state, accounting, and finalization contract; the runner supplies process and persistence
-   seams. The parser follows PROC-004 and reports progress so `driveRun`'s idle and hard-cap
+   seams. The parser follows PROC-004 and reports progress so `driveAttempt`'s idle and hard-cap
    timeouts work.
 5. **Owned artifacts.** Define each phase's writable outputs and protected inputs. Reference owns
-   `reference/<loop-id>/`; critique owns evidence under `critique/round-<n>/` and may create the
+   `reference/<build-id>/`; critique owns evidence under `critique/round-<n>/` and may create the
    build outputs allowed by PHASE-002. Implementation owns generated game source, including
    sculpted assets, and must preserve reference and critique evidence. Reference evidence never
    ships as a game asset. A new artifact-producing role must declare its output location.
 6. **Completion artifact validated in main.** The phase succeeds only when a main-process scanner
    says so: `scanReferencePack` for the pack, the parsed attempt-specific
-   `verdict-<run-id>.json` for critique. The model's
+   `verdict-<attempt-id>.json` for critique. The model's
    prose is not a completion signal (PROC-004). A new standalone asset phase would need a manifest
    scanner that checks every file exists, has a hash, a license or generation record, and was not
    copied from the reference pack.
 7. **Retry semantics.** The prompt tells the agent to audit existing output first and keep what is
    valid. Attempts are bounded (`MAX_REFERENCE_ATTEMPTS` is the pattern) and preserved files survive
    the retry.
-8. **Terminal states and cost.** Every exit path patches the run with tokens, cost, duration,
+8. **Terminal states and cost.** Every exit path patches the attempt with tokens, cost, duration,
    session ID, and a terminal status, then calls `accumulateCost` (PROC-003).
 9. **Renderer.** A panel per phase (`ReferenceStudyPanel`, `CritiquePanel`) that reads through a
-   typed, size-capped IPC operation (`loop:reference`, `loop:critique`). No panel reads the
+   typed, size-capped IPC operation (`build:reference`, `build:critique`). No panel reads the
    workspace directly.
 10. **Report.** `report.ts` includes the phase's artifacts in the exported summary.
 11. **Tests.** A prompt-contract test in `prompts.test.ts`, a scanner test like
     `reference-pack.test.ts`, a parser test like `parse-verdict.test.ts`, and resume/recovery
     coverage.
-12. **Docs.** The README's loop description and this section.
+12. **Docs.** The README's build description and this section.
 
 ### PHASE-002 — Phase boundaries are frozen files, not conversation
 
@@ -475,7 +475,7 @@ incomplete.
   outputs do not create source drift.
 - The authoritative bare revision repository lives under the app-private user-data root. Workspace
   metadata and imported portable history never become Git ref/object authority.
-- A phase's inputs are named by exact path in its prompt and are immutable for the loop's lifetime.
+- A phase's inputs are named by exact path in its prompt and are immutable for the build's lifetime.
   If an input is missing or invalid, the phase reports a process finding and fails closed rather
   than filling the gap from memory.
 
@@ -485,7 +485,7 @@ incomplete.
 
 - **Location.** All execution prompt text lives in `apps/desktop/src/shared/prompts.ts`. Runner
   code and views call the builders; the renderer previews with the same functions main executes
-  (ARCH-004). Never inline prompt text in `loop-runner.ts`, `index.ts`, or a view. Harness-specific
+  (ARCH-004). Never inline prompt text in `build-runner.ts`, `index.ts`, or a view. Harness-specific
   fragments (fan-out commands, agent-file text) live in `main/delegation.ts` and are passed in.
 - **Shape.** Every prompt has the same skeleton, in this order: one sentence of role and boundaries
   (what it must not modify); the user's goal delimiter-safe encoded inside a `<goal>` block without
@@ -503,12 +503,12 @@ incomplete.
   the quality bar and the contract over micro-instructions; newer models do worse with
   over-prescriptive step lists.
 - **Every prompt edit is a behavior change.** Update the contract assertions in `prompts.test.ts`,
-  run at least one calibration loop or replay against a recorded run, and say so in the PR
-  (SCOPE-001, TEST-002). Each run records the SHA-256 of the exact execution prompt.
+  run at least one calibration build or replay against a recorded build, and say so in the PR
+  (SCOPE-001, TEST-002). Each attempt records the SHA-256 of the exact execution prompt.
 - **Test the contract, not the string.** Assert on required sentences, exact artifact paths, and
   the verdict shape, as `prompts.test.ts` does. Full-string snapshots break on every wording change
   and prove nothing.
-- **No secrets, no machine paths.** Prompts are logged per run (LOG-001) and exported with the run
+- **No secrets, no machine paths.** Prompts are logged per attempt (LOG-001) and exported with the build
   folder. They may contain workspace-relative paths only.
 
 ## Renderer and product behavior
@@ -520,7 +520,7 @@ incomplete.
 - Prevent accidental duplicate starts while preserving an intentional retry path. Loading, empty,
   success, recoverable failure, and terminal failure states must be distinguishable.
 - UI state is a projection of durable main-process state, not an independent state machine that can
-  advance a run on its own.
+  advance a build on its own.
 - Keep long-running logs bounded and preserve operator context such as filters, selection, and scroll
   position during incremental updates.
 

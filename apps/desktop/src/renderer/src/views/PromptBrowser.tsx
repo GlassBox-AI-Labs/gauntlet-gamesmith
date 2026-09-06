@@ -61,9 +61,9 @@ export function PromptBrowser({ prompts }: { prompts: PromptItem[] }): React.JSX
 
   return (
     <>
-      <section aria-labelledby="run-prompts-title">
+      <section aria-labelledby="build-prompts-title">
         <div className="mb-2 flex items-baseline justify-between">
-          <h2 id="run-prompts-title" className="text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">Prompts</h2>
+          <h2 id="build-prompts-title" className="text-[11px] font-medium uppercase tracking-wide text-[#8f8885]">Prompts</h2>
           <span className="text-[10px] text-[#5f5956]">Open a tile to read the formatted prompt</span>
         </div>
         <div className="grid grid-cols-2 gap-2 max-md:grid-cols-1">

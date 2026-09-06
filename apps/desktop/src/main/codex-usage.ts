@@ -1,18 +1,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { codexAgentMetricId } from '../shared/agent-id'
-import type { AgentMetric, TokenTotals } from '../shared/loop'
+import type { AgentMetric, TokenTotals } from '../shared/build'
 import { estimateCostUsd } from './pricing'
 
 /**
- * Spend from codex runs launched inside an implement run.
+ * Spend from codex attempts launched inside an implement attempt.
  *
  * Claude Code cannot run a non-Claude model as a subagent, so a Codex subagent
  * is a cheap Claude dispatcher that shells out to `codex exec`. Those tokens
  * never reach Claude's own usage report, so they are read from codex itself:
  * it appends a running `token_count` event to its session log at
  * `$CODEX_HOME/sessions/<y>/<m>/<d>/rollout-<local ISO>-<id>.jsonl`. The
- * implement spawn sets CODEX_HOME, so every nested run lands there whatever
+ * implement spawn sets CODEX_HOME, so every nested attempt lands there whatever
  * command line the dispatcher improvised — the count cannot be bypassed by an
  * agent that ignores its instructions.
  *
@@ -223,7 +223,7 @@ export function usageForThread(codexHome: string, threadId: string): TokenTotals
 /**
  * One metric row per codex session started since `sinceMs`, priced from its own
  * token count. `exceptThreadId` drops the orchestrator's own session, which the
- * run counts separately through `usageForThread` so it stays one row rather
+ * attempt counts separately through `usageForThread` so it stays one row rather
  * than appearing again as a worker slice.
  */
 export function readCodexUsage(codexHome: string, sinceMs: number, model: string, exceptThreadId?: string | null): AgentMetric[] {

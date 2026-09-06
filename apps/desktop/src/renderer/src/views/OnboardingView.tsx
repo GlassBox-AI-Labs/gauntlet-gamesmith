@@ -81,7 +81,7 @@ function InstallHint({ kind, offer, busy, onInstall }: {
         ? (
           <>
             <p className="text-xs leading-relaxed text-[#96908d]">
-              The app can install it for you. It downloads and runs {HARNESS_LABELS[kind]}&apos;s official
+              The app can install it for you. It downloads and attempts {HARNESS_LABELS[kind]}&apos;s official
               installer, which needs no other software, and shows you everything it does.
             </p>
             <Button
@@ -209,8 +209,8 @@ function AgentCard({ state, offer, selected, busy, onSelect, onSignIn, onInstall
 }
 
 /**
- * The first-run flow: say what the app is, get one agent signed in, explain the
- * loop, then hand over to the Runs view.
+ * The first-build flow: say what the app is, get one agent signed in, explain the
+ * build, then hand over to the Builds view.
  *
  * Finishing is recorded in the main process, so the flow does not come back
  * after a restart. It is skippable on purpose — someone reinstalling should not
@@ -414,7 +414,7 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
           <section>
             <h1 className="text-[27px] font-semibold tracking-[-0.02em]">How it works</h1>
             <p className="mt-4 text-sm leading-relaxed text-[#b5afac]">
-              Four things happen every time you start a run.
+              Four things happen every time you start a build.
             </p>
             <ol className="mt-7 grid gap-3.5">
               {TOUR_CARDS.map((card, index) => (
@@ -443,13 +443,13 @@ export function OnboardingView({ onDone }: { onDone: () => void }): React.JSX.El
             <p className="mt-4 text-sm leading-relaxed text-[#b5afac]">
               {connected
                 ? `${HARNESS_LABELS[connected]} is connected. The next screen is where you describe your first game.`
-                : 'No agent is connected yet. You can look around, but a run cannot start until you sign in to one on the Agents tab.'}
+                : 'No agent is connected yet. You can look around, but a build cannot start until you sign in to one on the Agents tab.'}
             </p>
             <div className="mt-7 rounded-lg border border-[#332e2e] bg-[#171313] p-4">
               <h2 className="text-sm font-medium text-[#ded9d6]">Two things worth knowing</h2>
               <ul className="mt-2 grid gap-2 text-xs leading-relaxed text-[#96908d]">
                 <li>
-                  Runs take a while and use your subscription's allowance. If you hit its limit, the app
+                  Builds take a while and use your subscription's allowance. If you hit its limit, the app
                   pauses and picks up again by itself.
                 </li>
                 <li>

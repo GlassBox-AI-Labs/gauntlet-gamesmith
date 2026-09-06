@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WORKSPACE_METADATA_DIR } from './workspace-metadata'
 import { parseAgentMetricId } from '../shared/agent-id'
-import type { RawStreamChunk, RawStreamInput, ReadRawStreamInput } from '../shared/loop'
+import type { RawStreamChunk, RawStreamInput, ReadRawStreamInput } from '../shared/build'
 import { isRecordId } from '../shared/record-id'
 import {
   MAX_CHILD_DIRECTORY_ENTRIES,
@@ -16,11 +16,11 @@ export const RAW_STREAM_CHUNK_BYTES = 192 * 1024
 
 export interface RawStreamRoots {
   workspaceDir: string
-  runId: string
+  attemptId: string
   sessionId: string | null
   claudeHome: string
   codexHome: string
-  /** Only the latest run whose child metrics own the live agent directory. */
+  /** Only the latest attempt whose child metrics own the live agent directory. */
   allowLiveChildStream: boolean
 }
 
@@ -28,7 +28,7 @@ export interface RawStreamRoots {
 export function rawStreamTrustError(playTrusted: boolean): string | null {
   return playTrusted
     ? null
-    : 'Untrusted history (imported or created before trust provenance shipped) cannot read CLI transcripts; only newly started trusted runs may open raw streams.'
+    : 'Untrusted history (imported or created before trust provenance shipped) cannot read CLI transcripts; only newly started trusted builds may open raw streams.'
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -39,7 +39,7 @@ function record(value: unknown): Record<string, unknown> {
 /** Runtime validation for the renderer-to-main request. */
 export function parseReadStreamInput(value: unknown): ReadRawStreamInput {
   const input = record(value)
-  if (!isRecordId(input.runId)) throw new Error('Invalid run id.')
+  if (!isRecordId(input.attemptId)) throw new Error('Invalid build id.')
   if (input.stream !== 'stdout' && input.stream !== 'stderr' && input.stream !== 'agent') {
     throw new Error('Invalid raw stream kind.')
   }
@@ -60,7 +60,7 @@ export function parseReadStreamInput(value: unknown): ReadRawStreamInput {
     throw new Error('Raw stream identity is invalid.')
   }
   return {
-    runId: input.runId,
+    attemptId: input.attemptId,
     stream: input.stream,
     ...(input.stream === 'agent' ? { agentId: input.agentId as string } : {}),
     offset: input.offset as number,
@@ -110,7 +110,7 @@ function containedFile(ownerRoot: string, root: string, candidate: string): stri
 
 function childStream(roots: RawStreamRoots, slug: string): string {
   const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'agents')
-  const directories = [path.join(root, roots.runId), ...(roots.allowLiveChildStream ? [root] : [])]
+  const directories = [path.join(root, roots.attemptId), ...(roots.allowLiveChildStream ? [root] : [])]
   const matches: string[] = []
   for (const [directoryIndex, directory] of directories.entries()) {
     if (directoryIndex === 0) {
@@ -203,18 +203,18 @@ function codexStream(roots: RawStreamRoots, threadId: string): string {
 
 /** Resolve only app-owned transcript conventions; the renderer never supplies a path. */
 export function resolveRawStreamPath(roots: RawStreamRoots, input: RawStreamInput): string {
-  if (input.runId !== roots.runId || !isRecordId(roots.runId)) throw new Error('Raw stream does not belong to this run.')
+  if (input.attemptId !== roots.attemptId || !isRecordId(roots.attemptId)) throw new Error('Raw stream does not belong to this attempt.')
   if (input.stream === 'stdout') {
-    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'runs')
-    return containedFile(roots.workspaceDir, root, path.join(root, `${roots.runId}.out.ndjson`))
+    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'builds')
+    return containedFile(roots.workspaceDir, root, path.join(root, `${roots.attemptId}.out.ndjson`))
   }
   if (input.stream === 'stderr') {
-    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'runs')
-    return containedFile(roots.workspaceDir, root, path.join(root, `${roots.runId}.err.log`))
+    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'builds')
+    return containedFile(roots.workspaceDir, root, path.join(root, `${roots.attemptId}.err.log`))
   }
   const agent = parseAgentMetricId(input.agentId)
   if (agent?.kind === 'child') return childStream(roots, agent.slug)
-  if (agent?.kind === 'workflow') return workflowStream(roots, agent.runId, agent.agentId)
+  if (agent?.kind === 'workflow') return workflowStream(roots, agent.attemptId, agent.agentId)
   if (agent?.kind === 'codex') return codexStream(roots, agent.threadId)
   throw new Error('This agent does not have a separate raw stream.')
 }

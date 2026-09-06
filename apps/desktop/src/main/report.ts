@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { LoopRecord, ReferencePack, RunRecord } from '../shared/loop'
-import { runtimeMs } from '../shared/run-timing'
+import type { BuildRecord, ReferencePack, PhaseAttempt } from '../shared/build'
+import { runtimeMs } from '../shared/attempt-timing'
 import { describeModels } from '../shared/models'
 import { redactLogText } from '../shared/redact-log'
 import { PRICE_TABLE_VERSION } from './pricing'
@@ -23,7 +23,7 @@ const MAX_DIRECTORY_ENTRIES = 2_000
 const MAX_PAIRS_BYTES = 256 * 1024
 const MAX_PAIRS_MD_BYTES = 64 * 1024
 const MAX_PROJECTED_IMAGE_BYTES = 128 * 1024 * 1024
-const MAX_REPORT_RUNS = 500
+const MAX_REPORT_BUILDS = 500
 const MAX_REPORT_CHARS = 2 * 1024 * 1024
 const lexical = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
@@ -215,35 +215,35 @@ function spark(score: number): string {
 }
 
 export function buildReport(
-  loop: LoopRecord,
-  runs: RunRecord[],
+  build: BuildRecord,
+  attempts: PhaseAttempt[],
   artifacts: CritiqueArtifacts[] = [],
   referencePack?: ReferencePack,
-  canonical?: { totalRuns: number; aggregate: { costUsd: number; inputTokens: number; outputTokens: number } },
+  canonical?: { totalAttempts: number; aggregate: { costUsd: number; inputTokens: number; outputTokens: number } },
 ): string {
-  const totalRuns = canonical?.totalRuns ?? runs.length
-  runs = runs.slice(-MAX_REPORT_RUNS)
-  const done = runs.filter((r) => r.status !== 'queued')
+  const totalAttempts = canonical?.totalAttempts ?? attempts.length
+  attempts = attempts.slice(-MAX_REPORT_BUILDS)
+  const done = attempts.filter((r) => r.status !== 'queued')
   const totalCost = canonical?.aggregate.costUsd ?? done.reduce((sum, r) => sum + (r.costUsd ?? 0), 0)
   const totalIn = canonical?.aggregate.inputTokens ?? done.reduce((sum, r) => sum + (r.inputTokens ?? 0), 0)
   const totalOut = canonical?.aggregate.outputTokens ?? done.reduce((sum, r) => sum + (r.outputTokens ?? 0), 0)
-  const verdicts = runs.filter((r) => r.role === 'critique' && r.verdict).map((r) => ({ round: r.round, verdict: r.verdict! }))
+  const verdicts = attempts.filter((r) => r.role === 'critique' && r.verdict).map((r) => ({ round: r.round, verdict: r.verdict! }))
   const lastFinished = done.reduce<string | null>((last, r) => (r.finishedAt && (!last || r.finishedAt > last) ? r.finishedAt : last), null)
-  const wallClockMs = lastFinished ? new Date(lastFinished).getTime() - new Date(loop.createdAt).getTime() : null
+  const wallClockMs = lastFinished ? new Date(lastFinished).getTime() - new Date(build.createdAt).getTime() : null
 
   const lines: string[] = []
-  lines.push(`# Gauntlet Gamesmith report — ${loop.status.toUpperCase()}`)
+  lines.push(`# Gauntlet Gamesmith report — ${build.status.toUpperCase()}`)
   lines.push('')
-  lines.push(`- **Goal:** ${loop.prompt.replace(/\s+/g, ' ').slice(0, 180)}${loop.prompt.length > 180 ? '…' : ''}`)
-  lines.push(`- **Workspace:** ${loop.workspaceDir}`)
+  lines.push(`- **Goal:** ${build.prompt.replace(/\s+/g, ' ').slice(0, 180)}${build.prompt.length > 180 ? '…' : ''}`)
+  lines.push(`- **Workspace:** ${build.workspaceDir}`)
   lines.push(
-    `- **Models:** ${describeModels(loop.models)}`,
+    `- **Models:** ${describeModels(build.models)}`,
   )
-  lines.push(`- **Started:** ${loop.createdAt} · **Updated:** ${loop.updatedAt}${wallClockMs != null ? ` · **Wall clock:** ${fmtDuration(wallClockMs)}` : ''}`)
+  lines.push(`- **Started:** ${build.createdAt} · **Updated:** ${build.updatedAt}${wallClockMs != null ? ` · **Wall clock:** ${fmtDuration(wallClockMs)}` : ''}`)
   lines.push(
-    `- **Rounds:** ${loop.round} of ${loop.maxRounds} · **Equivalent API cost:** $${totalCost.toFixed(2)}${loop.budgetUsd ? ` of $${loop.budgetUsd.toFixed(2)} budget` : ''} · **Tokens (all runs):** in ${fmtTokens(totalIn)} / out ${fmtTokens(totalOut)}`,
+    `- **Rounds:** ${build.round} of ${build.maxRounds} · **Equivalent API cost:** $${totalCost.toFixed(2)}${build.budgetUsd ? ` of $${build.budgetUsd.toFixed(2)} budget` : ''} · **Tokens (all builds):** in ${fmtTokens(totalIn)} / out ${fmtTokens(totalOut)}`,
   )
-  if (loop.stopReason) lines.push(`- **Outcome:** ${loop.stopReason}`)
+  if (build.stopReason) lines.push(`- **Outcome:** ${build.stopReason}`)
   lines.push('')
 
   if (verdicts.length > 0) {
@@ -255,21 +255,21 @@ export function buildReport(
 
   lines.push('## Rounds')
   lines.push('')
-  if (totalRuns > runs.length) {
-    lines.push(`_Showing the newest ${runs.length} of ${totalRuns} attempts; canonical totals above include every attempt._`)
+  if (totalAttempts > attempts.length) {
+    lines.push(`_Showing the newest ${attempts.length} of ${totalAttempts} attempts; canonical totals above include every attempt._`)
     lines.push('')
   }
   lines.push('| Round | Role | Revision | Model | Status | Equivalent API cost | Tokens in | Tokens out | Runtime | Score |')
   lines.push('|---|---|---|---|---|---|---|---|---|---|')
-  for (const run of runs) {
-    const score = run.verdict ? `${run.verdict.score.toFixed(2)}${run.verdict.pass ? ' ✓ PASS' : ''}` : ''
+  for (const attempt of attempts) {
+    const score = attempt.verdict ? `${attempt.verdict.score.toFixed(2)}${attempt.verdict.pass ? ' ✓ PASS' : ''}` : ''
     lines.push(
-      `| ${run.role === 'reference' ? '—' : run.round} | ${run.role} | ${run.revision?.slice(0, 12) ?? '—'} | ${run.model ?? '—'} | ${run.status} | ${run.costUsd != null ? `$${run.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(run.inputTokens)} | ${fmtTokens(run.outputTokens)} | ${fmtDuration(runtimeMs(run))} | ${score} |`,
+      `| ${attempt.role === 'reference' ? '—' : attempt.round} | ${attempt.role} | ${attempt.revision?.slice(0, 12) ?? '—'} | ${attempt.model ?? '—'} | ${attempt.status} | ${attempt.costUsd != null ? `$${attempt.costUsd.toFixed(2)}` : '—'} | ${fmtTokens(attempt.inputTokens)} | ${fmtTokens(attempt.outputTokens)} | ${fmtDuration(runtimeMs(attempt))} | ${score} |`,
     )
   }
   lines.push('')
 
-  if (loop.models.referenceMode === 'skip') {
+  if (build.models.referenceMode === 'skip') {
     lines.push('## Reference Study', '', 'Skipped by the operator. No reference agent was run; evaluation uses the goal and supplied context.', '')
   } else if (referencePack) {
     lines.push('## Reference Pack')
@@ -326,7 +326,7 @@ export function buildReport(
     }
   }
 
-  const lastWithAgents = [...runs].reverse().find((r) => r.metrics && r.metrics.agents.length > 0)
+  const lastWithAgents = [...attempts].reverse().find((r) => r.metrics && r.metrics.agents.length > 0)
   if (lastWithAgents?.metrics) {
     lines.push(`## Agent breakdown (round ${lastWithAgents.round} ${lastWithAgents.role})`)
     lines.push('')
@@ -362,7 +362,7 @@ export function buildReport(
   }
 
   lines.push(
-    `_Costs are equivalent API cost estimates (claude: the CLI's per-model breakdown at run end, which counts workflow agents that its total_cost_usd omits, and a price-table estimate mid-run that undercounts a fan-out in flight; codex: tokens × price table ${PRICE_TABLE_VERSION}); runs use subscription logins. Ledger: ledger.db in app user data._`,
+    `_Costs are equivalent API cost estimates (claude: the CLI's per-model breakdown at build end, which counts workflow agents that its total_cost_usd omits, and a price-table estimate mid-build that undercounts a fan-out in flight; codex: tokens × price table ${PRICE_TABLE_VERSION}); builds use subscription logins. Ledger: ledger.db in app user data._`,
   )
   const projected = redactLogText(lines.join('\n'))
   if (projected.length <= MAX_REPORT_CHARS) return projected

@@ -1,5 +1,5 @@
 import { harnessKinds, type HarnessKind } from '../shared/harness'
-import type { RunRole, StartLoopInput } from '../shared/loop'
+import type { PhaseRole, StartBuildInput } from '../shared/build'
 import { isRecordId } from '../shared/record-id'
 import {
   AGENT_EFFORTS,
@@ -60,13 +60,13 @@ export function parseOnboardingHarness(value: unknown): HarnessKind | null {
   return assertHarnessKind(value)
 }
 
-export function assertLoopId(value: unknown): string {
-  if (!isRecordId(value)) throw new Error('Invalid loop id.')
+export function assertBuildId(value: unknown): string {
+  if (!isRecordId(value)) throw new Error('Invalid build id.')
   return value
 }
 
-export function parseStartLoopInput(value: unknown): StartLoopInput {
-  const input = record(value, 'Loop input')
+export function parseStartBuildInput(value: unknown): StartBuildInput {
+  const input = record(value, 'Build input')
   const maxRounds = input.maxRounds
   if (typeof maxRounds !== 'number' || !Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 100) {
     throw new Error('Max rounds must be an integer between 1 and 100.')
@@ -80,7 +80,7 @@ export function parseStartLoopInput(value: unknown): StartLoopInput {
   if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || attachmentIds.length > 100 || attachmentIds.some((id) => typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)))) throw new Error('Invalid attachment selection.')
   if (input.referenceMode === 'files' && (!Array.isArray(attachmentIds) || attachmentIds.length === 0)) throw new Error('Files-only Reference Study requires attachments.')
   return {
-    ...(input.referenceMode !== undefined ? { referenceMode: input.referenceMode as StartLoopInput['referenceMode'] } : {}),
+    ...(input.referenceMode !== undefined ? { referenceMode: input.referenceMode as StartBuildInput['referenceMode'] } : {}),
     ...(attachmentIds !== undefined ? { attachmentIds: [...new Set(attachmentIds as string[])] } : {}),
     prompt: goalString(input.prompt),
     workspaceDir: boundedString(input.workspaceDir, 'Workspace path', 8_192),
@@ -99,16 +99,16 @@ export function parseStartLoopInput(value: unknown): StartLoopInput {
   }
 }
 
-export function parseRenameInput(loopId: unknown, title: unknown): { loopId: string; title: string } {
-  return { loopId: assertLoopId(loopId), title: boundedString(title, 'Title', 80) }
+export function parseRenameInput(buildId: unknown, title: unknown): { buildId: string; title: string } {
+  return { buildId: assertBuildId(buildId), title: boundedString(title, 'Title', 80) }
 }
 
-export function parseDeleteRunsInput(loopIds: unknown, deleteFiles: unknown): { loopIds: string[]; deleteFiles: boolean } {
-  if (!Array.isArray(loopIds) || loopIds.length === 0 || loopIds.length > 100) {
-    throw new Error('Run deletion requires between 1 and 100 run ids.')
+export function parseDeleteBuildsInput(buildIds: unknown, deleteFiles: unknown): { buildIds: string[]; deleteFiles: boolean } {
+  if (!Array.isArray(buildIds) || buildIds.length === 0 || buildIds.length > 100) {
+    throw new Error('Build deletion requires between 1 and 100 build ids.')
   }
   if (typeof deleteFiles !== 'boolean') throw new Error('Delete-files flag must be a boolean.')
-  return { loopIds: [...new Set(loopIds.map(assertLoopId))], deleteFiles }
+  return { buildIds: [...new Set(buildIds.map(assertBuildId))], deleteFiles }
 }
 
 export function renameTrustError(playTrusted: boolean): string | null {
@@ -125,30 +125,30 @@ export function parseLogLimit(value: unknown): number {
   return value
 }
 
-export function parseLoopListOffset(value: unknown): number {
+export function parseBuildListOffset(value: unknown): number {
   if (value === undefined) return 0
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 1_000_000) {
-    throw new Error('Loop-list offset must be a safe integer between 0 and 1000000.')
+    throw new Error('Build-list offset must be a safe integer between 0 and 1000000.')
   }
   return value
 }
 
-export function parseRunPageOffset(value: unknown): number {
+export function parseAttemptPageOffset(value: unknown): number {
   if (value === undefined) return 0
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 50_000) {
-    throw new Error('Run-page offset must be a safe integer between 0 and 50000.')
+    throw new Error('Build-page offset must be a safe integer between 0 and 50000.')
   }
   return value
 }
 
-export function parseRunPromptRequest(loopId: unknown, role: unknown, round: unknown): { loopId: string; role: RunRole; round: number } {
-  if (role !== 'reference' && role !== 'assets' && role !== 'implement' && role !== 'critique') throw new Error('Invalid run role.')
+export function parseAttemptPromptRequest(buildId: unknown, role: unknown, round: unknown): { buildId: string; role: PhaseRole; round: number } {
+  if (role !== 'reference' && role !== 'assets' && role !== 'implement' && role !== 'critique') throw new Error('Invalid build role.')
   if (typeof round !== 'number' || !Number.isSafeInteger(round) || round < 0 || round > 10_000) {
     throw new Error('Prompt round must be an integer between 0 and 10000.')
   }
   if (role === 'reference' && round !== 0) throw new Error('Reference Study prompt round must be zero.')
   if (role !== 'reference' && round === 0) throw new Error('Asset, implementation, and critique prompt rounds must be positive.')
-  return { loopId: assertLoopId(loopId), role, round }
+  return { buildId: assertBuildId(buildId), role, round }
 }
 
 export function parseOptionalRound(value: unknown): number | null {

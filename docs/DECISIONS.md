@@ -503,6 +503,63 @@ Teammates must not reintroduce these modes through defaults, presets, or new mod
 Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
 automatic harness orchestration requires a new product decision with explicit UI semantics.
 
+## ADR-020 — Builds, rounds, phases, and phase attempts (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The word "run" meant two opposite things. The UI called the whole job a run — the
+sidebar's "Runs", `new-run-workspace.ts`, `ReportRunRow` — while the database called one agent
+execution a run: `RunRecord`, the `runs` table. `renderer/src/lib/run-pages.ts` (now `build-pages.ts`) used both senses four
+lines apart. Every reader, human or agent, had to infer the size of the thing from context.
+
+**Decision.** Four words, one meaning each.
+
+A **build** is one job: one goal, one project folder, one budget, one final verdict. A build runs in
+numbered **rounds**; round 0 is the Reference Study and rounds 1..`maxRounds` are an implementation
+followed by a critique. A **phase** is one role within one round — the reference study, an
+implementation, a critique. A phase is an identity, not a stored row: it is the pair (round, role).
+A **phase attempt** is one execution of one phase; a retry produces a second attempt at the same
+phase, and attempts are the rows that get stored.
+
+Storage is `builds` and `phase_attempts`, with `build_id` and `attempt_id` replacing `loop_id` and
+`run_id`. Types are `BuildRecord` and `PhaseAttempt`; the short form for an attempt is `attempt`
+(`attemptId`, `AttemptStatus`, `AttemptMetrics`), because `phaseAttemptId` at 431 sites is noise and
+the UI already said "attempts". The role type is `PhaseRole`, because a role names the phase rather
+than the attempt. There is no `phases` table and must not be one.
+
+**Why `build`, despite the collision.** "Build" already means "compile the game" in roughly 205
+places, including agent prompt text and the `dist$|build$` file-exclusion pattern. That cost was
+accepted deliberately. The mitigation is a writing rule, not code: never use "build" as a bare noun
+for compilation in operator-visible text — write "compile" or "game build" there. `forging` was
+considered and rejected because it reads as *faked* in this repository, where `forged-source.txt`
+and `forged-evidence.txt` are the evidence-tampering fixtures, and `forge/` is a real directory in
+the bundled img2threejs skill.
+
+**Compatibility.** `initializeSchema` renames a pre-rename database in place, guarded on the old
+table still existing so it is idempotent, and writes one `ledger.db.pre-build-rename` backup through
+`VACUUM INTO` before the first `ALTER`. Import accepts either vocabulary: the validator detects the
+shape, validates against it, and only then migrates its own private temp snapshot — validation stays
+first because it is what rejects triggers and views, and `ALTER TABLE` re-parses trigger bodies.
+Report files move to format 2; a format-1 file's `loopId` is read as `buildId`. No stored *values*
+change: role strings, log kinds, and status literals are exactly as they were.
+
+A project folder migrated by this build is rejected by an older build of the app as an unsupported
+schema. Single user, forward-only.
+
+**Deliberately unchanged.** The on-disk `.gauntlet-gamesmith/runs/` stream directory and the
+`runsDev`/`runsIno` keys in process-launch metadata keep their names: recovery reattaches to live
+child processes through those exact paths and identity fields, and renaming them risks orphaning a
+crash-recovered attempt for no operator-visible gain. `AgentMetric.phase` also keeps its name — it
+already carries a role or workflow phase title, which is what this vocabulary calls a phase. In the
+Workflow tailers a "run" is a Workflow-tool run, an unrelated concept, and stays a run. The word
+"loop" survives for the *cycle* — reference → implement → critique → repeat — which is a loop even
+though the record is a build.
+
+**Consequences.** `STANDARDS.md` already called these things phases in PHASE-001; the code now
+agrees with it. Reviewers should reject a new `phases` table, any reintroduction of `run` as a noun
+for either the job or an attempt, and any use of "build" as a bare noun for compilation in
+operator-visible text.
+
 
 ## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
 
@@ -650,4 +707,4 @@ otherwise the catalog uses its placeholder. No cover path field is exposed.
 **Consequences.** Publishers can proceed directly to **Preview game**, then publish
 the reviewed release. The compilation script must produce one static browser output
 below the source root; unsupported games need another implementation round. Output
-detection and cover selection appear in the existing run log.
+detection and cover selection appear in the existing build log.

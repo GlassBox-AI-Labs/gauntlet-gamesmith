@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { LoopRecord, LoopSnapshot, RunRecord } from '../shared/loop'
+import type { BuildRecord, BuildSnapshot, PhaseAttempt } from '../shared/build'
 import { DEFAULT_CRITIC, resolveModels } from '../shared/models'
 import { hasMixedPrompts, REPORT_FILE_KIND, reportTotals, shortHash } from '../shared/reports'
 import { buildReportRow, hashPrompt, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
 
-const loop: LoopRecord = {
+const build: BuildRecord = {
   id: 'l1',
   title: 'Pac-man',
   prompt: 'Build Pac-Man at AAA quality',
@@ -21,10 +21,10 @@ const loop: LoopRecord = {
   updatedAt: '2026-08-30T21:00:00.000Z',
 }
 
-function run(partial: Partial<RunRecord>): RunRecord {
+function attempt(partial: Partial<PhaseAttempt>): PhaseAttempt {
   return {
     id: 'r',
-    loopId: 'l1',
+    buildId: 'l1',
     round: 1,
     role: 'implement',
     harness: 'claude',
@@ -57,11 +57,11 @@ function run(partial: Partial<RunRecord>): RunRecord {
   }
 }
 
-const snapshot: LoopSnapshot = {
-  loop,
-  runs: [
-    run({ id: 'a', costUsd: 6, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 1_800_000, revision: 'abcdef1234567890' }),
-    run({
+const snapshot: BuildSnapshot = {
+  build,
+  attempts: [
+    attempt({ id: 'a', costUsd: 6, inputTokens: 1_500_000, outputTokens: 90_000, durationMs: 1_800_000, revision: 'abcdef1234567890' }),
+    attempt({
       id: 'b',
       role: 'critique',
       harness: 'codex',
@@ -73,8 +73,8 @@ const snapshot: LoopSnapshot = {
       verdict: { score: 0.62, pass: false, summary: 'Close', findings: [] },
       finishedAt: '2026-08-30T20:35:00.000Z',
     }),
-    run({ id: 'c', round: 2, costUsd: 5, inputTokens: 900_000, outputTokens: 50_000, durationMs: 900_000 }),
-    run({
+    attempt({ id: 'c', round: 2, costUsd: 5, inputTokens: 900_000, outputTokens: 50_000, durationMs: 900_000 }),
+    attempt({
       id: 'd',
       round: 2,
       role: 'critique',
@@ -87,7 +87,7 @@ const snapshot: LoopSnapshot = {
       verdict: { score: 0.91, pass: true, summary: 'Ships', findings: [] },
       finishedAt: '2026-08-30T21:00:00.000Z',
     }),
-    run({ id: 'e', round: 3, status: 'queued', costUsd: 99, finishedAt: null }),
+    attempt({ id: 'e', round: 3, status: 'queued', costUsd: 99, finishedAt: null }),
   ],
 }
 
@@ -129,7 +129,7 @@ describe('buildReportRow', () => {
   })
 
   it('copies the setup and prompt hash in, so the row stands on its own', () => {
-    expect(row.promptHash).toBe(hashPrompt(loop.prompt))
+    expect(row.promptHash).toBe(hashPrompt(build.prompt))
     expect(row.models.orchestratorModel).toBe('claude-fable-5')
     expect(row.models.criticModel).toBe(DEFAULT_CRITIC.criticModel)
     expect(row.title).toBe('Pac-man')
@@ -137,16 +137,16 @@ describe('buildReportRow', () => {
     expect(row.rounds[0].revision).toBe('abcdef1234567890')
   })
 
-  it('leaves cache token counts null when no run recorded a per-model split', () => {
+  it('leaves cache token counts null when no build recorded a per-model split', () => {
     expect(row.cacheReadTokens).toBeNull()
     expect(row.cacheWriteTokens).toBeNull()
   })
 
   it('adds up cache reads and writes when the per-model split survived', () => {
     const withMetrics = buildReportRow({
-      loop,
-      runs: [
-        run({
+      build,
+      attempts: [
+        attempt({
           id: 'a',
           metrics: {
             agents: [],
@@ -166,11 +166,11 @@ describe('buildReportRow', () => {
 describe('report totals and prompt grouping', () => {
   it('adds rows up and spots a report that mixes briefs', () => {
     const a = buildReportRow(snapshot)
-    const b = buildReportRow({ ...snapshot, loop: { ...loop, id: 'l2', prompt: 'Build Tetris' } })
+    const b = buildReportRow({ ...snapshot, build: { ...build, id: 'l2', prompt: 'Build Tetris' } })
     expect(hasMixedPrompts([a, a])).toBe(false)
     expect(hasMixedPrompts([a, b])).toBe(true)
     const totals = reportTotals([a, b])
-    expect(totals.runs).toBe(2)
+    expect(totals.attempts).toBe(2)
     expect(totals.rounds).toBe(4)
     expect(totals.costUsd).toBe(25)
   })
@@ -191,22 +191,22 @@ describe('renderReportMarkdown', () => {
     expect(md).toContain('# Opus vs Fable')
     expect(md).toContain('## Setup')
     expect(md).toContain('## Results')
-    expect(md).toContain(shortHash(hashPrompt(loop.prompt)))
+    expect(md).toContain(shortHash(hashPrompt(build.prompt)))
     expect(md).toContain('$12.50')
     expect(md).toContain('0.91')
   })
 
-  it('warns when the runs did not share a prompt', () => {
-    const mixed = { ...report, rows: [...report.rows, buildReportRow({ ...snapshot, loop: { ...loop, id: 'l2', prompt: 'Build Tetris' } })] }
-    expect(renderReportMarkdown(mixed)).toContain('These runs used different prompts.')
-    expect(renderReportMarkdown(report)).not.toContain('These runs used different prompts.')
+  it('warns when the builds did not share a prompt', () => {
+    const mixed = { ...report, rows: [...report.rows, buildReportRow({ ...snapshot, build: { ...build, id: 'l2', prompt: 'Build Tetris' } })] }
+    expect(renderReportMarkdown(mixed)).toContain('These builds used different prompts.')
+    expect(renderReportMarkdown(report)).not.toContain('These builds used different prompts.')
   })
 
   it('says so plainly when the report is empty', () => {
-    expect(renderReportMarkdown({ ...report, rows: [] })).toContain('no runs in it yet')
+    expect(renderReportMarkdown({ ...report, rows: [] })).toContain('no builds in it yet')
   })
 
-  it('escapes a pipe in a run title rather than splitting the column', () => {
+  it('escapes a pipe in a build title rather than splitting the column', () => {
     const piped = { ...report, rows: [{ ...report.rows[0], title: 'A | B' }] }
     expect(renderReportMarkdown(piped)).toContain('A \\| B')
   })
@@ -231,11 +231,27 @@ describe('report files', () => {
     expect(parsed.rows[0].rounds).toHaveLength(2)
   })
 
+  it('reads a format-1 report that still calls a build a build', () => {
+    const current = toReportFile(report, '2026-09-01T01:00:00.000Z')
+    const legacy = JSON.parse(JSON.stringify(current)) as {
+      version: number
+      report: { rows: Array<Record<string, unknown>> }
+    }
+    legacy.version = 1
+    for (const row of legacy.report.rows) {
+      row.loopId = row.buildId
+      delete row.buildId
+    }
+    const parsed = parseReportFile(JSON.stringify(legacy))
+    expect(parsed.rows[0].buildId).toBe(report.rows[0].buildId)
+    expect(parsed.rows[0].rounds).toHaveLength(2)
+  })
+
   it('refuses files that are not reports, and reports from a newer app', () => {
     expect(() => parseReportFile('not json')).toThrow(/not valid JSON/)
     expect(() => parseReportFile('{"kind":"something-else"}')).toThrow(/not a Gauntlet Gamesmith report/)
     expect(() => parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 99, report }))).toThrow(/newer version/)
-    expect(() => parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 1, report: { name: 'x' } }))).toThrow(/no name or no runs/)
+    expect(() => parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 1, report: { name: 'x' } }))).toThrow(/no name or no builds/)
     expect(() =>
       parseReportFile(JSON.stringify({ kind: REPORT_FILE_KIND, version: 1, report: { ...report, rows: [{ title: 'x' }] } })),
     ).toThrow(/missing its id, title, or prompt hash/)
@@ -251,7 +267,7 @@ describe('report files', () => {
   it('bounds imported report collections', () => {
     const oversized = toReportFile({ ...report, rows: Array.from({ length: 1_001 }, () => report.rows[0]!) }, '2026-09-01T01:00:00.000Z')
 
-    expect(() => parseReportFile(JSON.stringify(oversized))).toThrow(/too many runs/i)
+    expect(() => parseReportFile(JSON.stringify(oversized))).toThrow(/too many builds/i)
   })
 
   it('builds a safe file name from the report name', () => {

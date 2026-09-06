@@ -1,6 +1,6 @@
 import { Publishing, registerPublishingIpc } from './publishing'
-import { trustExistingRun } from './trust-ipc'
-import { createRunAttachments } from './run-attachments'
+import { trustExistingBuild } from './trust-ipc'
+import { createBuildAttachments } from './build-attachments'
 import { registerAttachmentIpc } from './attachment-ipc'
 import crypto from 'node:crypto'
 import fsSync from 'node:fs'
@@ -10,10 +10,10 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import fixPath from 'fix-path'
 import type { AccountRotation, AccountsResult, AccountsState, HarnessAction, HarnessKind } from '../shared/harness'
 import { IPC } from '../shared/ipc'
-import { type CritiqueRound, type LoopLogLine, type LoopRecord, type ReferenceStudy } from '../shared/loop'
+import { type CritiqueRound, type BuildLogLine, type BuildRecord, type ReferenceStudy } from '../shared/build'
 import { isCodexModel, resolveModels } from '../shared/models'
-import { REPORT_FILE_SUFFIX, type DeleteRunsResult, type ReportRecord, type ReportRunRow } from '../shared/reports'
-import { referencePackDir, referenceRootForLoop } from '../shared/reference-path'
+import { REPORT_FILE_SUFFIX, type DeleteBuildsResult, type ReportRecord, type ReportBuildRow } from '../shared/reports'
+import { referencePackDir, referenceRootForBuild } from '../shared/reference-path'
 import { failure, success, type OperationResult } from '../shared/result'
 import { redactedErrorMessage } from '../shared/redact-log'
 import {
@@ -36,24 +36,24 @@ import { HarnessLoginManager } from './harness-login'
 import { subscriptionAuthError } from './harness-status'
 import {
   assertHarnessKind,
-  assertLoopId,
+  assertBuildId,
   parseLogLimit,
-  parseDeleteRunsInput,
-  parseLoopListOffset,
+  parseDeleteBuildsInput,
+  parseBuildListOffset,
   parseOnboardingHarness,
   parseOptionalRound,
-  parseRunPageOffset,
-  parseRunPromptRequest,
+  parseAttemptPageOffset,
+  parseAttemptPromptRequest,
   parseRenameInput,
-  parseStartLoopInput,
+  parseStartBuildInput,
   parseTerminalInput,
   parseTerminalResize,
   renameTrustError,
 } from './ipc-input'
 import { Ledger } from './ledger'
 import { OnboardingStore } from './onboarding'
-import { LoopRunner } from './loop-runner'
-import { stopExistingLoop } from './loop-stop'
+import { BuildRunner } from './build-runner'
+import { stopExistingBuild } from './build-stop'
 import { MediaBaseGate, startMediaServer } from './media-server'
 import { hasActivePlay, playAccessError, playState, startPlay, stopAllPlayAndWait, stopPlay } from './play'
 import { parseReadStreamInput, rawStreamTrustError, readRawStreamChunk, resolveProtectedRawStreamPath } from './raw-streams'
@@ -62,20 +62,20 @@ import { buildReport, scanCritiqueArtifacts } from './report'
 import { buildReportRow, parseReportFile, renderReportMarkdown, reportFileBase, toReportFile } from './reports'
 import { checkoutRoundRevision, configureRoundRevisionStorage } from './round-revision'
 import {
-  copyRunFolder,
-  deleteRunFolder,
+  copyBuildFolder,
+  deleteBuildFolder,
   exportActivityError,
   nextAvailableExportPath,
   RAW_EXPORT_WARNING,
-  RUN_LEDGER_FILE,
-  RUN_METADATA_DIR,
+  BUILD_LEDGER_FILE,
+  BUILD_METADATA_DIR,
   safeExportFolderName,
-} from './run-transfer'
+} from './build-transfer'
 import { developmentRendererUrl } from './dev-renderer-url'
 import { developmentAppIconPath } from './development-app-icon'
 import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
-import { boundedLoopSnapshot, loopListPage } from './ipc-projection'
-import { withPromptLogs, type PromptLogRun } from './prompt-logs'
+import { boundedBuildSnapshot, buildListPage } from './ipc-projection'
+import { withPromptLogs, type PromptLogAttempt } from './prompt-logs'
 import { settleQuitSupervisors } from './quit-settlement'
 import { readExactFileDescriptor } from './bounded-fd'
 import { resolveUserDataOverride } from './user-data-dir'
@@ -84,7 +84,7 @@ import { configureAgentWritableRoots } from './cli-executable'
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
 let publishing: Publishing | null = null
-let loopRunner: LoopRunner | null = null
+let buildRunner: BuildRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
 const APP_NAME = 'Gauntlet Gamesmith'
@@ -135,14 +135,14 @@ function protectedWorkspaceRoots(): string[] {
   return [app.getPath('userData'), cliHome('claude'), cliHome('codex')]
 }
 
-/** Where new runs are created when the user has not chosen a folder. */
+/** Where new builds are created when the user has not chosen a folder. */
 function defaultWorkspaceParent(): string {
   return path.join(app.getPath('home'), 'GauntletGames')
 }
 
 /**
  * Directories an agent can write into: the app's own private state, the folder
- * new runs are created in, and every project folder a run has used. Executable
+ * new builds are created in, and every project folder a build has used. Executable
  * resolution refuses to spawn anything found inside them.
  */
 configureAgentWritableRoots(() => [
@@ -211,8 +211,8 @@ async function rotateAccount(kind: HarnessKind, error = ''): Promise<AccountRota
 
 function accountChange(kind: HarnessKind, change: () => AccountsState): AccountsResult {
   const root = harnessesRoot()
-  if (ledger?.runningLoop()) {
-    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before switching accounts.' }
+  if (ledger?.runningBuild()) {
+    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running build before switching accounts.' }
   }
   harnessLogins.cancel(kind)
   return { ok: true, state: change() }
@@ -227,19 +227,19 @@ async function forgetAccount(kind: HarnessKind, accountId: string): Promise<Acco
       error: 'Account 1 holds the shared session history. Sign out of it instead of removing it.',
     }
   }
-  if (ledger?.runningLoop()) {
-    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running loop before removing an account.' }
+  if (ledger?.runningBuild()) {
+    return { ok: false, state: readAccounts(root, kind), error: 'Stop the running build before removing an account.' }
   }
   harnessLogins.cancel(kind)
   await harnessLogins.logout(kind, accountDir(root, kind, accountId))
   return { ok: true, state: removeAccount(root, kind, accountId) }
 }
 
-function registerLoopIpc(): void {
-  ipcMain.handle(IPC.loop.start, async (_event, value: unknown) => {
-    if (!loopRunner) return { ok: false, error: 'Loop runner not ready.' }
+function registerBuildIpc(): void {
+  ipcMain.handle(IPC.build.start, async (_event, value: unknown) => {
+    if (!buildRunner) return { ok: false, error: 'Build runner not ready.' }
     try {
-      const input = parseStartLoopInput(value)
+      const input = parseStartBuildInput(value)
       const models = resolveModels(input, input, input, input)
       const picks = [models.orchestratorModel, models.subagentModel, models.criticModel, models.researchModel, models.assetModel]
       const needsCodex = picks.some(isCodexModel)
@@ -252,154 +252,154 @@ function registerLoopIpc(): void {
       if (claudeError) return { ok: false, error: claudeError }
       const codexError = needsCodex ? subscriptionAuthError('Codex', codexStatus) : null
       if (codexError) return { ok: false, error: codexError }
-      return loopRunner.start({ ...input, ...models }, 'new-child')
+      return buildRunner.start({ ...input, ...models }, 'new-child')
     } catch (error) {
-      return { ok: false, error: redactedErrorMessage(error, 'Invalid loop input.') }
+      return { ok: false, error: redactedErrorMessage(error, 'Invalid build input.') }
     }
   })
-  ipcMain.handle(IPC.loop.trust, (_event, value: unknown) => {
-    if (!ledger) return failure('Run history is not ready.')
-    return trustExistingRun(ledger, value,
+  ipcMain.handle(IPC.build.trust, (_event, value: unknown) => {
+    if (!ledger) return failure('Build history is not ready.')
+    return trustExistingBuild(ledger, value,
       (options) => mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options),
-      (loop, line) => {
-        mainWindow?.webContents.send(IPC.loop.log, line)
-        const projection = ledger?.recentRunProjectionForLoop(loop.id, 200)
-        if (projection) mainWindow?.webContents.send(IPC.loop.update, boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger!.runCount(loop.id), detailTruncated: projection.truncatedFields, aggregate: ledger!.runAggregate(loop.id) }))
+      (build, line) => {
+        mainWindow?.webContents.send(IPC.build.log, line)
+        const projection = ledger?.recentAttemptProjectionForBuild(build.id, 200)
+        if (projection) mainWindow?.webContents.send(IPC.build.update, boundedBuildSnapshot({ build, attempts: projection.attempts, totalAttempts: ledger!.attemptCount(build.id), detailTruncated: projection.truncatedFields, aggregate: ledger!.attemptAggregate(build.id) }))
       }, hasActivePlay)
   })
-  ipcMain.handle(IPC.loop.resume, (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.resume, (_event, value: unknown) => {
     try {
-      return loopRunner?.resumeLoop(assertLoopId(value)) ?? { ok: false, error: 'Loop runner not ready.' }
+      return buildRunner?.resumeBuild(assertBuildId(value)) ?? { ok: false, error: 'Build runner not ready.' }
     } catch (error) {
-      return { ok: false, error: redactedErrorMessage(error, 'Invalid loop id.') }
+      return { ok: false, error: redactedErrorMessage(error, 'Invalid build id.') }
     }
   })
-  ipcMain.handle(IPC.loop.stop, (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.stop, (_event, value: unknown) => {
     try {
-      if (!loopRunner || !ledger) return failure('Loop runner is not ready.')
-      return stopExistingLoop(ledger, loopRunner, assertLoopId(value))
+      if (!buildRunner || !ledger) return failure('Build runner is not ready.')
+      return stopExistingBuild(ledger, buildRunner, assertBuildId(value))
     } catch (error) {
-      return failure(redactedErrorMessage(error, 'Invalid loop id.'))
+      return failure(redactedErrorMessage(error, 'Invalid build id.'))
     }
   })
-  ipcMain.handle(IPC.loop.list, (_event, offsetValue: unknown) => {
-    const offset = parseLoopListOffset(offsetValue)
+  ipcMain.handle(IPC.build.list, (_event, offsetValue: unknown) => {
+    const offset = parseBuildListOffset(offsetValue)
     return ledger
-      ? loopListPage(ledger.recentLoops(100, offset), ledger.loopCount(), offset, (loopId) => ledger!.runCount(loopId))
+      ? buildListPage(ledger.recentBuilds(100, offset), ledger.buildCount(), offset, (buildId) => ledger!.attemptCount(buildId))
       : { snapshots: [], total: 0, offset, hasMore: false }
   })
-  ipcMain.handle(IPC.loop.get, (_event, value: unknown, offsetValue: unknown) => {
-    const loop = ledger?.getLoop(assertLoopId(value))
-    if (!loop || !ledger) return null
-    const runOffset = parseRunPageOffset(offsetValue)
-    const projection = ledger.recentRunProjectionForLoop(loop.id, 200, runOffset)
-    return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), runOffset, detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
+  ipcMain.handle(IPC.build.get, (_event, value: unknown, offsetValue: unknown) => {
+    const build = ledger?.getBuild(assertBuildId(value))
+    if (!build || !ledger) return null
+    const attemptOffset = parseAttemptPageOffset(offsetValue)
+    const projection = ledger.recentAttemptProjectionForBuild(build.id, 200, attemptOffset)
+    return boundedBuildSnapshot({ build, attempts: projection.attempts, totalAttempts: ledger.attemptCount(build.id), attemptOffset, detailTruncated: projection.truncatedFields, aggregate: ledger.attemptAggregate(build.id) })
   })
-  ipcMain.handle(IPC.loop.rename, (_event, loopId: unknown, value: unknown) => {
+  ipcMain.handle(IPC.build.rename, (_event, buildId: unknown, value: unknown) => {
     try {
-      if (!ledger) return failure('Run history is not ready.')
-      const input = parseRenameInput(loopId, value)
-      const loop = ledger.getLoop(input.loopId)
-      if (!loop) return failure('Run not found.')
-      const trustError = renameTrustError(loop.playTrusted)
+      if (!ledger) return failure('Build history is not ready.')
+      const input = parseRenameInput(buildId, value)
+      const build = ledger.getBuild(input.buildId)
+      if (!build) return failure('Build not found.')
+      const trustError = renameTrustError(build.playTrusted)
       if (trustError) return failure(trustError)
-      ledger.patchLoop(input.loopId, { title: input.title })
-      const updated = ledger.getLoop(input.loopId)
-      return updated ? success(updated) : failure('Run disappeared while renaming.')
+      ledger.patchBuild(input.buildId, { title: input.title })
+      const updated = ledger.getBuild(input.buildId)
+      return updated ? success(updated) : failure('Build disappeared while renaming.')
     } catch (error) {
-      return failure(redactedErrorMessage(error, 'Could not rename run.'))
+      return failure(redactedErrorMessage(error, 'Could not rename build.'))
     }
   })
-  ipcMain.handle(IPC.loop.deleteRuns, async (_event, value: unknown, deleteFilesValue: unknown): Promise<DeleteRunsResult> => {
-    if (!ledger) return { ok: false, deletedIds: [], errors: ['Run storage is not ready.'] }
+  ipcMain.handle(IPC.build.deleteBuilds, async (_event, value: unknown, deleteFilesValue: unknown): Promise<DeleteBuildsResult> => {
+    if (!ledger) return { ok: false, deletedIds: [], errors: ['Build storage is not ready.'] }
     try {
-      const input = parseDeleteRunsInput(value, deleteFilesValue)
+      const input = parseDeleteBuildsInput(value, deleteFilesValue)
       const deletedIds: string[] = []
       const errors: string[] = []
-      for (const loopId of input.loopIds) {
-        const loop = ledger.getLoop(loopId)
-        if (!loop) {
-          errors.push('One of the runs was already gone.')
+      for (const buildId of input.buildIds) {
+        const build = ledger.getBuild(buildId)
+        if (!build) {
+          errors.push('One of the builds was already gone.')
           continue
         }
-        if (loop.status === 'running') {
-          errors.push(`"${loop.title}" is still running. Stop it first.`)
+        if (build.status === 'running') {
+          errors.push(`"${build.title}" is still running. Stop it first.`)
           continue
         }
         const sharing = input.deleteFiles
-          ? ledger.loopsInWorkspace(loop.workspaceDir).filter((other) => other.id !== loopId)
+          ? ledger.buildsInWorkspace(build.workspaceDir).filter((other) => other.id !== buildId)
           : []
         if (sharing.length > 0) {
-          errors.push(`"${loop.title}" shares its project folder with ${sharing.length} other ${sharing.length === 1 ? 'run' : 'runs'}, so the files were kept.`)
+          errors.push(`"${build.title}" shares its project folder with ${sharing.length} other ${sharing.length === 1 ? 'build' : 'builds'}, so the files were kept.`)
         }
         try {
           if (input.deleteFiles && sharing.length === 0) {
-            ledger.assertLoopWorkspaceIdentity(loopId)
-            await deleteRunFolder(loop.workspaceDir, app.getPath('home'))
+            ledger.assertBuildWorkspaceIdentity(buildId)
+            await deleteBuildFolder(build.workspaceDir, app.getPath('home'))
           }
-          ledger.deleteLoop(loopId)
-          deletedIds.push(loopId)
+          ledger.deleteBuild(buildId)
+          deletedIds.push(buildId)
         } catch (error) {
-          errors.push(`Could not delete "${loop.title}": ${redactedErrorMessage(error, 'Deletion failed safely.')}`)
+          errors.push(`Could not delete "${build.title}": ${redactedErrorMessage(error, 'Deletion failed safely.')}`)
         }
       }
       return { ok: errors.length === 0, deletedIds, errors }
     } catch (error) {
-      return { ok: false, deletedIds: [], errors: [redactedErrorMessage(error, 'Invalid run deletion request.')] }
+      return { ok: false, deletedIds: [], errors: [redactedErrorMessage(error, 'Invalid build deletion request.')] }
     }
   })
-  ipcMain.handle(IPC.loop.active, () => {
+  ipcMain.handle(IPC.build.active, () => {
     if (!ledger) return null
-    const loop = ledger.runningLoop() ?? ledger.latestLoop()
-    if (!loop) return null
-    const projection = ledger.recentRunProjectionForLoop(loop.id, 200)
-    return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
+    const build = ledger.runningBuild() ?? ledger.latestBuild()
+    if (!build) return null
+    const projection = ledger.recentAttemptProjectionForBuild(build.id, 200)
+    return boundedBuildSnapshot({ build, attempts: projection.attempts, totalAttempts: ledger.attemptCount(build.id), detailTruncated: projection.truncatedFields, aggregate: ledger.attemptAggregate(build.id) })
   })
-  ipcMain.handle(IPC.loop.log, (_event, loopId: unknown, limit: unknown) => {
+  ipcMain.handle(IPC.build.log, (_event, buildId: unknown, limit: unknown) => {
     if (!ledger) return []
-    const id = assertLoopId(loopId)
-    const events = ledger.eventsForLoop(id, parseLogLimit(limit))
-    const represented = [...new Set(events.slice().reverse().flatMap((event) => event.runId ? [event.runId] : []))].slice(0, 64).reverse()
-    const runs = represented
-      .map((runId) => ledger!.promptRunForLog(runId))
-      .filter((run): run is PromptLogRun => run != null && run.loopId === id)
-    const latest = runs.length === 0 ? ledger.latestPromptRunForLog(id) : null
-    return withPromptLogs(latest ? [latest] : runs, events)
+    const id = assertBuildId(buildId)
+    const events = ledger.eventsForBuild(id, parseLogLimit(limit))
+    const represented = [...new Set(events.slice().reverse().flatMap((event) => event.attemptId ? [event.attemptId] : []))].slice(0, 64).reverse()
+    const attempts = represented
+      .map((attemptId) => ledger!.promptAttemptForLog(attemptId))
+      .filter((attempt): attempt is PromptLogAttempt => attempt != null && attempt.buildId === id)
+    const latest = attempts.length === 0 ? ledger.latestPromptAttemptForLog(id) : null
+    return withPromptLogs(latest ? [latest] : attempts, events)
   })
-  ipcMain.handle(IPC.loop.prompt, (_event, loopId: unknown, role: unknown, round: unknown) => {
+  ipcMain.handle(IPC.build.prompt, (_event, buildId: unknown, role: unknown, round: unknown) => {
     try {
-      if (!ledger) return failure('Run history is not ready.')
-      const input = parseRunPromptRequest(loopId, role, round)
-      if (!ledger.getLoop(input.loopId)) return failure('Run not found.')
-      const prompt = ledger.runPrompt(input.loopId, input.role, input.round)
+      if (!ledger) return failure('Build history is not ready.')
+      const input = parseAttemptPromptRequest(buildId, role, round)
+      if (!ledger.getBuild(input.buildId)) return failure('Build not found.')
+      const prompt = ledger.attemptPrompt(input.buildId, input.role, input.round)
       return prompt ? success(prompt) : failure(`No ${input.role} prompt was recorded for round ${input.round}.`)
     } catch (error) {
       return failure(redactedErrorMessage(error, 'Could not load the exact prompt.'))
     }
   })
-  ipcMain.handle(IPC.loop.readStream, (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.readStream, (_event, value: unknown) => {
     try {
       if (!ledger) return failure('Raw streams are not ready.')
       const input = parseReadStreamInput(value)
-      const run = ledger.getRun(input.runId)
-      if (!run) return failure('Run not found.')
-      if (input.stream === 'agent' && !run.metrics?.agents.some((agent) => agent.id === input.agentId)) {
-        return failure('Agent stream does not belong to this run.')
+      const attempt = ledger.getAttempt(input.attemptId)
+      if (!attempt) return failure('Build not found.')
+      if (input.stream === 'agent' && !attempt.metrics?.agents.some((agent) => agent.id === input.agentId)) {
+        return failure('Agent stream does not belong to this attempt.')
       }
-      const loop = ledger.getLoop(run.loopId)
-      if (!loop) return failure('Run owner not found.')
-      const trustError = rawStreamTrustError(loop.playTrusted)
+      const build = ledger.getBuild(attempt.buildId)
+      if (!build) return failure('Build owner not found.')
+      const trustError = rawStreamTrustError(build.playTrusted)
       if (trustError) return failure(trustError)
-      const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
-      const latestImplementRunId = ledger.latestRunIdForRole(loop.id, 'implement')
+      const workspaceDir = ledger.assertBuildWorkspaceIdentity(build.id)
+      const latestImplementAttemptId = ledger.latestAttemptIdForRole(build.id, 'implement')
       const streamPath = resolveProtectedRawStreamPath(
         {
           workspaceDir,
-          runId: run.id,
-          sessionId: run.sessionId,
+          attemptId: attempt.id,
+          sessionId: attempt.sessionId,
           claudeHome: cliHome('claude'),
           codexHome: cliHome('codex'),
-          allowLiveChildStream: latestImplementRunId === run.id,
+          allowLiveChildStream: latestImplementAttemptId === attempt.id,
         },
         input,
         protectedWorkspaceRoots(),
@@ -409,39 +409,39 @@ function registerLoopIpc(): void {
       return failure(redactedErrorMessage(error, 'Could not read raw stream.'))
     }
   })
-  ipcMain.handle(IPC.loop.report, (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.report, (_event, value: unknown) => {
     try {
-      if (!ledger) return failure('Run history is not ready.')
-      const loop = ledger.getLoop(assertLoopId(value))
-      if (!loop) return failure('Run not found.')
-      ledger!.assertLoopWorkspaceIdentity(loop.id)
-      const totalRuns = ledger.runCount(loop.id)
-      const runs = ledger.recentRunProjectionForLoop(loop.id, 500).runs
-      const referenceDir = referenceRootForLoop(loop.id, ledger.hasRunRole(loop.id, 'reference'))
+      if (!ledger) return failure('Build history is not ready.')
+      const build = ledger.getBuild(assertBuildId(value))
+      if (!build) return failure('Build not found.')
+      ledger!.assertBuildWorkspaceIdentity(build.id)
+      const totalAttempts = ledger.attemptCount(build.id)
+      const attempts = ledger.recentAttemptProjectionForBuild(build.id, 500).attempts
+      const referenceDir = referenceRootForBuild(build.id, ledger.hasAttemptRole(build.id, 'reference'))
       return success(buildReport(
-        loop,
-        runs,
-        scanCritiqueArtifacts(loop.workspaceDir, loop),
-        scanReferencePack(loop.workspaceDir, referenceDir, loop),
-        { totalRuns, aggregate: ledger.runAggregate(loop.id) },
+        build,
+        attempts,
+        scanCritiqueArtifacts(build.workspaceDir, build),
+        scanReferencePack(build.workspaceDir, referenceDir, build),
+        { totalAttempts, aggregate: ledger.attemptAggregate(build.id) },
       ))
     } catch (error) {
       return failure(redactedErrorMessage(error, 'Could not build report.'))
     }
   })
-  ipcMain.handle(IPC.loop.exportRun, async (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.exportBuild, async (_event, value: unknown) => {
     try {
-      if (!mainWindow || !ledger) return { ok: false, error: 'Run export is not ready.' }
-      const loop = ledger.getLoop(assertLoopId(value))
-      if (!loop) return { ok: false, error: 'Run not found.' }
-      ledger.assertLoopWorkspaceIdentity(loop.id)
+      if (!mainWindow || !ledger) return { ok: false, error: 'Build export is not ready.' }
+      const build = ledger.getBuild(assertBuildId(value))
+      if (!build) return { ok: false, error: 'Build not found.' }
+      ledger.assertBuildWorkspaceIdentity(build.id)
       const activityError = exportActivityError(ledger.hasRunningActivity(), hasActivePlay())
       if (activityError) return { ok: false, error: activityError }
-      if (ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
+      if (ledger.hasAttemptErrorPrefixForWorkspace(build.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
         return { ok: false, error: 'This workspace is quarantined after unknown process ownership and cannot be exported while an untracked writer may survive.' }
       }
       const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Export complete run folder',
+        title: 'Export complete build folder',
         message: `${RAW_EXPORT_WARNING} Choose where ${APP_NAME} should copy the complete project and its exact SQLite history.`,
         buttonLabel: 'Export here',
         defaultPath: app.getPath('downloads'),
@@ -451,33 +451,33 @@ function registerLoopIpc(): void {
       if (result.canceled || !parentDir) return { ok: false, canceled: true }
       const changedActivityError = exportActivityError(ledger.hasRunningActivity(), hasActivePlay())
       if (changedActivityError) return { ok: false, error: changedActivityError }
-      if (ledger.hasRunErrorPrefixForWorkspace(loop.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
+      if (ledger.hasAttemptErrorPrefixForWorkspace(build.workspaceDir, 'Launch identity was not durably recorded before the app exited.')) {
         return { ok: false, error: 'This workspace is quarantined after unknown process ownership and cannot be exported while an untracked writer may survive.' }
       }
       assertWorkspaceBoundary(parentDir, protectedWorkspaceRoots())
-      const sourceDir = ledger.prepareRunFolder(loop.id)
+      const sourceDir = ledger.prepareBuildFolder(build.id)
       const destinationDir = nextAvailableExportPath(parentDir, safeExportFolderName(path.basename(sourceDir)))
-      await copyRunFolder(sourceDir, destinationDir, loop.workspaceIdentity)
+      await copyBuildFolder(sourceDir, destinationDir, build.workspaceIdentity)
       return { ok: true, filePath: destinationDir, warning: RAW_EXPORT_WARNING }
     } catch (error) {
-      return { ok: false, error: `Could not export run: ${redactedErrorMessage(error, 'Unknown export failure.')}` }
+      return { ok: false, error: `Could not export build: ${redactedErrorMessage(error, 'Unknown export failure.')}` }
     }
   })
-  ipcMain.handle(IPC.loop.importRun, async () => {
+  ipcMain.handle(IPC.build.importBuild, async () => {
     try {
-      if (!mainWindow || !ledger) return { ok: false, error: 'Run import is not ready.' }
+      if (!mainWindow || !ledger) return { ok: false, error: 'Build import is not ready.' }
       const pickedExport = await dialog.showOpenDialog(mainWindow, {
-        title: 'Open exported run folder',
-        message: `Choose the transferred project folder containing ${RUN_METADATA_DIR}/${RUN_LEDGER_FILE}.`,
-        buttonLabel: 'Open run folder',
+        title: 'Open exported build folder',
+        message: `Choose the transferred project folder containing ${BUILD_METADATA_DIR}/${BUILD_LEDGER_FILE}.`,
+        buttonLabel: 'Open build folder',
         properties: ['openDirectory'],
       })
       const workspaceDir = pickedExport.filePaths[0]
       if (pickedExport.canceled || !workspaceDir) return { ok: false, canceled: true }
       assertWorkspaceBoundary(workspaceDir, protectedWorkspaceRoots())
-      const snapshots = ledger.importRunFolder(workspaceDir)
+      const snapshots = ledger.importBuildFolder(workspaceDir)
       const primary = snapshots[0]
-        ? boundedLoopSnapshot({ ...snapshots[0], aggregate: ledger.runAggregate(snapshots[0].loop.id) })
+        ? boundedBuildSnapshot({ ...snapshots[0], aggregate: ledger.attemptAggregate(snapshots[0].build.id) })
         : undefined
       return {
         ok: true,
@@ -485,26 +485,26 @@ function registerLoopIpc(): void {
         snapshots: primary ? [primary] : [],
       }
     } catch (error) {
-      return { ok: false, error: `Could not import run: ${redactedErrorMessage(error, 'Unknown import failure.')}` }
+      return { ok: false, error: `Could not import build: ${redactedErrorMessage(error, 'Unknown import failure.')}` }
     }
   })
   ipcMain.handle(IPC.media.base, async (): Promise<OperationResult<string>> =>
     mediaGate ? await mediaGate.get() : failure('Media server has not started yet.'))
-  ipcMain.handle(IPC.loop.critique, (_event, value: unknown) => {
+  ipcMain.handle(IPC.build.critique, (_event, value: unknown) => {
     try {
-      if (!ledger) return failure('Run history is not ready.')
-      const loop = ledger.getLoop(assertLoopId(value))
-      if (!loop) return failure('Run not found.')
-      ledger.assertLoopWorkspaceIdentity(loop.id)
-      const artifacts = new Map(scanCritiqueArtifacts(loop.workspaceDir, loop).map((artifact) => [artifact.round, artifact]))
+      if (!ledger) return failure('Build history is not ready.')
+      const build = ledger.getBuild(assertBuildId(value))
+      if (!build) return failure('Build not found.')
+      ledger.assertBuildWorkspaceIdentity(build.id)
+      const artifacts = new Map(scanCritiqueArtifacts(build.workspaceDir, build).map((artifact) => [artifact.round, artifact]))
       const byRound = new Map<number, CritiqueRound>()
-      const totalCritiques = ledger.runCountByRole(loop.id, 'critique')
-      const critiqueProjection = ledger.latestRunProjectionPerRound(loop.id, 'critique', 100)
-      const critiqueRuns = critiqueProjection.runs
+      const totalCritiques = ledger.attemptCountByRole(build.id, 'critique')
+      const critiqueProjection = ledger.latestAttemptProjectionPerRound(build.id, 'critique', 100)
+      const critiqueAttempts = critiqueProjection.attempts
       let remainingThoughtBytes = 512 * 1024
-      for (const run of boundedLoopSnapshot({ loop, runs: critiqueRuns, totalRuns: totalCritiques }).runs) {
-        const artifact = artifacts.get(run.round)
-        const thoughtRows = ledger.eventsForRun(run.id, 'thought', 50)
+      for (const attempt of boundedBuildSnapshot({ build, attempts: critiqueAttempts, totalAttempts: totalCritiques }).attempts) {
+        const artifact = artifacts.get(attempt.round)
+        const thoughtRows = ledger.eventsForAttempt(attempt.id, 'thought', 50)
         const thoughts: string[] = []
         let thoughtTruncated = thoughtRows.length === 50
         for (const line of thoughtRows) {
@@ -517,18 +517,18 @@ function registerLoopIpc(): void {
           remainingThoughtBytes -= size
           thoughts.push(text)
         }
-        byRound.set(run.round, {
-          round: run.round,
-          runId: run.id,
-          status: run.status,
-          verdict: run.verdict,
+        byRound.set(attempt.round, {
+          round: attempt.round,
+          attemptId: attempt.id,
+          status: attempt.status,
+          verdict: attempt.verdict,
           thoughts,
           shots: artifact?.shots ?? [],
           refs: artifact?.refs ?? [],
           videos: artifact?.videos ?? [],
           pairs: artifact?.pairs ?? null,
           pairsMd: artifact?.pairsMd ?? null,
-          truncated: (artifact?.truncated ?? false) || thoughtTruncated || totalCritiques > critiqueRuns.length || critiqueProjection.truncatedFields,
+          truncated: (artifact?.truncated ?? false) || thoughtTruncated || totalCritiques > critiqueAttempts.length || critiqueProjection.truncatedFields,
         })
       }
       return success([...byRound.values()].sort((a, b) => a.round - b.round))
@@ -536,28 +536,28 @@ function registerLoopIpc(): void {
       return failure(redactedErrorMessage(error, 'Could not load critique details.'))
     }
   })
-  ipcMain.handle(IPC.loop.reference, (_event, loopValue: unknown, runValue: unknown): ReferenceStudy | null => {
+  ipcMain.handle(IPC.build.reference, (_event, buildValue: unknown, attemptValue: unknown): ReferenceStudy | null => {
     if (!ledger) return null
-    const loop = ledger.getLoop(assertLoopId(loopValue))
-    const run = runValue == null ? ledger.latestRunForLoopByRole(loop?.id ?? '', 'reference') : ledger.getRun(assertLoopId(runValue))
-    if (!loop || !run || run.loopId !== loop.id || run.role !== 'reference') return null
+    const build = ledger.getBuild(assertBuildId(buildValue))
+    const attempt = attemptValue == null ? ledger.latestAttemptForBuildByRole(build?.id ?? '', 'reference') : ledger.getAttempt(assertBuildId(attemptValue))
+    if (!build || !attempt || attempt.buildId !== build.id || attempt.role !== 'reference') return null
     try {
-      ledger.assertLoopWorkspaceIdentity(loop.id)
+      ledger.assertBuildWorkspaceIdentity(build.id)
     } catch {
       return null
     }
     return {
-      runId: run.id,
-      status: run.status,
-      prompt: run.prompt,
-      logs: withPromptLogs([run], ledger.eventsForRun(run.id, undefined, 500)),
-      pack: scanReferencePack(loop.workspaceDir, referencePackDir(loop.id), loop),
+      attemptId: attempt.id,
+      status: attempt.status,
+      prompt: attempt.prompt,
+      logs: withPromptLogs([attempt], ledger.eventsForAttempt(attempt.id, undefined, 500)),
+      pack: scanReferencePack(build.workspaceDir, referencePackDir(build.id), build),
     }
   })
   ipcMain.handle(IPC.play.start, (_event, value: unknown, roundValue: unknown) => {
-    const loop = ledger?.getLoop(assertLoopId(value))
-    if (!loop) return { running: false, url: null, error: 'Loop not found.', round: null }
-    const accessError = playAccessError(loop)
+    const build = ledger?.getBuild(assertBuildId(value))
+    if (!build) return { running: false, url: null, error: 'Build not found.', round: null }
+    const accessError = playAccessError(build)
     if (accessError) {
       return {
         running: false,
@@ -567,27 +567,27 @@ function registerLoopIpc(): void {
       }
     }
     try {
-      ledger!.assertLoopWorkspaceIdentity(loop.id)
+      ledger!.assertBuildWorkspaceIdentity(build.id)
     } catch (error) {
       return { running: false, url: null, error: redactedErrorMessage(error, 'The workspace path is unsafe.'), round: null }
     }
     const round = parseOptionalRound(roundValue)
     const revision = round == null
       ? null
-      : ledger?.succeededImplementRevision(loop.id, round)
+      : ledger?.succeededImplementRevision(build.id, round)
     if (round != null && !revision) {
       return {
-        ...playState(loop.id),
+        ...playState(build.id),
         error: `Round ${round} has no saved Git revision. Revisions are available for rounds completed after this feature was installed.`,
       }
     }
     try {
-      const playDir = revision ? checkoutRoundRevision(loop.workspaceDir, loop.id, round!, revision) : loop.workspaceDir
+      const playDir = revision ? checkoutRoundRevision(build.workspaceDir, build.id, round!, revision) : build.workspaceDir
       const expectedWorkspace = revision
         ? captureWorkspaceIdentity(playDir, protectedWorkspaceRoots())
-        : loop
+        : build
       return startPlay(
-        loop.id,
+        build.id,
         playDir,
         round,
         revision ? playDir : null,
@@ -597,26 +597,26 @@ function registerLoopIpc(): void {
       )
     } catch (error) {
       return {
-        ...playState(loop.id),
+        ...playState(build.id),
         error: `Could not check out round ${round}: ${redactedErrorMessage(error, 'Unknown checkout failure.')}`,
       }
     }
   })
   ipcMain.handle(IPC.play.stop, (_event, value: unknown) => {
-    const loopId = assertLoopId(value)
-    stopPlay(loopId)
+    const buildId = assertBuildId(value)
+    stopPlay(buildId)
   })
-  ipcMain.handle(IPC.play.state, (_event, value: unknown) => playState(assertLoopId(value)))
-  ipcMain.handle(IPC.loop.pickWorkspace, async () => {
+  ipcMain.handle(IPC.play.state, (_event, value: unknown) => playState(assertBuildId(value)))
+  ipcMain.handle(IPC.build.pickWorkspace, async () => {
     if (!mainWindow) return null
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose where new run folders are created',
-      buttonLabel: 'Use for new runs',
+      title: 'Choose where new build folders are created',
+      buttonLabel: 'Use for new builds',
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
-  ipcMain.handle(IPC.loop.defaultWorkspace, () => defaultWorkspaceParent())
+  ipcMain.handle(IPC.build.defaultWorkspace, () => defaultWorkspaceParent())
 }
 
 function registerIpc(): void {
@@ -632,7 +632,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.harness.cancelLogin, (_event, value: unknown) => harnessLogins.cancel(assertHarnessKind(value)))
   ipcMain.handle(IPC.harness.logout, async (_event, value: unknown) => {
     const kind = assertHarnessKind(value)
-    if (ledger?.runningLoop()) return { ok: false, error: 'Stop the running loop before signing out.' }
+    if (ledger?.runningBuild()) return { ok: false, error: 'Stop the running build before signing out.' }
     return await harnessLogins.logout(kind)
   })
   ipcMain.handle(IPC.harness.accounts, (_event, value: unknown) =>
@@ -704,8 +704,8 @@ function createWindow(): BrowserWindow {
 }
 
 function reportIds(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > 1_000) throw new Error('Report run ids must be an array of at most 1000 ids.')
-  return [...new Set(value.map(assertLoopId))]
+  if (!Array.isArray(value) || value.length > 1_000) throw new Error('Report build ids must be an array of at most 1000 ids.')
+  return [...new Set(value.map(assertBuildId))]
 }
 
 function reportName(value: unknown): string {
@@ -715,13 +715,13 @@ function reportName(value: unknown): string {
   return name
 }
 
-function reportRowsFor(loopIds: readonly string[]): ReportRunRow[] {
+function reportRowsFor(buildIds: readonly string[]): ReportBuildRow[] {
   if (!ledger) return []
   const store = ledger
-  return loopIds
-    .map((id) => store.getLoop(id))
-    .filter((loop): loop is LoopRecord => loop != null)
-    .map((loop) => buildReportRow({ loop, runs: store.runsForLoop(loop.id) }))
+  return buildIds
+    .map((id) => store.getBuild(id))
+    .filter((build): build is BuildRecord => build != null)
+    .map((build) => buildReportRow({ build, attempts: store.attemptsForBuild(build.id) }))
 }
 
 function touchReport(report: ReportRecord, patch: Partial<ReportRecord>): ReportRecord {
@@ -742,7 +742,7 @@ async function saveReportFile(report: ReportRecord, extension: string, body: str
 
 function registerReportIpc(): void {
   ipcMain.handle(IPC.report.list, () => ledger?.reports() ?? [])
-  ipcMain.handle(IPC.report.get, (_event, value: unknown) => ledger?.getReport(assertLoopId(value)) ?? null)
+  ipcMain.handle(IPC.report.get, (_event, value: unknown) => ledger?.getReport(assertBuildId(value)) ?? null)
   ipcMain.handle(IPC.report.create, (_event, nameValue: unknown, value: unknown) => {
     if (!ledger) return null
     const stamp = new Date().toISOString()
@@ -756,39 +756,39 @@ function registerReportIpc(): void {
     })
   })
   ipcMain.handle(IPC.report.rename, (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(assertLoopId(reportId))
+    const report = ledger?.getReport(assertBuildId(reportId))
     return report ? touchReport(report, { name: reportName(value) }) : null
   })
-  ipcMain.handle(IPC.report.addRuns, (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(assertLoopId(reportId))
+  ipcMain.handle(IPC.report.addBuilds, (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(assertBuildId(reportId))
     if (!report) return null
-    const present = new Set(report.rows.map((row) => row.loopId))
+    const present = new Set(report.rows.map((row) => row.buildId))
     const ids = reportIds(value).filter((id) => !present.has(id))
     return ids.length > 0 ? touchReport(report, { rows: [...report.rows, ...reportRowsFor(ids)] }) : report
   })
-  ipcMain.handle(IPC.report.removeRuns, (_event, reportId: unknown, value: unknown) => {
-    const report = ledger?.getReport(assertLoopId(reportId))
+  ipcMain.handle(IPC.report.removeBuilds, (_event, reportId: unknown, value: unknown) => {
+    const report = ledger?.getReport(assertBuildId(reportId))
     if (!report) return null
     const dropped = new Set(reportIds(value))
-    return touchReport(report, { rows: report.rows.filter((row) => !dropped.has(row.loopId)) })
+    return touchReport(report, { rows: report.rows.filter((row) => !dropped.has(row.buildId)) })
   })
   ipcMain.handle(IPC.report.refresh, (_event, value: unknown) => {
-    const report = ledger?.getReport(assertLoopId(value))
+    const report = ledger?.getReport(assertBuildId(value))
     if (!report) return null
-    const fresh = new Map(reportRowsFor(report.rows.map((row) => row.loopId)).map((row) => [row.loopId, row]))
+    const fresh = new Map(reportRowsFor(report.rows.map((row) => row.buildId)).map((row) => [row.buildId, row]))
     return touchReport(report, {
       capturedAt: new Date().toISOString(),
-      rows: report.rows.map((row) => fresh.get(row.loopId) ?? row),
+      rows: report.rows.map((row) => fresh.get(row.buildId) ?? row),
     })
   })
-  ipcMain.handle(IPC.report.remove, (_event, value: unknown) => ledger?.deleteReport(assertLoopId(value)) ?? false)
+  ipcMain.handle(IPC.report.remove, (_event, value: unknown) => ledger?.deleteReport(assertBuildId(value)) ?? false)
   ipcMain.handle(IPC.report.markdown, (_event, value: unknown) => {
-    const report = ledger?.getReport(assertLoopId(value))
+    const report = ledger?.getReport(assertBuildId(value))
     return report ? renderReportMarkdown(report) : ''
   })
   ipcMain.handle(IPC.report.exportJson, async (_event, value: unknown) => {
     try {
-      const report = ledger?.getReport(assertLoopId(value))
+      const report = ledger?.getReport(assertBuildId(value))
       if (!report) return { ok: false, error: 'Report not found.' }
       return await saveReportFile(report, REPORT_FILE_SUFFIX, JSON.stringify(toReportFile(report, new Date().toISOString()), null, 2), 'Export report for a teammate')
     } catch (error) {
@@ -797,7 +797,7 @@ function registerReportIpc(): void {
   })
   ipcMain.handle(IPC.report.exportMarkdown, async (_event, value: unknown) => {
     try {
-      const report = ledger?.getReport(assertLoopId(value))
+      const report = ledger?.getReport(assertBuildId(value))
       if (!report) return { ok: false, error: 'Report not found.' }
       return await saveReportFile(report, '.md', renderReportMarkdown(report), 'Save report as Markdown')
     } catch (error) {
@@ -836,28 +836,28 @@ if (hasSingleInstanceLock) {
   void app.whenReady().then(() => {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
-    const attachments = createRunAttachments(protectedWorkspaceRoots)
+    const attachments = createBuildAttachments(protectedWorkspaceRoots)
     registerAttachmentIpc(attachments, () => mainWindow)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
-    loopRunner = new LoopRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
+    buildRunner = new BuildRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {
       protectedRoots: protectedWorkspaceRoots,
       prepareContext: (ids) => attachments.prepare(ids),
       rotateAccount,
     })
-    mediaGate = new MediaBaseGate(() => startMediaServer((loopId) => {
-      const loop = ledger?.getLoop(loopId)
-      if (!loop) return null
+    mediaGate = new MediaBaseGate(() => startMediaServer((buildId) => {
+      const build = ledger?.getBuild(buildId)
+      if (!build) return null
       try {
-        ledger?.assertLoopWorkspaceIdentity(loopId)
-        return loop
+        ledger?.assertBuildWorkspaceIdentity(buildId)
+        return build
       } catch {
         return null
       }
     }))
-    publishing = new Publishing(ledger, line => mainWindow?.webContents.send(IPC.loop.log, line))
+    publishing = new Publishing(ledger, line => mainWindow?.webContents.send(IPC.build.log, line))
     registerPublishingIpc(publishing)
     registerIpc()
-    registerLoopIpc()
+    registerBuildIpc()
     registerReportIpc()
     mainWindow = createWindow()
     if (smokeTestMode) {
@@ -866,7 +866,7 @@ if (hasSingleInstanceLock) {
         app.quit()
       })
     }
-    loopRunner.recoverAll()
+    buildRunner.recoverAll()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
@@ -880,20 +880,20 @@ if (hasSingleInstanceLock) {
   })
 }
 
-// Loop agents are detached processes and by default survive app quit — the
-// next launch re-attaches to them (LoopRunner.recoverAll). When a run is
+// Build agents are detached processes and by default survive app quit — the
+// next launch re-attaches to them (BuildRunner.recoverAll). When a build is
 // live, quitting asks whether to keep them working or stop them gracefully.
 let playQuitPending = false
 let playQuitSettled = false
 app.on('before-quit', (event) => {
   if (publishing?.isBusy()) {
     event.preventDefault()
-    dialog.showErrorBox('Publishing is still running', 'Wait for browser sign-in or the publishing build/upload to finish, then quit. The run log shows build progress.')
+    dialog.showErrorBox('Publishing is still running', 'Wait for account authentication or game preparation to finish, then quit. The build log shows progress.')
     return
   }
   if (playQuitSettled) return
-  const active = loopRunner?.activeRun()
-  const forcedAgentSettlement = loopRunner?.quitSettlementPending() ?? false
+  const active = buildRunner?.activeAttempt()
+  const forcedAgentSettlement = buildRunner?.quitSettlementPending() ?? false
   if (playQuitPending) {
     event.preventDefault()
     return
@@ -905,9 +905,9 @@ app.on('before-quit', (event) => {
       buttons: ['Keep agents running', 'Stop agents, then quit', 'Cancel'],
       defaultId: 0,
       cancelId: 2,
-      message: `A loop is running (${active.role}, pid ${active.pid}).`,
+      message: `A build is running (${active.role}, pid ${active.pid}).`,
       detail:
-        'Agents are detached: quitting keeps them working headless and the app re-attaches on the next launch (the loop advances to its next run only while the app is open). Or stop them gracefully (SIGINT) and end the loop now.',
+        'Agents are detached: quitting keeps them working headless and the app re-attaches on the next launch (the build advances to its next attempt only while the app is open). Or stop them gracefully (SIGINT) and end the build now.',
     })
     if (choice === 2) {
       // Cancel means cancel: do not stop a Play server or login terminal before
@@ -929,7 +929,7 @@ app.on('before-quit', (event) => {
   void (async () => {
     try {
       const settlement = await settleQuitSupervisors(
-        async () => !settleAgents || !loopRunner || await loopRunner.stopForQuitAndWait(),
+        async () => !settleAgents || !buildRunner || await buildRunner.stopForQuitAndWait(),
         async () => { if (settlePlay) await stopAllPlayAndWait() },
       )
       if (!settlement.ok) {

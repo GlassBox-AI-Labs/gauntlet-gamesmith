@@ -26,7 +26,7 @@ export type CliExecutable = (kind: HarnessKind, unsafeRoots?: readonly string[],
 /**
  * Re-check the selected app-managed CLI profile immediately before execution.
  * Login can change between the UI's initial Start check and a later retry,
- * resume, or boot recovery; treating every run as subscription without this
+ * resume, or boot recovery; treating every attempt as subscription without this
  * gate risks charging an API-key/provider account.
  */
 export function subscriptionReadiness(

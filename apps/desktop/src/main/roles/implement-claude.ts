@@ -1,4 +1,4 @@
-import type { AgentMetric, LoopRecord, RunMetrics, RunRecord, TokenTotals } from '../../shared/loop'
+import type { AgentMetric, BuildRecord, AttemptMetrics, PhaseAttempt, TokenTotals } from '../../shared/build'
 import { normalizeSessionId } from '../../shared/session-id'
 import { isCrossHarness } from '../../shared/models'
 import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
@@ -21,8 +21,8 @@ const MAX_STREAM_ID_CHARS = 256
 
 export interface ClaudeImplementRuntime {
   ledger: Ledger
-  loop: LoopRecord
-  run: RunRecord
+  build: BuildRecord
+  attempt: PhaseAttempt
   gate: LogGate
   childBoundary: ChildStreamBoundary
   initialWorkflowOffsets?: Record<string, number>
@@ -60,7 +60,7 @@ function formatTokens(value: number): string {
 
 /** Prefer complete per-model accounting over the primary-thread CLI total. */
 export function implementCostUsd(
-  perModel: RunMetrics['perModel'],
+  perModel: AttemptMetrics['perModel'],
   totalCostUsd: number | null,
   liveEstimate: number | null,
 ): number | null {
@@ -71,7 +71,7 @@ export function implementCostUsd(
 
 /** Prefer fan-out-aware per-model token totals over primary-thread usage. */
 export function implementTokens(
-  perModel: RunMetrics['perModel'],
+  perModel: AttemptMetrics['perModel'],
   usage: Record<string, number> | undefined,
 ): { input: number; output: number } | null {
   const models = Object.values(perModel)
@@ -94,7 +94,7 @@ export function implementTokens(
  * construction. The runner supplies only process-level orchestration seams.
  */
 export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): StreamParser {
-  const { ledger, loop, run, gate } = runtime
+  const { ledger, build, attempt, gate } = runtime
   const initialWorkflowOffsets = runtime.initialWorkflowOffsets ?? {}
   const initialWorkflowIdentities = runtime.initialWorkflowIdentities ?? {}
   const plog = (kind: string, text: string, agentId?: string): void => {
@@ -129,8 +129,8 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
   let fallbackId = 0
   let lastTokenFlush = runtime.now()
   let liveCostEstimate: number | null = null
-  let sessionId: string | null = ledger.getRun(run.id)?.sessionId ?? null
-  const workflowBaseline = (ledger.getRun(run.id)?.metrics?.agents ?? [])
+  let sessionId: string | null = ledger.getAttempt(attempt.id)?.sessionId ?? null
+  const workflowBaseline = (ledger.getAttempt(attempt.id)?.metrics?.agents ?? [])
     .filter((agent) => agent.source === 'workflow')
     .slice(0, MAX_IMPLEMENT_AGENT_IDS)
   let workflowAgents: AgentMetric[] = workflowBaseline
@@ -146,14 +146,14 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
     if (!sessionId) return
     const claudeHome = runtime.harnessHome('claude')
     tail ??= new WorkflowTail(
-      workflowTailDir(claudeHome, loop.workspaceDir, sessionId),
+      workflowTailDir(claudeHome, build.workspaceDir, sessionId),
       initialWorkflowOffsets,
       claudeHome,
       initialWorkflowIdentities,
     )
     const { agents: live, events } = tail.pollWithEvents()
     for (const event of events) plog(event.kind, event.text, event.agentId)
-    const progress = readWorkflowProgress(workflowDir(claudeHome, loop.workspaceDir, sessionId))
+    const progress = readWorkflowProgress(workflowDir(claudeHome, build.workspaceDir, sessionId))
     const progressWarning = progress.warning?.slice(0, 1_000)
     if (progressWarning && !loggedWorkflowWarnings.has(progressWarning)) {
       if (loggedWorkflowWarnings.size < MAX_IMPLEMENT_WORKFLOW_KEYS) loggedWorkflowWarnings.add(progressWarning)
@@ -202,8 +202,8 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
   }
 
   const pollChildren = (): void => {
-    if (!isCrossHarness(loop.models)) return
-    childAgents = readChildAgents(runtime.childBoundary, loop.models.subagentModel, runtime.harnessHome('codex'))
+    if (!isCrossHarness(build.models)) return
+    childAgents = readChildAgents(runtime.childBoundary, build.models.subagentModel, runtime.harnessHome('codex'))
   }
 
   const flushTokens = (force = false): void => {
@@ -215,7 +215,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
     let output = 0
     const perModel = new Map<string, TokenTotals>()
     for (const { usage, model } of msgUsage.values()) {
-      const key = model ?? loop.models.orchestratorModel
+      const key = model ?? build.models.orchestratorModel
       const tokens = perModel.get(key) ?? emptyTokens()
       tokens.input += usage.input_tokens ?? 0
       tokens.output += usage.output_tokens ?? 0
@@ -235,13 +235,13 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       input += agent.tokens.input + agent.tokens.cacheRead + agent.tokens.cacheWrite
       output += agent.tokens.output
     }
-    ledger.patchRun(run.id, {
+    ledger.patchAttempt(attempt.id, {
       inputTokens: input,
       outputTokens: output,
       costUsd: liveCostEstimate,
       costSource: liveCostEstimate === null ? null : `price_table:${PRICE_TABLE_VERSION}`,
       metrics: buildImplementMetrics({
-        models: loop.models,
+        models: build.models,
         agentLabels,
         messageUsage: msgUsage,
         result: null,
@@ -288,7 +288,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
         plog('error', 'Claude init reported an invalid session id; workflow paths and resume state will ignore it.')
       }
       sessionId = reportedSession ?? sessionId
-      if (model || sessionId) ledger.patchRun(run.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
+      if (model || sessionId) ledger.patchAttempt(attempt.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
       plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)
       return
     }
@@ -401,7 +401,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       pollWorkflows()
       pollChildren()
       const metrics = buildImplementMetrics({
-        models: loop.models,
+        models: build.models,
         agentLabels,
         messageUsage: msgUsage,
         result,

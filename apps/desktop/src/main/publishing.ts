@@ -17,7 +17,7 @@ import { readCatalogResponse } from './publishing-response'
 import { IPC } from '../shared/ipc'
 import { success, failure } from '../shared/result'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
-import type { LoopLogLine } from '../shared/loop'
+import type { BuildLogLine } from '../shared/build'
 import {
   enrollmentEmail,
   publisherCredentials,
@@ -45,7 +45,7 @@ export class Publishing {
   ).origin
   private active = false
   private signInAbort: AbortController | null = null
-  private logTarget: { loopId: string; runId: string | null } | null = null
+  private logTarget: { buildId: string; attemptId: string | null } | null = null
   private readonly root = path.join(
     app.getPath('userData'),
     'publishing',
@@ -53,17 +53,17 @@ export class Publishing {
   )
   constructor(
     private readonly ledger: Ledger,
-    private readonly emit: (line: LoopLogLine) => void,
+    private readonly emit: (line: BuildLogLine) => void,
   ) {
     fs.mkdirSync(this.root, { recursive: true, mode: 0o700 })
   }
   isBusy(): boolean {
     return this.active
   }
-  private log(loopId: string, text: string): void {
-    const line: LoopLogLine = {
-      loopId,
-      runId: this.logTarget?.loopId === loopId ? this.logTarget.runId : null,
+  private log(buildId: string, text: string): void {
+    const line: BuildLogLine = {
+      buildId,
+      attemptId: this.logTarget?.buildId === buildId ? this.logTarget.attemptId : null,
       ts: new Date().toISOString(),
       kind: 'system',
       channel: 'system',
@@ -211,11 +211,11 @@ export class Publishing {
       throw new Error('Wait for the publishing operation to finish.')
     fs.rmSync(path.join(this.root, 'session.enc'), { force: true })
   }
-  private jobFile(loopId: string): string {
-    return path.join(this.root, `${uuid(loopId)}.json`)
+  private jobFile(buildId: string): string {
+    return path.join(this.root, `${uuid(buildId)}.json`)
   }
-  private readJob(loopId: string): LocalJob | null {
-    const file = this.jobFile(loopId)
+  private readJob(buildId: string): LocalJob | null {
+    const file = this.jobFile(buildId)
     if (!fs.existsSync(file)) return null
     if (fs.statSync(file).size > 65536)
       throw new Error('Publishing job is too large or damaged.')
@@ -235,21 +235,21 @@ export class Publishing {
     }
     if (stored.build) {
       const build = object(stored.build),
-        loop = this.ledger.getLoop(loopId)
+        projectBuild = this.ledger.getBuild(buildId)
       const directory = boundedText(build.directory, 'build checkout', 4096)
       if (
-        !loop ||
+        !projectBuild ||
         path.resolve(directory) !== directory ||
         fs.realpathSync(directory) !== directory ||
         !directory.startsWith(
-          `${loop.workspaceDir}${path.sep}.gauntlet-gamesmith${path.sep}play${path.sep}`,
+          `${projectBuild.workspaceDir}${path.sep}.gauntlet-gamesmith${path.sep}play${path.sep}`,
         ) ||
         !['starting', 'running', 'finished'].includes(String(build.status))
       )
         throw new Error('Publishing build record is invalid.')
       job.build = {
         directory,
-        runId: uuid(build.runId),
+        attemptId: uuid(build.attemptId ?? build.runId),
         status: build.status as BuildJob['status'],
         gateDir: boundedText(build.gateDir, 'build gate', 4096),
       }
@@ -275,8 +275,8 @@ export class Publishing {
     }
     return job
   }
-  private save(loopId: string, job: LocalJob): void {
-    const file = this.jobFile(loopId),
+  private save(buildId: string, job: LocalJob): void {
+    const file = this.jobFile(buildId),
       temp = `${file}.tmp`
     fs.writeFileSync(temp, JSON.stringify(job), { mode: 0o600 })
     fs.renameSync(temp, file)
@@ -285,18 +285,18 @@ export class Publishing {
     if (this.active)
       throw new Error('A publishing operation is already running.')
     const input = object(value),
-      loopId = uuid(input.loopId),
+      buildId = uuid(input.buildId),
       round = input.round
     if (!Number.isSafeInteger(round) || (round as number) < 1)
       throw new Error('Select a completed saved round.')
     const metadata = publicationListing(input)
-    const loop = this.ledger.getLoop(loopId)
-    if (!loop) throw new Error('Run not found.')
-    const trustError = playAccessError(loop)
+    const projectBuild = this.ledger.getBuild(buildId)
+    if (!projectBuild) throw new Error('Build not found.')
+    const trustError = playAccessError(projectBuild)
     if (trustError) throw new Error(trustError)
-    this.ledger.assertLoopWorkspaceIdentity(loopId)
+    this.ledger.assertBuildWorkspaceIdentity(buildId)
     const revision = this.ledger.succeededImplementRevision(
-      loopId,
+      buildId,
       round as number,
     )
     if (!revision)
@@ -306,38 +306,38 @@ export class Publishing {
     try {
       const auth = await this.authenticated(),
         me = await this.request('me', undefined, auth)
-      const job: LocalJob = this.readJob(loopId) ?? {
+      const job: LocalJob = this.readJob(buildId) ?? {
         gameId: randomUUID(),
         requestKey: randomUUID(),
         publisherId: uuid(me.publisher.id),
       }
       if (job.publisherId !== me.publisher.id)
         throw new Error(
-          'This run is linked to another publisher. Sign in to that account.',
+          'This build is linked to another publisher. Sign in to that account.',
         )
       if (job.build)
         await recoverPublicationBuild(job.build, (text) =>
-          this.log(loopId, text),
+          this.log(buildId, text),
         )
       this.logTarget = {
-        loopId,
-        runId:
+        buildId,
+        attemptId:
           this.ledger
-            .runsForLoop(loopId)
+            .attemptsForBuild(buildId)
             .find(
-              (run) =>
-                run.role === 'implement' &&
-                run.round === round &&
-                run.revision === revision,
+              (attempt) =>
+                attempt.role === 'implement' &&
+                attempt.round === round &&
+                attempt.revision === revision,
             )?.id ?? null,
       }
       this.log(
-        loopId,
+        buildId,
         `Preparing publication of round ${round}, revision ${revision}.`,
       )
       checkout = checkoutRoundRevision(
-        loop.workspaceDir,
-        loopId,
+        projectBuild.workspaceDir,
+        buildId,
         round as number,
         revision,
       )
@@ -345,14 +345,14 @@ export class Publishing {
         checkout,
         (build) => {
           job.build = build
-          this.save(loopId, job)
+          this.save(buildId, job)
         },
-        (text) => this.log(loopId, text),
+        (text) => this.log(buildId, text),
       )
       const artifact = await packDirectory(buildDir, revision)
       metadata.coverPath = publicationCover(artifact)
       this.log(
-        loopId,
+        buildId,
         metadata.coverPath
           ? `Using shipping cover: ${metadata.coverPath}.`
           : 'No shipping cover found; the catalog will use its default artwork.',
@@ -365,14 +365,14 @@ export class Publishing {
         job.digest = fingerprint
         job.preview = undefined
       }
-      this.save(loopId, job)
+      this.save(buildId, job)
       this.log(
-        loopId,
-        `Uploading ${artifact.files.length} shipping files. Run history and harness credentials are excluded.`,
+        buildId,
+        `Uploading ${artifact.files.length} shipping files. Build history and harness credentials are excluded.`,
       )
-      const sourceRunId = this.logTarget.runId
-      if (!sourceRunId)
-        throw new Error('The saved round has no implementation run.')
+      const sourceAttemptId = this.logTarget.attemptId
+      if (!sourceAttemptId)
+        throw new Error('The saved round has no implementation attempt.')
       const started = await this.request(
         'releases',
         {
@@ -380,7 +380,8 @@ export class Publishing {
           requestKey: job.requestKey,
           listing: metadata,
           digest: validateArtifact(artifact).digest,
-          source: { loopId, runId: sourceRunId, round, revision },
+          // Keep the initial hosted provenance contract compatible across desktop updates.
+          source: { loopId: buildId, runId: sourceAttemptId, round, revision },
         },
         auth,
       )
@@ -430,9 +431,9 @@ export class Publishing {
       }
       // Bearer preview URLs are ephemeral; do not persist them in portable logs.
       job.preview = { ...result, previewUrl: '' }
-      this.save(loopId, job)
+      this.save(buildId, job)
       this.log(
-        loopId,
+        buildId,
         `Release ${result.releaseId} is ready for private preview. It is not yet published.`,
       )
       const previewOrigin = new URL(preview.url).origin
@@ -447,7 +448,7 @@ export class Publishing {
       return { ...result, previewUrl: '' }
     } catch (error) {
       this.log(
-        loopId,
+        buildId,
         `Publication failed: ${redactedErrorMessage(error, 'Unknown publishing error.')}`,
       )
       throw error
@@ -457,8 +458,8 @@ export class Publishing {
     }
   }
   async history(value: unknown): Promise<ReleaseHistory> {
-    const loopId = uuid(value),
-      job = this.readJob(loopId)
+    const buildId = uuid(value),
+      job = this.readJob(buildId)
     if (!job)
       return {
         gameId: null,
@@ -469,7 +470,7 @@ export class Publishing {
       }
     const me = await this.request('me', undefined, await this.authenticated())
     if (job.publisherId !== me.publisher.id)
-      throw new Error('This run belongs to another publisher account.')
+      throw new Error('This build belongs to another publisher account.')
     const game = me.games.find((game: { id: string }) => game.id === job.gameId)
     if (!game) throw new Error('Published game was not found.')
     return {
@@ -501,12 +502,12 @@ export class Publishing {
     if (this.active)
       throw new Error('A publishing operation is already running.')
     const input = object(value),
-      loopId = uuid(input.loopId),
+      buildId = uuid(input.buildId),
       releaseId = uuid(input.releaseId)
     this.active = true
     try {
-      const history = await this.history(loopId),
-        job = this.readJob(loopId)
+      const history = await this.history(buildId),
+        job = this.readJob(buildId)
       if (
         !job ||
         !history.gameId ||
@@ -515,7 +516,7 @@ export class Publishing {
           (release) => release.id === releaseId && release.status === 'ready',
         )
       )
-        throw new Error('Choose a ready release from this run.')
+        throw new Error('Choose a ready release from this build.')
       const preview = await this.request(
         'preview',
         { releaseId },
@@ -536,9 +537,9 @@ export class Publishing {
         previewUrl: '',
       }
       job.preview = result
-      this.save(loopId, job)
+      this.save(buildId, job)
       await shell.openExternal(preview.url)
-      this.log(loopId, `Opened private preview for release ${releaseId}.`)
+      this.log(buildId, `Opened private preview for release ${releaseId}.`)
       return result
     } finally {
       this.active = false
@@ -548,10 +549,10 @@ export class Publishing {
     if (this.active)
       throw new Error('A publishing operation is already running.')
     const input = object(value),
-      loopId = uuid(input.loopId)
+      buildId = uuid(input.buildId)
     this.active = true
     try {
-      const history = await this.history(loopId)
+      const history = await this.history(buildId)
       if (
         !history.gameId ||
         !history.currentReleaseId ||
@@ -578,7 +579,7 @@ export class Publishing {
         await this.authenticated(),
       )
       this.log(
-        loopId,
+        buildId,
         `Unpublished game ${history.gameId}. Saved releases remain available.`,
       )
     } finally {
@@ -587,10 +588,10 @@ export class Publishing {
   }
   async publish(value: unknown): Promise<string> {
     const input = object(value),
-      loopId = uuid(input.loopId)
+      buildId = uuid(input.buildId)
     if (this.active)
       throw new Error('A publishing operation is already running.')
-    const job = this.readJob(loopId)
+    const job = this.readJob(buildId)
     if (
       !job?.preview ||
       job.preview.gameId !== input.gameId ||
@@ -610,7 +611,7 @@ export class Publishing {
         await this.authenticated(),
       )
       this.log(
-        loopId,
+        buildId,
         `Published release ${job.preview.releaseId}: ${job.preview.gameUrl}`,
       )
       return job.preview.gameUrl

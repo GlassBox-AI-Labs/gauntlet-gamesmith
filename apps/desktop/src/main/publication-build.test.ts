@@ -24,6 +24,6 @@ describe('publication builds', () => {
   it('reports nonzero builds and fails closed on incomplete launch recovery', async () => {
     const dir = workspace('node -e "process.exit(7)"')
     await expect(buildPublication(dir, job => directories.push(job.gateDir), () => {})).rejects.toThrow('exited 7')
-    await expect(recoverPublicationBuild({ directory: dir, runId: '123e4567-e89b-42d3-a456-426614174000', status: 'starting', gateDir: '' }, () => {})).rejects.toThrow('incomplete process ownership')
+    await expect(recoverPublicationBuild({ directory: dir, attemptId: '123e4567-e89b-42d3-a456-426614174000', status: 'starting', gateDir: '' }, () => {})).rejects.toThrow('incomplete process ownership')
   }, 15000)
 })

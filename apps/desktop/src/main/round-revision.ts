@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isRecordId } from '../shared/record-id'
-import { LEGACY_RUN_METADATA_DIR, RUN_METADATA_DIR } from './run-transfer'
+import { LEGACY_BUILD_METADATA_DIR, BUILD_METADATA_DIR } from './build-transfer'
 
 const REPOSITORY_DIR = 'repository.git'
 const PLAY_DIR = 'play'
@@ -19,11 +19,11 @@ const MAX_RETAINED_CHECKOUT_ENTRIES = 100_000
 const MAX_RETAINED_CHECKOUT_BYTES = 1024 * 1024 * 1024
 const CHECKOUT_NAME = /^round-[1-9]\d*-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const EXCLUDED_PATHS = [
-  `:(exclude)${RUN_METADATA_DIR}`,
-  `:(exclude)${RUN_METADATA_DIR}/**`,
+  `:(exclude)${BUILD_METADATA_DIR}`,
+  `:(exclude)${BUILD_METADATA_DIR}/**`,
   // A folder that predates the rename, in case its migration did not run.
-  `:(exclude)${LEGACY_RUN_METADATA_DIR}`,
-  `:(exclude)${LEGACY_RUN_METADATA_DIR}/**`,
+  `:(exclude)${LEGACY_BUILD_METADATA_DIR}`,
+  `:(exclude)${LEGACY_BUILD_METADATA_DIR}/**`,
   ':(exclude)gauntlet-report-v1.md',
   ':(exclude,glob)**/node_modules/**',
   ':(exclude)node_modules',
@@ -40,9 +40,9 @@ let revisionStorageRoot: string | null = null
 
 interface CaptureRoundRevisionInput {
   workspaceDir: string
-  loopId: string
+  buildId: string
   round: number
-  /** The prior round revision, or a source round revision when forking a future run. */
+  /** The prior round revision, or a source round revision when forking a future attempt. */
   parentRevision?: string | null
 }
 
@@ -64,14 +64,14 @@ export function configureRoundRevisionStorage(root: string): void {
   revisionStorageRoot = candidate
 }
 
-export function roundRevisionRepositoryPath(loopId: string): string {
-  if (!isRecordId(loopId)) throw new Error('Invalid loop id for round revision.')
+export function roundRevisionRepositoryPath(buildId: string): string {
+  if (!isRecordId(buildId)) throw new Error('Invalid build id for round revision.')
   if (!revisionStorageRoot) throw new Error('Round revision storage has not been configured.')
-  return ownedDirectory(revisionStorageRoot, [loopId, REPOSITORY_DIR], false)
+  return ownedDirectory(revisionStorageRoot, [buildId, REPOSITORY_DIR], false)
 }
 
-function repositoryDir(loopId: string): string {
-  return roundRevisionRepositoryPath(loopId)
+function repositoryDir(buildId: string): string {
+  return roundRevisionRepositoryPath(buildId)
 }
 
 function contained(root: string, target: string): boolean {
@@ -93,9 +93,9 @@ function ownedDirectory(workspaceDir: string, segments: string[], create: boolea
       fs.mkdirSync(current, { mode: 0o700 })
       stat = fs.lstatSync(current)
     }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Owned run directory is not a real directory: ${segment}`)
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Owned build directory is not a real directory: ${segment}`)
     const canonical = fs.realpathSync(current)
-    if (!contained(workspace, canonical)) throw new Error(`Owned run directory escapes the workspace: ${segment}`)
+    if (!contained(workspace, canonical)) throw new Error(`Owned build directory escapes the workspace: ${segment}`)
     current = canonical
   }
   return current
@@ -125,7 +125,7 @@ function safeGitEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   }
 }
 
-function run(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv, tolerate?: RegExp): string {
+function attempt(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv, tolerate?: RegExp): string {
   const result = spawnSync(command, args, {
     cwd,
     env: safeGitEnv(env),
@@ -185,11 +185,11 @@ function validateRepositoryLayout(repo: string): void {
   }
 }
 
-function git(workspaceDir: string, loopId: string, args: string[], indexFile?: string, tolerate?: RegExp): string {
-  const repo = repositoryDir(loopId)
+function git(workspaceDir: string, buildId: string, args: string[], indexFile?: string, tolerate?: RegExp): string {
+  const repo = repositoryDir(buildId)
   validateRepositoryLayout(repo)
   sanitizeRepositoryConfig(repo)
-  const output = run(
+  const output = attempt(
     GIT_BINARY,
     [...GIT_CONFIG_OVERRIDES, `--git-dir=${repo}`, `--work-tree=${workspaceDir}`, ...args],
     workspaceDir,
@@ -206,9 +206,9 @@ function git(workspaceDir: string, loopId: string, args: string[], indexFile?: s
   return output
 }
 
-function ensureRepository(workspaceDir: string, loopId: string): void {
+function ensureRepository(workspaceDir: string, buildId: string): void {
   if (!revisionStorageRoot) throw new Error('Round revision storage has not been configured.')
-  const repo = ownedDirectory(revisionStorageRoot, [loopId, REPOSITORY_DIR], true)
+  const repo = ownedDirectory(revisionStorageRoot, [buildId, REPOSITORY_DIR], true)
   const head = path.join(repo, 'HEAD')
   try {
     const stat = fs.lstatSync(head)
@@ -217,7 +217,7 @@ function ensureRepository(workspaceDir: string, loopId: string): void {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  run(GIT_BINARY, [...GIT_CONFIG_OVERRIDES, 'init', '--bare', '--quiet', repo], workspaceDir)
+  attempt(GIT_BINARY, [...GIT_CONFIG_OVERRIDES, 'init', '--bare', '--quiet', repo], workspaceDir)
   const headStat = fs.lstatSync(head)
   if (headStat.isSymbolicLink() || !headStat.isFile()) throw new Error('Git did not create a safe round revision repository.')
 }
@@ -284,50 +284,50 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
   // Round zero is the durable pre-reference source baseline. Positive rounds
   // remain the immutable implementations assigned to critics.
   if (!Number.isInteger(input.round) || input.round < 0) throw new Error('Round must be a nonnegative integer.')
-  if (!isRecordId(input.loopId)) throw new Error('Invalid loop id for round revision.')
-  ensureRepository(input.workspaceDir, input.loopId)
+  if (!isRecordId(input.buildId)) throw new Error('Invalid build id for round revision.')
+  ensureRepository(input.workspaceDir, input.buildId)
   if (input.parentRevision) {
     assertRevision(input.parentRevision)
-    git(input.workspaceDir, input.loopId, ['cat-file', '-e', `${input.parentRevision}^{commit}`])
+    git(input.workspaceDir, input.buildId, ['cat-file', '-e', `${input.parentRevision}^{commit}`])
   }
 
   const revision = withTemporaryIndex((indexFile) => {
-    git(input.workspaceDir, input.loopId, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
-    git(input.workspaceDir, input.loopId, ['add', '-A', '-f', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
-    const tree = git(input.workspaceDir, input.loopId, ['write-tree'], indexFile)
-    const args = ['commit-tree', tree, '-m', `Gauntlet Gamesmith ${input.loopId} round ${input.round}`]
+    git(input.workspaceDir, input.buildId, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
+    git(input.workspaceDir, input.buildId, ['add', '-A', '-f', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
+    const tree = git(input.workspaceDir, input.buildId, ['write-tree'], indexFile)
+    const args = ['commit-tree', tree, '-m', `Gauntlet Gamesmith ${input.buildId} round ${input.round}`]
     if (input.parentRevision) args.push('-p', input.parentRevision)
-    return git(input.workspaceDir, input.loopId, args, indexFile)
+    return git(input.workspaceDir, input.buildId, args, indexFile)
   })
 
   assertRevision(revision)
-  git(input.workspaceDir, input.loopId, ['update-ref', `refs/loops/${input.loopId}/rounds/${input.round}`, revision])
+  git(input.workspaceDir, input.buildId, ['update-ref', `refs/builds/${input.buildId}/rounds/${input.round}`, revision])
   return revision
 }
 
 /** Compare the current playable source to the immutable tree a critic was assigned. */
-export function workspaceMatchesRevision(workspaceDir: string, loopId: string, revision: string): boolean {
+export function workspaceMatchesRevision(workspaceDir: string, buildId: string, revision: string): boolean {
   assertRevision(revision)
-  ensureRepository(workspaceDir, loopId)
-  const expectedTree = git(workspaceDir, loopId, ['show', '-s', '--format=%T', revision])
+  ensureRepository(workspaceDir, buildId)
+  const expectedTree = git(workspaceDir, buildId, ['show', '-s', '--format=%T', revision])
   const actualTree = withTemporaryIndex((indexFile) => {
-    git(workspaceDir, loopId, ['read-tree', revision], indexFile)
+    git(workspaceDir, buildId, ['read-tree', revision], indexFile)
     // Files present in the immutable revision remain tracked even when they
     // live below an ignored build/dist directory, so their edits/deletions are
     // detected. Newly created project-ignored outputs are not source drift.
-    git(workspaceDir, loopId, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
-    return git(workspaceDir, loopId, ['write-tree'], indexFile)
+    git(workspaceDir, buildId, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
+    return git(workspaceDir, buildId, ['write-tree'], indexFile)
   })
   return actualTree === expectedTree
 }
 
 /** Materialize a temporary playable checkout for one immutable round revision. */
-export function checkoutRoundRevision(workspaceDir: string, loopId: string, round: number, revision: string): string {
+export function checkoutRoundRevision(workspaceDir: string, buildId: string, round: number, revision: string): string {
   if (!Number.isInteger(round) || round < 1) throw new Error('Round must be a positive integer.')
   assertRevision(revision)
-  ensureRepository(workspaceDir, loopId)
-  git(workspaceDir, loopId, ['cat-file', '-e', `${revision}^{commit}`])
-  const playRoot = ownedDirectory(workspaceDir, [RUN_METADATA_DIR, PLAY_DIR], true)
+  ensureRepository(workspaceDir, buildId)
+  git(workspaceDir, buildId, ['cat-file', '-e', `${revision}^{commit}`])
+  const playRoot = ownedDirectory(workspaceDir, [BUILD_METADATA_DIR, PLAY_DIR], true)
   assertCheckoutCapacity(playRoot)
   // A fresh unguessable directory makes every Play session a no-clobber
   // publication. Never reclaim a deterministic pathname whose entry may have
@@ -336,8 +336,8 @@ export function checkoutRoundRevision(workspaceDir: string, loopId: string, roun
   fs.mkdirSync(destination, { mode: 0o700 })
   try {
     withTemporaryIndex((indexFile) => {
-      git(workspaceDir, loopId, ['read-tree', revision], indexFile)
-      git(workspaceDir, loopId, ['checkout-index', '--all', '--force', `--prefix=${destination}${path.sep}`], indexFile)
+      git(workspaceDir, buildId, ['read-tree', revision], indexFile)
+      git(workspaceDir, buildId, ['checkout-index', '--all', '--force', `--prefix=${destination}${path.sep}`], indexFile)
     })
     const stat = fs.lstatSync(destination)
     if (stat.isSymbolicLink() || !stat.isDirectory() || !contained(playRoot, fs.realpathSync(destination))) {
@@ -359,12 +359,12 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
   const workspaceDir = path.dirname(metadataRoot)
   if (
     path.basename(playRoot) !== PLAY_DIR
-    || path.basename(metadataRoot) !== RUN_METADATA_DIR
+    || path.basename(metadataRoot) !== BUILD_METADATA_DIR
     || !CHECKOUT_NAME.test(name)
   ) {
     throw new Error('Refusing to clean an invalid round checkout path.')
   }
-  const expectedRoot = ownedDirectory(workspaceDir, [RUN_METADATA_DIR, PLAY_DIR], false)
+  const expectedRoot = ownedDirectory(workspaceDir, [BUILD_METADATA_DIR, PLAY_DIR], false)
   const expected = liveCheckoutIdentities.get(checkoutDir)
   if (!expected) throw new Error('Refusing to clean a round checkout not owned by this app session.')
   let stat: fs.Stats

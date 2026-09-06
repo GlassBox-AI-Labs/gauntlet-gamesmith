@@ -2,9 +2,9 @@ import { dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import { IPC } from '../shared/ipc'
 import { redactedErrorMessage } from '../shared/redact-log'
 import type { AttachmentResult } from '../shared/attachments'
-import type { createRunAttachments } from './run-attachments'
+import type { createBuildAttachments } from './build-attachments'
 
-export function registerAttachmentIpc(store: ReturnType<typeof createRunAttachments>, window: () => BrowserWindow | null): void {
+export function registerAttachmentIpc(store: ReturnType<typeof createBuildAttachments>, window: () => BrowserWindow | null): void {
   async function result<T>(action: () => T | Promise<T>): Promise<AttachmentResult<T>> {
     try { return { ok: true, value: await action() } }
     catch (error) { return { ok: false, error: redactedErrorMessage(error, 'Could not access the attachment.') } }

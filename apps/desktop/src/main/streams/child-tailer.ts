@@ -12,9 +12,9 @@ import { translateClaudeLine, type StreamEvent } from './claude-stream'
 import { translateCodexLine } from './codex-stream'
 
 /**
- * Follows every delegated child stream in the run's `agents/` folder and turns
+ * Follows every delegated child stream in the attempt's `agents/` folder and turns
  * new lines into schema events attributed to the child's slug. Children can
- * appear mid-run, so each poll rescans the directory. This adds visibility
+ * appear mid-attempt, so each poll rescans the directory. This adds visibility
  * only — token and cost accounting stays in child-agents.ts, so no usage is
  * emitted or counted here.
  */
@@ -36,7 +36,7 @@ export class ChildStreamTailer {
 
   constructor(
     private readonly dir: string,
-    /** Streams untouched since the run began are a previous run's leftovers. */
+    /** Streams untouched since the attempt began are a previous attempt's leftovers. */
     private readonly startedAtMs: number,
     initialOffsets?: Record<string, number>,
     initialIdentities: Record<string, { dev: number; ino: number }> = {},

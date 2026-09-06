@@ -18,12 +18,12 @@ import {
 import { PublisherAccountForm } from './PublisherAccountForm'
 import appLogo from '../../../../build/icon.png'
 export function PublishDialog({
-  loopId,
+  buildId,
   round,
   title,
   onClose,
 }: {
-  loopId: string
+  buildId: string
   round: number
   title: string
   onClose: () => void
@@ -46,7 +46,7 @@ export function PublishDialog({
     controls: '',
   })
   async function refresh() {
-    const result = await window.publishing.history(loopId)
+    const result = await window.publishing.history(buildId)
     if (!result.ok) throw new Error(result.error)
     setHistory(result.value)
   }
@@ -69,11 +69,11 @@ export function PublishDialog({
       setStatus(result.value)
       if (result.value.connected) await refresh()
     })
-  }, [loopId])
+  }, [buildId])
   async function publish() {
     if (!preview) return
     const result = await window.publishing.publish({
-      loopId,
+      buildId,
       releaseId: preview.releaseId,
       gameId: preview.gameId,
       generation: preview.generation,
@@ -190,7 +190,7 @@ export function PublishDialog({
                     event.preventDefault()
                     void work(async () => {
                       const result = await window.publishing.prepare({
-                        loopId,
+                        buildId,
                         round,
                         ...draft,
                       })
@@ -246,7 +246,7 @@ export function PublishDialog({
                         onClick={() =>
                           void work(async () => {
                             const result = await window.publishing.unpublish({
-                              loopId,
+                              buildId,
                               generation: history.generation,
                             })
                             if (!result.ok) throw new Error(result.error)
@@ -298,7 +298,7 @@ export function PublishDialog({
                           void work(async () => {
                             const result =
                               await window.publishing.previewRelease({
-                                loopId,
+                                buildId,
                                 releaseId: release.id,
                               })
                             if (!result.ok) throw new Error(result.error)

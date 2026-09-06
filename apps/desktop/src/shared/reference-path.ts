@@ -1,12 +1,12 @@
-const SAFE_LOOP_ID = /^[a-zA-Z0-9-]+$/
+const SAFE_BUILD_ID = /^[a-zA-Z0-9-]+$/
 
-/** Canonical workspace-relative directory for a loop's frozen Reference Pack. */
-export function referencePackDir(loopId: string): string {
-  if (!SAFE_LOOP_ID.test(loopId)) throw new Error('Invalid loop id for Reference Pack path.')
-  return `reference/${loopId}`
+/** Canonical workspace-relative directory for a build's frozen Reference Pack. */
+export function referencePackDir(buildId: string): string {
+  if (!SAFE_BUILD_ID.test(buildId)) throw new Error('Invalid build id for Reference Pack path.')
+  return `reference/${buildId}`
 }
 
-/** Historical loops without an explicit reference phase used the shared reference/ directory. */
-export function referenceRootForLoop(loopId: string, hasReferenceRun: boolean): string {
-  return hasReferenceRun ? referencePackDir(loopId) : 'reference'
+/** Historical builds without an explicit reference phase used the shared reference/ directory. */
+export function referenceRootForBuild(buildId: string, hasReferenceAttempt: boolean): string {
+  return hasReferenceAttempt ? referencePackDir(buildId) : 'reference'
 }
