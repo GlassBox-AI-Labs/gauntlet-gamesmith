@@ -225,3 +225,13 @@ presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-dele
 CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`
 and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
 project roots, links into those roots, and private app directories remain excluded (ADR-015).
+
+## Publish to the local catalog
+
+Select a completed saved round and click **Publish**. The desktop signs in through
+the system browser, builds an immutable checkout, uploads its validated static
+output, and opens a private preview before explicit publication. A separate
+publisher account is required only for this operation; normal development and
+Play remain account-free. The local catalog and game host can be used by other
+devices on the LAN. See [local catalog setup](../../docs/CATALOG.md) for startup,
+developer provisioning, supported builds, retries, and rollback.

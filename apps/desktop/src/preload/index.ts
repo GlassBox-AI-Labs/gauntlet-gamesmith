@@ -1,3 +1,4 @@
+import type { PublishingApi } from '../shared/publishing'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
@@ -113,3 +114,13 @@ const attachments: AttachmentApi = {
 }
 contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)
+
+const publishing: PublishingApi = {
+  cancelSignIn: () => ipcRenderer.invoke(IPC.publishing.cancelSignIn),
+  status: () => ipcRenderer.invoke(IPC.publishing.status),
+  signIn: () => ipcRenderer.invoke(IPC.publishing.signIn),
+  signOut: () => ipcRenderer.invoke(IPC.publishing.signOut),
+  prepare: input => ipcRenderer.invoke(IPC.publishing.prepare, input),
+  publish: input => ipcRenderer.invoke(IPC.publishing.publish, input),
+}
+contextBridge.exposeInMainWorld('publishing', publishing)

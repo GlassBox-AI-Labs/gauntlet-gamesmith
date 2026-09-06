@@ -1,3 +1,4 @@
+import { PublishDialog } from './PublishDialog'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
@@ -264,6 +265,7 @@ export function RunDetail({
   onReadStream,
   onScrollTop,
 }: RunDetailProps): React.JSX.Element {
+  const [publishing, setPublishing] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameBusy, setRenameBusy] = useState(false)
   const [titleDraft, setTitleDraft] = useState(snapshot.loop.title)
@@ -478,11 +480,13 @@ export function RunDetail({
                 <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
               </Button>
             )}
+            <Button variant="outline" disabled={!selectedRoundPlayable} onClick={() => setPublishing(true)}><Upload /> Publish</Button>
           </div>
         )}
       </div>
 
       {selectedRound == null && loop.stopReason && !running && <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>}
+      {publishing && selectedRound != null && <PublishDialog loopId={loop.id} round={selectedRound} title={loop.title} onClose={() => setPublishing(false)} />}
       {play.error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>}
       {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported run folder.</p>}

@@ -10,7 +10,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @gauntlet/desktop build",
+    "build": "pnpm -r --if-present build",
     "dev": "pnpm --filter @gauntlet/desktop dev",
     "package": "pnpm --filter @gauntlet/desktop package",
     "package:dir": "pnpm --filter @gauntlet/desktop package:dir",
@@ -20,9 +20,17 @@
     "package:win": "pnpm --filter @gauntlet/desktop package:win",
     "prototype:run-form": "pnpm --filter @gauntlet/desktop prototype:run-form",
     "start": "pnpm --filter @gauntlet/desktop start",
-    "test": "pnpm --filter @gauntlet/desktop test",
-    "typecheck": "pnpm --filter @gauntlet/desktop typecheck",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
     "prototype:app": "pnpm --filter @gauntlet/desktop prototype:app",
-    "dev:run-form": "pnpm --filter @gauntlet/desktop dev:run-form"
+    "dev:run-form": "pnpm --filter @gauntlet/desktop dev:run-form",
+    "catalog:db": "node scripts/catalog-db.mjs",
+    "catalog:dev": "pnpm --filter @gauntlet/web dev",
+    "catalog:build": "pnpm --filter @gauntlet/web build",
+    "catalog:start": "pnpm --filter @gauntlet/web start",
+    "catalog:admin": "pnpm --filter @gauntlet/web admin",
+    "catalog:import": "pnpm --filter @gauntlet/web run import",
+    "catalog:verify": "pnpm --filter @gauntlet/web exec tsx scripts/verify.ts",
+    "catalog:up": "node scripts/catalog-up.mjs"
   }
 }

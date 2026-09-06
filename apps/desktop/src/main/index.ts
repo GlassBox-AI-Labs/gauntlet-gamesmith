@@ -1,3 +1,4 @@
+import { Publishing, registerPublishingIpc } from './publishing'
 import { trustExistingRun } from './trust-ipc'
 import { createRunAttachments } from './run-attachments'
 import { registerAttachmentIpc } from './attachment-ipc'
@@ -82,6 +83,7 @@ import { configureAgentWritableRoots } from './cli-executable'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
+let publishing: Publishing | null = null
 let loopRunner: LoopRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
@@ -852,6 +854,8 @@ if (hasSingleInstanceLock) {
         return null
       }
     }))
+    publishing = new Publishing(ledger, line => mainWindow?.webContents.send(IPC.loop.log, line))
+    registerPublishingIpc(publishing)
     registerIpc()
     registerLoopIpc()
     registerReportIpc()
@@ -882,6 +886,11 @@ if (hasSingleInstanceLock) {
 let playQuitPending = false
 let playQuitSettled = false
 app.on('before-quit', (event) => {
+  if (publishing?.isBusy()) {
+    event.preventDefault()
+    dialog.showErrorBox('Publishing is still running', 'Wait for browser sign-in or the publishing build/upload to finish, then quit. The run log shows build progress.')
+    return
+  }
   if (playQuitSettled) return
   const active = loopRunner?.activeRun()
   const forcedAgentSettlement = loopRunner?.quitSettlementPending() ?? false

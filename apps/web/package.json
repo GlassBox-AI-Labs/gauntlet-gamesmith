@@ -1,0 +1,6 @@
+{
+  "name": "@gauntlet/web", "private": true, "version": "0.0.0", "type": "module",
+  "scripts": { "dev": "tsx server/index.ts", "build": "vite build", "start": "tsx server/index.ts --production", "typecheck": "tsc --noEmit", "test": "vitest run", "admin": "tsx scripts/admin.ts", "import": "tsx scripts/import.ts" },
+  "dependencies": { "@gauntlet/publishing": "workspace:*", "react": "19.2.8", "react-dom": "19.2.8" },
+  "devDependencies": { "@types/node": "24.13.3", "@types/react": "19.2.18", "@types/react-dom": "19.2.5", "@vitejs/plugin-react": "5.2.0", "vite": "7.3.6", "vitest": "4.1.11", "typescript": "7.0.2", "tsx": "^4.20.0" }
+}

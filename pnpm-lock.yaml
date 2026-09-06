@@ -13,6 +13,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@gauntlet/publishing':
+        specifier: workspace:*
+        version: link:../../packages/publishing
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -55,7 +58,7 @@ importers:
     devDependencies:
       '@tailwindcss/vite':
         specifier: 4.3.3
-        version: 4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))
+        version: 4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13))
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
@@ -67,7 +70,7 @@ importers:
         version: 19.2.5(@types/react@19.2.18)
       '@vitejs/plugin-react':
         specifier: 5.2.0
-        version: 5.2.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))
+        version: 5.2.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
       electron:
         specifier: 44.0.0
         version: 44.0.0
@@ -76,7 +79,7 @@ importers:
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
       electron-vite:
         specifier: 5.0.0
-        version: 5.0.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))
+        version: 5.0.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13))
       lightningcss:
         specifier: npm:lightningcss-wasm@1.33.0
         version: lightningcss-wasm@1.33.0
@@ -88,10 +91,59 @@ importers:
         version: 7.0.2
       vite:
         specifier: 7.3.6
-        version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+        version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
       vitest:
         specifier: 4.1.11
-        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
+
+  apps/web:
+    dependencies:
+      '@gauntlet/publishing':
+        specifier: workspace:*
+        version: link:../../packages/publishing
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.5
+        version: 19.2.5(@types/react@19.2.18)
+      '@vitejs/plugin-react':
+        specifier: 5.2.0
+        version: 5.2.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.13
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 7.3.6
+        version: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
+
+  packages/publishing:
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.3
+        version: 24.13.3
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
 
 packages:
 
@@ -3082,6 +3134,11 @@ packages:
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
+  tsx@4.23.13:
+    resolution: {integrity: sha512-BL5MGkRln6aDYhb0xbQlEAGw743BaZYWdbWtdJOBriYJboKgUUYCadFp2/FpBBZquBC/ezNBn7wMMPx7FDZUDw==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
+
   tw-animate-css@1.4.0:
     resolution: {integrity: sha512-7bziOlRqH0hJx80h/3mbicLW7o8qLsH5+RaLR2t+OHM3D0JlWGODQKQ4cxbK7WlvmUxpcj6Kgu6EKqjrGFe3QQ==}
 
@@ -4665,12 +4722,12 @@ snapshots:
       '@tailwindcss/oxide-win32-arm64-msvc': 4.3.3
       '@tailwindcss/oxide-win32-x64-msvc': 4.3.3
 
-  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))':
+  '@tailwindcss/vite@4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13))':
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
       tailwindcss: 4.3.3
-      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
 
   '@types/babel__core@7.20.5':
     dependencies:
@@ -4819,7 +4876,7 @@ snapshots:
 
   '@ungap/structured-clone@1.4.0': {}
 
-  '@vitejs/plugin-react@5.2.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))':
+  '@vitejs/plugin-react@5.2.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -4827,7 +4884,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-rc.3
       '@types/babel__core': 7.20.5
       react-refresh: 0.18.0
-      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
     transitivePeerDependencies:
       - supports-color
 
@@ -4840,13 +4897,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.1
 
-  '@vitest/mocker@4.1.11(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))':
+  '@vitest/mocker@4.1.11(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))':
     dependencies:
       '@vitest/spy': 4.1.11
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
 
   '@vitest/pretty-format@4.1.11':
     dependencies:
@@ -5252,7 +5309,7 @@ snapshots:
 
   electron-to-chromium@1.5.416: {}
 
-  electron-vite@5.0.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)):
+  electron-vite@5.0.0(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)):
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-arrow-functions': 7.29.7(@babel/core@7.29.7)
@@ -5260,7 +5317,7 @@ snapshots:
       esbuild: 0.25.12
       magic-string: 0.30.21
       picocolors: 1.1.1
-      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
     transitivePeerDependencies:
       - supports-color
 
@@ -6520,6 +6577,12 @@ snapshots:
 
   tslib@2.8.1: {}
 
+  tsx@4.23.13:
+    dependencies:
+      esbuild: 0.28.2
+    optionalDependencies:
+      fsevents: 2.3.3
+
   tw-animate-css@1.4.0: {}
 
   type-fest@0.13.1:
@@ -6639,7 +6702,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0):
+  vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.7)
@@ -6652,11 +6715,12 @@ snapshots:
       fsevents: 2.3.3
       jiti: 2.7.0
       lightningcss: lightningcss-wasm@1.33.0
+      tsx: 4.23.13
 
-  vitest@4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)):
+  vitest@4.1.11(@types/node@24.13.3)(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13)):
     dependencies:
       '@vitest/expect': 4.1.11
-      '@vitest/mocker': 4.1.11(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0))
+      '@vitest/mocker': 4.1.11(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(tsx@4.23.13))
       '@vitest/pretty-format': 4.1.11
       '@vitest/runner': 4.1.11
       '@vitest/snapshot': 4.1.11
@@ -6673,7 +6737,7 @@ snapshots:
       tinyexec: 1.3.0
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.1
-      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)
+      vite: 7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss-wasm@1.33.0)(tsx@4.23.13)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 24.13.3

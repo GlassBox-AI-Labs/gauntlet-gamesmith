@@ -502,3 +502,38 @@ Do not gate their collection on `isUltracode`; VIS-001 continues to apply.
 Teammates must not reintroduce these modes through defaults, presets, or new model support.
 Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
 automatic harness orchestration requires a new product decision with explicit UI semantics.
+
+
+## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
+
+**Status:** accepted. Narrowly supersedes ADR-003's no-app-auth/no-Supabase policy
+for publishing; local loops and their SQLite history are unchanged.
+
+**Context.** Developers need to publish a finished game to a shared catalog while
+keeping local game creation independent of a platform account. The first release
+runs on a developer LAN; hosted US deployment and multiplayer follow later.
+
+**Decision.** Keep the catalog and publishing module in this monorepo. Local
+Supabase owns publisher Auth, catalog metadata, and release artifacts. Provision
+only developers whose monorepo access an administrator has verified; public signup
+is disabled. CLI authentication remains entirely separate (ADR-002, PROC-001).
+
+Desktop Publish operates on a completed immutable round, builds with installed
+dependencies, packages a bounded static output, and opens a private preview before
+explicit promotion. Export is not a publishing artifact. Releases are immutable;
+games have stable URLs and a transactionally updated current-release pointer.
+Failed uploads preserve the existing release. Updates, rollback, and unpublish
+are owner-controlled and reject stale generation values.
+
+Serve executable game content on a separate sandboxed origin without account
+credentials. Keep the local Supabase ports on loopback; expose only the catalog
+and game-content host to the trusted LAN. The initial supported runtime is static
+browser games with relative assets and no persistent player state or networking.
+Publishing progress and build output remain visible in both local event ledgers.
+
+**Consequences.** Creating/playing games locally still needs no platform account.
+Publishing introduces container/runtime setup and a separate OS-protected desktop
+session. Future hosted Vercel/CDN deployment targets one shared Supabase project
+per environment and starts in the US. Future multiplayer uses a shared pluggable
+module with guest access and game-dependent authority; it is not part of v1.
+Payments, creator monetization, and platform billing are deferred.
