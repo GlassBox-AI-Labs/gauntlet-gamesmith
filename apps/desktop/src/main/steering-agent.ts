@@ -5,9 +5,9 @@ import { StringDecoder } from 'node:string_decoder'
 import { consultPlan } from './harness-plans'
 import { cliExecutable } from './cli-executable'
 import { createCodexStream } from './streams/codex-stream'
-import { prepareProcessMeta, completeProcessMeta, processGroupIdentity, processGroupStillOwned, interruptCapturedProcessGroup, readProcessIdentity, type RunProcessMeta } from './run-process'
+import { prepareProcessMeta, completeProcessMeta, processGroupIdentity, processGroupStillOwned, interruptCapturedProcessGroup, readProcessIdentity, type AttemptProcessMeta } from './attempt-process'
 import type { StreamEvent } from './streams/claude-stream'
-import type { TokenTotals } from '../shared/loop'
+import type { TokenTotals } from '../shared/build'
 import { STEERING_REPLY_SCHEMA } from '../shared/steering'
 
 export interface ConsultInput {
@@ -24,7 +24,7 @@ export function consultArgs(input: ConsultInput, schemaPath: string): string[] {
 /** A separate read-only process, with private ownership and normal portable raw streams. */
 export function createConsultAgent(privateDir: string, environment: () => Record<string, string>): ConsultAgent {
   const ownershipPath = (id: string) => path.join(privateDir, `${id}.process.json`)
-  const settle = (meta: Pick<RunProcessMeta, 'pid' | 'groupIdentities'>, report: (message: string) => void) => new Promise<boolean>(resolve => {
+  const settle = (meta: Pick<AttemptProcessMeta, 'pid' | 'groupIdentities'>, report: (message: string) => void) => new Promise<boolean>(resolve => {
     interruptCapturedProcessGroup(meta.pid, meta.groupIdentities, report, outcome => resolve(outcome === 'gone'))
   })
   const agent: ConsultAgent = input => new Promise((resolve, reject) => {
@@ -53,7 +53,7 @@ export function createConsultAgent(privateDir: string, environment: () => Record
       throw error
     }
     const outStat = fs.fstatSync(out), errStat = fs.fstatSync(err)
-    let meta: RunProcessMeta | null = null, buffer = '', text = '', sessionId: string | null = null, tokens: TokenTotals | null = null, failure = '', size = 0
+    let meta: AttemptProcessMeta | null = null, buffer = '', text = '', sessionId: string | null = null, tokens: TokenTotals | null = null, failure = '', size = 0
     let stopping: Promise<boolean> | null = null
     const decoder = new StringDecoder('utf8')
     const stream = createCodexStream()
@@ -146,7 +146,7 @@ export function createConsultAgent(privateDir: string, environment: () => Record
     const file = ownershipPath(id)
     if (!fs.existsSync(file)) return true
     if (fs.statSync(file).size > 256000) return false
-    const meta = JSON.parse(fs.readFileSync(file, 'utf8')) as RunProcessMeta
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8')) as AttemptProcessMeta
     if (!Number.isSafeInteger(meta.pid) || meta.pid <= 1 || !Array.isArray(meta.groupIdentities) || meta.groupIdentities.length > 256 || !meta.groupIdentities.every(identity => typeof identity === 'string')) return false
     const gone = await settle(meta, () => {})
     if (gone) fs.rmSync(file, { force: true })

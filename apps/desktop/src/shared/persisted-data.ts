@@ -1,4 +1,4 @@
-import type { AgentMetric, RunMetrics, TokenTotals, Verdict, VerdictFinding } from './loop'
+import type { AgentMetric, AttemptMetrics, TokenTotals, Verdict, VerdictFinding } from './build'
 import { redactLogText } from './redact-log'
 
 const VERDICT_SEVERITIES = new Set(['critical', 'major', 'minor'])
@@ -10,7 +10,7 @@ const MAX_AGENTS = 512
 const MAX_MODELS = 128
 // Historical CLI streams can carry a bounded terminal-style suffix such as
 // `[1m]`. It is part of the persisted label now, so retain it rather than
-// making the entire run unreadable (DATA-002).
+// making the entire attempt unreadable (DATA-002).
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:/+\[\]-]{0,255}$/
 const LEGACY_MODEL_NAMES = new Set(['<synthetic>'])
 const REDACTED_MODEL = '[REDACTED]'
@@ -79,7 +79,7 @@ function normalizeIdentities(value: unknown, keyPattern: RegExp): Record<string,
   return Object.fromEntries(entries) as Record<string, { dev: number; ino: number }>
 }
 
-function normalizeProjection(value: unknown): NonNullable<RunMetrics['projection']> | null {
+function normalizeProjection(value: unknown): NonNullable<AttemptMetrics['projection']> | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'loggedOutLines',
     'loggedErrLines',
@@ -223,15 +223,15 @@ function normalizeAgent(value: unknown): AgentMetric | null {
   return agent
 }
 
-/** Canonical decoder for metrics persisted by older and current runs. */
-export function normalizeRunMetrics(value: unknown): RunMetrics | null {
+/** Canonical decoder for metrics persisted by older and current attempts. */
+export function normalizeAttemptMetrics(value: unknown): AttemptMetrics | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ['agents', 'perModel', 'projection'])) return null
   if (!Array.isArray(value.agents) || value.agents.length > MAX_AGENTS || !isRecord(value.perModel)) return null
   const agents = value.agents.map(normalizeAgent)
   if (agents.some((agent) => agent === null)) return null
   const entries = Object.entries(value.perModel)
   if (entries.length > MAX_MODELS) return null
-  const perModel: RunMetrics['perModel'] = {}
+  const perModel: AttemptMetrics['perModel'] = {}
   for (const [model, candidate] of entries) {
     const safeModel = normalizePersistedModel(model)
     if (!safeModel || !isRecord(candidate) || !hasOnlyKeys(candidate, ['costUsd', 'tokens'])) return null

@@ -4,9 +4,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { fmtSpan, fmtTokens, fmtUsd } from '@/lib/format'
-import type { LoopSnapshot } from '../../../shared/loop'
+import type { BuildSnapshot } from '../../../shared/build'
 import { modelLabel } from '../../../shared/models'
-import { hasMixedPrompts, reportTotals, shortHash, type ReportRecord, type ReportRunRow } from '../../../shared/reports'
+import { hasMixedPrompts, reportTotals, shortHash, type ReportRecord, type ReportBuildRow } from '../../../shared/reports'
 
 const REPORT_STATUS_STYLES: Record<string, string> = {
   running: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
@@ -59,7 +59,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   )
 }
 
-function setupLines(row: ReportRunRow): string[] {
+function setupLines(row: ReportBuildRow): string[] {
   return [
     `${modelLabel(row.models.orchestratorModel)} · ${row.models.orchestratorEffort}`,
     row.models.subagentModel ? `${modelLabel(row.models.subagentModel)} · ${row.models.subagentEffort}` : 'solo, no subagents',
@@ -67,11 +67,11 @@ function setupLines(row: ReportRunRow): string[] {
   ]
 }
 
-function RoundBreakdown({ row }: { row: ReportRunRow }): React.JSX.Element {
+function RoundBreakdown({ row }: { row: ReportBuildRow }): React.JSX.Element {
   if (row.rounds.length === 0) {
     return (
       <div className="px-4 py-3 text-[11px] text-[#68615f]">
-        This run has no finished rounds.{row.stopReason ? ` ${row.stopReason}` : ''}
+        This attempt has no finished rounds.{row.stopReason ? ` ${row.stopReason}` : ''}
       </div>
     )
   }
@@ -112,36 +112,36 @@ function RoundBreakdown({ row }: { row: ReportRunRow }): React.JSX.Element {
   )
 }
 
-function AddRunsModal({
+function AddBuildsModal({
   snapshots,
   present,
   busy,
   onClose,
   onAdd,
 }: {
-  snapshots: LoopSnapshot[]
+  snapshots: BuildSnapshot[]
   present: Set<string>
   busy: boolean
   onClose: () => void
-  onAdd: (loopIds: string[]) => void
+  onAdd: (buildIds: string[]) => void
 }): React.JSX.Element {
   const [picked, setPicked] = useState<Set<string>>(new Set())
-  const available = snapshots.filter((item) => !present.has(item.loop.id))
+  const available = snapshots.filter((item) => !present.has(item.build.id))
   return (
-    <Modal title="Add runs to this report" onClose={onClose}>
+    <Modal title="Add builds to this report" onClose={onClose}>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {available.length === 0 && <p className="p-4 text-[12px] text-[#88817e]">Every run on this machine is already in the report.</p>}
+        {available.length === 0 && <p className="p-4 text-[12px] text-[#88817e]">Every build on this machine is already in the report.</p>}
         {available.map((item) => {
-          const checked = picked.has(item.loop.id)
+          const checked = picked.has(item.build.id)
           return (
             <button
-              key={item.loop.id}
+              key={item.build.id}
               type="button"
               onClick={() =>
                 setPicked((current) => {
                   const next = new Set(current)
-                  if (next.has(item.loop.id)) next.delete(item.loop.id)
-                  else next.add(item.loop.id)
+                  if (next.has(item.build.id)) next.delete(item.build.id)
+                  else next.add(item.build.id)
                   return next
                 })
               }
@@ -151,10 +151,10 @@ function AddRunsModal({
             >
               <CheckMark checked={checked} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-[#ded9d6]">{item.loop.title}</span>
-                <span className="block truncate text-[11px] text-[#68615f]">{item.loop.workspaceDir}</span>
+                <span className="block truncate text-[13px] text-[#ded9d6]">{item.build.title}</span>
+                <span className="block truncate text-[11px] text-[#68615f]">{item.build.workspaceDir}</span>
               </span>
-              <span className="shrink-0 font-mono text-[10px] uppercase text-[#77706d]">{item.loop.status}</span>
+              <span className="shrink-0 font-mono text-[10px] uppercase text-[#77706d]">{item.build.status}</span>
             </button>
           )
         })}
@@ -184,7 +184,7 @@ export function ReportPanel({
   onError,
 }: {
   report: ReportRecord
-  snapshots: LoopSnapshot[]
+  snapshots: BuildSnapshot[]
   onReplace: (report: ReportRecord) => void
   onDeleted: (reportId: string) => void
   onNotice: (text: string) => void
@@ -202,7 +202,7 @@ export function ReportPanel({
   const scored = report.rows.map((row) => row.bestScore).filter((score): score is number => score != null)
   const bestOverall = scored.length > 0 ? Math.max(...scored) : null
 
-  const run = async (action: () => Promise<ReportRecord | null>, success?: string): Promise<void> => {
+  const attempt = async (action: () => Promise<ReportRecord | null>, success?: string): Promise<void> => {
     setBusy(true)
     try {
       const next = await action()
@@ -224,13 +224,13 @@ export function ReportPanel({
       setNameDraft(report.name)
       return
     }
-    await run(() => window.reports.rename(report.id, name))
+    await attempt(() => window.reports.rename(report.id, name))
   }
 
   const removeChecked = async (): Promise<void> => {
     const ids = [...checked]
     setChecked(new Set())
-    await run(() => window.reports.removeRuns(report.id, ids), `Removed ${ids.length} ${ids.length === 1 ? 'run' : 'runs'} from the report.`)
+    await attempt(() => window.reports.removeBuilds(report.id, ids), `Removed ${ids.length} ${ids.length === 1 ? 'build' : 'builds'} from the report.`)
   }
 
   const deleteReport = async (): Promise<void> => {
@@ -298,19 +298,19 @@ export function ReportPanel({
       </div>
 
       <p className="mb-5 text-[11px] text-[#68615f]">
-        {report.rows.length} {report.rows.length === 1 ? 'run' : 'runs'} · numbers captured {new Date(report.capturedAt).toLocaleString()}
+        {report.rows.length} {report.rows.length === 1 ? 'build' : 'builds'} · numbers captured {new Date(report.capturedAt).toLocaleString()}
       </p>
 
       <div className="mb-5 flex flex-wrap gap-2">
         <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" disabled={busy} onClick={() => setAdding(true)}>
-          <Plus /> Add runs
+          <Plus /> Add attempts
         </Button>
         <Button
           variant="outline"
           className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white"
           disabled={busy}
-          title="Pull today's numbers for any run still on this machine"
-          onClick={() => void run(() => window.reports.refresh(report.id), 'Pulled fresh numbers from the ledger.')}
+          title="Pull today's numbers for any build still on this machine"
+          onClick={() => void attempt(() => window.reports.refresh(report.id), 'Pulled fresh numbers from the ledger.')}
         >
           <RefreshCw /> Refresh from ledger
         </Button>
@@ -334,7 +334,7 @@ export function ReportPanel({
           variant="outline"
           className="ml-auto border-[#6b4a44] bg-transparent text-[#f0b8aa] hover:bg-[#3a2622] hover:text-[#f7cec2]"
           disabled={busy}
-          title="Delete this report. The runs themselves are not touched."
+          title="Delete this report. The builds themselves are not touched."
           onClick={() => void deleteReport()}
         >
           <Trash2 /> Delete report
@@ -343,13 +343,13 @@ export function ReportPanel({
 
       {mixed && (
         <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-300">
-          These runs did not all use the same prompt — the hash column differs. Compare the rows one at a time; the totals row is not a like-for-like race.
+          These attempts did not all use the same prompt — the hash column differs. Compare the rows one at a time; the totals row is not a like-for-like race.
         </p>
       )}
 
       {report.rows.length === 0 ? (
         <p className="rounded-lg border border-[#332e2e] bg-[#151212] px-4 py-6 text-center text-[12px] text-[#88817e]">
-          This report has no runs yet. Use <span className="text-[#c2bbb7]">Add runs</span> to put some in.
+          This report has no attempts yet. Use <span className="text-[#c2bbb7]">Add builds</span> to put some in.
         </p>
       ) : (
         <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e]">
@@ -358,7 +358,7 @@ export function ReportPanel({
               <TableRow className="border-[#3b3636] hover:bg-transparent">
                 <TableHead className="w-8 px-2" />
                 <TableHead className="w-8 px-2" />
-                <TableHead className="px-2 text-[11px] text-[#68615f]">Run</TableHead>
+                <TableHead className="px-2 text-[11px] text-[#68615f]">Build</TableHead>
                 <TableHead className="px-2 text-[11px] text-[#68615f]">Orchestrator / Implementer / Critic</TableHead>
                 <TableHead className="px-2 text-[11px] text-[#68615f]">Outcome</TableHead>
                 <TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead>
@@ -370,18 +370,18 @@ export function ReportPanel({
             </TableHeader>
             <TableBody className="text-xs">
               {report.rows.map((row) => {
-                const open = expanded.has(row.loopId)
+                const open = expanded.has(row.buildId)
                 return [
-                  <TableRow key={row.loopId} className="border-[#2a2626] hover:bg-white/[0.02]">
+                  <TableRow key={row.buildId} className="border-[#2a2626] hover:bg-white/[0.02]">
                     <TableCell className="px-2 py-3">
                       <Checkbox
-                        checked={checked.has(row.loopId)}
+                        checked={checked.has(row.buildId)}
                         label={`Select ${row.title}`}
                         onChange={() =>
                           setChecked((current) => {
                             const next = new Set(current)
-                            if (next.has(row.loopId)) next.delete(row.loopId)
-                            else next.add(row.loopId)
+                            if (next.has(row.buildId)) next.delete(row.buildId)
+                            else next.add(row.buildId)
                             return next
                           })
                         }
@@ -394,8 +394,8 @@ export function ReportPanel({
                         onClick={() =>
                           setExpanded((current) => {
                             const next = new Set(current)
-                            if (next.has(row.loopId)) next.delete(row.loopId)
-                            else next.add(row.loopId)
+                            if (next.has(row.buildId)) next.delete(row.buildId)
+                            else next.add(row.buildId)
                             return next
                           })
                         }
@@ -442,7 +442,7 @@ export function ReportPanel({
                     </TableCell>
                   </TableRow>,
                   open ? (
-                    <TableRow key={`${row.loopId}-rounds`} className="border-[#2a2626] bg-[#131010] hover:bg-[#131010]">
+                    <TableRow key={`${row.buildId}-rounds`} className="border-[#2a2626] bg-[#131010] hover:bg-[#131010]">
                       <TableCell colSpan={10} className="p-0">
                         <RoundBreakdown row={row} />
                       </TableCell>
@@ -452,7 +452,7 @@ export function ReportPanel({
               })}
               <TableRow className="border-t-2 border-[#4a4342] bg-[#181414] font-medium hover:bg-[#181414]">
                 <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">
-                  Total · {totals.runs} {totals.runs === 1 ? 'run' : 'runs'}
+                  Total · {totals.attempts} {totals.attempts === 1 ? 'build' : 'builds'}
                 </TableCell>
                 <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">{bestOverall == null ? '—' : `best ${bestOverall.toFixed(2)}`}</TableCell>
                 <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]">{totals.rounds}</TableCell>
@@ -472,19 +472,19 @@ export function ReportPanel({
       )}
 
       <p className="text-[11px] leading-relaxed text-[#68615f]">
-        Input tokens include cache reads and writes, so the total is input plus output. Costs are equivalent API cost estimates; the runs themselves used
+        Input tokens include cache reads and writes, so the total is input plus output. Costs are equivalent API cost estimates; the attempts themselves used
         subscription logins. Numbers are frozen at capture time — use Refresh from ledger to pull them again.
       </p>
 
       {adding && (
-        <AddRunsModal
+        <AddBuildsModal
           snapshots={snapshots}
-          present={new Set(report.rows.map((row) => row.loopId))}
+          present={new Set(report.rows.map((row) => row.buildId))}
           busy={busy}
           onClose={() => setAdding(false)}
-          onAdd={(loopIds) => {
+          onAdd={(buildIds) => {
             setAdding(false)
-            void run(() => window.reports.addRuns(report.id, loopIds), `Added ${loopIds.length} ${loopIds.length === 1 ? 'run' : 'runs'} to the report.`)
+            void attempt(() => window.reports.addBuilds(report.id, buildIds), `Added ${buildIds.length} ${buildIds.length === 1 ? 'build' : 'builds'} to the report.`)
           }}
         />
       )}
@@ -492,7 +492,7 @@ export function ReportPanel({
   )
 }
 
-export function DeleteRunsDialog({
+export function DeleteBuildsDialog({
   count,
   deleteFiles,
   busy,
@@ -510,11 +510,11 @@ export function DeleteRunsDialog({
   const [typed, setTyped] = useState('')
   const armed = !deleteFiles || typed.trim().toUpperCase() === 'DELETE'
   return (
-    <Modal title={`Delete ${count} ${count === 1 ? 'run' : 'runs'}?`} onClose={onCancel}>
+    <Modal title={`Delete ${count} ${count === 1 ? 'build' : 'builds'}?`} onClose={onCancel}>
       <div className="grid gap-3 p-4">
         <p className="text-[12px] leading-relaxed text-[#b5afac]">
-          The {count === 1 ? 'run disappears' : 'runs disappear'} from this list. By default the project {count === 1 ? 'folder stays' : 'folders stay'} on
-          disk, so <span className="text-[#ded9d6]">Import run</span> can bring {count === 1 ? 'it' : 'them'} back later.
+          The {count === 1 ? 'build disappears' : 'builds disappear'} from this list. By default the project {count === 1 ? 'folder stays' : 'folders stay'} on
+          disk, so <span className="text-[#ded9d6]">Import build</span> can bring {count === 1 ? 'it' : 'them'} back later.
         </p>
         <button
           type="button"
@@ -555,7 +555,7 @@ export function DeleteRunsDialog({
           disabled={busy || !armed}
           onClick={onConfirm}
         >
-          {busy ? <LoaderCircle className="animate-spin" /> : <Trash2 />} {deleteFiles ? 'Delete runs and files' : 'Delete runs'}
+          {busy ? <LoaderCircle className="animate-spin" /> : <Trash2 />} {deleteFiles ? 'Delete builds and files' : 'Delete builds'}
         </Button>
       </div>
     </Modal>
@@ -577,7 +577,7 @@ export function NameReportDialog({
 }): React.JSX.Element {
   const [name, setName] = useState(defaultName)
   return (
-    <Modal title={`New report from ${count} ${count === 1 ? 'run' : 'runs'}`} onClose={onCancel}>
+    <Modal title={`New report from ${count} ${count === 1 ? 'build' : 'builds'}`} onClose={onCancel}>
       <div className="grid gap-2 p-4">
         <label className="grid gap-1.5 text-[11px] text-[#96908d]">
           Report name
@@ -593,7 +593,7 @@ export function NameReportDialog({
           />
         </label>
         <p className="text-[11px] leading-relaxed text-[#68615f]">
-          The report copies each run's numbers as they stand right now, so it still reads correctly after you send it to someone else.
+          The report copies each attempt's numbers as they stand right now, so it still reads correctly after you send it to someone else.
         </p>
       </div>
       <div className="flex justify-end gap-2 border-t border-[#332e2e] px-4 py-3">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { RunRecord } from '../shared/loop'
+import type { PhaseAttempt } from '../shared/build'
 import { planCompletion, planResume, planStart } from './round-planner'
 
 describe('planCompletion', () => {
@@ -18,20 +18,20 @@ describe('planCompletion', () => {
   })
 })
 
-function run(role: RunRecord['role'], status: RunRecord['status'], round: number): RunRecord {
-  return { role, status, round } as RunRecord
+function attempt(role: PhaseAttempt['role'], status: PhaseAttempt['status'], round: number): PhaseAttempt {
+  return { role, status, round } as PhaseAttempt
 }
 
 describe('planResume', () => {
   it.each([
     [null, { kind: 'queue-reference', round: 0 }],
-    [run('implement', 'queued', 2), { kind: 'continue-queued', run: run('implement', 'queued', 2) }],
-    [run('critique', 'failed', 2), { kind: 'retry', run: run('critique', 'failed', 2) }],
-    [run('reference', 'succeeded', 0), { kind: 'queue-implement', round: 1, prior: run('reference', 'succeeded', 0) }],
-    [run('implement', 'succeeded', 2), { kind: 'queue-critique', round: 2, prior: run('implement', 'succeeded', 2) }],
-    [run('implement', 'succeeded', 3), { kind: 'finish-exhausted', prior: run('implement', 'succeeded', 3) }],
-    [run('critique', 'succeeded', 2), { kind: 'queue-implement', round: 3, prior: run('critique', 'succeeded', 2) }],
-    [run('critique', 'succeeded', 3), { kind: 'finish-exhausted', prior: run('critique', 'succeeded', 3) }],
+    [attempt('implement', 'queued', 2), { kind: 'continue-queued', attempt: attempt('implement', 'queued', 2) }],
+    [attempt('critique', 'failed', 2), { kind: 'retry', attempt: attempt('critique', 'failed', 2) }],
+    [attempt('reference', 'succeeded', 0), { kind: 'queue-implement', round: 1, prior: attempt('reference', 'succeeded', 0) }],
+    [attempt('implement', 'succeeded', 2), { kind: 'queue-critique', round: 2, prior: attempt('implement', 'succeeded', 2) }],
+    [attempt('implement', 'succeeded', 3), { kind: 'finish-exhausted', prior: attempt('implement', 'succeeded', 3) }],
+    [attempt('critique', 'succeeded', 2), { kind: 'queue-implement', round: 3, prior: attempt('critique', 'succeeded', 2) }],
+    [attempt('critique', 'succeeded', 3), { kind: 'finish-exhausted', prior: attempt('critique', 'succeeded', 3) }],
   ] as const)('maps resume state %# to one action', (last, expected) => {
     expect(planResume(last, 3)).toEqual(expected)
   })

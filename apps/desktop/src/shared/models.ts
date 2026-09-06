@@ -1,12 +1,12 @@
 import type { HarnessKind } from './harness'
-import type { LoopModels, ReferenceMode } from './loop'
+import type { BuildModels, ReferenceMode } from './build'
 import { redactLogText } from './redact-log'
 
 /** Per-agent effort. Both CLIs accept these five for any agent. */
 export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * Legacy persisted session-level efforts (ADR-019); never offer these for new runs.
+ * Legacy persisted session-level efforts (ADR-019); never offer these for new builds.
  * Session-level efforts that also switch on the CLI's own fan-out.
  *
  * `ultracode` is not in claude's `--help` and not in its "valid values"
@@ -39,8 +39,8 @@ export const MODEL_IDS = {
 export const DISPATCHER_MODEL_ID = MODEL_IDS.claudeSonnet
 
 const CLAUDE_MODELS: readonly ModelChoice[] = [
-  // Fable 5.1 needs Claude Code 2.1.251+. An older CLI fails the run with
-  // `400 ... does not support this model`, so a loop picking it on a stale
+  // Fable 5.1 needs Claude Code 2.1.251+. An older CLI fails the attempt with
+  // `400 ... does not support this model`, so a build picking it on a stale
   // binary dies on its first call rather than degrading.
   { id: MODEL_IDS.claudeFable51, label: 'Fable 5.1' },
   { id: MODEL_IDS.claudeFable, label: 'Fable 5' },
@@ -50,7 +50,7 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
 
 /**
  * Every model any role can be given. The harness follows from the model name,
- * so a run never stores it separately.
+ * so an attempt never stores it separately.
  *
  * The Codex entries are ordered with Astra first, followed by the gpt-5.6
  * models: sol is
@@ -81,30 +81,30 @@ export function canonicalModelId(model: string | null | undefined): string | nul
   return Object.values(MODEL_IDS).find((id) => model === id || model.startsWith(`${id}-`)) ?? null
 }
 
-/** Translate a historical effort when copying settings into a new-run draft. */
-export function newRunOrchestratorEffort(effort: string): string {
+/** Translate a historical effort when copying settings into a new-build draft. */
+export function newBuildOrchestratorEffort(effort: string): string {
   if (effort === 'ultra') return 'max'
   if (effort === 'ultracode') return 'xhigh'
   return (AGENT_EFFORTS as readonly string[]).includes(effort) ? effort : 'high'
 }
 
-/** Historical normalization and replay only; new-run controls use AGENT_EFFORTS. */
+/** Historical normalization and replay only; new-build controls use AGENT_EFFORTS. */
 export function orchestratorEfforts(model: string): readonly string[] {
   return isCodexModel(model) ? CODEX_ORCHESTRATOR_EFFORTS : CLAUDE_ORCHESTRATOR_EFFORTS
 }
 
 /**
  * True when the workers run on a different CLI than the orchestrator. Neither
- * CLI can host the other's model, so these runs delegate by shelling out —
- * see the delegation rules in loop-runner.
+ * CLI can host the other's model, so these builds delegate by shelling out —
+ * see the delegation rules in build-runner.
  */
-export function isCrossHarness(models: Pick<LoopModels, 'orchestratorModel' | 'subagentModel'>): boolean {
+export function isCrossHarness(models: Pick<BuildModels, 'orchestratorModel' | 'subagentModel'>): boolean {
   return !!models.subagentModel && harnessFor(models.subagentModel) !== harnessFor(models.orchestratorModel)
 }
 
 export const SOLO_SUBAGENT = 'none'
 
-/** The four fields the run form actually sets for the implementation side. */
+/** The four fields the build form actually sets for the implementation side. */
 export interface ImplementerFields {
   orchestratorModel: string
   orchestratorEffort: string
@@ -112,7 +112,7 @@ export interface ImplementerFields {
   subagentEffort: string
 }
 
-/** Where the run form starts: the combination worth reaching for by default. */
+/** Where the build form starts: the combination worth reaching for by default. */
 export const DEFAULT_IMPLEMENTER: ImplementerFields = {
   orchestratorModel: MODEL_IDS.claudeOpus,
   orchestratorEffort: 'high',
@@ -126,7 +126,7 @@ export interface CriticFields {
   criticEffort: string
 }
 
-/** Where the run form starts: a critic outside the implementer's model family. */
+/** Where the build form starts: a critic outside the implementer's model family. */
 export const DEFAULT_CRITIC: CriticFields = { criticModel: MODEL_IDS.codexSol, criticEffort: 'medium' }
 
 /** The Reference Study's deep-research fan-out is picked the same way. */
@@ -135,7 +135,7 @@ export interface ResearchFields {
   researchEffort: string
 }
 
-/** Where the run form starts: cheap, parallel researchers — luna is codex's fast/cheap tier. */
+/** Where the build form starts: cheap, parallel researchers — luna is codex's fast/cheap tier. */
 export const DEFAULT_RESEARCH: ResearchFields = { researchModel: MODEL_IDS.codexLuna, researchEffort: 'medium' }
 
 /** The Asset Build's sculptors. Null skips the phase entirely. */
@@ -145,7 +145,7 @@ export interface AssetFields {
 }
 
 /**
- * Where the run form starts: the subagent default, because sculptors are
+ * Where the build form starts: the subagent default, because sculptors are
  * fan-out workers. Not the critic's cross-family pick — the critic is in a
  * different model family so it has no attachment to the code, and no such
  * adversarial argument applies to production work. And not the cheap tier
@@ -154,7 +154,7 @@ export interface AssetFields {
  */
 export const DEFAULT_ASSET: AssetFields = { assetModel: MODEL_IDS.claudeOpus, assetEffort: 'high' }
 
-/** The one-line note under the run form, judged against who is implementing. */
+/** The one-line note under the build form, judged against who is implementing. */
 export function describeCritic(criticModel: string, implementerModel: string): string {
   return isCodexModel(criticModel) === isCodexModel(implementerModel)
     ? 'Same model family as the implementer, so expect a friendlier grader.'
@@ -166,7 +166,7 @@ export function modelLabel(id: string | null | undefined): string {
 }
 
 /** Fan-out is an orchestrator effort level, not a separate switch: `ultracode` on claude, `ultra` on codex. */
-export function isUltracode(models: Pick<LoopModels, 'orchestratorEffort'>): boolean {
+export function isUltracode(models: Pick<BuildModels, 'orchestratorEffort'>): boolean {
   return models.orchestratorEffort === 'ultracode' || models.orchestratorEffort === 'ultra'
 }
 
@@ -189,7 +189,7 @@ export function resolveModels(
   critic: Partial<CriticFields> | null | undefined,
   research?: Partial<ResearchFields> | null,
   asset?: Partial<AssetFields> | null,
-): LoopModels {
+): BuildModels {
   const base = DEFAULT_IMPLEMENTER
   const subagentModel =
     fields?.subagentModel === null || fields?.subagentModel === SOLO_SUBAGENT
@@ -247,8 +247,8 @@ export function resolveModels(
  * model and effort that preset stood for anyway.
  */
 export function normalizeModels(
-  raw: (Partial<LoopModels> & { ultracode?: boolean; criticHarness?: unknown }) | null | undefined,
-): LoopModels {
+  raw: (Partial<BuildModels> & { ultracode?: boolean; criticHarness?: unknown }) | null | undefined,
+): BuildModels {
   if (!raw) return resolveModels(DEFAULT_IMPLEMENTER, DEFAULT_CRITIC)
   const models = resolveModels(
     {
@@ -266,7 +266,7 @@ export function normalizeModels(
     'assetModel' in raw ? { assetModel: raw.assetModel, assetEffort: raw.assetEffort } : undefined,
   )
   // Keep a model name the picker no longer offers rather than silently
-  // retitling an old run, but only where it is still a bounded CLI model id.
+  // retitling an old build, but only where it is still a bounded CLI model id.
   const orchestratorModel = storedModel(raw.orchestratorModel, models.orchestratorModel)
   const criticModel = storedModel(raw.criticModel, models.criticModel)
   const subagentModel = storedOptionalModel(raw.subagentModel, models.subagentModel)
@@ -295,7 +295,7 @@ export function normalizeModels(
 }
 
 /** One plain sentence naming who builds and who judges — used in logs and the report. */
-export function describeModels(models: LoopModels): string {
+export function describeModels(models: BuildModels): string {
   const impl = models.subagentModel
     ? `${models.orchestratorModel} (${models.orchestratorEffort}) orchestrating ${models.subagentModel} (${models.subagentEffort}) subagents`
     : `${models.orchestratorModel} (${models.orchestratorEffort}) solo, no subagents`

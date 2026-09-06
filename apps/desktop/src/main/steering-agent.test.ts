@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createConsultAgent } from './steering-agent'
-import { readProcessIdentity } from './run-process'
+import { readProcessIdentity } from './attempt-process'
 
 const fixture = vi.hoisted(() => ({ program: '' }))
 vi.mock('./cli-executable', () => ({ cliExecutable: () => process.execPath }))

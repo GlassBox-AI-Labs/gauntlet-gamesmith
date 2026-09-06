@@ -83,5 +83,5 @@ export function parseCodexStatus(
 export function subscriptionAuthError(label: string, status: ProbeResult | null): string | null {
   if (!status?.loggedIn) return `${label} is not connected. Sign in on the Agents tab.`
   if (status.billingMode === 'subscription') return null
-  return `${label} is connected with ${status.billingMode === 'api_key' ? 'API-key/provider billing' : 'an unrecognized billing mode'}. Gauntlet Loop only runs subscription-authenticated CLI accounts; sign in with the app-managed subscription profile.`
+  return `${label} is connected with ${status.billingMode === 'api_key' ? 'API-key/provider billing' : 'an unrecognized billing mode'}. Gauntlet Gamesmith only runs subscription-authenticated CLI accounts; sign in with the app-managed subscription profile.`
 }

@@ -27,7 +27,7 @@ export interface SteeringAssetChange {
 }
 export interface SteeringMessage {
   id: string
-  loopId: string
+  buildId: string
   role: 'user' | 'assistant' | 'system'
   content: string
   createdAt: string
@@ -36,37 +36,37 @@ export interface SteeringMessage {
 }
 export interface SteeringDirective {
   id: string
-  loopId: string
+  buildId: string
   messageId: string
   text: string
   sourceMessageIds: string[]
   attachmentIds?: string[]
   assetChanges?: SteeringAssetChange[]
   withdrawn: boolean
-  firstRunId: string | null
+  firstAttemptId: string | null
   firstRound: number | null
 }
 export interface RequirementSnapshot {
-  implementationRunId: string
+  implementationAttemptId: string
   directives: Pick<SteeringDirective, 'id' | 'text' | 'attachmentIds' | 'assetChanges'>[]
   attachments?: SteeringAttachment[]
   /** Asset work accepted for this round; persistent requirements do not rebuild on every round. */
   assetWork?: SteeringAssetChange[]
 }
 export interface SteeringState {
-  loopId: string
+  buildId: string
   model: string
   messages: SteeringMessage[]
   directives: SteeringDirective[]
   busy: boolean
 }
 export interface SteeringApi {
-  history(loopId: string): Promise<OperationResult<SteeringState>>
-  setModel(input: { loopId: string; model: string }): Promise<OperationResult<SteeringState>>
-  send(input: { loopId: string; messageId: string; content: string; attachmentIds?: string[] }): Promise<OperationResult<SteeringState>>
-  preview(input: { loopId: string; attachmentId: string }): Promise<OperationResult<string>>
-  cancel(loopId: string): Promise<OperationResult<void>>
-  withdraw(input: { loopId: string; directiveId: string }): Promise<OperationResult<SteeringState>>
+  history(buildId: string): Promise<OperationResult<SteeringState>>
+  setModel(input: { buildId: string; model: string }): Promise<OperationResult<SteeringState>>
+  send(input: { buildId: string; messageId: string; content: string; attachmentIds?: string[] }): Promise<OperationResult<SteeringState>>
+  preview(input: { buildId: string; attachmentId: string }): Promise<OperationResult<string>>
+  cancel(buildId: string): Promise<OperationResult<void>>
+  withdraw(input: { buildId: string; directiveId: string }): Promise<OperationResult<SteeringState>>
   onUpdate(listener: (state: SteeringState) => void): () => void
 }
 export function steeringId(value: unknown): string {
@@ -80,20 +80,20 @@ export function steeringIds(value: unknown, limit = 100): string[] {
   if (new Set(result).size !== result.length) throw new Error('Duplicate steering IDs.')
   return result
 }
-export function steeringInput(value: unknown): { loopId: string; messageId: string; content: string; attachmentIds: string[] } {
+export function steeringInput(value: unknown): { buildId: string; messageId: string; content: string; attachmentIds: string[] } {
   if (!value || typeof value !== 'object') throw new Error('Invalid steering message.')
   const raw = value as Record<string, unknown>, attachmentIds = steeringIds(raw.attachmentIds, MAX_STEERING_FILES)
   if (typeof raw.content !== 'string' || (!raw.content.trim() && !attachmentIds.length) || raw.content.length > MAX_STEERING_MESSAGE) throw new Error('Add a message or attachment (up to 12,000 characters and 10 files).')
-  return { loopId: steeringId(raw.loopId), messageId: steeringId(raw.messageId), content: raw.content.trim(), attachmentIds }
+  return { buildId: steeringId(raw.buildId), messageId: steeringId(raw.messageId), content: raw.content.trim(), attachmentIds }
 }
-export function steeringAttachments(value: unknown, loopId: string): SteeringAttachment[] {
+export function steeringAttachments(value: unknown, buildId: string): SteeringAttachment[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > 100) throw new Error('Invalid stored steering attachments.')
   const files = value.map(raw => {
     if (!raw || typeof raw !== 'object') throw new Error('Invalid stored steering attachment.')
     const file = raw as SteeringAttachment
     if (!isRecordId(file.id) || !isRecordId(file.sourceId) || typeof file.name !== 'string' || !file.name || file.name.length > 240 || !['image', 'file'].includes(file.kind) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_CONTEXT_FILE_BYTES || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('Invalid stored steering attachment.')
-    const prefix = `.gauntlet-gamesmith/steering/${loopId}/${file.id}/`
+    const prefix = `.gauntlet-gamesmith/steering/${buildId}/${file.id}/`
     if (typeof file.path !== 'string' || !file.path.startsWith(prefix) || !/^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,119}$/.test(file.path.slice(prefix.length))) throw new Error('Invalid stored steering attachment path.')
     return { id: file.id, sourceId: file.sourceId, name: file.name, kind: file.kind, path: file.path, bytes: file.bytes, sha256: file.sha256 }
   })

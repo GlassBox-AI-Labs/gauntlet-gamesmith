@@ -2,7 +2,7 @@ import type { SteeringApi, SteeringState } from '../shared/steering'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
-import type { LoopApi, LoopLogLine, LoopSnapshot, PlayStateEvent } from '../shared/loop'
+import type { BuildApi, BuildLogLine, BuildSnapshot, PlayStateEvent } from '../shared/build'
 import type { AttachmentApi } from '../shared/attachments'
 import type { OnboardingApi } from '../shared/onboarding'
 import type { ReportApi } from '../shared/reports'
@@ -39,44 +39,44 @@ const harnesses: HarnessApi = {
   },
 }
 
-const loops: LoopApi = {
-  list: (offset) => ipcRenderer.invoke(IPC.loop.list, offset),
-  get: (loopId, offset) => ipcRenderer.invoke(IPC.loop.get, loopId, offset),
-  rename: (loopId, title) => ipcRenderer.invoke(IPC.loop.rename, loopId, title),
-  critique: (loopId) => ipcRenderer.invoke(IPC.loop.critique, loopId),
-  reference: (loopId, runId) => ipcRenderer.invoke(IPC.loop.reference, loopId, runId),
+const builds: BuildApi = {
+  list: (offset) => ipcRenderer.invoke(IPC.build.list, offset),
+  get: (buildId, offset) => ipcRenderer.invoke(IPC.build.get, buildId, offset),
+  rename: (buildId, title) => ipcRenderer.invoke(IPC.build.rename, buildId, title),
+  critique: (buildId) => ipcRenderer.invoke(IPC.build.critique, buildId),
+  reference: (buildId, attemptId) => ipcRenderer.invoke(IPC.build.reference, buildId, attemptId),
   mediaBase: () => ipcRenderer.invoke(IPC.media.base),
-  playStart: (loopId, round) => ipcRenderer.invoke(IPC.play.start, loopId, round),
-  playStop: (loopId) => ipcRenderer.invoke(IPC.play.stop, loopId),
-  playState: (loopId) => ipcRenderer.invoke(IPC.play.state, loopId),
+  playStart: (buildId, round) => ipcRenderer.invoke(IPC.play.start, buildId, round),
+  playStop: (buildId) => ipcRenderer.invoke(IPC.play.stop, buildId),
+  playState: (buildId) => ipcRenderer.invoke(IPC.play.state, buildId),
   onPlayState: (listener) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: PlayStateEvent): void => listener(payload)
     ipcRenderer.on(IPC.play.state, wrapped)
     return () => ipcRenderer.removeListener(IPC.play.state, wrapped)
   },
-  start: (input) => ipcRenderer.invoke(IPC.loop.start, input),
-  trust: (loopId) => ipcRenderer.invoke(IPC.loop.trust, loopId),
-  resume: (loopId) => ipcRenderer.invoke(IPC.loop.resume, loopId),
-  stop: (loopId) => ipcRenderer.invoke(IPC.loop.stop, loopId),
-  active: () => ipcRenderer.invoke(IPC.loop.active),
-  log: (loopId, limit) => ipcRenderer.invoke(IPC.loop.log, loopId, limit),
-  prompt: (loopId, role, round) => ipcRenderer.invoke(IPC.loop.prompt, loopId, role, round),
-  readStream: (input) => ipcRenderer.invoke(IPC.loop.readStream, input),
-  report: (loopId) => ipcRenderer.invoke(IPC.loop.report, loopId),
-  exportRun: (loopId) => ipcRenderer.invoke(IPC.loop.exportRun, loopId),
-  importRun: () => ipcRenderer.invoke(IPC.loop.importRun),
-  deleteRuns: (loopIds, deleteFiles) => ipcRenderer.invoke(IPC.loop.deleteRuns, loopIds, deleteFiles),
-  pickWorkspace: () => ipcRenderer.invoke(IPC.loop.pickWorkspace),
-  defaultWorkspace: () => ipcRenderer.invoke(IPC.loop.defaultWorkspace),
+  start: (input) => ipcRenderer.invoke(IPC.build.start, input),
+  trust: (buildId) => ipcRenderer.invoke(IPC.build.trust, buildId),
+  resume: (buildId) => ipcRenderer.invoke(IPC.build.resume, buildId),
+  stop: (buildId) => ipcRenderer.invoke(IPC.build.stop, buildId),
+  active: () => ipcRenderer.invoke(IPC.build.active),
+  log: (buildId, limit) => ipcRenderer.invoke(IPC.build.log, buildId, limit),
+  prompt: (buildId, role, round) => ipcRenderer.invoke(IPC.build.prompt, buildId, role, round),
+  readStream: (input) => ipcRenderer.invoke(IPC.build.readStream, input),
+  report: (buildId) => ipcRenderer.invoke(IPC.build.report, buildId),
+  exportBuild: (buildId) => ipcRenderer.invoke(IPC.build.exportBuild, buildId),
+  importBuild: () => ipcRenderer.invoke(IPC.build.importBuild),
+  deleteBuilds: (buildIds, deleteFiles) => ipcRenderer.invoke(IPC.build.deleteBuilds, buildIds, deleteFiles),
+  pickWorkspace: () => ipcRenderer.invoke(IPC.build.pickWorkspace),
+  defaultWorkspace: () => ipcRenderer.invoke(IPC.build.defaultWorkspace),
   onUpdate: (listener) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: LoopSnapshot): void => listener(payload)
-    ipcRenderer.on(IPC.loop.update, wrapped)
-    return () => ipcRenderer.removeListener(IPC.loop.update, wrapped)
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: BuildSnapshot): void => listener(payload)
+    ipcRenderer.on(IPC.build.update, wrapped)
+    return () => ipcRenderer.removeListener(IPC.build.update, wrapped)
   },
   onLog: (listener) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: LoopLogLine): void => listener(payload)
-    ipcRenderer.on(IPC.loop.log, wrapped)
-    return () => ipcRenderer.removeListener(IPC.loop.log, wrapped)
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: BuildLogLine): void => listener(payload)
+    ipcRenderer.on(IPC.build.log, wrapped)
+    return () => ipcRenderer.removeListener(IPC.build.log, wrapped)
   },
 }
 
@@ -89,10 +89,10 @@ const onboarding: OnboardingApi = {
 const reports: ReportApi = {
   list: () => ipcRenderer.invoke(IPC.report.list),
   get: (reportId) => ipcRenderer.invoke(IPC.report.get, reportId),
-  create: (name, loopIds) => ipcRenderer.invoke(IPC.report.create, name, loopIds),
+  create: (name, buildIds) => ipcRenderer.invoke(IPC.report.create, name, buildIds),
   rename: (reportId, name) => ipcRenderer.invoke(IPC.report.rename, reportId, name),
-  addRuns: (reportId, loopIds) => ipcRenderer.invoke(IPC.report.addRuns, reportId, loopIds),
-  removeRuns: (reportId, loopIds) => ipcRenderer.invoke(IPC.report.removeRuns, reportId, loopIds),
+  addBuilds: (reportId, buildIds) => ipcRenderer.invoke(IPC.report.addBuilds, reportId, buildIds),
+  removeBuilds: (reportId, buildIds) => ipcRenderer.invoke(IPC.report.removeBuilds, reportId, buildIds),
   refresh: (reportId) => ipcRenderer.invoke(IPC.report.refresh, reportId),
   remove: (reportId) => ipcRenderer.invoke(IPC.report.remove, reportId),
   markdown: (reportId) => ipcRenderer.invoke(IPC.report.markdown, reportId),
@@ -102,7 +102,7 @@ const reports: ReportApi = {
 }
 
 contextBridge.exposeInMainWorld('harnesses', harnesses)
-contextBridge.exposeInMainWorld('loops', loops)
+contextBridge.exposeInMainWorld('builds', builds)
 contextBridge.exposeInMainWorld('reports', reports)
 
 const attachments: AttachmentApi = {

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { thoughtAvailabilityMessage } from '@/lib/run-visibility'
+import { thoughtAvailabilityMessage } from '@/lib/build-visibility'
 import { useMediaBase } from '@/lib/use-media-base'
-import type { CritiqueRound } from '../../../shared/loop'
+import type { CritiqueRound } from '../../../shared/build'
 
 function Winner({ active }: { active: boolean }): React.JSX.Element | null {
   if (!active) return null
@@ -17,13 +17,13 @@ const FINDING_STYLES: Record<string, string> = {
 }
 
 /** Full drill-down for one critique round: verdict, thoughts, video, side-by-sides. */
-export function CritiqueRoundView({ loopId, round }: { loopId: string; round: CritiqueRound }): React.JSX.Element {
+export function CritiqueRoundView({ buildId, round }: { buildId: string; round: CritiqueRound }): React.JSX.Element {
   const [thoughtsOpen, setThoughtsOpen] = useState(false)
   const [zoom, setZoom] = useState<{ src: string; alt: string } | null>(null)
   const zoomTrigger = useRef<HTMLButtonElement | null>(null)
   const closeZoomRef = useRef<HTMLButtonElement | null>(null)
   const { base, error: mediaError, retry: retryMedia } = useMediaBase()
-  const mediaUrl = (rel: string): string => (base ? `${base}/${loopId}/${rel.split('/').map(encodeURIComponent).join('/')}` : '')
+  const mediaUrl = (rel: string): string => (base ? `${base}/${buildId}/${rel.split('/').map(encodeURIComponent).join('/')}` : '')
   const openZoom = (src: string, alt: string, trigger: HTMLButtonElement): void => {
     zoomTrigger.current = trigger
     setZoom({ src, alt })
@@ -69,14 +69,14 @@ export function CritiqueRoundView({ loopId, round }: { loopId: string; round: Cr
           <button
             type="button"
             aria-expanded={thoughtsOpen}
-            aria-controls={`critique-thoughts-${round.runId}`}
+            aria-controls={`critique-thoughts-${round.attemptId}`}
             onClick={() => setThoughtsOpen((open) => !open)}
             className="text-xs text-[#a99bc4] hover:text-[#c4b8dd]"
           >
             𝜓 thought process ({round.thoughts.length}) {thoughtsOpen ? '▾' : '▸'}
           </button>
           {thoughtsOpen && (
-            <ol id={`critique-thoughts-${round.runId}`} className="mt-2 grid gap-1.5 border-l border-[#3a3444] pl-3 text-[11px] italic leading-relaxed text-[#a99bc4]">
+            <ol id={`critique-thoughts-${round.attemptId}`} className="mt-2 grid gap-1.5 border-l border-[#3a3444] pl-3 text-[11px] italic leading-relaxed text-[#a99bc4]">
               {round.thoughts.map((thought, index) => (
                 <li key={index}>{thought}</li>
               ))}

@@ -1,12 +1,12 @@
-import type { LogChannel } from '../../shared/loop'
+import type { LogChannel } from '../../shared/build'
 import { canonicalModelId } from '../../shared/models'
 import { normalizeSessionId } from '../../shared/session-id'
 
 /**
  * Pure translation of one raw CLI stream line into schema events. The role
- * parsers in loop-runner.ts are thin decorators over these: they add the
- * run-specific prefix, accounting, and control flow, so the translators stay
- * run-agnostic and every agent's stream reads the same way in the log.
+ * parsers in build-runner.ts are thin decorators over these: they add the
+ * build-specific prefix, accounting, and control flow, so the translators stay
+ * build-agnostic and every agent's stream reads the same way in the log.
  */
 export interface StreamEvent {
   channel: LogChannel
@@ -100,7 +100,7 @@ export function normalizeStreamUsage(value: unknown): Record<string, number> | u
  * older ones sent only a top-level `reset_at` ISO string, and that shape is
  * still read. Purely informational — the pause/retry path keys off turn
  * failures, not this event — but the percentages are how an operator sees a
- * long run drifting toward a stall, so every window the CLI reports is shown
+ * long attempt drifting toward a stall, so every window the CLI reports is shown
  * and the reset shown is the one for the window nearest its limit.
  */
 function rateLimitText(obj: Record<string, unknown>): string | null {

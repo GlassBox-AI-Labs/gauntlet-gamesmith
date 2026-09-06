@@ -2,18 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, File, Paperclip, PanelRightClose, PanelRightOpen, LoaderCircle, X } from 'lucide-react'
 import type { SteeringState, SteeringAttachment } from '../../../shared/steering'
 import { DEFAULT_STEERING_MODEL, STEERING_MODEL_CHOICES, MAX_STEERING_MESSAGE, MAX_STEERING_FILES } from '../../../shared/steering'
-import type { RunAttachment } from '../../../shared/attachments'
+import type { BuildAttachment } from '../../../shared/attachments'
 import './steering.css'
 
-function Attachment({ file, runId, onRemove }: { file: RunAttachment | SteeringAttachment; runId?: string; onRemove?: () => void }) {
+function Attachment({ file, buildId, onRemove }: { file: BuildAttachment | SteeringAttachment; buildId?: string; onRemove?: () => void }) {
   const [preview, setPreview] = useState('')
   useEffect(() => {
     if (file.kind !== 'image') return
     let alive = true
-    const request = runId ? window.steering.preview({ loopId: runId, attachmentId: file.id }) : window.attachments.preview(file.id)
+    const request = buildId ? window.steering.preview({ buildId, attachmentId: file.id }) : window.attachments.preview(file.id)
     void request.then(result => { if (alive && result.ok) setPreview(result.value) }).catch(() => {})
     return () => { alive = false }
-  }, [file.id, file.kind, runId])
+  }, [file.id, file.kind, buildId])
   return <div className="steering-attachment" title={file.name}>
     {preview ? <img src={preview} alt={file.name} /> : <File size={18} aria-hidden="true" />}
     <div><span>{file.name}</span><small>{file.bytes >= 1048576 ? `${(file.bytes / 1048576).toFixed(1)} MB` : `${Math.ceil(file.bytes / 1024)} KB`}</small></div>
@@ -21,11 +21,11 @@ function Attachment({ file, runId, onRemove }: { file: RunAttachment | SteeringA
   </div>
 }
 
-export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopStatus: string; runName: string; runId: string; round: number }) {
+export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { buildStatus: string; buildName: string; buildId: string; round: number }) {
   const [collapsed, setCollapsed] = useState(false)
-  const [state, setState] = useState<SteeringState>({ loopId: runId, model: DEFAULT_STEERING_MODEL, messages: [], directives: [], busy: false })
+  const [state, setState] = useState<SteeringState>({ buildId, model: DEFAULT_STEERING_MODEL, messages: [], directives: [], busy: false })
   const [draft, setDraft] = useState('')
-  const [files, setFiles] = useState<RunAttachment[]>([])
+  const [files, setFiles] = useState<BuildAttachment[]>([])
   const [attaching, setAttaching] = useState(false)
   const [sending, setSending] = useState(false)
   const [savingModel, setSavingModel] = useState(false)
@@ -36,23 +36,23 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
   const bottom = useRef<HTMLDivElement>(null)
   const updated = useRef(0)
   const mounted = useRef(true)
-  const draftFiles = useRef<RunAttachment[]>([])
+  const draftFiles = useRef<BuildAttachment[]>([])
   const release = (ids: string[]) => { for (const id of ids) void window.attachments.remove(id).catch(() => {}) }
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false; release(draftFiles.current.map(file => file.id)) }
-  }, [runId])
+  }, [buildId])
   useEffect(() => {
     let alive = true
     setError('')
-    const off = window.steering.onUpdate(next => { if (next.loopId === runId) { updated.current++; setState(next); setLoaded(true) } })
+    const off = window.steering.onUpdate(next => { if (next.buildId === buildId) { updated.current++; setState(next); setLoaded(true) } })
     const version = updated.current
-    void window.steering.history(runId).then(result => {
+    void window.steering.history(buildId).then(result => {
       if (!result.ok) throw new Error(result.error)
       if (alive) { if (updated.current === version) setState(result.value); setLoaded(true) }
     }).catch(error => { if (alive) setError(String(error)) })
     return () => { alive = false; off() }
-  }, [runId, loadVersion])
+  }, [buildId, loadVersion])
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }) }, [state.messages.length, state.busy, collapsed])
   const busy = state.busy || sending
 
@@ -81,7 +81,7 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
     const version = updated.current
     setSavingModel(true); setError('')
     try {
-      const result = await window.steering.setModel({ loopId: runId, model })
+      const result = await window.steering.setModel({ buildId, model })
       if (!result.ok) throw new Error(result.error)
       if (mounted.current && updated.current === version) setState(result.value)
     } catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : 'Could not save the chat model.') }
@@ -94,7 +94,7 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
     if (retry.current?.key !== key) retry.current = { key, id: crypto.randomUUID() }
     setSending(true); setError('')
     try {
-      const result = await window.steering.send({ loopId: runId, messageId: retry.current.id, content, attachmentIds })
+      const result = await window.steering.send({ buildId, messageId: retry.current.id, content, attachmentIds })
       if (!result.ok) throw new Error(result.error)
       if (mounted.current) {
         if (updated.current === version) setState(result.value)
@@ -105,30 +105,30 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
     finally { if (mounted.current) setSending(false) }
   }
   async function cancel() {
-    try { const result = await window.steering.cancel(runId); if (!result.ok) throw new Error(result.error) }
+    try { const result = await window.steering.cancel(buildId); if (!result.ok) throw new Error(result.error) }
     catch (error) { if (mounted.current) setError(String(error)) }
   }
   async function withdraw(id: string) {
-    try { const result = await window.steering.withdraw({ loopId: runId, directiveId: id }); if (!result.ok) throw new Error(result.error) }
+    try { const result = await window.steering.withdraw({ buildId, directiveId: id }); if (!result.ok) throw new Error(result.error) }
     catch (error) { if (mounted.current) setError(String(error)) }
   }
-  const timing = loopStatus === 'running' ? 'New directions enter the next implementation attempt' : ['stopped', 'failed'].includes(loopStatus) ? 'Resume includes queued directions when retrying implementation' : 'Directions wait for another implementation attempt'
-  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Chat for ${runName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
+  const timing = buildStatus === 'running' ? 'New directions enter the next implementation attempt' : ['stopped', 'failed'].includes(buildStatus) ? 'Resume includes queued directions when retrying implementation' : 'Directions wait for another implementation attempt'
+  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Chat for ${buildName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
     <div className="steering-sidebar-header">
       <button aria-label={collapsed ? 'Expand chat' : 'Collapse chat'} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}</button>
-      {!collapsed && <div><h2>Chat</h2><p>{runName} · Round {round}</p></div>}
+      {!collapsed && <div><h2>Chat</h2><p>{buildName} · Round {round}</p></div>}
     </div>
     {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Chat{busy ? ' · Thinking' : ''}</button>}
     <div className="steering-sidebar-expanded" hidden={collapsed}>
       <div className="steering-chat" role="log" aria-label="Run conversation" aria-live="polite">
         {!loaded && !error && <span className="steering-thinking">Loading conversation…</span>}
         {state.messages.map(message => <div key={message.id} className={`steering-message ${message.role}`}>
-          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Run assistant'}</span>}
-          {!!message.attachments?.length && <div className="steering-attachments">{message.attachments.map(file => <Attachment key={file.id} file={file} runId={runId} />)}</div>}
+          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Build assistant'}</span>}
+          {!!message.attachments?.length && <div className="steering-attachments">{message.attachments.map(file => <Attachment key={file.id} file={file} buildId={buildId} />)}</div>}
           {message.content && <p>{message.content}</p>}
           {state.directives.filter(d => d.messageId === message.id).map(d => <div className="steering-direction-status" key={d.id} title={d.text}>
             <span>{d.withdrawn ? 'Withdrawn' : d.firstRound != null ? `Included in round ${d.firstRound} · persists` : 'Queued · ' + timing.toLowerCase()}</span>
-            {!d.withdrawn && !d.firstRunId && <button onClick={() => void withdraw(d.id)} aria-label={`Withdraw direction: ${d.text}`}>Withdraw</button>}
+            {!d.withdrawn && !d.firstAttemptId && <button onClick={() => void withdraw(d.id)} aria-label={`Withdraw direction: ${d.text}`}>Withdraw</button>}
           </div>)}
         </div>)}
         {busy && <div className="steering-thinking"><LoaderCircle size={14} className="animate-spin" />Thinking…</div>}

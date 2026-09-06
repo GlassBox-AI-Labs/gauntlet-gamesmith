@@ -96,7 +96,7 @@ describe('translateCodexLine', () => {
   })
 
   it('keeps the end of a failing command output, where the reason is', () => {
-    // The shape that filled a real run's log: a playtest harness that streams
+    // The shape that filled a real attempt's log: a playtest harness that streams
     // per-wave telemetry and prints its verdict on the last line.
     const output = `${'wave 1/3 score 0 active 8 '.repeat(40)}{"ok":false,"problems":["Timed out in wave 3"]}`
     const t = translateCodexLine(

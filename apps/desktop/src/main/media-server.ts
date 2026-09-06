@@ -61,10 +61,10 @@ export interface MediaServerHandle {
 
 /**
  * Loopback media server for critique screenshots and gameplay video.
- * URL shape: http://127.0.0.1:<port>/<token>/<loopId>/<relPath>, where relPath
- * must stay inside the loop workspace's critique/ or reference/ directories.
+ * URL shape: http://127.0.0.1:<port>/<token>/<buildId>/<relPath>, where relPath
+ * must stay inside the build workspace's critique/ or reference/ directories.
  */
-export function createMediaServer(resolveWorkspace: (loopId: string) => string | WorkspaceRootIdentity | null): Promise<MediaServerHandle> {
+export function createMediaServer(resolveWorkspace: (buildId: string) => string | WorkspaceRootIdentity | null): Promise<MediaServerHandle> {
   const token = crypto.randomUUID()
   const server = http.createServer((req, res) => {
     let descriptor: number | null = null
@@ -81,8 +81,8 @@ export function createMediaServer(resolveWorkspace: (loopId: string) => string |
         return deny(404)
       }
       const parts = decoded.split('/').filter(Boolean)
-      const [reqToken, loopId, ...rest] = parts
-      const workspace = reqToken === token && loopId ? resolveWorkspace(loopId) : null
+      const [reqToken, buildId, ...rest] = parts
+      const workspace = reqToken === token && buildId ? resolveWorkspace(buildId) : null
       const resolved = workspace ? resolveMediaFile(workspace, rest.join('/')) : null
       if (!resolved) return deny(404)
 
@@ -171,7 +171,7 @@ export function createMediaServer(resolveWorkspace: (loopId: string) => string |
   })
 }
 
-export async function startMediaServer(resolveWorkspace: (loopId: string) => string | WorkspaceRootIdentity | null): Promise<string> {
+export async function startMediaServer(resolveWorkspace: (buildId: string) => string | WorkspaceRootIdentity | null): Promise<string> {
   return (await createMediaServer(resolveWorkspace)).baseUrl
 }
 

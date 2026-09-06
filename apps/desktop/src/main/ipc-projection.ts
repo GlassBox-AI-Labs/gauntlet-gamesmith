@@ -1,7 +1,7 @@
-import type { LoopListPage, LoopRecord, LoopSnapshot, RunRecord } from '../shared/loop'
+import type { BuildListPage, BuildRecord, BuildSnapshot, PhaseAttempt } from '../shared/build'
 
-export const IPC_LOOP_LIST_LIMIT = 100
-export const IPC_SNAPSHOT_RUN_LIMIT = 200
+export const IPC_BUILD_LIST_LIMIT = 100
+export const IPC_SNAPSHOT_ATTEMPT_LIMIT = 200
 export const IPC_SNAPSHOT_BYTE_LIMIT = 8 * 1024 * 1024
 const PROMPT_LIMIT = 64 * 1024
 const TEXT_LIMIT = 16 * 1024
@@ -17,72 +17,72 @@ function boundedText(value: string | null, limit: number): { value: string | nul
   return { value: value.slice(0, limit), truncated: true }
 }
 
-function boundedRun(run: RunRecord): { run: RunRecord; truncated: boolean } {
-  const prompt = boundedText(run.prompt, PROMPT_LIMIT)
-  const summary = boundedText(run.summary, TEXT_LIMIT)
-  const error = boundedText(run.error, TEXT_LIMIT)
-  const verdict = run.verdict && bytes(run.verdict) <= VERDICT_LIMIT ? run.verdict : null
-  const metrics = run.metrics && bytes(run.metrics) <= METRICS_LIMIT ? run.metrics : null
+function boundedAttempt(attempt: PhaseAttempt): { attempt: PhaseAttempt; truncated: boolean } {
+  const prompt = boundedText(attempt.prompt, PROMPT_LIMIT)
+  const summary = boundedText(attempt.summary, TEXT_LIMIT)
+  const error = boundedText(attempt.error, TEXT_LIMIT)
+  const verdict = attempt.verdict && bytes(attempt.verdict) <= VERDICT_LIMIT ? attempt.verdict : null
+  const metrics = attempt.metrics && bytes(attempt.metrics) <= METRICS_LIMIT ? attempt.metrics : null
   return {
-    run: { ...run, prompt: prompt.value ?? '', summary: summary.value, error: error.value, verdict, metrics },
-    truncated: prompt.truncated || summary.truncated || error.truncated || (run.verdict != null && verdict == null) || (run.metrics != null && metrics == null),
+    attempt: { ...attempt, prompt: prompt.value ?? '', summary: summary.value, error: error.value, verdict, metrics },
+    truncated: prompt.truncated || summary.truncated || error.truncated || (attempt.verdict != null && verdict == null) || (attempt.metrics != null && metrics == null),
   }
 }
 
 /** Bound every full snapshot before Electron structured-clones it to the renderer. */
-export function boundedLoopSnapshot(snapshot: LoopSnapshot): LoopSnapshot {
-  const totalRuns = snapshot.totalRuns ?? snapshot.runs.length
-  const runOffset = snapshot.runOffset ?? 0
-  const recent = snapshot.runs.slice(-IPC_SNAPSHOT_RUN_LIMIT)
-  const kept: RunRecord[] = []
-  let projectedBytes = bytes(snapshot.loop)
+export function boundedBuildSnapshot(snapshot: BuildSnapshot): BuildSnapshot {
+  const totalAttempts = snapshot.totalAttempts ?? snapshot.attempts.length
+  const attemptOffset = snapshot.attemptOffset ?? 0
+  const recent = snapshot.attempts.slice(-IPC_SNAPSHOT_ATTEMPT_LIMIT)
+  const kept: PhaseAttempt[] = []
+  let projectedBytes = bytes(snapshot.build)
   let truncatedFields = false
   for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const projected = boundedRun(recent[index])
-    const runBytes = bytes(projected.run)
-    if (projectedBytes + runBytes > IPC_SNAPSHOT_BYTE_LIMIT) break
-    kept.unshift(projected.run)
-    projectedBytes += runBytes
+    const projected = boundedAttempt(recent[index])
+    const attemptBytes = bytes(projected.attempt)
+    if (projectedBytes + attemptBytes > IPC_SNAPSHOT_BYTE_LIMIT) break
+    kept.unshift(projected.attempt)
+    projectedBytes += attemptBytes
     truncatedFields ||= projected.truncated
   }
-  const omitted = Math.max(0, totalRuns - runOffset - kept.length)
+  const omitted = Math.max(0, totalAttempts - attemptOffset - kept.length)
   const detailTruncated = truncatedFields || snapshot.detailTruncated === true
-  const hasMoreRuns = runOffset + kept.length < totalRuns || detailTruncated
+  const hasMoreAttempts = attemptOffset + kept.length < totalAttempts || detailTruncated
   const warnings = [
     omitted > 0 ? `${omitted} older attempt${omitted === 1 ? '' : 's'} were omitted from this page.` : null,
     detailTruncated ? 'Oversized prompt, verdict, or metrics fields were elided.' : null,
   ].filter((warning): warning is string => warning != null)
   return {
-    loop: snapshot.loop,
-    runs: kept,
-    totalRuns,
-    runOffset,
+    build: snapshot.build,
+    attempts: kept,
+    totalAttempts,
+    attemptOffset,
     aggregate: snapshot.aggregate,
-    hasMoreRuns,
+    hasMoreAttempts,
     detailTruncated,
     projectionWarning: warnings.length > 0 ? warnings.join(' ') : null,
   }
 }
 
 /** History list rows carry no attempt payload; selection fetches one bounded detail snapshot. */
-export function loopSummarySnapshot(loop: LoopRecord, totalRuns: number): LoopSnapshot {
-  const prompt = boundedText(loop.prompt, 1_024)
+export function buildSummarySnapshot(build: BuildRecord, totalAttempts: number): BuildSnapshot {
+  const prompt = boundedText(build.prompt, 1_024)
   return {
-    loop: { ...loop, prompt: prompt.value ?? '' },
-    runs: [],
-    totalRuns,
-    runOffset: 0,
-    hasMoreRuns: totalRuns > 0 || prompt.truncated,
+    build: { ...build, prompt: prompt.value ?? '' },
+    attempts: [],
+    totalAttempts,
+    attemptOffset: 0,
+    hasMoreAttempts: totalAttempts > 0 || prompt.truncated,
     detailTruncated: prompt.truncated,
-    projectionWarning: totalRuns > 0 || prompt.truncated ? 'Select this run to load its bounded attempt history.' : null,
+    projectionWarning: totalAttempts > 0 || prompt.truncated ? 'Select this build to load its bounded attempt history.' : null,
   }
 }
 
-export function loopListPage(loops: LoopRecord[], total: number, offset: number, runCount: (loopId: string) => number): LoopListPage {
+export function buildListPage(builds: BuildRecord[], total: number, offset: number, attemptCount: (buildId: string) => number): BuildListPage {
   return {
-    snapshots: loops.map((loop) => loopSummarySnapshot(loop, runCount(loop.id))),
+    snapshots: builds.map((build) => buildSummarySnapshot(build, attemptCount(build.id))),
     total,
     offset,
-    hasMore: offset + loops.length < total,
+    hasMore: offset + builds.length < total,
   }
 }

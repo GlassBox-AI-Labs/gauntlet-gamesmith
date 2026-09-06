@@ -12,7 +12,7 @@ describe('agent metric ids', () => {
     expect(parseAgentMetricId(childAgentMetricId('physics'))).toEqual({ kind: 'child', slug: 'physics' })
     expect(parseAgentMetricId(workflowAgentMetricId('wf_build', 'a1'))).toEqual({
       kind: 'workflow',
-      runId: 'wf_build',
+      attemptId: 'wf_build',
       agentId: 'a1',
     })
     expect(parseAgentMetricId(codexAgentMetricId('thread-1'))).toEqual({ kind: 'codex', threadId: 'thread-1' })

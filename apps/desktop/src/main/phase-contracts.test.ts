@@ -15,13 +15,13 @@ describe('referencePackFingerprint', () => {
   it('is deterministic and detects a frozen-pack mutation at either phase boundary', () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-pack-hash-'))
     dir = workspace
-    const pack = path.join(workspace, 'reference', 'loop-1')
+    const pack = path.join(workspace, 'reference', 'build-1')
     fs.mkdirSync(pack, { recursive: true })
     fs.writeFileSync(path.join(pack, 'README.md'), 'frozen')
-    const first = referencePackFingerprint(workspace, 'reference/loop-1')
-    expect(referencePackFingerprint(workspace, 'reference/loop-1')).toBe(first)
+    const first = referencePackFingerprint(workspace, 'reference/build-1')
+    expect(referencePackFingerprint(workspace, 'reference/build-1')).toBe(first)
     fs.writeFileSync(path.join(pack, 'README.md'), 'changed')
-    expect(referencePackFingerprint(workspace, 'reference/loop-1')).not.toBe(first)
+    expect(referencePackFingerprint(workspace, 'reference/build-1')).not.toBe(first)
   })
 
   it('distinguishes a missing phase tree from a present tree and detects later writes', () => {

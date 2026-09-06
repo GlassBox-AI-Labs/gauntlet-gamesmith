@@ -1,4 +1,4 @@
-import type { TokenTotals } from './loop'
+import type { TokenTotals } from './build'
 
 /** Portable, bounded working memory. It is agent-authored evidence, never requirements. */
 export interface LeadNotebook {
@@ -16,17 +16,17 @@ export const LEAD_NOTEBOOK_LABELS: Record<keyof LeadNotebook, string> = {
 }
 
 export interface LeadDispatch {
-  runId: string
+  attemptId: string
   round: number
   mode: 'new' | 'continued' | 'recovered'
-  fromRunId: string | null
+  fromAttemptId: string | null
   resumeId: string | null
   reason: string
   usageBaseline: TokenTotals | null
 }
 
 export interface LeadCheckpoint {
-  runId: string
+  attemptId: string
   round: number
   createdAt: string
   notebook: LeadNotebook | null
@@ -56,13 +56,13 @@ export function parseLeadNotebook(value: unknown): LeadNotebook {
   return result
 }
 
-export function extractLeadNotebook(response: string, runId: string): LeadNotebook | null {
+export function extractLeadNotebook(response: string, attemptId: string): LeadNotebook | null {
   const start = response.lastIndexOf('<lead-notebook>')
   if (start === -1) return null
   const end = response.indexOf('</lead-notebook>', start)
   if (end === -1 || end - start > 30000) throw new Error('Incomplete or oversized lead notebook.')
   const value: unknown = JSON.parse(response.slice(start + '<lead-notebook>'.length, end))
-  if (!value || typeof value !== 'object' || (value as Record<string, unknown>).attemptId !== runId) {
+  if (!value || typeof value !== 'object' || (value as Record<string, unknown>).attemptId !== attemptId) {
     throw new Error('Lead notebook belongs to a different attempt.')
   }
   return parseLeadNotebook(value)

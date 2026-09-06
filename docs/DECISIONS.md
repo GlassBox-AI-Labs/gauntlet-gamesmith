@@ -503,12 +503,69 @@ Teammates must not reintroduce these modes through defaults, presets, or new mod
 Tests cover rejected new-run inputs and unchanged historical normalization. Reintroducing
 automatic harness orchestration requires a new product decision with explicit UI semantics.
 
-## ADR-020 — Run-scoped conversational steering (2026-09-05)
+## ADR-020 — Builds, rounds, phases, and phase attempts (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The word "run" meant two opposite things. The UI called the whole job a run — the
+sidebar's "Runs", `new-run-workspace.ts`, `ReportRunRow` — while the database called one agent
+execution a run: `RunRecord`, the `runs` table. `renderer/src/lib/run-pages.ts` (now `build-pages.ts`) used both senses four
+lines apart. Every reader, human or agent, had to infer the size of the thing from context.
+
+**Decision.** Four words, one meaning each.
+
+A **build** is one job: one goal, one project folder, one budget, one final verdict. A build runs in
+numbered **rounds**; round 0 is the Reference Study and rounds 1..`maxRounds` are an implementation
+followed by a critique. A **phase** is one role within one round — the reference study, an
+implementation, a critique. A phase is an identity, not a stored row: it is the pair (round, role).
+A **phase attempt** is one execution of one phase; a retry produces a second attempt at the same
+phase, and attempts are the rows that get stored.
+
+Storage is `builds` and `phase_attempts`, with `build_id` and `attempt_id` replacing `loop_id` and
+`run_id`. Types are `BuildRecord` and `PhaseAttempt`; the short form for an attempt is `attempt`
+(`attemptId`, `AttemptStatus`, `AttemptMetrics`), because `phaseAttemptId` at 431 sites is noise and
+the UI already said "attempts". The role type is `PhaseRole`, because a role names the phase rather
+than the attempt. There is no `phases` table and must not be one.
+
+**Why `build`, despite the collision.** "Build" already means "compile the game" in roughly 205
+places, including agent prompt text and the `dist$|build$` file-exclusion pattern. That cost was
+accepted deliberately. The mitigation is a writing rule, not code: never use "build" as a bare noun
+for compilation in operator-visible text — write "compile" or "game build" there. `forging` was
+considered and rejected because it reads as *faked* in this repository, where `forged-source.txt`
+and `forged-evidence.txt` are the evidence-tampering fixtures, and `forge/` is a real directory in
+the bundled img2threejs skill.
+
+**Compatibility.** `initializeSchema` renames a pre-rename database in place, guarded on the old
+table still existing so it is idempotent, and writes one `ledger.db.pre-build-rename` backup through
+`VACUUM INTO` before the first `ALTER`. Import accepts either vocabulary: the validator detects the
+shape, validates against it, and only then migrates its own private temp snapshot — validation stays
+first because it is what rejects triggers and views, and `ALTER TABLE` re-parses trigger bodies.
+Report files move to format 2; a format-1 file's `loopId` is read as `buildId`. No stored *values*
+change: role strings, log kinds, and status literals are exactly as they were.
+
+A project folder migrated by this build is rejected by an older build of the app as an unsupported
+schema. Single user, forward-only.
+
+**Deliberately unchanged.** The on-disk `.gauntlet-gamesmith/runs/` stream directory and the
+`runsDev`/`runsIno` keys in process-launch metadata keep their names: recovery reattaches to live
+child processes through those exact paths and identity fields, and renaming them risks orphaning a
+crash-recovered attempt for no operator-visible gain. `AgentMetric.phase` also keeps its name — it
+already carries a role or workflow phase title, which is what this vocabulary calls a phase. In the
+Workflow tailers a "run" is a Workflow-tool run, an unrelated concept, and stays a run. The word
+"loop" survives for the *cycle* — reference → implement → critique → repeat — which is a loop even
+though the record is a build.
+
+**Consequences.** `STANDARDS.md` already called these things phases in PHASE-001; the code now
+agrees with it. Reviewers should reject a new `phases` table, any reintroduction of `run` as a noun
+for either the job or an attempt, and any use of "build" as a bare noun for compilation in
+operator-visible text.
+
+## ADR-028 — Build-scoped conversational steering (2026-09-05)
 
 **Status:** accepted.
 
 **Decision.** Steering is an initially empty conversation in a collapsible right
-sidebar at the run level. A separate, read-only Codex consult answers questions,
+sidebar at the build level. A separate, read-only Codex consult answers questions,
 consolidates related feedback, and batches material clarification questions into
 ordinary replies. Clear instructions queue without redundant confirmation;
 questions and tentative ideas alone do not change requirements. Schema-validated
@@ -520,16 +577,16 @@ At the first implementation dispatch, freeze the cumulative directions for that
 logical round. Its critic and automatic retries receive the same immutable snapshot.
 ADR-026 adds an explicit Resume boundary for pending directions.
 Chat arriving after that boundary waits for the next implementation. No phase is
-interrupted or injected with new chat. Chat never restarts a stopped/completed loop.
+interrupted or injected with new chat. Chat never restarts a stopped/completed build.
 Historical implementations without a snapshot retain their original requirements.
 
 **Storage and lifecycle.** Messages, directions, withdrawals, and requirement
 snapshots are append-only events in the existing mirrored ledgers. Full event reads
 are separate from truncated log projections. No schema migration is needed. Export
 and import retain history, source IDs, snapshots, and consult attempts. Imported
-history remains read-only until the existing run/folder trust flow grants execution.
+history remains read-only until the existing build/folder trust flow grants execution.
 Consults are excluded from phase scheduling, resume decisions, the rounds table,
-and phase-attempt counts. Run-wide cost/token totals and the activity log still
+and phase-attempt counts. Build-wide cost/token totals and the activity log still
 include chat; table totals describe only its visible phase rows. The round attached
 to a consult records when the conversation happened, not when steering was applied.
 Each consult has
@@ -539,15 +596,15 @@ settlement supervise its own captured process group. Incomplete process ownershi
 quarantines chat; restart never automatically retries a conversation.
 
 **V1 limits.** Uses the app's Codex profile at low effort, defaulting to gpt-5.6-sol; a Codex
-connection is required even for Claude implementation runs. Conversations are bounded
+connection is required even for Claude implementation builds. Conversations are bounded
 at 250,000 prompt characters and 24,000 cumulative direction characters; reaching a
 limit returns an explicit error rather than silently forgetting history. The frozen
-reference pack is evidence, not something chat edits. A passed run does not gain an
+reference pack is evidence, not something chat edits. A passed build does not gain an
 automatic extra round. Supporting reference refreshes, larger conversations, or
 in-flight phase injection requires a separate design.
 
 
-## ADR-021 — Immutable attachments in run steering (2026-09-05)
+## ADR-021 — Immutable attachments in build steering (2026-09-05)
 
 **Status:** accepted.
 
@@ -560,12 +617,12 @@ conversation. New directions cite both source messages and attachment IDs; the
 main process verifies those relationships before accepting them.
 
 Selection snapshots source bytes through the existing bounded attachment module.
-Sending publishes immutable copies under `.gauntlet-gamesmith/steering/<loop-id>/`
+Sending publishes immutable copies under `.gauntlet-gamesmith/steering/<build-id>/`
 with unique file IDs, original names, sizes, and SHA-256 hashes in mirrored message
 events. The frozen Reference Pack is unchanged. File reads and previews are bound
-to the selected run, verified workspace/directory identities, and recorded hashes.
+to the selected build, verified workspace/directory identities, and recorded hashes.
 Export/import preserves these files and their message references. Limits are ten
-files per message, 20 MB per file, and 100 files/100 MB per run. Supported raster
+files per message, 20 MB per file, and 100 files/100 MB per build. Supported raster
 images are supplied directly to the consult CLI; other files and earlier images
 remain available at their recorded read-only workspace paths.
 
@@ -579,14 +636,14 @@ sculpting from the original cast. The first included round performs requested
 asset work; later rounds retain the desired result without unconditionally
 rebuilding it. No additional loop phase or consult table row is introduced.
 
-## ADR-022 — Per-run steering model selection (2026-09-05)
+## ADR-022 — Per-build steering model selection (2026-09-05)
 
 **Status:** accepted.
 
-**Decision.** The Steering composer offers the supported Codex models from the
+**Decision.** The Chat composer offers the supported Codex models from the
 shared model catalog. Selection is independent of implementation/critique models
-and saved per run in mirrored `steering-model` events, including export/import.
-Runs without a preference default to gpt-5.6-sol. Each consult captures its model
+and saved per build in mirrored `steering-model` events, including export/import.
+Builds without a preference default to gpt-5.6-sol. Each consult captures its model
 at admission for CLI dispatch, attempt provenance, and equivalent API cost.
 Changing the selection during a reply applies to the next message. Selection
 does not start an attempt, create a rounds-table row, or clear conversation history.
@@ -596,7 +653,7 @@ V1 remains on the app's Codex connection at low effort.
 
 ## ADR-026 — Explicit Resume includes pending steering (2026-09-06)
 
-**Status:** accepted; refines ADR-020.
+**Status:** accepted; refines ADR-028.
 
 **Context.** Repeated implementation failures can keep an operator's directions
 queued indefinitely when every retry inherits the first attempt's requirements.
@@ -606,7 +663,7 @@ The operator requested that saved steering reach implementation immediately.
 pending directions in its new attempt, without advancing the round number or
 rewriting any historical prompt, snapshot, or result. Persist the cumulative
 directions, attachment versions, and unfinished asset work before launch, and
-record the inclusion in the steering conversation and run log. A retry with no
+record the inclusion in the steering conversation and build log. A retry with no
 pending directions retains its previous requirements. Chat alone still does not
 resume work or inject messages into a running process.
 
@@ -624,17 +681,17 @@ critic never evaluates against directions absent from its implementation.
 
 **Status:** accepted.
 
-**Decision.** New runs retain one implementation lead session across rounds, with
+**Decision.** New builds retain one implementation lead session across rounds, with
 fresh independent research and critique sessions. Explicit Resume enables this
-behavior for an existing run; historical attempts and automatic recovery of
-unconverted runs keep their recorded behavior. Each implementation remains its
+behavior for an existing build; historical attempts and automatic recovery of
+unconverted builds keep their recorded behavior. Each implementation remains its
 own supervised process, immutable prompt, requirement snapshot, accounting record,
-and saved build. The app continues to own scheduling, process settlement, phase
+and saved source revision. The app continues to own scheduling, process settlement, phase
 gates, round/budget limits, and termination.
 
 Before dispatch, persist the selected session, source attempt, continuation mode,
 exact effective prompt, and Codex cumulative usage baseline. Only locally trusted
-run history can authorize a private CLI session. Transferred runs recover from
+build history can authorize a private CLI session. Transferred builds recover from
 portable memory in fresh sessions; folder trust does not adopt session IDs.
 A CLI session lookup rejection before any observed agent work permits one fresh
 recovery attempt with identical frozen requirements. Authentication, rate limits,
@@ -653,22 +710,22 @@ session; they are untrusted working evidence subordinate to the current phase
 protocol and frozen operator requirements. These events use the existing portable
 schema, with bounded full reads separate from log projections.
 
-Steering remains the separate read-only consult defined by ADR-020. It receives
+Steering remains the separate read-only consult defined by ADR-028. It receives
 the latest valid notebook and recent reports, explicitly speaks as the steering
 assistant, and queues clear directions without redundant confirmation. ADR-026's
 explicit Resume boundary still includes pending directions; automatic recovery
 and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
-injects into a running phase or starts a stopped run.
+injects into a running phase or starts a stopped build.
 
-The sidebar is labelled **Chat**, with **Run assistant** as the speaker. This
+The sidebar is labelled **Chat**, with **Build assistant** as the speaker. This
 conversation is the operator's interface for lead context; steering names the
 internal mechanism that queues confirmed directions.
 It answers questions about plans, decisions, failed approaches, verification,
 and remaining work from the saved memory. Do not add separate lead status, notebook
-panels, selectors, or extra explanatory elements to the Run surface. Memory stays
+panels, selectors, or extra explanatory elements to the Build surface. Memory stays
 internal; attempts, continuation/recovery events, and complete raw activity remain
-visible in the existing run log under VIS-001.
+visible in the existing build log under VIS-001.
 Codex usage is cumulative for a resumed session: record the pre-launch baseline
 and charge only its delta, preserving repeated raw completion events without
 adding their usage twice. If no reliable baseline is available, use a fresh
@@ -676,7 +733,12 @@ session with memory and explain why. Claude workflow transcripts and summaries
 are scoped to the current attempt so earlier workers are not charged again.
 
 **Limits.** This is continuity across implementation turns, not an always-running
-AI process or unlimited context. CLI compaction may still occur. Imported runs
+AI process or unlimited context. CLI compaction may still occur. Imported builds
 use notebook recovery, and direct conversational turns with the implementation
 lead remain a separate workflow change. The notebook does not alter critic inputs
 or grant the lead authority to override an app stop condition.
+
+**Vocabulary compatibility.** Existing lead dispatches and requirement snapshots retain their
+original event bytes. Readers accept the earlier `fromRunId` and `implementationRunId` fields
+and project them as attempt IDs; new events use the Build vocabulary. Raw stream and process
+ownership paths stay under `.gauntlet-gamesmith/runs/`, as required by ADR-020.

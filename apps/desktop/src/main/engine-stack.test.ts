@@ -130,9 +130,9 @@ function passingWorkspace(): string {
 
 /** Put a cast in the pack, the way the Reference Study writes one. */
 function withCast(dir: string, names: string[]): void {
-  fs.mkdirSync(path.join(dir, 'reference/loop-1'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'reference/build-1'), { recursive: true })
   fs.writeFileSync(
-    path.join(dir, 'reference/loop-1/manifest.json'),
+    path.join(dir, 'reference/build-1/manifest.json'),
     JSON.stringify({ sources: [{ url: 'https://example.com' }], cast: names.map((name) => ({ name })) }),
   )
 }
@@ -227,7 +227,7 @@ describe('the gate itself', () => {
     expect(code).toBe(1)
   })
 
-  it('catches the object-oriented game the loop writes when left alone', () => {
+  it('catches the object-oriented game the build writes when left alone', () => {
     const dir = workspace()
     scaffoldEngine(dir)
     fs.writeFileSync(path.join(dir, 'src/sim/player.ts'), `export class Player {\n  health = 100\n}\n`)

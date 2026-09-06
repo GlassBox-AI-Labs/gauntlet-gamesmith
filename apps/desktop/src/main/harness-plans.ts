@@ -1,5 +1,5 @@
 import type { HarnessKind } from '../shared/harness'
-import type { LoopModels } from '../shared/loop'
+import type { BuildModels } from '../shared/build'
 import { DISPATCHER_MODEL_ID, harnessFor } from '../shared/models'
 
 export const DISPATCHER_MODEL = DISPATCHER_MODEL_ID
@@ -19,7 +19,7 @@ export interface SpawnPlan {
 }
 
 export interface PlanContext {
-  models: LoopModels
+  models: BuildModels
   prompt: string
   claudeHome: string
   codexHome: string
@@ -76,10 +76,10 @@ export function claudeArgs(model: string, effort: string, prompt: string): strin
 }
 
 /**
- * Environment for a run that may shell out to the other CLI mid-flight.
+ * Environment for an attempt that may shell out to the other CLI mid-flight.
  *
- * A cross-harness run has the orchestrator start the other CLI itself. Same-
- * harness and no-delegation runs receive only their own home, avoiding
+ * A cross-harness attempt has the orchestrator start the other CLI itself. Same-
+ * harness and no-delegation builds receive only their own home, avoiding
  * needless access to the other CLI's private profile.
  */
 function requiredHomes(ctx: PlanContext, primaryModel: string, delegatedModels: readonly (string | null)[]): Record<string, string> {
@@ -120,7 +120,7 @@ export function implementPlan(ctx: PlanContext): SpawnPlan {
     args: [
       ...(ctx.resumeId ? ['--resume', ctx.resumeId] : []),
       ...claudeArgs(models.orchestratorModel, models.orchestratorEffort, ctx.prompt),
-      // Subagent output reaches the run log only when it is forwarded; the
+      // Subagent output reaches the build log only when it is forwarded; the
       // critique has no subagents, so this is the implement side's flag alone.
       '--forward-subagent-text',
     ],
@@ -167,7 +167,7 @@ export function assetsPlan(ctx: PlanContext): SpawnPlan {
   }
 }
 
-/** A one-agent research run using the orchestrator model, with no delegation. */
+/** A one-agent research attempt using the orchestrator model, with no delegation. */
 export function referencePlan(ctx: PlanContext): SpawnPlan {
   const { models } = ctx
   if (harnessFor(models.orchestratorModel) === 'codex') {

@@ -2,12 +2,12 @@
 
 The Electron desktop app drives the stock Claude Code and Codex CLIs while keeping credentials entirely in each CLI's own store.
 
-See the [architecture guide](../../docs/ARCHITECTURE.md) for module ownership, loop execution,
+See the [architecture guide](../../docs/ARCHITECTURE.md) for module ownership, build execution,
 harnesses, evaluation, and persistence boundaries.
 
-On first launch the app shows a setup flow instead of the Runs view: a welcome
+On first launch the app shows a setup flow instead of the Builds view: a welcome
 step, a connect step that detects each CLI and drives its login, and a four-card
-tour of the loop.
+tour of the build cycle.
 
 When a CLI is missing, the connect step offers to install it. On macOS and Linux
 **Install** runs the vendor's own native installer — `https://claude.ai/install.sh`
@@ -26,35 +26,35 @@ unreadable file simply means the flow runs again. The flow is skippable, and
 Two tabs:
 
 - **Agents** — CLI detection, login-status probing, and an interactive PTY for signing in to Claude Code and Codex. It does not read credential files.
-- **Run** — paste a goal prompt and start a Reference Study → implement → critique loop. The form selects a parent runs folder; Create makes a fresh prompt-named project directory inside it, with a numeric suffix when needed, so locally created runs never share a workspace. Before Round 1, a solo research run downloads and audits an attributable, per-run Reference Pack under `reference/<loop-id>/`; the pack contains its brief, source manifest, research notes, journey and story notes, stills, journey captures, motion frames, and gameplay video before implementation can begin. Every implementer and critic then consumes that frozen pack. The Reference Study appears as its own expandable attempt with live logs and pack results. Failing delegated workers are marked explicitly and cannot hold a completed phase open forever; the phase artifact must still pass main-process validation before the loop advances. Failing critique findings are fed into the next round's implement prompt. Runs, verdicts, token metrics, and the full event log are mirrored into `.gauntlet-gamesmith/ledger.db` inside the project folder (via `node:sqlite`), while the user-data ledger acts as the local multi-project registry. The loop stops on critic pass, max rounds, budget ceiling (equivalent API cost), or the stop button; rate limits pause with bounded backoff and resume automatically. All roles reuse the subscription logins from the Agents tab (`CLAUDE_CONFIG_DIR`/`CODEX_HOME` point at the app's harness homes; billing and credential-routing environment variables are stripped).
+- **Build** — paste a goal prompt and start a Reference Study → implement → critique cycle. The form selects a parent builds folder; Create makes a fresh prompt-named project directory inside it, with a numeric suffix when needed, so locally created builds never share a workspace. Before Round 1, a solo research attempt downloads and audits an attributable, per-build Reference Pack under `reference/<build-id>/`; the pack contains its brief, source manifest, research notes, journey and story notes, stills, journey captures, motion frames, and gameplay video before implementation can begin. Every implementer and critic then consumes that frozen pack. The Reference Study appears as its own expandable attempt with live logs and pack results. Failing delegated workers are marked explicitly and cannot hold a completed phase open forever; the phase artifact must still pass main-process validation before the build advances. Failing critique findings are fed into the next round's implement prompt. Builds, verdicts, token metrics, and the full event log are mirrored into `.gauntlet-gamesmith/ledger.db` inside the project folder (via `node:sqlite`), while the user-data ledger acts as the local multi-project registry. The build stops on critic pass, max rounds, budget ceiling (equivalent API cost), or the stop button; rate limits pause with bounded backoff and resume automatically. All roles reuse the subscription logins from the Agents tab (`CLAUDE_CONFIG_DIR`/`CODEX_HOME` point at the app's harness homes; billing and credential-routing environment variables are stripped).
 
-**Play** may launch a trusted local run while its agents are still working. With no completed round selected, it previews the live project folder, so reloads can reflect work-in-progress edits or temporary build errors. Selecting a completed round instead launches that round's immutable Git revision.
+**Play** may launch a trusted local build while its agents are still working. With no completed round selected, it previews the live project folder, so reloads can reflect work-in-progress edits or temporary build errors. Selecting a completed round instead launches that round's immutable Git revision.
 
-Run folders can be shared with **Export** and **Import**. Stop a run first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, build files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local runs, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained run without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history and histories created before trust provenance was recorded start untrusted. Clicking **Play** or **Resume** shows a native warning naming the run and exact folder, with **Cancel** selected by default. **Trust run & folder** permits Gauntlet Gamesmith, its agents, and project scripts to execute with your local permissions. Main rechecks the registered folder identity, matching portable history, process ownership, and folder metadata after confirmation, then records consent and a visible event in both ledgers before continuing the original action. Browsing history never prompts. Changing selection during confirmation cancels the pending launch; consent can only apply to the run named in the dialog.
+Build folders can be shared with **Export** and **Import**. Stop a build first, then Export copies the complete project directory—including source, Git data, downloaded `reference/` material, `critique/` evidence, compiled game files, raw CLI streams, and `.gauntlet-gamesmith/ledger.db`—to a new portable folder. Existing `.gauntlet-loop/` metadata remains supported: after its workspace identity and portable history match are validated, it is migrated to `.gauntlet-gamesmith/`. If both directories exist, current data wins and the legacy tree is retained beneath it before the obsolete top-level `.gauntlet-loop/` path is removed; unsafe folders remain unchanged and fail closed. For trusted local builds, timestamped event-log links open the associated raw stream in a bounded side reader; there is no separate raw-file toolbar. Raw streams are intentionally byte-complete and are not secret-scrubbed; a CLI may have echoed sensitive local text, so review the exported folder before sharing it. Import opens a transferred folder in place and registers every contained build without remapping IDs, timestamps, attempts, logs, metrics, or verdicts. Only the machine-specific absolute workspace path is rebound to the imported folder. Imported history and histories created before trust provenance was recorded start untrusted. Clicking **Play** or **Resume** shows a native warning naming the run and exact folder, with **Cancel** selected by default. **Trust run & folder** permits Gauntlet Gamesmith, its agents, and project scripts to execute with your local permissions. Main rechecks the registered folder identity, matching portable history, process ownership, and folder metadata after confirmation, then records consent and a visible event in both ledgers before continuing the original action. Browsing history never prompts. Changing selection during confirmation cancels the pending launch; consent can only apply to the run named in the dialog.
 
 Existing-folder execution consent does not grant private CLI transcript access or rename privileges, and does not adopt portable CLI session IDs or Git objects as local authority. Imported Resume uses fresh attempts/sessions; missing app-private revisions can still block a historical round or critique. Play the live folder when a transferred round has no local revision. Trust is denied for active or quarantined workspaces, changed or mismatched history, protected directories, external/broken links, special files, and trees exceeding 200,000 entries. A fresh import on another machine requires its own consent.
 
-Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<loop-id>/` and their exact relative path is recorded in the loop log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
+Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<build-id>/` and their exact relative path is recorded in the build log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
-### Chat with a run
+### Chat with a build
 
-New runs use a continuing implementation lead across rounds. Each round
-still has its own process, saved build, independent critic, and accounting. The
+New builds use a continuing implementation lead across rounds. Each round
+still has its own process, saved source revision, independent critic, and accounting. The
 Chat can explain the lead's plan, decisions, failed approaches,
 verification, and remaining work when you ask. Saved notes stay behind the scenes;
 there is no separate lead status or notebook panel. Notes are saved when an attempt
 ends, and the assistant distinguishes recorded claims from actual verification.
 Your included directions take precedence over earlier plans and decisions.
 
-Explicit **Resume loop** enables lead continuity for an existing run. Automatic
-recovery of historical runs retains their recorded behavior. Session lookup
+Explicit **Resume build** enables lead continuity for an existing build. Automatic
+recovery of historical builds retains their recorded behavior. Session lookup
 failures before any work can recover in a fresh session with the same frozen
-requirements. Imported runs use portable notebook recovery and fresh CLI sessions.
+requirements. Imported builds use portable notebook recovery and fresh CLI sessions.
 The activity log records these changes. Codex continuation subtracts prior session
 usage so earlier rounds are not charged again; without a reliable baseline the
 app visibly starts a fresh session with saved memory.
 
-Each run has an initially empty **Chat** conversation in a collapsible right sidebar.
+Each build has an initially empty **Chat** conversation in a collapsible right sidebar.
 Connect Codex on the Agents tab, then ask questions or describe changes. Attach
 files/images with the paperclip or drop them into Chat. Image previews and
 file chips stay with each message. You can send a file without text and clarify
@@ -62,19 +62,19 @@ its purpose in the next reply. The chat
 assistant can inspect the workspace, consolidates feedback, and asks related
 clarifying questions together. Clear directions queue automatically. Messages and
 directions persist across rounds, app restarts, and folder export/import.
-The Run assistant also receives the lead's latest valid notebook and recent
+The Build assistant also receives the lead's latest valid notebook and recent
 attempt reports. It answers separately from the lead and can explain recorded
 decisions while the lead works. Questions alone do not change requirements.
 
 Directions enter at the next implementation dispatch. The implementation and its
-critic share an immutable requirements snapshot. Explicit **Resume loop** includes
+critic share an immutable requirements snapshot. Explicit **Resume build** includes
 pending directions when retrying implementation, even in the same round. Automatic
 recovery keeps the interrupted attempt's snapshot; an active phase does not receive
 late messages. Included directions persist until newer steering changes them. Withdraw a
 pending direction before inclusion, or send another message to undo an included
-one. Chat does not resume stopped or passed loops. **Stop response** cancels only
+one. Chat does not resume stopped or passed builds. **Stop response** cancels only
 chat. Consults stay out of the rounds table and its attempt counts. Their prompts,
-tool events, and raw output remain in the run log; run-wide cost and token totals
+tool events, and raw output remain in the build log; build-wide cost and token totals
 include chat. Attachments are saved as immutable copies outside the original
 Reference Pack. Confirmed directions name the copies to include at the next
 implementation boundary; the critic receives those same versions. Asset requests
@@ -82,11 +82,11 @@ can schedule a 3D model rebuild or integrate a supplied replacement during
 implementation. A rebuild request is work for its first included round; its
 resulting requirement persists afterward. Originals remain available for history
 and export. Limits are 10 files per message, 20 MB per file, and 100 files/100 MB
-of steering attachments per run. Choose the chat model below the message box;
-the choice is saved per run and affects the next reply. An active reply keeps its
+of steering attachments per build. Choose the chat model below the message box;
+the choice is saved per build and affects the next reply. An active reply keeps its
 original model and cost attribution. V1 offers the supported Codex models through
 the app's Codex profile, defaults to `gpt-5.6-sol`, and uses low effort independently
-of the run's implementation model.
+of the build's implementation model.
 
 Run the TypeScript development app from the repository root:
 
@@ -98,7 +98,7 @@ Use Node 22 (`nvm use` will read the checked-in `.nvmrc`).
 
 ### Running a second instance
 
-Everything the app owns — run history, harness logins, round revisions, and the
+Everything the app owns — build history, harness logins, round revisions, and the
 single-instance lock — lives under the Electron user-data directory, so a second
 launch is normally refused while one is already running. Pass an absolute
 `--gauntlet-user-data` path to get a separate profile that runs beside it:
@@ -107,7 +107,7 @@ launch is normally refused while one is already running. Pass an absolute
 pnpm --filter @gauntlet/desktop exec electron . --gauntlet-user-data=/tmp/gg-test-profile
 ```
 
-That profile starts empty: no runs, no signed-in CLIs, and the first-run setup
+That profile starts empty: no builds, no signed-in CLIs, and the first-launch setup
 flow. Delete the directory to discard it. A missing or relative path fails at
 startup rather than falling back to the real profile.
 
@@ -243,9 +243,9 @@ The app creates isolated CLI homes inside its user-data directory:
 The CLIs own everything stored in those directories. The Electron app only starts their commands and reads their documented status output.
 
 
-## Run composer and supplied context
+## Build composer and supplied context
 
-The compact run composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
+The compact build composer is the selected Variant A design, centered in a modal with a fading, dimmed backdrop. Closing it preserves the draft. Pace presets set actual model/effort
 fields; fine-tuning models locks pace until Reset. Connection pills reflect CLI subscription
 status and open the real Agents sign-in UI without discarding the form.
 
@@ -254,7 +254,7 @@ lightbox; folder chips open the original folder in Finder. Main snapshots suppor
 media, and source files, excluding hidden, credential, generated, and linked entries. The form
 reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
 
-At Create, copies and a provenance manifest are saved to `reference/<loop-id>/supplied/` in the
+At Create, copies and a provenance manifest are saved to `reference/<build-id>/supplied/` in the
 new project. They are used as untrusted reference evidence, remain available to implementation
 and critique, and travel with Export. Draft attachments are in memory until Create; reload
 before Create discards the draft. Original files are never modified.
@@ -270,8 +270,8 @@ before Create discards the draft. Original files are never modified.
 (`Gauntlet Gamesmith Dev run-form`), separate build outputs, and port 5177 or `CONDUCTOR_PORT`.
 This profile needs its own CLI logins; no credentials or production ledger are copied.
 
-New runs use explicit delegation and offer reasoning efforts from low through max. Ultra and
-Ultracode are retained only for historical run replay/resume; they must not be added to new-run
+New builds use explicit delegation and offer reasoning efforts from low through max. Ultra and
+Ultracode are retained only for historical build replay/resume; they must not be added to new-build
 presets or pickers. See [ADR-019](../../docs/DECISIONS.md#adr-019--explicit-delegation-instead-of-ultra-for-new-runs-2026-09-05).
 
 CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z/bin`

@@ -1,4 +1,4 @@
-import type { TokenTotals } from '../shared/loop'
+import type { TokenTotals } from '../shared/build'
 import { canonicalModelId, MODEL_IDS } from '../shared/models'
 
 export const PRICE_TABLE_VERSION = '2026-09-02'

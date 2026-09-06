@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 
-let pending: ReturnType<typeof window.loops.mediaBase> | null = null
+let pending: ReturnType<typeof window.builds.mediaBase> | null = null
 
-function requestMediaBase(): ReturnType<typeof window.loops.mediaBase> {
-  pending ??= window.loops.mediaBase().catch((error: unknown) => {
+function requestMediaBase(): ReturnType<typeof window.builds.mediaBase> {
+  pending ??= window.builds.mediaBase().catch((error: unknown) => {
     pending = null
     throw error
   })

@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ContextFolder } from '../shared/run-context'
+import type { ContextFolder } from '../shared/build-context'
 
 /** Opaque folder IDs limit Finder actions to folders attached in this session. */
 export function createContextFolders() {

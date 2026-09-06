@@ -1,12 +1,12 @@
 import { referenceReadingInstructions } from '../shared/prompts'
 import { createHash } from 'node:crypto'
-import type { LoopModels } from '../shared/loop'
+import type { BuildModels } from '../shared/build'
 import { DISPATCHER_MODEL_ID, harnessFor, isUltracode } from '../shared/models'
 import { ASSET_WAVE_SIZE, MACOS_BROWSER_SANDBOX_RULE } from '../shared/prompts'
 import { CHILD_PROCESS_EXIT_EVENT } from './child-process-exit'
 import { assertChildSlug } from './child-stream-name'
 import { claudeArgs, codexArgs } from './harness-plans'
-import { RUN_METADATA_DIR } from './run-transfer'
+import { BUILD_METADATA_DIR } from './build-transfer'
 
 /**
  * How an orchestrator hands work to its workers.
@@ -20,10 +20,10 @@ import { RUN_METADATA_DIR } from './run-transfer'
  *
  * A delegated worker is a process the app never started, so every delegation
  * command redirects the child's structured stream into
- * `<run metadata dir>/agents/<slug>.<harness>.jsonl`, which the app parses for
+ * `<build metadata dir>/agents/<slug>.<harness>.jsonl`, which the app parses for
  * tokens and cost exactly as it parses a run it started itself.
  */
-const STREAM_DIR = `${RUN_METADATA_DIR}/agents`
+const STREAM_DIR = `${BUILD_METADATA_DIR}/agents`
 export const GAUNTLET_IMPLEMENTER_AGENT_PREFIX = 'gauntlet-implementer-v2-'
 
 export interface ImplementerAgentDefinition {
@@ -58,7 +58,7 @@ export function codexChildCommand(model: string, effort: string, slug: string): 
   const safeSlug = commandSlug(slug)
   const stream = `${STREAM_DIR}/${safeSlug}.codex.jsonl`
   return observedChildCommand(
-    `"\${GAUNTLET_CODEX_BIN:?}" ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${RUN_METADATA_DIR}/codex-${safeSlug}.md`,
+    `"\${GAUNTLET_CODEX_BIN:?}" ${codexArgs(model, effort, null).map(quote).join(' ')} - < ${BUILD_METADATA_DIR}/codex-${safeSlug}.md`,
     stream,
   )
 }
@@ -66,7 +66,7 @@ export function codexChildCommand(model: string, effort: string, slug: string): 
 /** The command a codex orchestrator runs to hand a slice to claude. */
 export function claudeChildCommand(model: string, effort: string, slug: string): string {
   const safeSlug = commandSlug(slug)
-  const args = claudeArgs(model, effort, `$(cat ${RUN_METADATA_DIR}/claude-${safeSlug}.md)`)
+  const args = claudeArgs(model, effort, `$(cat ${BUILD_METADATA_DIR}/claude-${safeSlug}.md)`)
     .map((arg) => (arg.startsWith('$(cat ') ? `"${arg}"` : quote(arg)))
     .join(' ')
   const stream = `${STREAM_DIR}/${safeSlug}.claude.jsonl`
@@ -78,7 +78,7 @@ export function claudeChildCommand(model: string, effort: string, slug: string):
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function implementerAgentDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition | null {
+export function implementerAgentDefinition(models: BuildModels, referenceDir: string): ImplementerAgentDefinition | null {
   if (harnessFor(models.orchestratorModel) !== 'claude' || !models.subagentModel) return null
   const workerIsClaude = harnessFor(models.subagentModel) === 'claude'
   const frontModel = workerIsClaude ? models.subagentModel : DISPATCHER_MODEL_ID
@@ -89,7 +89,7 @@ export function implementerAgentDefinition(models: LoopModels, referenceDir: str
     : `You are a dispatcher, not an engineer. ${models.subagentModel} does the building through the codex CLI; you hand it the work and report back. Never write or edit code yourself, and never take the slice over if codex struggles.
 
 1. Choose a short slug for your slice — lowercase, hyphens, no spaces.
-${!models.referenceMode || models.referenceMode === 'web' ? `2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop.` : `2. ${referenceReadingInstructions(referenceDir, models.referenceMode)}`} Write your full brief to \`${RUN_METADATA_DIR}/codex-<slug>.md\`: the slice, the files it owns, the reference mode and exact supplied or frozen evidence paths it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
+${!models.referenceMode || models.referenceMode === 'web' ? `2. Read ${referenceDir}/README.md and ${referenceDir}/research.md plus the relevant parts of journey.md and story.md; VIEW the downloaded references relevant to the slice; and WATCH the gameplay clip when motion or game feel matters. Treat the sourced gameplay dossier, progression classification, story beats, and difficulty curve as requirements. If the Reference Pack is missing, report the blocker and stop.` : `2. ${referenceReadingInstructions(referenceDir, models.referenceMode)}`} Write your full brief to \`${BUILD_METADATA_DIR}/codex-<slug>.md\`: the slice, the files it owns, the reference mode and exact supplied or frozen evidence paths it must inspect, the quality bar, and how to verify it. Codex starts with no memory of this conversation, so the brief must stand alone.
 3. Run this ONE command with the Bash tool, in the foreground, with \`timeout\` set to 14400000:
 
    ${codexChildCommand(models.subagentModel, models.subagentEffort, '<slug>')}
@@ -113,7 +113,7 @@ ${body}`
 }
 
 /** Compatibility accessor for code that only needs the generated markdown. */
-export function implementerAgentMd(models: LoopModels, referenceDir: string): string | null {
+export function implementerAgentMd(models: BuildModels, referenceDir: string): string | null {
   return implementerAgentDefinition(models, referenceDir)?.markdown ?? null
 }
 
@@ -121,7 +121,7 @@ export function implementerAgentMd(models: LoopModels, referenceDir: string): st
  * Agent definitions are immutable and definition-addressed. A workspace can
  * retain old configurations without a later run replacing their bytes.
  */
-function requireImplementerDefinition(models: LoopModels, referenceDir: string): ImplementerAgentDefinition {
+function requireImplementerDefinition(models: BuildModels, referenceDir: string): ImplementerAgentDefinition {
   const definition = implementerAgentDefinition(models, referenceDir)
   if (!definition) throw new Error('Claude implementer definition requested for a non-delegated phase.')
   return definition
@@ -135,7 +135,7 @@ function requireImplementerDefinition(models: LoopModels, referenceDir: string):
  * from either orchestrator harness. Null researchModel = no fan-out: the
  * reference agent does the sweep itself, cheaply.
  */
-export function researchRules(models: LoopModels, referenceDir: string): string {
+export function researchRules(models: BuildModels, referenceDir: string): string {
   if (!models.researchModel) {
     return 'Run this sweep yourself — do NOT spawn researcher subagents. Keep it to focused web searches per angle and move on; depth here is not worth extra cost on this run.'
   }
@@ -143,7 +143,7 @@ export function researchRules(models: LoopModels, referenceDir: string): string 
   if (harness === 'codex' && harnessFor(models.orchestratorModel) === 'codex') {
     return `Fan this sweep out to parallel researchers on ${models.researchModel} at ${models.researchEffort} effort — one per angle, cheap and disposable. For each angle choose a short task name using lowercase letters, digits, and underscores (e.g. research_reddit), then delegate it with \`spawn_agent\`, passing model="${models.researchModel}", reasoning_effort="${models.researchEffort}", and fork_turns="none". Each message must be a self-contained brief telling the researcher exactly what to find and to write its findings — every claim with its source URL — to ${referenceDir}/research/<task-name>.md. Researchers research and write notes only; they must never touch project source or download pack media. Launch all angles before waiting, then wait for every researcher to finish. Read their notes and distill them into ${referenceDir}/research.md yourself.`
   }
-  const briefFile = `${RUN_METADATA_DIR}/${harness}-<slug>.md`
+  const briefFile = `${BUILD_METADATA_DIR}/${harness}-<slug>.md`
   const command =
     harness === 'codex'
       ? codexChildCommand(models.researchModel, models.researchEffort, '<slug>')
@@ -173,7 +173,7 @@ function referenceHandoff(referenceDir: string): string {
 }
 
 /** The rules appended to the implement prompt, per combination. */
-export function delegationRules(models: LoopModels, referenceDir: string): string {
+export function delegationRules(models: BuildModels, referenceDir: string): string {
   const verify = `Verify the game actually builds and runs before you finish. ${MACOS_BROWSER_SANDBOX_RULE}`
   if (!models.subagentModel) {
     return `Working rules: you implement this yourself — do NOT delegate to subagents. ${verify}`
@@ -188,7 +188,7 @@ export function delegationRules(models: LoopModels, referenceDir: string): strin
   }
 
   if (orchestrator === 'codex' && worker === 'claude') {
-    return `Orchestration rules: you are the orchestrator; ${models.subagentModel} does the building through the claude CLI. For each slice, choose a short slug and write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` naming the files that slice owns and how to verify it. Then launch every slice from the workspace root in one command, in parallel, and wait for them all:
+    return `Orchestration rules: you are the orchestrator; ${models.subagentModel} does the building through the claude CLI. For each slice, choose a short slug and write a self-contained brief to \`${BUILD_METADATA_DIR}/claude-<slug>.md\` naming the files that slice owns and how to verify it. Then launch every slice from the workspace root in one command, in parallel, and wait for them all:
 
   ${claudeChildCommand(models.subagentModel, models.subagentEffort, '<slug>')} &
 
@@ -234,7 +234,7 @@ export function sculptorBrief(referenceDir: string): string {
  * Null when the orchestrator is not claude — codex takes its rules in the
  * prompt instead of from a file.
  */
-export function sculptorAgentMd(models: LoopModels, referenceDir: string): string | null {
+export function sculptorAgentMd(models: BuildModels, referenceDir: string): string | null {
   if (harnessFor(models.orchestratorModel) !== 'claude' || !models.assetModel) return null
   const claudeWorker = harnessFor(models.assetModel) === 'claude'
   const model = claudeWorker ? models.assetModel : DISPATCHER_MODEL_ID
@@ -250,7 +250,7 @@ effort: ${effort}
   return `${header}You are a dispatcher, not a modeller. ${models.assetModel} does the sculpting through the codex CLI; you hand it one object and report back. Never model anything yourself.
 
 1. Your slug is the cast entry's name.
-2. Write the full brief for your object to \`${RUN_METADATA_DIR}/codex-<slug>.md\` — it must stand alone, because codex starts with no memory of this run. Include the entry's line from ${referenceDir}/cast.md and these rules verbatim:
+2. Write the full brief for your object to \`${BUILD_METADATA_DIR}/codex-<slug>.md\` — it must stand alone, because codex starts with no memory of this run. Include the entry's line from ${referenceDir}/cast.md and these rules verbatim:
 
 ${sculptorBrief(referenceDir)}
 
@@ -275,7 +275,7 @@ ${sculptorBrief(referenceDir)}
  * by finishing, so a usage limit landing mid-wave discards every one still in
  * flight. See ASSET_WAVE_SIZE.
  */
-export function sculptorRules(models: LoopModels, referenceDir: string): string {
+export function sculptorRules(models: BuildModels, referenceDir: string): string {
   if (!models.assetModel) return ''
   const orchestrator = harnessFor(models.orchestratorModel)
   const worker = harnessFor(models.assetModel)
@@ -287,7 +287,7 @@ export function sculptorRules(models: LoopModels, referenceDir: string): string 
   }
 
   if (orchestrator === 'codex' && worker === 'claude') {
-    return `${shared} For each entry, write a self-contained brief to \`${RUN_METADATA_DIR}/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch one wave from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
+    return `${shared} For each entry, write a self-contained brief to \`${BUILD_METADATA_DIR}/claude-<slug>.md\` — its line from cast.md plus the rules below — then \`mkdir -p ${STREAM_DIR}\` and launch one wave from the workspace root in one command, in parallel:\n\n  ${claudeChildCommand(models.assetModel, models.assetEffort, '<slug>')} &\n\nfollowed by \`wait\`. The brief:\n\n${sculptorBrief(referenceDir)}`
   }
 
   if (orchestrator === 'claude' && worker === 'codex') {

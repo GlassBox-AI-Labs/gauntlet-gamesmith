@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assertLoopWorkspaceIdentity, assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
+import { assertBuildWorkspaceIdentity, assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
 
 const roots: string[] = []
 const makeRoot = (): string => {
@@ -45,10 +45,10 @@ describe('assertWorkspaceBoundary', () => {
     fs.mkdirSync(project)
     fs.mkdirSync(privateRoot)
     const captured = captureWorkspaceIdentity(project, [privateRoot])
-    expect(assertLoopWorkspaceIdentity(captured, [privateRoot])).toBe(fs.realpathSync(project))
+    expect(assertBuildWorkspaceIdentity(captured, [privateRoot])).toBe(fs.realpathSync(project))
 
     fs.renameSync(project, `${project}-original`)
     fs.mkdirSync(project)
-    expect(() => assertLoopWorkspaceIdentity(captured, [privateRoot])).toThrow(/changed identity/)
+    expect(() => assertBuildWorkspaceIdentity(captured, [privateRoot])).toThrow(/changed identity/)
   })
 })

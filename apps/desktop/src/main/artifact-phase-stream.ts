@@ -1,5 +1,5 @@
 import type { HarnessKind } from '../shared/harness'
-import type { TokenTotals } from '../shared/loop'
+import type { TokenTotals } from '../shared/build'
 import { codexTokens } from './codex-usage'
 import { rateLimitPause } from './rate-limit'
 import { translateClaudeLine } from './streams/claude-stream'
