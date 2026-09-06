@@ -419,12 +419,31 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
   return { error: 'Nothing launchable yet — no dev/start/serve/preview script in package.json.' }
 }
 
-/** Minimal environment for agent-authored game scripts; no shell credentials or user npm config. */
+/**
+ * Minimal environment for agent-authored game scripts; no shell credentials and
+ * no user npm config.
+ *
+ * `HOME` is passed through rather than redirected. Rewriting it hid the user's
+ * dotfiles from convention-following code, but Node version managers are
+ * convention-following code too: volta, asdf and mise all resolve their
+ * toolchain from `$HOME`, so a redirected home hid the user's Node along with
+ * their secrets. A real run failed with exit 126 and `Volta error: Node is not
+ * available` — Play worked only for operators whose `npm` was a real binary
+ * rather than a shim.
+ *
+ * What the redirect actually bought is kept by narrower means: the two
+ * `NPM_CONFIG_*` variables still point into the workspace, so `~/.npmrc` and
+ * its registry tokens are ignored and nothing the game installs touches the
+ * user's npm cache. The allowlist still drops credentials and `NODE_OPTIONS`.
+ * The rest was never a real barrier — the script runs as the user and can read
+ * any absolute path (DECISIONS: "same-user filesystem permissions are not
+ * claimed as a technical read barrier").
+ */
 export function playEnvironment(workspaceDir: string, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const home = safeWorkspaceMetadataDir(workspaceDir, ['play-home'], true)
   fs.chmodSync(home, 0o700)
   const env = Object.fromEntries(
-    ['PATH', 'SystemRoot', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL']
+    ['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL']
       .map((key) => [key, source[key]])
       .filter((entry): entry is [string, string] => entry[1] !== undefined),
   )
@@ -433,8 +452,6 @@ export function playEnvironment(workspaceDir: string, source: NodeJS.ProcessEnv 
   else delete env.PATH
   return {
     ...env,
-    HOME: home,
-    USERPROFILE: home,
     NPM_CONFIG_USERCONFIG: path.join(home, 'npmrc'),
     NPM_CONFIG_CACHE: path.join(home, 'npm-cache'),
     BROWSER: 'none',

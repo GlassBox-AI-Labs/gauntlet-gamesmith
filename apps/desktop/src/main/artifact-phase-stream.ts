@@ -154,6 +154,13 @@ export function createArtifactPhaseStream(options: ArtifactPhaseStreamOptions): 
     }
     for (const event of translated.events) visible(event.kind, event.text, event.agentId)
     if (translated.summary !== undefined) summary = translated.summary
+    // A completed turn is proof the CLI got its answer, so anything it reported
+    // as an error before that was survived — a dropped websocket it reconnected
+    // through, most often. Leaving it set made a recovered transient the run's
+    // recorded cause of death half an hour later. A rate-limit notice is
+    // deliberately kept: that is a real condition, and clearing it would
+    // suppress the account rotation it exists to trigger.
+    if (translated.turn) failure = null
     if (translated.turn?.usage) {
       sawUsage = true
       const turn = codexTokens(translated.turn.usage)

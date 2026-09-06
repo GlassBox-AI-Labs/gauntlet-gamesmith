@@ -160,6 +160,8 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
     for (const event of translated.events) plog(event.kind, event.text, event.agentId)
     if (translated.summary !== undefined) lastAgentMessage = translated.summary
     if (translated.turn) {
+      // See artifact-phase-stream: a completed turn clears a survived error.
+      failure = null
       const turn = codexTokens(translated.turn.usage)
       tokens.input += turn.input
       tokens.output += turn.output
