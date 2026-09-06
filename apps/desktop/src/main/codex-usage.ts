@@ -222,8 +222,9 @@ export function usageForThread(codexHome: string, threadId: string): TokenTotals
 
 /**
  * One metric row per codex session started since `sinceMs`, priced from its own
- * token count. `exceptThreadId` drops the orchestrator's own session, whose
- * tokens the run already counts from its live stream.
+ * token count. `exceptThreadId` drops the orchestrator's own session, which the
+ * run counts separately through `usageForThread` so it stays one row rather
+ * than appearing again as a worker slice.
  */
 export function readCodexUsage(codexHome: string, sinceMs: number, model: string, exceptThreadId?: string | null): AgentMetric[] {
   return rolloutsSince(codexHome, sinceMs).flatMap(({ file, startedAtMs, modifiedAtMs }, index) => {
