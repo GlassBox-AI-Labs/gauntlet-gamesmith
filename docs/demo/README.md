@@ -1,12 +1,10 @@
-# Continuing lead and steering V1
+# Continuing lead in Steering chat
 
-![Run lead notebook alongside steering](continuing-lead-steering-v1.jpg)
+![Lead context answered in the existing Steering conversation](continuing-lead-chat-v1.jpg)
 
 Captured from the built Electron app in an isolated profile with seeded sample history.
-No provider was running; the game actions and verification text shown are sample records.
+No provider was running; game actions, verification, and the assistant response are sample records.
 
-The run is paused after round 2, with the same implementation session recorded across
-both rounds. The expanded notebook shows its plan, decisions, failed experiment,
-verification report, and remaining work. Steering shows one direction included in round 2
-and another queued for an explicit implementation retry or the next implementation round.
-The saved-attempt selector lets the operator inspect earlier notebook versions.
+The existing conversation answers a question about the current plan and what the lead learned.
+Saved lead memory stays behind the scenes. There is no separate status strip, notebook panel,
+or history selector. The chat still distinguishes included directions from queued changes.

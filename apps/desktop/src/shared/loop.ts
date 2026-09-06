@@ -404,7 +404,6 @@ export interface ReferenceStudy {
 }
 
 export interface LoopApi {
-  lead(loopId: string, offset?: number): Promise<OperationResult<import('./lead').LeadState>>
   list(offset?: number): Promise<LoopListPage>
   get(loopId: string, offset?: number): Promise<LoopSnapshot | null>
   rename(loopId: string, title: string): Promise<OperationResult<LoopRecord>>

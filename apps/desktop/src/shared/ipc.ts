@@ -20,7 +20,6 @@ export const IPC = {
     terminalData: 'harness:terminal-data',
   },
   loop: {
-    lead: 'loop:lead',
     list: 'loop:list',
     get: 'loop:get',
     rename: 'loop:rename',

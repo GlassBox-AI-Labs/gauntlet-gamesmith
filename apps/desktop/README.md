@@ -38,14 +38,13 @@ Generated workspace files are immutable publications. Final report snapshots liv
 
 ### Steering a run
 
-New runs use a continuing **Run lead** across implementation rounds. Each round
+New runs use a continuing implementation lead across rounds. Each round
 still has its own process, saved build, independent critic, and accounting. The
-Run view shows the lead's current activity and whether its CLI session continued
-or was recovered. Expand **Lead notebook** to inspect saved plans, decisions,
-failed approaches, verification, and remaining work, including older attempts.
-Notes are saved when an attempt ends. Missing notes are reported explicitly;
-the latest valid notebook and recent report remain available to the next turn.
-These notes are working evidence, and your included directions take precedence.
+Steering chat can explain the lead's plan, decisions, failed approaches,
+verification, and remaining work when you ask. Saved notes stay behind the scenes;
+there is no separate lead status or notebook panel. Notes are saved when an attempt
+ends, and the assistant distinguishes recorded claims from actual verification.
+Your included directions take precedence over earlier plans and decisions.
 
 Explicit **Resume loop** enables lead continuity for an existing run. Automatic
 recovery of historical runs retains their recorded behavior. Session lookup

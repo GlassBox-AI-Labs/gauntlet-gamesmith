@@ -1,4 +1,3 @@
-import { LeadContinuity } from './lead-continuity'
 import { SteeringAttachments } from './steering-attachments'
 import { SteeringService } from './steering'
 import { createConsultAgent } from './steering-agent'
@@ -298,14 +297,6 @@ function registerLoopIpc(): void {
     const runOffset = parseRunPageOffset(offsetValue)
     const projection = ledger.recentRunProjectionForLoop(loop.id, 200, runOffset)
     return boundedLoopSnapshot({ loop, runs: projection.runs, totalRuns: ledger.runCount(loop.id), runOffset, detailTruncated: projection.truncatedFields, aggregate: ledger.runAggregate(loop.id) })
-  })
-  ipcMain.handle(IPC.loop.lead, (_event, value: unknown, offsetValue: unknown) => {
-    try {
-      if (!ledger) return failure('Run history is not ready.')
-      return success(new LeadContinuity(ledger).state(assertLoopId(value), parseRunPageOffset(offsetValue)))
-    } catch (error) {
-      return failure(redactedErrorMessage(error, 'Could not load the lead notebook.'))
-    }
   })
   ipcMain.handle(IPC.loop.rename, (_event, loopId: unknown, value: unknown) => {
     try {

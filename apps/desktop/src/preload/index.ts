@@ -40,7 +40,6 @@ const harnesses: HarnessApi = {
 }
 
 const loops: LoopApi = {
-  lead: (loopId, offset) => ipcRenderer.invoke(IPC.loop.lead, loopId, offset),
   list: (offset) => ipcRenderer.invoke(IPC.loop.list, offset),
   get: (loopId, offset) => ipcRenderer.invoke(IPC.loop.get, loopId, offset),
   rename: (loopId, title) => ipcRenderer.invoke(IPC.loop.rename, loopId, title),

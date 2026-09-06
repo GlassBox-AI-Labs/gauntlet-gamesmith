@@ -147,7 +147,6 @@ export function SteeringSidebar({ loopStatus, runName, runId, round }: { loopSta
         </div>
       </form>
       <p className="steering-footnote">{timing}</p>
-      <p className="steering-footnote">Steering answers questions separately from the run lead. Included directions persist and override earlier decisions.</p>
     </div>
   </aside>
 }

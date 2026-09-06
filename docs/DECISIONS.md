@@ -661,10 +661,12 @@ and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
 injects into a running phase or starts a stopped run.
 
-The Run view shows the lead's current activity, whether its session continued or
-was recovered, and a paginated notebook history for inspecting decisions before
-steering. Attempts and full activity remain visible by round. This operator need
-justifies a compact run-level notebook under VIS-001; there is no new dashboard.
+The existing Steering conversation is the operator's interface for lead context.
+It answers questions about plans, decisions, failed approaches, verification,
+and remaining work from the saved memory. Do not add separate lead status, notebook
+panels, selectors, or extra explanatory elements to the Run surface. Memory stays
+internal; attempts, continuation/recovery events, and complete raw activity remain
+visible in the existing run log under VIS-001.
 Codex usage is cumulative for a resumed session: record the pre-launch baseline
 and charge only its delta, preserving repeated raw completion events without
 adding their usage twice. If no reliable baseline is available, use a fresh
