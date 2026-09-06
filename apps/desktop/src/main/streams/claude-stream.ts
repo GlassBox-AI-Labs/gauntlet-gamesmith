@@ -22,6 +22,21 @@ export function trunc(value: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
+/**
+ * Keep the END of the text instead of the start.
+ *
+ * A failing command says why on its last lines: the compiler's error list, a
+ * test harness's verdict, a stack trace. Truncating from the front kept the
+ * banner and threw the reason away, so the log filled with red lines reading
+ * `command failed: src/sim/types.ts src/sim/content.ts …` — a file listing
+ * that `rg` printed before a later command in the same shell exited non-zero.
+ * Use this wherever the payload is a command's own output.
+ */
+export function truncTail(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `…${flat.slice(-max)}` : flat
+}
+
 export interface ClaudeLineResult {
   events: StreamEvent[]
   /** Present when this line was the CLI's system/init event. */
@@ -282,7 +297,7 @@ export function translateClaudeLine(line: string): ClaudeLineResult | null {
       if (block.type === 'tool_result') {
         push(
           block.is_error
-            ? { channel: 'error', kind: 'error', text: `✗ tool error: ${trunc(JSON.stringify(block.content ?? ''), 300)}` }
+            ? { channel: 'error', kind: 'error', text: `✗ tool error: ${truncTail(JSON.stringify(block.content ?? ''), 300)}` }
             : { channel: 'tool', kind: 'tool', text: `← tool result: ${trunc(JSON.stringify(block.content ?? ''), 300)}` },
         )
       } else {
