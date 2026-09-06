@@ -28,7 +28,15 @@ function rollout(input: number, cached: number, output: number): void {
 
 /** `steps` run in order: a string is a stream line, a function mutates the rollout. */
 function orchestratorAfter(prompt: string, steps: (string | (() => void))[]): RunMetrics['agents'][number] {
+  return driveProtocol(prompt, steps).orchestrator()
+}
+
+function driveProtocol(prompt: string, steps: (string | (() => void))[]): {
+  orchestrator: () => RunMetrics['agents'][number]
+  outcomeError: () => Promise<string | null>
+} {
   let metrics: RunMetrics | null = null
+  let outcome: { error: string | null } | null = null
   let clock = 1_000_000
   const run = { id: 'run-1', round: 1, role: 'implement', prompt, createdAt: new Date(clock).toISOString() } as RunRecord
   const parser = createCodexImplementProtocol({
@@ -45,7 +53,7 @@ function orchestratorAfter(prompt: string, steps: (string | (() => void))[]): Ru
     harnessHome: () => home,
     log: () => undefined,
     broadcast: () => undefined,
-    finalize: async () => undefined,
+    finalize: async (_exit, collect) => { outcome = collect() },
   })
   for (const step of steps) {
     if (typeof step === 'string') parser.onLine!(step)
@@ -53,7 +61,14 @@ function orchestratorAfter(prompt: string, steps: (string | (() => void))[]): Ru
   }
   clock += 60_000 // clear the 15s flush throttle
   parser.tick!()
-  return metrics!.agents.find((agent) => agent.id === 'orchestrator')!
+  return {
+    orchestrator: () => metrics!.agents.find((agent) => agent.id === 'orchestrator')!,
+    /** Run the real finalize so the recorded outcome is the one the ledger sees. */
+    outcomeError: async (): Promise<string | null> => {
+      await parser.finalize!({ code: 0, timedOut: false, spawnError: null })
+      return outcome?.error ?? null
+    },
+  }
 }
 
 const threadStarted = JSON.stringify({ type: 'thread.started', thread_id: THREAD })
@@ -81,5 +96,19 @@ describe('codex orchestrator accounting', () => {
     rollout(500_000, 100_000, 9_000)
     const orchestrator = orchestratorAfter('fresh prompt', [threadStarted])
     expect(orchestrator.tokens).toEqual({ input: 400_000, output: 9_000, cacheRead: 100_000, cacheWrite: 0 })
+  })
+
+  it('does not report a reconnect the stream recovered from as the run failure', async () => {
+    rollout(1_000, 0, 100)
+    const driven = driveProtocol('fresh prompt', [
+      threadStarted,
+      // All five reconnects burn, then the CLI falls back to HTTPS and finishes.
+      ...[2, 3, 4, 5].map((attempt) => JSON.stringify({
+        type: 'error',
+        message: `Reconnecting... ${attempt}/5 (stream disconnected before completion: websocket closed by server before response.completed)`,
+      })),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1_000, cached_input_tokens: 0, output_tokens: 100 } }),
+    ])
+    await expect(driven.outcomeError()).resolves.toBeNull()
   })
 })
