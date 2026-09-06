@@ -171,4 +171,3 @@ Publisher sign-out returns the desktop to the opt-in sign-in state.
 Cancel stops the browser handoff and leaves sign-in available to retry.
 
 ![Cancel stops the browser handoff and leaves sign-in available to retry.](28-app-cancel-sign-in.png)
-
