@@ -29,8 +29,11 @@
     "catalog:build": "pnpm --filter @gauntlet/web build",
     "catalog:start": "pnpm --filter @gauntlet/web start",
     "catalog:admin": "pnpm --filter @gauntlet/web admin",
-    "catalog:import": "pnpm --filter @gauntlet/web run import",
     "catalog:verify": "pnpm --filter @gauntlet/web exec tsx scripts/verify.ts",
-    "catalog:up": "node scripts/catalog-up.mjs"
+    "catalog:up": "node scripts/catalog-up.mjs",
+    "db:migrate": "pnpm --filter @gauntlet/db db:migrate",
+    "db:up": "pnpm --filter @gauntlet/db db:up",
+    "db:schema": "pnpm --filter @gauntlet/db db:schema",
+    "db:types": "pnpm --filter @gauntlet/db db:types"
   }
 }

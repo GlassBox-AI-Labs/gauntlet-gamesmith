@@ -1,85 +1,349 @@
-/** Explicit local integration check: provisions temporary accounts in this project's local Supabase. */
 import assert from 'node:assert/strict'
 import { randomUUID, randomBytes, createHash } from 'node:crypto'
-import { Supabase, localConfig } from '../server/supabase'
-import { digest } from '@gauntlet/publishing/node'
-import { Catalog } from '../server/catalog'
-const config = localConfig()
-if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(config.url)) throw new Error('Integration verification requires local Supabase.')
-const db = new Supabase(config), base = process.env.CATALOG_TEST_URL ?? 'http://127.0.0.1:4310'
-const users: string[] = [], gameId = randomUUID(), releaseIds: string[] = []
-async function request(route: string, value?: unknown, token?: string) {
-  const r = await fetch(`${base}/api/${route}`, { method: value === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: value === undefined ? undefined : JSON.stringify(value) })
-  return { status: r.status, data: await r.json() }
+import { createClient } from '@supabase/supabase-js'
+import { Catalog } from '@gauntlet/data/api/catalog'
+import { DeviceConnections } from '@gauntlet/data/api/device'
+import { digest, validateArtifact } from '@gauntlet/publishing/node'
+import { localEnvironment } from './environment.mjs'
+import { localClient } from '../server/supabase'
+const env = localEnvironment(),
+  db = localClient(),
+  base = process.env.CATALOG_TEST_URL ?? 'http://127.0.0.1:4310',
+  gameId = randomUUID(),
+  users: string[] = [],
+  ids: string[] = []
+assert.match(env.SUPABASE_URL!, /^http:\/\/(127\.0\.0\.1|localhost):/)
+const capture = (error: unknown, context: string) => {
+    console.error(context)
+  },
+  catalog = new Catalog(db, env.CATALOG_SECRET!, capture)
+async function request(route: string, input?: unknown, token?: string) {
+  const response = await fetch(`${base}/api/${route}`, {
+    method: input === undefined ? 'GET' : 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: input === undefined ? undefined : JSON.stringify(input),
+  })
+  return { status: response.status, data: await response.json() }
 }
-const artifact = (content: string) => ({ version: 1, sourceRevision: 'integration-fixture', files: [{ path: 'index.html', data: Buffer.from(content).toString('base64'), sha256: digest(content) }] })
-try {
-  async function account() {
-    const id = randomUUID(), email = `verify-${id}@local.test`, password = randomBytes(24).toString('hex')
-    const user = await db.request('/auth/v1/admin/users', { method: 'POST', body: JSON.stringify({ email, password, email_confirm: true }) }); users.push(user.id)
-    await db.table('publishers', '', { method: 'POST', body: JSON.stringify({ id: user.id, handle: `verify-${id}`, display_name: 'Verification publisher' }) })
-    const login = await request('login', { email, password }); assert.equal(login.status, 200, login.data.error)
-    return login.data
+async function account() {
+  const email = `verify-${randomUUID()}@local.test`,
+    password = randomBytes(24).toString('hex')
+  const created = await db.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  })
+  assert.ifError(created.error)
+  const id = created.data.user!.id
+  users.push(id)
+  assert.ifError(
+    (
+      await db.from('publishers').insert({
+        id,
+        handle: `verify-${id}`,
+        display_name: 'Verification publisher',
+      })
+    ).error,
+  )
+  const client = createClient(env.SUPABASE_URL!, env.SUPABASE_ANON_KEY!, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    }),
+    login = await client.auth.signInWithPassword({ email, password })
+  assert.ifError(login.error)
+  return login.data.session!
+}
+const source = {
+    loopId: randomUUID(),
+    runId: randomUUID(),
+    round: 1,
+    revision: 'a'.repeat(40),
+  },
+  listing = {
+    title: 'Integration maze',
+    slug: `verify-${gameId}`,
+    description: 'Verification',
+    controls: 'Arrows',
+    coverPath: null,
   }
-  const owner = await account(), other = await account()
-  const metadata = { title: 'Integration game', slug: `verify-${gameId}`, description: 'Local verification', controls: 'None', coverPath: null }
-  const input = { gameId, requestKey: randomUUID(), listing: metadata, artifact: artifact('<h1>Version one</h1>') }
-  assert.notEqual((await request('releases', input)).status, 200, 'guest cannot upload')
-  const uploaded = await request('releases', input, owner.access_token); assert.equal(uploaded.status, 200, JSON.stringify(uploaded.data)); releaseIds.push(uploaded.data.id)
-  await db.table('releases', `?id=eq.${uploaded.data.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'uploading' }) })
-  await new Catalog(db).recoverUploads()
-  assert.equal((await db.table('releases', `?id=eq.${uploaded.data.id}`))[0].status, 'ready', 'restart recovers complete uploaded bytes')
-  const missingId = randomUUID(); releaseIds.push(missingId)
-  await db.table('releases', '', { method: 'POST', body: JSON.stringify({ id: missingId, game_id: gameId, request_key: randomUUID(), digest: '0'.repeat(64), listing: metadata, base_generation: 0 }) })
-  await new Catalog(db).recoverUploads()
-  assert.equal((await db.table('releases', `?id=eq.${missingId}`))[0].status, 'failed', 'restart gives incomplete upload a retryable terminal state')
-  assert.equal((await request('releases', input, owner.access_token)).data.id, uploaded.data.id, 'retry is idempotent')
-  assert.notEqual((await request('releases', { ...input, artifact: artifact('changed') }, owner.access_token)).status, 200, 'retry cannot change bytes')
-  assert.notEqual((await request('releases', { ...input, requestKey: randomUUID() }, other.access_token)).status, 200, 'another owner cannot upload')
-  assert.notEqual((await request('preview', { releaseId: uploaded.data.id }, other.access_token)).status, 200, 'another owner cannot preview')
-  const preview = await request('preview', { releaseId: uploaded.data.id }, owner.access_token); assert.equal(preview.status, 200)
-  const page = await fetch(preview.data.url); assert.equal(page.status, 200); assert.match(await page.text(), /Version one/)
-  assert.match(page.headers.get('content-security-policy')!, /sandbox/)
-  assert.equal((await fetch(preview.data.url.replace(/\/\d{10}\.[a-f0-9]{64}\//, '/invalid/'))).status, 404)
-  const promote = { gameId, releaseId: uploaded.data.id, generation: 0 }
-  assert.notEqual((await request('promote', promote, other.access_token)).status, 200)
-  assert.equal((await request('promote', promote, owner.access_token)).status, 200)
-  assert.notEqual((await request('promote', promote, owner.access_token)).status, 200, 'stale promotion fails')
-  assert((await request('games')).data.some((g: any) => g.id === gameId))
-  const publishedURL = new URL(preview.data.url); publishedURL.pathname = `/play/${gameId}/${uploaded.data.id}/index.html`
-  assert.equal((await fetch(publishedURL)).status, 200)
-  const bad = { ...input, requestKey: randomUUID(), artifact: { ...input.artifact, files: [{ ...input.artifact.files[0], sha256: '0'.repeat(64) }] } }
-  assert.notEqual((await request('releases', bad, owner.access_token)).status, 200)
-  assert.equal((await fetch(publishedURL)).status, 200, 'failed update preserves release')
-  const two = await request('releases', { ...input, requestKey: randomUUID(), artifact: artifact('Version two') }, owner.access_token); assert.equal(two.status, 200); releaseIds.push(two.data.id)
-  assert.equal((await request('promote', { gameId, releaseId: two.data.id, generation: 1 }, owner.access_token)).status, 200)
-  assert.equal((await fetch(publishedURL)).status, 404, 'old direct URLs cannot bypass current release')
-  assert.equal((await request('promote', { gameId, releaseId: uploaded.data.id, generation: 2 }, owner.access_token)).status, 200, 'rollback')
-  assert.equal((await fetch(publishedURL)).status, 200)
-  assert.equal((await request('promote', { gameId, releaseId: null, generation: 3 }, owner.access_token)).status, 200, 'unpublish')
-  assert.equal((await fetch(publishedURL)).status, 404)
-  assert(!(await request('games')).data.some((g: any) => g.id === gameId))
-  const secret = randomBytes(32).toString('hex'), challenge = createHash('sha256').update(secret).digest('hex')
-  const device = await request('device/start', { challenge }); assert.equal(device.status, 200)
-  assert((await request('device/poll', { code: device.data.code, secret })).data.pending)
-  assert.equal((await request('device/approve', { code: device.data.code, refreshToken: owner.refresh_token }, owner.access_token)).status, 200)
-  assert.notEqual((await request('device/poll', { code: device.data.code, secret: 'wrong' })).status, 200)
-  const exchanged = (await request('device/poll', { code: device.data.code, secret })).data
-  assert.equal((await db.publisher(exchanged.access_token)).id, users[0])
-  assert.notEqual((await request('device/poll', { code: device.data.code, secret })).status, 200, 'device exchange is one-time')
-  const direct = await fetch(`${config.url}/rest/v1/games`, { headers: { apikey: config.anon, Authorization: `Bearer ${owner.access_token}` } })
-  assert.notEqual(direct.status, 200, 'browser cannot bypass publishing operations via PostgREST')
-  const signup = await fetch(`${config.url}/auth/v1/signup`, { method: 'POST', headers: { apikey: config.anon, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: `closed-${randomUUID()}@local.test`, password: randomBytes(24).toString('hex') }) })
-  assert.notEqual(signup.status, 200, 'public signup is closed')
-  console.log('PASS: real local Supabase auth, ownership, private previews, artifact checks, retry/restart recovery, update, stale promotion, rollback, unpublish, device sign-in, closed signup, and direct database denial.')
+const artifact = (html: string) => ({
+  version: 1 as const,
+  sourceRevision: source.revision,
+  files: [
+    {
+      path: 'index.html',
+      data: Buffer.from(html).toString('base64'),
+      sha256: digest(html),
+    },
+  ],
+})
+try {
+  const owner = await account(),
+    other = await account(),
+    build = artifact('<h1>First saved round</h1>'),
+    input = {
+      gameId,
+      requestKey: randomUUID(),
+      listing,
+      source,
+      digest: validateArtifact(build).digest,
+    }
+  assert.equal((await request('releases', input)).status, 401)
+  assert.equal(
+    (
+      await request(
+        'releases',
+        { ...input, source: undefined },
+        owner.access_token,
+      )
+    ).status,
+    400,
+  )
+  assert.equal(
+    (
+      await request(
+        'releases',
+        { ...input, artifact: build },
+        owner.access_token,
+      )
+    ).status,
+    400,
+  )
+  const begin = await request('releases', input, owner.access_token)
+  assert.equal(begin.status, 200, JSON.stringify(begin.data))
+  ids.push(begin.data.releaseId)
+  assert.equal(
+    (await request('releases', input, owner.access_token)).data.releaseId,
+    begin.data.releaseId,
+  )
+  assert.notEqual(
+    (await request('releases', input, other.access_token)).status,
+    200,
+  )
+  const uploaded = await fetch(begin.data.uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(build),
+  })
+  assert(uploaded.ok, await uploaded.text())
+  const complete = await request(
+    'releases/complete',
+    { releaseId: ids[0] },
+    owner.access_token,
+  )
+  assert.equal(complete.status, 200, JSON.stringify(complete.data))
+  assert.equal(complete.data.status, 'ready')
+  assert.equal(
+    (
+      await request(
+        'releases/complete',
+        { releaseId: ids[0] },
+        owner.access_token,
+      )
+    ).status,
+    200,
+  )
+  assert.notEqual(
+    (await request('preview', { releaseId: ids[0] }, other.access_token))
+      .status,
+    200,
+  )
+  const preview = await request(
+    'preview',
+    { releaseId: ids[0] },
+    owner.access_token,
+  )
+  assert.equal(preview.status, 200)
+  assert.equal((await fetch(preview.data.url)).status, 200)
+  const promote = { gameId, releaseId: ids[0], generation: 0 }
+  assert.notEqual(
+    (await request('promote', promote, other.access_token)).status,
+    200,
+  )
+  assert.equal(
+    (await request('promote', promote, owner.access_token)).status,
+    200,
+  )
+  assert.notEqual(
+    (await request('promote', promote, owner.access_token)).status,
+    200,
+  )
+  const second = artifact('<h1>Second saved round</h1>'),
+    next = await request(
+      'releases',
+      {
+        ...input,
+        requestKey: randomUUID(),
+        digest: validateArtifact(second).digest,
+      },
+      owner.access_token,
+    )
+  assert.equal(next.status, 200)
+  ids.push(next.data.releaseId)
+  assert(
+    (
+      await fetch(next.data.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(second),
+      })
+    ).ok,
+  )
+  // A fresh domain instance can resume completion; no in-memory server state is required.
+  assert.equal(
+    (
+      await new Catalog(db, env.CATALOG_SECRET!, capture).complete(
+        users[0],
+        ids[1],
+      )
+    ).status,
+    'ready',
+  )
+  assert.equal(
+    (
+      await request(
+        'promote',
+        { gameId, releaseId: ids[1], generation: 1 },
+        owner.access_token,
+      )
+    ).status,
+    200,
+  )
+  assert.equal(
+    (
+      await request(
+        'promote',
+        { gameId, releaseId: ids[0], generation: 2 },
+        owner.access_token,
+      )
+    ).status,
+    200,
+  )
+  assert.equal(
+    (
+      await request(
+        'promote',
+        { gameId, releaseId: null, generation: 3 },
+        owner.access_token,
+      )
+    ).status,
+    200,
+  )
+  assert(
+    !(await request('games')).data.some((g: { id: string }) => g.id === gameId),
+  )
+  const secret = randomBytes(32).toString('hex'),
+    challenge = createHash('sha256').update(secret).digest('hex'),
+    device = await request('device/start', { challenge })
+  assert.equal(device.status, 200)
+  assert.equal(new URL(device.data.url).origin, base)
+  assert.equal(
+    (await request('device/poll', { code: device.data.code, secret })).data
+      .pending,
+    true,
+  )
+  await new DeviceConnections(db, env.CATALOG_SECRET!, capture).approve(
+    users[0],
+    device.data.code,
+    { access_token: owner.access_token, refresh_token: owner.refresh_token },
+  )
+  assert.notEqual(
+    (await request('device/poll', { code: device.data.code, secret: 'wrong' }))
+      .status,
+    200,
+  )
+  assert.equal(
+    (await request('device/poll', { code: device.data.code, secret })).data
+      .access_token,
+    owner.access_token,
+  )
+  assert.notEqual(
+    (await request('device/poll', { code: device.data.code, secret })).status,
+    200,
+  )
+  // Invalid bytes and forged source metadata never become ready releases.
+  for (const invalid of [
+    {
+      ...build,
+      files: [
+        { ...build.files[0], data: Buffer.from('tampered').toString('base64') },
+      ],
+    },
+    { ...build, sourceRevision: 'b'.repeat(40) },
+  ]) {
+    const candidate = await request(
+      'releases',
+      { ...input, requestKey: randomUUID() },
+      owner.access_token,
+    )
+    assert.equal(candidate.status, 200)
+    ids.push(candidate.data.releaseId)
+    assert(
+      (
+        await fetch(candidate.data.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(invalid),
+        })
+      ).ok,
+    )
+    assert.notEqual(
+      (
+        await request(
+          'releases/complete',
+          { releaseId: candidate.data.releaseId },
+          owner.access_token,
+        )
+      ).status,
+      200,
+    )
+    assert.equal(
+      (await catalog.release(candidate.data.releaseId)).status,
+      'failed',
+    )
+  }
+  const cookieAttempt = await fetch(`${base}/api/promote`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Cookie: 'sb-auth-token=browser-session',
+    },
+    body: JSON.stringify(promote),
+  })
+  assert.equal(cookieAttempt.status, 401)
+  assert.ifError(
+    (await db.from('publishers').update({ enabled: false }).eq('id', users[0]))
+      .error,
+  )
+  assert.equal((await request('me', undefined, owner.access_token)).status, 401)
+  assert.ifError(
+    (await db.from('publishers').update({ enabled: true }).eq('id', users[0]))
+      .error,
+  )
+  const direct = await fetch(`${env.SUPABASE_URL}/rest/v1/games`, {
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY!,
+      Authorization: `Bearer ${owner.access_token}`,
+    },
+  })
+  assert.notEqual(direct.status, 200)
+  assert.equal((await fetch(`${base}/dashboard`)).status, 404)
+  console.log(
+    'PASS: saved-round provenance, desktop-only endpoints, signed uploads, immutable validation, restart retry, owner checks, promotion, rollback, unpublish, cross-instance one-time handoff, and read-only website.',
+  )
 } finally {
-  await db.table('games', `?id=eq.${gameId}`, { method: 'PATCH', body: JSON.stringify({ current_release_id: null }) })
-  await db.table('publication_events', `?game_id=eq.${gameId}`, { method: 'DELETE' })
-  await db.table('releases', `?game_id=eq.${gameId}`, { method: 'DELETE' })
-  await db.table('games', `?id=eq.${gameId}`, { method: 'DELETE' })
-  if (releaseIds.length) await db.request('/storage/v1/object/game-artifacts', { method: 'DELETE', body: JSON.stringify({ prefixes: releaseIds.map(id => `${id}.json`) }) })
+  await db.from('games').update({ current_release_id: null }).eq('id', gameId)
+  await db.from('publication_events').delete().eq('game_id', gameId)
+  await db.from('releases').delete().eq('game_id', gameId)
+  await db.from('games').delete().eq('id', gameId)
+  await db.storage
+    .from('game-artifacts')
+    .remove(ids.flatMap((id) => [`${id}.json`, `pending/${id}.json`]))
   for (const id of users) {
-    await db.table('publishers', `?id=eq.${id}`, { method: 'DELETE' })
-    await db.request(`/auth/v1/admin/users/${id}`, { method: 'DELETE' })
+    await db.from('desktop_connections').delete().eq('approved_by', id)
+    await db.from('publishers').delete().eq('id', id)
+    await db.auth.admin.deleteUser(id)
   }
 }

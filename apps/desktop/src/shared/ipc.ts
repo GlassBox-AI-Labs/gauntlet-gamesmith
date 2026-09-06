@@ -1,6 +1,6 @@
 /** Canonical IPC channel names shared by main and preload. */
 export const IPC = {
-  publishing: { cancelSignIn: 'publishing:cancel-sign-in', status: 'publishing:status', signIn: 'publishing:sign-in', signOut: 'publishing:sign-out', prepare: 'publishing:prepare', publish: 'publishing:publish' },
+  publishing: { history: 'publishing:history', previewRelease: 'publishing:preview-release', unpublish: 'publishing:unpublish', cancelSignIn: 'publishing:cancel-sign-in', status: 'publishing:status', signIn: 'publishing:sign-in', signOut: 'publishing:sign-out', prepare: 'publishing:prepare', publish: 'publishing:publish' },
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',

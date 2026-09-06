@@ -8,7 +8,7 @@ export default defineConfig({
     build: {
       // fix-path is ESM-only. Bundle it into the CommonJS main process instead
       // of emitting require("fix-path"), which returns a module namespace.
-      externalizeDeps: { exclude: ['fix-path', '@gauntlet/publishing'] },
+      externalizeDeps: { exclude: ['fix-path', '@gauntlet/publishing', '@gauntlet/ui'] },
     },
   },
   preload: {},

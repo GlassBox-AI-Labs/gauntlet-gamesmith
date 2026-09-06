@@ -116,6 +116,9 @@ contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)
 
 const publishing: PublishingApi = {
+  history: loopId => ipcRenderer.invoke(IPC.publishing.history, loopId),
+  previewRelease: input => ipcRenderer.invoke(IPC.publishing.previewRelease, input),
+  unpublish: input => ipcRenderer.invoke(IPC.publishing.unpublish, input),
   cancelSignIn: () => ipcRenderer.invoke(IPC.publishing.cancelSignIn),
   status: () => ipcRenderer.invoke(IPC.publishing.status),
   signIn: () => ipcRenderer.invoke(IPC.publishing.signIn),

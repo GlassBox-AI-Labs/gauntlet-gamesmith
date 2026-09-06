@@ -8,3 +8,8 @@ dist-*/
 apps/web/build/
 supabase/.temp/
 supabase/.branches/
+
+.next/
+*.tsbuildinfo
+packages/db/supabase/.temp/
+packages/db/supabase/.branches/

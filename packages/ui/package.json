@@ -1,0 +1,30 @@
+{
+  "name": "@gauntlet/ui",
+  "private": true,
+  "version": "0.0.0",
+  "exports": {
+    "./button": "./src/button.tsx",
+    "./badge": "./src/badge.tsx",
+    "./input": "./src/input.tsx",
+    "./utils": "./src/utils.ts",
+    "./brand": "./src/brand.tsx",
+    "./theme.css": "./src/theme.css",
+    "./sheet": "./src/sheet.tsx"
+  },
+  "dependencies": {
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "tailwind-merge": "3.6.0",
+    "radix-ui": "1.4.3",
+    "lucide-react": "1.37.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "typescript": "7.0.2"
+  }
+}

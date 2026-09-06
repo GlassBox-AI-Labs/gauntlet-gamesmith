@@ -228,10 +228,12 @@ project roots, links into those roots, and private app directories remain exclud
 
 ## Publish to the local catalog
 
-Select a completed saved round and click **Publish**. The desktop signs in through
-the system browser, builds an immutable checkout, uploads its validated static
-output, and opens a private preview before explicit publication. A separate
-publisher account is required only for this operation; normal development and
-Play remain account-free. The local catalog and game host can be used by other
-devices on the LAN. See [local catalog setup](../../docs/CATALOG.md) for startup,
-developer provisioning, supported builds, retries, and rollback.
+Open a run and click **Publish round N**, or select a specific completed saved
+round and click **Publish**. Supabase sign-in opens a browser handoff, then the
+publisher session stays in Electron. Build the saved revision, play its private
+preview, and explicitly publish. The same drawer's **Releases** tab owns history,
+rollback, and unpublish; sign-out is there too. There is no web management UI or
+artifact file picker. The website only browses and plays games.
+
+Local development and Play remain account-free. See [local catalog setup](../../docs/CATALOG.md)
+for startup, developer provisioning, networking limits, and verification.

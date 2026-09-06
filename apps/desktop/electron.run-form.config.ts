@@ -3,7 +3,7 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
 export default defineConfig({
-  main: { build: { outDir: 'out/run-form/main', externalizeDeps: { exclude: ['fix-path', '@gauntlet/publishing'] }, rollupOptions: { input: { index: path.resolve(__dirname, 'src/main/index.ts') } } } },
+  main: { build: { outDir: 'out/run-form/main', externalizeDeps: { exclude: ['fix-path', '@gauntlet/publishing', '@gauntlet/ui'] }, rollupOptions: { input: { index: path.resolve(__dirname, 'src/main/index.ts') } } } },
   preload: { build: { outDir: 'out/run-form/preload', rollupOptions: { input: { index: path.resolve(__dirname, 'src/preload/index.ts') } } } },
   renderer: {
     plugins: [react(), tailwindcss()],

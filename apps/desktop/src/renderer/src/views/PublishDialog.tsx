@@ -1,26 +1,390 @@
-import { useEffect, useRef, useState } from 'react'
-import type { PublicationPreview, PublisherStatus } from '../../../shared/publishing'
-import { Button } from '@/components/ui/button'
-
-export function PublishDialog({ loopId, round, title, onClose }: { loopId: string; round: number; title: string; onClose: () => void }): React.JSX.Element {
-  const dialog = useRef<HTMLDialogElement>(null)
-  const [status, setStatus] = useState<PublisherStatus | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('')
-  const [preview, setPreview] = useState<PublicationPreview | null>(null), [published, setPublished] = useState('')
-  const [draft, setDraft] = useState({ title, slug: title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64), description: '', controls: '', coverPath: '', outputDir: 'dist' })
-  useEffect(() => { dialog.current?.showModal(); void window.publishing.status().then(result => { if (result.ok) setStatus(result.value); else setError(result.error) }); return () => dialog.current?.close() }, [])
-  async function run(fn: () => Promise<void>) { setBusy(true); setError(''); try { await fn() } catch (e) { setError(e instanceof Error ? e.message : 'Publishing failed.') } finally { setBusy(false) } }
-  return <dialog ref={dialog} onCancel={e => { if (busy) e.preventDefault(); else onClose() }} className="m-auto max-h-[90vh] overflow-y-auto w-[min(560px,90vw)] rounded-xl border border-[#49433c] bg-[#211d19] p-6 text-[#eee8df] shadow-2xl backdrop:bg-black/60">
-    <div className="mb-4 flex items-center justify-between"><h2 className="text-lg font-semibold">Publish round {round}</h2><button aria-label="Close publishing" disabled={busy} onClick={onClose}>✕</button></div>
-    <p className="mb-4 text-xs text-[#b7aa9b]">Publish a frozen build to your local arcade. Build output and progress appear in the run log.</p>
-    {error && <p role="alert" className="mb-4 rounded border border-red-800 p-3 text-sm text-red-200">{error}</p>}
-    {!status?.connected ? <><Button disabled={busy} onClick={() => void run(async () => { const result = await window.publishing.signIn(); if (!result.ok) throw new Error(result.error); setStatus(result.value) })}>{busy ? 'Waiting for browser sign-in…' : 'Sign in to publish'}</Button>{busy && <Button variant="outline" className="ml-2" onClick={() => void window.publishing.cancelSignIn()}>Cancel sign-in</Button>}</> : <>
-      <div className="mb-4 flex justify-between text-xs"><span>{status.publisherName} · {status.catalogUrl}</span><button disabled={busy} onClick={() => void run(async () => { const result = await window.publishing.signOut(); if (!result.ok) throw new Error(result.error); setStatus({ ...status, connected: false }) })}>Sign out</button></div>
-      <form onSubmit={event => { event.preventDefault(); void run(async () => { const result = await window.publishing.prepare({ loopId, round, ...draft }); if (!result.ok) throw new Error(result.error); setPreview(result.value) }) }} className="grid gap-3">
-        {([['title','Title'],['slug','Game URL slug'],['description','Description'],['controls','Controls'],['coverPath','Cover path inside build (optional)'],['outputDir','Build output folder']] as const).map(([key,label]) => <label key={key} className="grid gap-1 text-xs text-[#c7b9a8]">{label}<input required={['title','slug','description','outputDir'].includes(key)} disabled={busy || !!preview} value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value })} className="rounded border border-[#544839] bg-[#181511] p-2 text-sm text-white" /></label>)}
-        {!preview && <Button disabled={busy} type="submit" className="mt-3">{busy ? 'Building and uploading…' : 'Build & open private preview'}</Button>}
-      </form>
-      {preview && !published && <div className="mt-4"><p className="mb-3 text-xs text-[#c7b9a8]">The preview opened in your browser. Check this version before publishing. Only publish assets you have permission to share.</p><div className="flex gap-3"><Button disabled={busy} onClick={() => void run(async () => { const result = await window.publishing.publish({ loopId, releaseId: preview.releaseId, gameId: preview.gameId, generation: preview.generation }); if (!result.ok) throw new Error(result.error); setPublished(result.value) })}>{busy ? 'Publishing…' : 'Publish this version'}</Button><Button variant="outline" disabled={busy} onClick={() => setPreview(null)}>Edit draft</Button></div></div>}
-      {published && <p role="status" className="mt-4 rounded border border-green-800 p-3 text-sm text-green-200">Published: <span className="select-all">{published}</span></p>}
-    </>}
-  </dialog>
+import { useEffect, useState } from 'react'
+import type {
+  PublicationPreview,
+  PublisherStatus,
+  ReleaseHistory,
+} from '../../../shared/publishing'
+import { Button } from '@gauntlet/ui/button'
+import { Input } from '@gauntlet/ui/input'
+import { Badge } from '@gauntlet/ui/badge'
+import { Brand } from '@gauntlet/ui/brand'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from '@gauntlet/ui/sheet'
+import appLogo from '../../../../build/icon.png'
+export function PublishDialog({
+  loopId,
+  round,
+  title,
+  onClose,
+}: {
+  loopId: string
+  round: number
+  title: string
+  onClose: () => void
+}): React.JSX.Element {
+  const [status, setStatus] = useState<PublisherStatus | null>(null),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    [notice, setNotice] = useState('')
+  const [preview, setPreview] = useState<PublicationPreview | null>(null),
+    [history, setHistory] = useState<ReleaseHistory | null>(null),
+    [tab, setTab] = useState<'build' | 'releases'>('build')
+  const [draft, setDraft] = useState({
+    title,
+    slug: title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 64),
+    description: '',
+    controls: '',
+    coverPath: '',
+    outputDir: 'dist',
+  })
+  async function refresh() {
+    const result = await window.publishing.history(loopId)
+    if (!result.ok) throw new Error(result.error)
+    setHistory(result.value)
+  }
+  async function work(fn: () => Promise<void>) {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await fn()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Publishing failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  useEffect(() => {
+    void work(async () => {
+      const result = await window.publishing.status()
+      if (!result.ok) throw new Error(result.error)
+      setStatus(result.value)
+      if (result.value.connected) await refresh()
+    })
+  }, [loopId])
+  async function publish() {
+    if (!preview) return
+    const result = await window.publishing.publish({
+      loopId,
+      releaseId: preview.releaseId,
+      gameId: preview.gameId,
+      generation: preview.generation,
+    })
+    if (!result.ok) throw new Error(result.error)
+    setPreview(null)
+    await refresh()
+    setTab('releases')
+    setNotice(`Published: ${result.value}`)
+  }
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose()
+      }}
+    >
+      <SheetContent
+        className="overflow-y-auto"
+        onEscapeKeyDown={(event) => {
+          if (busy) event.preventDefault()
+        }}
+        onInteractOutside={(event) => {
+          if (busy) event.preventDefault()
+        }}
+      >
+        <SheetHeader>
+          <Brand
+            logo={<img src={appLogo} alt="" className="size-8" />}
+            suffix="publishing"
+          />
+          <SheetTitle>Publish round {round}</SheetTitle>
+          <SheetDescription>
+            Build a saved round, preview it, then publish to the arcade.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="space-y-5 px-6 pb-8">
+          {error && (
+            <p
+              role="alert"
+              className="rounded-lg border border-destructive p-3 text-sm text-destructive"
+            >
+              {error}
+            </p>
+          )}
+          {notice && (
+            <p
+              role="status"
+              className="select-all rounded-lg border bg-secondary p-3 text-sm"
+            >
+              {notice}
+            </p>
+          )}
+          {!status?.connected ? (
+            <div className="flex flex-wrap gap-3">
+              <Button
+                data-testid="publishing-sign-in"
+                disabled={busy}
+                onClick={() =>
+                  void work(async () => {
+                    const result = await window.publishing.signIn()
+                    if (!result.ok) throw new Error(result.error)
+                    setStatus(result.value)
+                    await refresh()
+                  })
+                }
+              >
+                {busy ? 'Waiting for browser sign-in…' : 'Sign in to publish'}
+              </Button>
+              {busy && (
+                <Button
+                  data-testid="publishing-cancel-sign-in"
+                  variant="outline"
+                  onClick={() =>
+                    void window.publishing
+                      .cancelSignIn()
+                      .then((result) => {
+                        if (!result.ok) setError(result.error)
+                      })
+                      .catch((error) =>
+                        setError(
+                          error instanceof Error
+                            ? error.message
+                            : 'Unable to cancel sign-in.',
+                        ),
+                      )
+                  }
+                >
+                  Cancel sign-in
+                </Button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <span className="text-sm text-muted-foreground">
+                  {status.publisherName}
+                </span>
+                <Button
+                  data-testid="publishing-sign-out"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    void work(async () => {
+                      const result = await window.publishing.signOut()
+                      if (!result.ok) throw new Error(result.error)
+                      setStatus({ ...status, connected: false })
+                      setHistory(null)
+                      setPreview(null)
+                    })
+                  }
+                >
+                  Sign out
+                </Button>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  data-testid="publishing-build-tab"
+                  variant={tab === 'build' ? 'secondary' : 'ghost'}
+                  aria-pressed={tab === 'build'}
+                  disabled={busy}
+                  onClick={() => setTab('build')}
+                >
+                  Publish this round
+                </Button>
+                <Button
+                  data-testid="publishing-releases-tab"
+                  variant={tab === 'releases' ? 'secondary' : 'ghost'}
+                  aria-pressed={tab === 'releases'}
+                  disabled={busy}
+                  onClick={() =>
+                    void work(async () => {
+                      await refresh()
+                      setTab('releases')
+                    })
+                  }
+                >
+                  Releases
+                </Button>
+              </div>
+              {tab === 'build' ? (
+                <form
+                  className="grid gap-4"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void work(async () => {
+                      const result = await window.publishing.prepare({
+                        loopId,
+                        round,
+                        ...draft,
+                      })
+                      if (!result.ok) throw new Error(result.error)
+                      setPreview(result.value)
+                      await refresh()
+                    })
+                  }}
+                >
+                  {(
+                    [
+                      ['title', 'Title'],
+                      ['slug', 'Game URL slug'],
+                      ['description', 'Description'],
+                      ['controls', 'Controls'],
+                      ['coverPath', 'Cover path inside build (optional)'],
+                      ['outputDir', 'Build output folder'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label key={key} className="grid gap-2 text-sm">
+                      {label}
+                      <Input
+                        data-testid={`publishing-${key}`}
+                        required={[
+                          'title',
+                          'slug',
+                          'description',
+                          'outputDir',
+                        ].includes(key)}
+                        disabled={busy || !!preview}
+                        value={draft[key]}
+                        onChange={(event) =>
+                          setDraft({ ...draft, [key]: event.target.value })
+                        }
+                      />
+                    </label>
+                  ))}
+                  {!preview && (
+                    <Button
+                      data-testid="publishing-build"
+                      disabled={busy}
+                      type="submit"
+                    >
+                      {busy
+                        ? 'Building and uploading…'
+                        : 'Build & open private preview'}
+                    </Button>
+                  )}
+                </form>
+              ) : (
+                <section className="space-y-5">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h2 className="font-semibold">Release history</h2>
+                    <Badge variant="secondary">
+                      {history?.currentReleaseId ? 'Live' : 'Unpublished'}
+                    </Badge>
+                    {history?.currentReleaseId && (
+                      <Button
+                        data-testid="publishing-unpublish"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          void work(async () => {
+                            const result = await window.publishing.unpublish({
+                              loopId,
+                              generation: history.generation,
+                            })
+                            if (!result.ok) throw new Error(result.error)
+                            await refresh()
+                            setPreview(null)
+                          })
+                        }
+                      >
+                        Unpublish
+                      </Button>
+                    )}
+                  </div>
+                  {history?.gameUrl && (
+                    <p className="select-all break-all text-sm text-muted-foreground">
+                      {history.gameUrl}
+                    </p>
+                  )}
+                  {!history?.releases.length && (
+                    <p className="text-sm text-muted-foreground">
+                      No releases yet. Build and preview this saved round to
+                      begin.
+                    </p>
+                  )}
+                  {history?.releases.map((release) => (
+                    <div
+                      key={release.id}
+                      className="space-y-3 rounded-lg border bg-card p-4"
+                    >
+                      <div className="flex flex-wrap justify-between gap-3">
+                        <h3 className="font-medium">{release.title}</h3>
+                        {history.currentReleaseId === release.id && (
+                          <Badge>Current</Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {release.round
+                          ? `Round ${release.round} · ${release.revision?.slice(0, 12)} · `
+                          : ''}
+                        {release.status}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(release.createdAt).toLocaleString()}
+                      </p>
+                      <Button
+                        data-testid={`publishing-preview-${release.id}`}
+                        variant="outline"
+                        disabled={busy || release.status !== 'ready'}
+                        onClick={() =>
+                          void work(async () => {
+                            const result =
+                              await window.publishing.previewRelease({
+                                loopId,
+                                releaseId: release.id,
+                              })
+                            if (!result.ok) throw new Error(result.error)
+                            setPreview(result.value)
+                          })
+                        }
+                      >
+                        Preview
+                        {history.currentReleaseId !== release.id
+                          ? ' / publish'
+                          : ''}
+                      </Button>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {preview && (
+                <section className="space-y-4 rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">
+                    The private preview opened in your browser. Publish only
+                    after checking this version.
+                  </p>
+                  <div className="flex gap-3">
+                    <Button
+                      data-testid="publishing-promote"
+                      disabled={busy}
+                      onClick={() => void work(publish)}
+                    >
+                      {busy ? 'Publishing…' : 'Publish this version'}
+                    </Button>
+                    <Button
+                      data-testid="publishing-edit"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => setPreview(null)}
+                    >
+                      Back
+                    </Button>
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  )
 }

@@ -3,7 +3,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../packages/db')
 const project = 'gauntlet-gamesmith'
 const docker = args => execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
 const context = JSON.parse(docker(['context', 'inspect']))[0]

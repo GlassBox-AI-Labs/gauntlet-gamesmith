@@ -537,3 +537,31 @@ session. Future hosted Vercel/CDN deployment targets one shared Supabase project
 per environment and starts in the US. Future multiplayer uses a shared pluggable
 module with guest access and game-dependent authority; it is not part of v1.
 Payments, creator monetization, and platform billing are deferred.
+
+## ADR-024 — Desktop publishing and a browse-only Next.js website (2026-09-06)
+
+**Status:** accepted; refines ADR-023 and supersedes the earlier web studio/import
+proposal in the initial publishing design.
+
+**Decision.** Electron owns all publisher management, including metadata, build,
+preview, promotion, release history, rollback, unpublish, and sign-out. Publications
+originate from saved loop rounds, not user-selected artifact files. The website
+exposes public browsing/play and publisher attribution. Its only account utility
+is the Supabase sign-in/one-time desktop connection handoff.
+
+Use Next.js App Router, server-rendered public reads, Server Actions for browser
+auth forms, and thin Route Handlers for the desktop protocol. Extract reusable
+renderer primitives and theme tokens to `packages/ui`; put framework-independent
+domain operations in `packages/data`. Follow the Othram schema.sql/generated-types
+workflow in `packages/db`, with idempotent migrations and transactional RPCs.
+
+**Consequences.** Small authenticated metadata requests authorize direct, scoped
+Supabase Storage uploads; game envelopes do not pass through Next.js function body
+limits. Server validation binds the artifact to the recorded source revision.
+One-time challenge-bound connections are durable in Postgres with encrypted
+sessions, and signing secrets are shared across Next.js instances. Publishing
+bearer credentials stay in Electron main. Web cookies do not authorize release
+mutation endpoints. Provenance is not machine attestation; v1 publishers are
+allowlisted developers. Game-content hosting remains a separate local process
+until the hosted CDN adapter is delivered. UI flow screenshots are PR attachments,
+not source-controlled catalog assets.

@@ -1,0 +1,27 @@
+{
+  "name": "@gauntlet/data",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./api/catalog": "./src/api/catalog.ts",
+    "./api/device": "./src/api/device.ts",
+    "./contracts": "./src/contracts.ts",
+    "./errors": "./src/errors.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gauntlet/db": "workspace:*",
+    "@gauntlet/publishing": "workspace:*",
+    "@supabase/supabase-js": "2.99.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}

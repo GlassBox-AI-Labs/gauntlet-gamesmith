@@ -265,7 +265,7 @@ export function RunDetail({
   onReadStream,
   onScrollTop,
 }: RunDetailProps): React.JSX.Element {
-  const [publishing, setPublishing] = useState(false)
+  const [publishing, setPublishing] = useState<number | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [renameBusy, setRenameBusy] = useState(false)
   const [titleDraft, setTitleDraft] = useState(snapshot.loop.title)
@@ -361,6 +361,7 @@ export function RunDetail({
       }, null)
   const playingSelectedBuild = play.running && play.round === selectedRound
   const selectedRevision = selectedRound == null ? null : (visibleRuns.find((run) => run.role === 'implement' && run.status === 'succeeded')?.revision ?? null)
+  const publishableRound = snapshot.runs.filter(run => run.role === 'implement' && run.status === 'succeeded' && run.revision).sort((a, b) => b.round - a.round)[0]?.round ?? null
   const selectedRoundPlayable = selectedRevision != null
 
   const saveTitle = async (): Promise<void> => {
@@ -450,8 +451,9 @@ export function RunDetail({
         {selectedRound == null && (
           <div className="ml-auto flex items-center gap-2">
             {playingSelectedBuild && play.url && <button type="button" onClick={() => onPlayStart(null)} className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20" title="Open in browser">{play.url}</button>}
+              <Button data-testid="run-publish" variant="outline" disabled={publishableRound == null} onClick={() => setPublishing(publishableRound)}><Upload /> Publish{publishableRound ? ` round ${publishableRound}` : ""}</Button>
             {playingSelectedBuild ? (
-              <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" onClick={onPlayStop}><Square /> Stop game</Button>
+            <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" onClick={onPlayStop}><Square /> Stop game</Button>
             ) : (
               <Button variant="outline" className="border-emerald-600/50 bg-transparent text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200" onClick={() => onPlayStart(null)}><Play className="fill-current" /> Play</Button>
             )}
@@ -480,13 +482,13 @@ export function RunDetail({
                 <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
               </Button>
             )}
-            <Button variant="outline" disabled={!selectedRoundPlayable} onClick={() => setPublishing(true)}><Upload /> Publish</Button>
+            <Button variant="outline" disabled={!selectedRoundPlayable} data-testid="round-publish" onClick={() => setPublishing(selectedRound)}><Upload /> Publish</Button>
           </div>
         )}
       </div>
 
       {selectedRound == null && loop.stopReason && !running && <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{loop.stopReason}</p>}
-      {publishing && selectedRound != null && <PublishDialog loopId={loop.id} round={selectedRound} title={loop.title} onClose={() => setPublishing(false)} />}
+      {publishing != null && <PublishDialog loopId={loop.id} round={publishing} title={loop.title} onClose={() => setPublishing(null)} />}
       {play.error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>}
       {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported run folder.</p>}
