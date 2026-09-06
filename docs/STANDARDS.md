@@ -398,12 +398,16 @@ Channel conventions:
 
 ## Loop phases and prompts
 
-The loop today is: **reference** (round 0, one-time Reference Study) → **implement** (round n) →
-**critique** (round n) → implement (round n+1, fed the critic's findings) ... until the critic passes,
-rounds or budget run out, or the user stops. A fourth phase, **asset** (produce the game's shipping
-art, audio, and data with provenance, between reference and the first implement), is planned; the
-rules below are written so it can be added by following the checklist rather than by inventing a new
-control flow.
+The loop today is: **reference** (round 0, when Reference Study is enabled) → **implement**
+(round n, including optional asset sculpting) → **critique** (round n) → implement (round n+1,
+fed the critic's findings). Skip mode begins directly with implementation. Completing the last
+allowed implementation exhausts the loop without another critique; budget limits, a passing
+critic, failures, and operator stop can also terminate execution (ADR-005).
+
+New loops do not queue a separate asset phase. The legacy `assets` role remains for old-attempt
+recovery; sculpting is now dispatched inside implementation when the cast needs work. See
+[`ARCHITECTURE.md`](ARCHITECTURE.md#loop-execution) for the current lifecycle and
+[`ASSET-PHASE.md` §2b](ASSET-PHASE.md#2b-the-merge--sculpting-moves-inside-implement) for the migration.
 
 ### PHASE-001 — A phase is a role with a complete contract
 
@@ -425,15 +429,17 @@ incomplete.
    stream state, accounting, and finalization contract; the runner supplies process and persistence
    seams. The parser follows PROC-004 and reports progress so `driveRun`'s idle and hard-cap
    timeouts work.
-5. **Owned artifact directory.** Each phase writes to exactly one workspace directory it owns:
-   `reference/<loop-id>/`, `critique/round-<n>/`, and for the asset phase `assets/<loop-id>/`.
-   Later phases read it and never write it. Reference evidence never ships as a game asset.
+5. **Owned artifacts.** Define each phase's writable outputs and protected inputs. Reference owns
+   `reference/<loop-id>/`; critique owns evidence under `critique/round-<n>/` and may create the
+   build outputs allowed by PHASE-002. Implementation owns generated game source, including
+   sculpted assets, and must preserve reference and critique evidence. Reference evidence never
+   ships as a game asset. A new artifact-producing role must declare its output location.
 6. **Completion artifact validated in main.** The phase succeeds only when a main-process scanner
    says so: `scanReferencePack` for the pack, the parsed attempt-specific
    `verdict-<run-id>.json` for critique. The model's
-   prose is not a completion signal (PROC-004). An asset phase needs a manifest scanner that checks
-   every file exists, has a hash, a license or generation record, and was not copied from the
-   reference pack.
+   prose is not a completion signal (PROC-004). A new standalone asset phase would need a manifest
+   scanner that checks every file exists, has a hash, a license or generation record, and was not
+   copied from the reference pack.
 7. **Retry semantics.** The prompt tells the agent to audit existing output first and keep what is
    valid. Attempts are bounded (`MAX_REFERENCE_ATTEMPTS` is the pattern) and preserved files survive
    the retry.
@@ -452,9 +458,11 @@ incomplete.
 
 **Default severity:** Major.
 
-- Every phase starts a fresh process. The only state that crosses a boundary is files on disk and
-  the previous verdict the implement prompt composer injects. Session resume is an optimization,
-  never a correctness dependency.
+- Every phase starts a fresh supervised process. Enabled implementation leads may continue their
+  prior CLI session and receive a saved notebook (ADR-027). The complete phase contract, frozen
+  operator directions, files on disk, and validated prior findings remain authoritative. Session
+  resume and model-written memory are optimizations, never correctness dependencies. Research and
+  critique sessions remain independent.
 - Findings are supplied and trusted across phases only through `composeImplementPrompt`. The app
   does not supply the implementer's transcript to the critic or prior critique evidence to the
   implementer; prompts explicitly exclude those sources, and no advancement decision trusts raw
@@ -469,7 +477,10 @@ incomplete.
   outputs do not create source drift.
 - The authoritative bare revision repository lives under the app-private user-data root. Workspace
   metadata and imported portable history never become Git ref/object authority.
-- A phase's inputs are named by exact path in its prompt and are immutable for the loop's lifetime.
+- A phase's file inputs are named by exact path in its prompt. The reference pack is immutable for
+  the loop's lifetime; steering text and attachments are frozen per implementation attempt and shared
+  by its critic. Automatic recovery reuses that snapshot; explicit Resume may include pending
+  directions in a new attempt without rewriting history (ADR-020/021/026).
   If an input is missing or invalid, the phase reports a process finding and fails closed rather
   than filling the gap from memory.
 

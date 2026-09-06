@@ -4,7 +4,7 @@ import { ModelSelectItems } from '@/components/ModelSelectItems'
 import { RunAttachmentChips } from '@/components/RunAttachmentChips'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { AgentsView } from './AgentsView'
-import { DEFAULT_RUN_PACE, RUN_PACES, runPreset, type RunPace } from '../../../shared/run-presets'
+import { DEFAULT_RUN_PACE, RUN_PACES, presetSlices, type RunPace } from '../../../shared/run-presets'
 import { harnessFor } from '../../../shared/models'
 import type { RunAttachment, AttachmentResult } from '../../../shared/attachments'
 import type { ReferenceMode } from '../../../shared/loop'
@@ -187,9 +187,9 @@ export function RunForm({
     return () => { disposed = true; remove(); window.removeEventListener('focus', onFocus) }
   }, [agentsOpen])
   const applyPace = (next: RunPace, tools = connected, sculpting = assets.assetModel !== null): void => {
-    const preset = runPreset(next, tools, sculpting)
+    const preset = presetSlices(next, tools, sculpting)
     setPace(next); setCustom(false)
-    onImplChange(preset); onCriticChange(preset); onResearchChange(preset); onAssetsChange(preset)
+    onImplChange(preset.impl); onCriticChange(preset.critic); onResearchChange(preset.research); onAssetsChange(preset.assets)
   }
   useEffect(() => {
     if (checking || busy || custom) return

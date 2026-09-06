@@ -1125,6 +1125,63 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(polls).toHaveLength(1)
   })
 
+  it('re-attaches a codex implement run with the codex reader, not the claude one', async () => {
+    const polls: (() => void)[] = []
+    let spawned = false
+    const { ledger, runner, workspaceDir, deps } = setup({
+      spawnChild: () => { spawned = true; throw new Error('recovery must not respawn a live run') },
+      repeat: (work) => {
+        polls.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      processGroupStillOwned: () => true,
+    })
+    // Extra Claude accounts share one transcript store, so the app itself makes
+    // `projects` a symlink. The claude reader walks that path and refuses it,
+    // which is how a codex run being handed the wrong reader was noticed.
+    const claudeHome = deps.harnessHome!('claude')
+    fs.mkdirSync(path.join(claudeHome, 'shared-projects'), { recursive: true })
+    fs.symlinkSync('shared-projects', path.join(claudeHome, 'projects'))
+
+    const models = resolveModels({ orchestratorModel: 'gpt-6-astra', subagentModel: 'gpt-5.6-sol' }, null)
+    const loop = ledger.createLoop({ prompt: 'recover codex', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const run = ledger.createRun({ loopId: loop.id, round: 1, role: 'implement', harness: 'codex', prompt: 'build' })
+    const startedAtMs = Date.now()
+    ledger.patchRun(run.id, { status: 'running', startedAt: new Date(startedAtMs).toISOString(), sessionId: '01a0746e-dcf6-7db1-8226-6e613b4fba02' })
+    const marker = prepareProcessMeta(workspaceDir, run.id, startedAtMs, workspaceIdentity(workspaceDir))
+    fs.writeFileSync(marker.outPath, '')
+    fs.writeFileSync(marker.errPath, '')
+    const identity = readProcessIdentity(process.pid)!
+    const meta = completeProcessMeta(workspaceDir, run.id, marker, process.pid, () => ({ identity, groupId: process.pid, startedAtMs }))
+    ledger.setRunProcessOwnership(run.id, {
+      pid: meta.pid,
+      processIdentity: meta.processIdentity,
+      groupIdentities: [`${meta.pid}:${meta.processIdentity}`],
+      startedAtMs: meta.startedAtMs,
+      outDev: meta.outDev,
+      outIno: meta.outIno,
+      errDev: meta.errDev,
+      errIno: meta.errIno,
+    })
+    fs.unlinkSync(processMetaPath(workspaceDir, run.id))
+    fs.mkdirSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'agents'))
+
+    runner.recoverAll()
+    // The claude reader builds its workflow paths on the first poll; the codex
+    // reader has none to build.
+    for (const poll of polls) poll()
+    // driveRun is fire-and-forget, so a rejected supervision promise settles a
+    // few microtasks later; assert only once it has had the chance to.
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve))
+
+    expect(spawned).toBe(false)
+    expect(ledger.getRun(run.id)?.status).toBe('running')
+    expect(ledger.getLoop(loop.id)?.status).toBe('running')
+    expect(ledger.eventsForRun(run.id).some((event) => event.text.includes('re-attached to live implement'))).toBe(true)
+    expect(ledger.eventsForRun(run.id).some((event) => event.text.includes('Run supervision failed'))).toBe(false)
+  })
+
   it('touches no replacement workspace before validating retained boot ownership', () => {
     const { ledger, runner, workspaceDir } = setup({
       signalProcess: () => {},
@@ -1357,6 +1414,11 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(attempts.every((attempt) => attempt.status === 'failed')).toBe(true)
     expect(runner.activeRun()).toBeNull()
     expect(attempts.every((attempt) => fs.existsSync(processMetaPath(workspaceDir, attempt.id)))).toBe(true)
+    // The retry must be told why the first attempt was rejected, or it can only repeat it.
+    expect(attempts[0].error).toBeTruthy()
+    expect(attempts[1].prompt).toContain(attempts[0].error!)
+    expect(attempts[1].prompt).toContain('This is the retry.')
+    expect(attempts[1].prompt).toContain(attempts[0].prompt)
   })
 
   it('turns a rate-limit event into a durable bounded pause without consuming a failure attempt', async () => {

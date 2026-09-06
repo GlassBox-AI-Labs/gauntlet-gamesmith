@@ -1,6 +1,6 @@
 import { codexAgentMetricId } from '../../shared/agent-id'
 import { normalizeSessionId } from '../../shared/session-id'
-import { normalizeStreamUsage, trunc, type StreamEvent } from './claude-stream'
+import { normalizeStreamUsage, trunc, truncTail, type StreamEvent } from './claude-stream'
 
 export interface CodexLineResult {
   events: StreamEvent[]
@@ -93,8 +93,11 @@ export function translateCodexLine(line: string): CodexLineResult | null {
     } else if (item.type === 'command_execution' && typeof item.command === 'string') {
       out.events.push({ channel: 'tool', kind: 'cmd', text: `$ ${trunc(item.command, 200)}` })
       if ((typeof item.exit_code === 'number' && item.exit_code !== 0) || item.status === 'failed') {
+        // The tail, not the head: a non-zero exit explains itself on the last
+        // lines, and `a; b` in one shell reports only b's status while a's
+        // output still leads the buffer.
         const detail = typeof item.aggregated_output === 'string' && item.aggregated_output.trim()
-          ? `: ${trunc(item.aggregated_output, 240)}`
+          ? `: ${truncTail(item.aggregated_output, 240)}`
           : ''
         out.events.push({
           channel: 'error',

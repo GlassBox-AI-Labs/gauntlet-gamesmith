@@ -74,12 +74,13 @@ describe('play safety', () => {
     fs.rmSync(outside, { force: true })
   })
 
-  it('constructs an allowlisted environment with an isolated package-manager home', () => {
+  it('constructs an allowlisted environment with an isolated npm config', () => {
     const dir = workspace()
     const plantedBin = path.join(dir, 'bin')
     fs.mkdirSync(plantedBin)
     const env = playEnvironment(dir, {
       PATH: `.:${plantedBin}:/usr/bin`,
+      HOME: '/Users/operator',
       LANG: 'en_US.UTF-8',
       AWS_SECRET_ACCESS_KEY: 'secret',
       GITHUB_TOKEN: 'secret',
@@ -89,11 +90,28 @@ describe('play safety', () => {
 
     expect(env.PATH).toBe('/usr/bin')
     expect(env.LANG).toBe('en_US.UTF-8')
-    expect(env.HOME).toBe(path.join(fs.realpathSync(dir), '.gauntlet-gamesmith', 'play-home'))
     expect(env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY')
     expect(env).not.toHaveProperty('GITHUB_TOKEN')
     expect(env).not.toHaveProperty('OPENAI_API_KEY')
     expect(env).not.toHaveProperty('NODE_OPTIONS')
+  })
+
+  it('passes HOME through so a shimmed node version manager can find its toolchain', () => {
+    const dir = workspace()
+    // Redirecting HOME hid volta/asdf/mise's toolchain along with the user's
+    // dotfiles: `npm` became a shim that could not find a Node and exited 126.
+    const env = playEnvironment(dir, { PATH: '/usr/bin', HOME: '/Users/operator' })
+    expect(env.HOME).toBe('/Users/operator')
+  })
+
+  it('keeps the user npm config and cache out of an agent-authored game script', () => {
+    const dir = workspace()
+    const playHome = path.join(fs.realpathSync(dir), '.gauntlet-gamesmith', 'play-home')
+    const env = playEnvironment(dir, { PATH: '/usr/bin', HOME: '/Users/operator' })
+    // What redirecting HOME was really protecting: registry tokens in
+    // ~/.npmrc, and the user's own npm cache.
+    expect(env.NPM_CONFIG_USERCONFIG).toBe(path.join(playHome, 'npmrc'))
+    expect(env.NPM_CONFIG_CACHE).toBe(path.join(playHome, 'npm-cache'))
   })
 
   it('rejects an agent-planted symlink for the isolated Play home', () => {

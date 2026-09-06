@@ -17,7 +17,7 @@ import {
 export { referencePackDir } from '../shared/reference-path'
 
 const IMAGE = /\.(png|jpe?g|webp|gif)$/i
-const VIDEO = /\.(webm|mp4|mov)$/i
+const VIDEO = /\.(webm|mp4|mov|mkv)$/i
 const MAX_FILES = 300
 const MAX_ENTRIES = 2_000
 const MAX_PROJECTED_IMAGE_BYTES = 128 * 1024 * 1024
@@ -263,9 +263,16 @@ export function scanReferencePack(workspaceDir: string, root: string, expectedWo
             }
           }
           if (invalid) issues.push('manifest.json contains an invalid source entry')
+          // A Markdown note in an evidence directory was written by the agent,
+          // not downloaded, so it has no URL to attribute and could never pass.
+          // The protocol asks for exactly such a note when no clean object shot
+          // exists — "a missing object shot makes a weaker pack, not a failed
+          // pack" — and counting it as evidence failed the run for obeying.
+          // Everything else stays in: an allowlist of media extensions would
+          // let an unattributed format nobody listed slip through.
           const downloaded = files
             .map((file) => file.slice(root.length + 1))
-            .filter((file) => /^(?:images|motion|video|journey|objects)\//.test(file))
+            .filter((file) => /^(?:images|motion|video|journey|objects)\//.test(file) && !file.endsWith('.md'))
           const missing = downloaded.filter((file) => !attributed.has(file))
           if (missing.length > 0) issues.push(`manifest.json lacks attribution for ${missing.length} downloaded evidence file${missing.length === 1 ? '' : 's'}`)
         }

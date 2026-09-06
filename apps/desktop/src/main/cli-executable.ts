@@ -15,18 +15,13 @@ function userInstallDirectories(homeDir = os.homedir()): string[] {
   return homeDir ? [path.join(homeDir, '.local', 'bin')] : []
 }
 
-interface ExecutableIdentity {
-  path: string
-  dev: number
-  ino: number
-}
-
 export const DELEGATED_CLI_EXECUTABLE_ENV_KEYS: Record<HarnessKind, 'GAUNTLET_CLAUDE_BIN' | 'GAUNTLET_CODEX_BIN'> = {
   claude: 'GAUNTLET_CLAUDE_BIN',
   codex: 'GAUNTLET_CODEX_BIN',
 }
 
-const cached = new Map<HarnessKind, ExecutableIdentity>()
+/** Pinned PATH entry per CLI — the launcher path, not the version file behind it. */
+const cached = new Map<HarnessKind, string>()
 
 function inside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate)
@@ -78,7 +73,8 @@ function effectiveRoots(unsafeRoots: readonly string[]): string[] {
   return [...new Set([...unsafeRoots, ...tracked])]
 }
 
-function validateCandidate(candidate: string, unsafeRoots: readonly string[]): ExecutableIdentity | null {
+/** The canonical executable a candidate path currently resolves to, or null if it is not a safe installed CLI. */
+function validateCandidate(candidate: string, unsafeRoots: readonly string[]): string | null {
   let real: string
   let stat: fs.Stats
   try {
@@ -90,7 +86,7 @@ function validateCandidate(candidate: string, unsafeRoots: readonly string[]): E
   if (!stat.isFile() || (stat.mode & 0o111) === 0) return null
   const roots = unsafeRoots.map(canonical)
   if (roots.some((root) => inside(root, real) || inside(root, canonical(candidate)))) return null
-  return { path: real, dev: stat.dev, ino: stat.ino }
+  return real
 }
 
 /** Pure resolver used by tests and the process-wide pinned registry below. */
@@ -98,7 +94,7 @@ export function resolveCliExecutable(
   kind: HarnessKind,
   sourceEnv: NodeJS.ProcessEnv = process.env,
   unsafeRoots: readonly string[] = [],
-): ExecutableIdentity {
+): { candidate: string; path: string } {
   const binary = kind === 'claude' ? 'claude' : 'codex'
   const roots = effectiveRoots(unsafeRoots)
   const executablePath = sanitizedExecutablePath(sourceEnv.PATH, roots)
@@ -108,33 +104,43 @@ export function resolveCliExecutable(
       ?.split(path.delimiter) ?? [],
   ]
   for (const directory of searched) {
-    const resolved = validateCandidate(path.join(directory, binary), roots)
-    if (resolved) return resolved
+    const candidate = path.join(directory, binary)
+    const resolved = validateCandidate(candidate, roots)
+    if (resolved) return { candidate, path: resolved }
   }
   throw new Error(`${binary} was not found as an installed executable outside project and private app directories.`)
 }
 
 /**
- * Resolve each stock CLI once, then require the same inode for every later
- * status/login/run spawn. This removes all bare-name PATH lookups after an
- * agent has had a chance to write executable project content.
+ * Search PATH once, pin the installed launcher path, then revalidate it for
+ * every later status/login/run spawn. This removes all bare-name PATH lookups
+ * after an agent has had a chance to write executable project content, while
+ * still following the CLI's own updater: `claude update` repoints
+ * ~/.local/bin/claude at a new version file, and pinning the version file
+ * instead would keep spawning the superseded binary until the app restarts.
+ * Every re-resolution revalidates the same safety rules as the first.
+ *
+ * What is returned is the launcher, not the file it resolves to. Some launchers
+ * decide what to run from the name they were called as: a Volta-managed `codex`
+ * is a symlink to `volta-shim`, and spawning that real path directly makes it
+ * exit with "volta-shim should not be called directly", so the CLI looked
+ * missing. Validation still follows the link — only the spawned path changed.
  */
 export function cliExecutable(
   kind: HarnessKind,
   unsafeRoots: readonly string[] = [],
   sourceEnv: NodeJS.ProcessEnv = process.env,
 ): string {
-  const prior = cached.get(kind)
-  if (prior) {
-    const current = validateCandidate(prior.path, effectiveRoots(unsafeRoots))
-    if (!current || current.dev !== prior.dev || current.ino !== prior.ino) {
-      throw new Error(`The installed ${kind} executable changed identity; restart after verifying the CLI installation.`)
+  const pinned = cached.get(kind)
+  if (pinned) {
+    if (!validateCandidate(pinned, effectiveRoots(unsafeRoots))) {
+      throw new Error(`The installed ${kind} executable at ${pinned} is no longer a safe installed executable; verify the CLI installation.`)
     }
-    return prior.path
+    return pinned
   }
   const resolved = resolveCliExecutable(kind, sourceEnv, unsafeRoots)
-  cached.set(kind, resolved)
-  return resolved.path
+  cached.set(kind, resolved.candidate)
+  return resolved.candidate
 }
 
 /**
@@ -150,14 +156,16 @@ export function validatedExecutableEnv(
   const env: Record<string, string> = {}
   const roots = effectiveRoots(unsafeRoots)
   for (const [kind, executable] of executables) {
-    if (!path.isAbsolute(executable) || canonical(executable) !== path.normalize(executable)) {
+    // The launcher itself may be a symlink (see cliExecutable), so this checks
+    // the shape of the path and revalidates what it resolves to, rather than
+    // demanding that the two be the same file.
+    if (!path.isAbsolute(executable) || path.normalize(executable) !== executable) {
       throw new Error(`The pinned ${kind} executable must be an absolute canonical path.`)
     }
-    const current = validateCandidate(executable, roots)
-    if (!current || current.path !== executable) {
+    if (!validateCandidate(executable, roots)) {
       throw new Error(`The pinned ${kind} executable is no longer a safe installed executable.`)
     }
-    env[DELEGATED_CLI_EXECUTABLE_ENV_KEYS[kind]] = current.path
+    env[DELEGATED_CLI_EXECUTABLE_ENV_KEYS[kind]] = executable
   }
   return env
 }

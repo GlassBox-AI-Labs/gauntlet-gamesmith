@@ -199,7 +199,7 @@ describe('continuing run lead with steering', () => {
 })
 
 describe('lead protocol accounting and lookup errors', () => {
-  it('subtracts saved cumulative Codex usage and does not double count repeated completion events', async () => {
+  it.each([false, true])('subtracts saved cumulative Codex usage and deduplicates completions (live rollout=%s)', async live => {
     const { loop, lead, implementation, finish, start } = setup(MODEL_IDS.codexLuna)
     const first = implementation(1); lead.prepare(first, first.prompt); finish(first)
     const next = implementation(2); lead.prepare(next, next.prompt); start(next)
@@ -210,6 +210,11 @@ describe('lead protocol accounting and lookup errors', () => {
       now: Date.now, nowIso: () => new Date().toISOString(), harnessHome: () => path.join(root, 'empty-harness'),
       log: () => {}, broadcast: () => {}, finalize: async (_exit, collect) => { outcome = collect() },
     })
+    if (live) {
+      const sessions = path.join(root, 'empty-harness', 'sessions', '2026', '09', '06')
+      fs.mkdirSync(sessions, { recursive: true })
+      fs.writeFileSync(path.join(sessions, `rollout-2026-09-06T12-00-00-${SESSION}.jsonl`), JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 550, cached_input_tokens: 400, output_tokens: 65 } } } }) + '\n')
+    }
     protocol.onLine(JSON.stringify({ type: 'thread.started', thread_id: SESSION }))
     const completed = JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 550, cached_input_tokens: 400, output_tokens: 65 } })
     protocol.onLine(completed); protocol.onLine(completed)

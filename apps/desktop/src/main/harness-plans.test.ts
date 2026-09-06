@@ -46,6 +46,13 @@ describe('implementPlan', () => {
     const codex = implementPlan({ ...ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol' }, null)), resumeId: 'thread-1' })
     // `codex exec resume <id>`: the subcommand precedes the flags.
     expect(codex.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread-1'])
+    // `exec resume` has no `-s`; passing it exits 2 before the model is reached.
+    expect(codex.args).not.toContain('-s')
+    expect(codex.args).toContain('sandbox_mode=workspace-write')
+    // A fresh run still uses the flag, and never the config key.
+    const fresh = implementPlan(ctx(resolveModels({ orchestratorModel: 'gpt-5.6-sol' }, null)))
+    expect(fresh.args).toContain('-s')
+    expect(fresh.args).not.toContain('sandbox_mode=workspace-write')
   })
 })
 

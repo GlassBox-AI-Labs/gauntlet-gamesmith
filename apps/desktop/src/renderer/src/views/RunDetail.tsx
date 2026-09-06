@@ -1,11 +1,12 @@
 import { LeadPanel } from './LeadPanel'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { agentDisplayStatus, logEmptyMessage, rawStreamForLogLine, rawStreamLinks, type RawStreamLink } from '@/lib/run-visibility'
+import { useStickToBottom } from '@/lib/use-stick-to-bottom'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { RawStreamBrowser } from '@/views/RawStreamBrowser'
@@ -286,12 +287,7 @@ export function RunDetail({
   const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedRawStream, setSelectedRawStream] = useState<RawStreamLink | null>(null)
-  const logRef = useRef<HTMLDivElement | null>(null)
-  const stickRef = useRef(true)
-
-  useEffect(() => {
-    if (stickRef.current && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
-  }, [lines])
+  const log = useStickToBottom(lines)
 
   const loop = snapshot.loop
   const running = loop.status === 'running'
@@ -604,7 +600,7 @@ export function RunDetail({
           </div>
 
           <LogFilterStrip lines={activityLines} filter={logFilter} onChange={setLogFilter} />
-          <div ref={logRef} onScroll={() => { const element = logRef.current; if (element) stickRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80 }} className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]">
+          <div ref={log.ref} onScroll={log.onScroll} className="h-[420px] overflow-y-auto rounded-lg border border-[#332e2e] bg-[#0d0a0b] p-3.5 font-mono text-[11px] leading-[1.7]">
             {emptyLogMessage && <span className="text-[#68615f]">{emptyLogMessage}</span>}
             {activityItems.map((item) => (
               <div key={item.key} className="flex gap-2 whitespace-pre-wrap break-all">
