@@ -6,6 +6,6 @@ export const GET = route('me', async (request) =>
   catalogApi.studio(
     createAdminClient(),
     captureServerError,
-    (await requestPublisher(request, true)).id,
+    (await requestPublisher(request)).id,
   ),
 )

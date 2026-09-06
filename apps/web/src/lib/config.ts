@@ -19,10 +19,6 @@ export async function gameOrigin() {
   url.port = process.env.GAME_PORT ?? '4311'
   return url.origin
 }
-export function catalogOrigin() {
-  return new URL(process.env.CATALOG_ORIGIN ?? 'http://localhost:4310').origin
-}
-
 // Next may normalize request.url to localhost when bound to 0.0.0.0.
 // Preserve the actual authority for the local desktop/browser handoff.
 export function requestOrigin(request: Request) {

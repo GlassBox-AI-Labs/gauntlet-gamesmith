@@ -565,3 +565,21 @@ mutation endpoints. Provenance is not machine attestation; v1 publishers are
 allowlisted developers. Game-content hosting remains a separate local process
 until the hosted CDN adapter is delivered. UI flow screenshots are PR attachments,
 not source-controlled catalog assets.
+
+## ADR-025 — Publisher email/password login inside Electron (2026-09-06)
+
+**Status:** accepted; supersedes ADR-024's browser account handoff.
+
+**Decision.** Put the Supabase email/password form in the Electron publishing
+drawer. Main validates the IPC payload and exchanges credentials through the
+catalog's small password-grant endpoint. The server verifies publisher eligibility
+before returning a session. Main keeps tokens in OS-backed encrypted storage and
+returns only publisher status to the renderer. Passwords are transient and cleared
+after every attempt; no password, token, or auth response is logged or exported.
+Require HTTPS or loopback for password submission.
+
+**Consequences.** Remove the website's login/connection pages, Server Actions,
+cookie clients, auth middleware, and durable device-handoff state. The website is
+exclusively browsing/play. The API authenticates Electron but creates no browser
+session. Existing encrypted desktop publisher sessions continue to refresh. V1
+still uses provisioned developer accounts; public signup remains deferred.

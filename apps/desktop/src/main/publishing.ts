@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID, randomBytes, createHash } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { app, ipcMain, safeStorage, shell, dialog } from 'electron'
 import { boundedText, listing, object, uuid } from '@gauntlet/publishing'
 import { packDirectory, validateArtifact } from '@gauntlet/publishing/node'
@@ -16,6 +16,7 @@ import { IPC } from '../shared/ipc'
 import { success, failure } from '../shared/result'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import type { LoopLogLine } from '../shared/loop'
+import { publisherCredentials } from './publishing-auth'
 import type { PublicationPreview, ReleaseHistory } from '../shared/publishing'
 
 interface Session {
@@ -101,7 +102,7 @@ export class Publishing {
     input?: unknown,
     auth?: Session | null,
   ): Promise<any> {
-    const timeout = AbortSignal.timeout(120000)
+    const timeout = AbortSignal.timeout(route === 'login' ? 30000 : 120000)
     const response = await fetch(`${this.catalogUrl}/api/${route}`, {
       method: input === undefined ? 'GET' : 'POST',
       headers: {
@@ -143,30 +144,35 @@ export class Publishing {
       publisherName: String(me.publisher.display_name),
     }
   }
-  async signIn() {
+  async signIn(value: unknown) {
+    const credentials = publisherCredentials(value)
+    const endpoint = new URL(this.catalogUrl)
+    if (
+      endpoint.protocol !== 'https:' &&
+      !(
+        endpoint.protocol === 'http:' &&
+        ['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname)
+      )
+    )
+      throw new Error('Publisher sign-in requires HTTPS or a loopback catalog.')
     if (this.active)
       throw new Error('A publishing operation is already running.')
     this.active = true
     this.signInAbort = new AbortController()
     try {
-      const secret = randomBytes(32).toString('hex'),
-        challenge = createHash('sha256').update(secret).digest('hex')
-      const start = await this.request('device/start', { challenge })
-      if (new URL(start.url).origin !== this.catalogUrl)
-        throw new Error('Unexpected sign-in origin.')
-      await shell.openExternal(start.url)
-      for (let attempt = 0; attempt < 150; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-        const session = await this.request('device/poll', {
-          code: start.code,
-          secret,
-        })
-        if (!session.pending) {
-          this.session(session)
-          return this.status()
-        }
+      const result = await this.request('login', credentials)
+      // Never persist the password or return tokens through IPC.
+      this.signInAbort.signal.throwIfAborted()
+      this.session(result)
+      return {
+        connected: true,
+        catalogUrl: this.catalogUrl,
+        publisherName: boundedText(
+          object(result.publisher).display_name,
+          'publisher name',
+          200,
+        ),
       }
-      throw new Error('Sign-in timed out. Try again.')
     } finally {
       this.active = false
       this.signInAbort = null
@@ -600,7 +606,7 @@ export function registerPublishingIpc(service: Publishing): void {
       }
     })
   handle(IPC.publishing.status, () => service.status())
-  handle(IPC.publishing.signIn, () => service.signIn())
+  handle(IPC.publishing.signIn, (input) => service.signIn(input))
   handle(IPC.publishing.signOut, () => service.signOut())
   handle(IPC.publishing.history, (value) => service.history(value))
   handle(IPC.publishing.previewRelease, (value) =>

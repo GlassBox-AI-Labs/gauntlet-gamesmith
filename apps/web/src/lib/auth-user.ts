@@ -1,9 +1,6 @@
 import 'server-only'
-import { cache } from 'react'
-import { redirect } from 'next/navigation'
 import { publisherSchema } from '@gauntlet/data/contracts'
 import { CatalogError, checked } from '@gauntlet/data/errors'
-import { createClient } from './supabase-server'
 import { createAdminClient } from './supabase-admin'
 import { captureServerError } from './capture'
 export async function publisherForToken(token: string) {
@@ -39,25 +36,4 @@ export async function publisherForUser(id: string) {
       'unauthorized',
     )
   return publisherSchema.parse(row)
-}
-export const getUser = cache(async () => {
-  const client = await createClient(),
-    { data, error } = await client.auth.getUser()
-  if (error) {
-    if (error.name === 'AuthSessionMissingError') return null
-    captureServerError(error, 'auth.user')
-    if ((error.status ?? 0) >= 500)
-      throw new Error('Authentication is temporarily unavailable.')
-    return null
-  }
-  return data.user
-})
-export const getPublisher = cache(async () => {
-  const user = await getUser()
-  return user ? publisherForUser(user.id) : null
-})
-export async function requirePublisher() {
-  const publisher = await getPublisher()
-  if (!publisher) redirect('/login')
-  return publisher
 }

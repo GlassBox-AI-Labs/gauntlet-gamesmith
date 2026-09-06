@@ -36,6 +36,10 @@ export interface ReleaseHistory {
   gameUrl: string | null
   releases: PublishedRelease[]
 }
+export interface PublisherCredentials {
+  email: string
+  password: string
+}
 export interface PublishingApi {
   history(loopId: string): Promise<OperationResult<ReleaseHistory>>
   previewRelease(input: {
@@ -47,7 +51,7 @@ export interface PublishingApi {
     generation: number
   }): Promise<OperationResult<void>>
   status(): Promise<OperationResult<PublisherStatus>>
-  signIn(): Promise<OperationResult<PublisherStatus>>
+  signIn(input: PublisherCredentials): Promise<OperationResult<PublisherStatus>>
   cancelSignIn(): Promise<OperationResult<void>>
   signOut(): Promise<OperationResult<void>>
   prepare(input: PublishDraft): Promise<OperationResult<PublicationPreview>>

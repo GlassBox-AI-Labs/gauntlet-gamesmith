@@ -1,7 +1,7 @@
 import 'server-only'
 import { z } from 'zod'
 import { CatalogError } from '@gauntlet/data/errors'
-import { publisherForToken, getPublisher } from './auth-user'
+import { publisherForToken } from './auth-user'
 import { captureServerError } from './capture'
 import { requestOrigin } from './config'
 export async function readBody(request: Request): Promise<unknown> {
@@ -30,14 +30,10 @@ export async function readBody(request: Request): Promise<unknown> {
     throw new CatalogError('Invalid JSON request.')
   }
 }
-export async function requestPublisher(request: Request, desktopOnly = false) {
+export async function requestPublisher(request: Request) {
   const bearer = request.headers.get('authorization')
   if (bearer?.startsWith('Bearer ') && bearer.length <= 12000)
     return publisherForToken(bearer.slice(7))
-  if (!desktopOnly) {
-    const publisher = await getPublisher()
-    if (publisher) return publisher
-  }
   throw new CatalogError(
     'Sign in from the desktop to publish a saved round.',
     'unauthorized',

@@ -34,38 +34,6 @@ export type Database = {
   }
   public: {
     Tables: {
-      desktop_connections: {
-        Row: {
-          approved_by: string | null
-          challenge: string
-          code: string
-          expires_at: string
-          sealed_session: string | null
-        }
-        Insert: {
-          approved_by?: string | null
-          challenge: string
-          code: string
-          expires_at: string
-          sealed_session?: string | null
-        }
-        Update: {
-          approved_by?: string | null
-          challenge?: string
-          code?: string
-          expires_at?: string
-          sealed_session?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "desktop_connections_approved_by_fkey"
-            columns: ["approved_by"]
-            isOneToOne: false
-            referencedRelation: "publishers"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       games: {
         Row: {
           created_at: string
@@ -249,10 +217,6 @@ export type Database = {
         }
       }
       catalog_games: { Args: never; Returns: Json }
-      consume_desktop_connection: {
-        Args: { connection_challenge: string; connection_code: string }
-        Returns: string
-      }
       promote_game: {
         Args: {
           actor: string
@@ -276,10 +240,6 @@ export type Database = {
         }
       }
       publisher_studio: { Args: { actor: string }; Returns: Json }
-      start_desktop_connection: {
-        Args: { connection_challenge: string; connection_code: string }
-        Returns: undefined
-      }
     }
     Enums: {
       [_ in never]: never

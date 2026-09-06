@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
-import { randomUUID, randomBytes, createHash } from 'node:crypto'
-import { createClient } from '@supabase/supabase-js'
+import { randomUUID, randomBytes } from 'node:crypto'
 import { Catalog } from '@gauntlet/data/api/catalog'
-import { DeviceConnections } from '@gauntlet/data/api/device'
 import { digest, validateArtifact } from '@gauntlet/publishing/node'
 import { localEnvironment } from './environment.mjs'
 import { localClient } from '../server/supabase'
@@ -26,7 +24,11 @@ async function request(route: string, input?: unknown, token?: string) {
     },
     body: input === undefined ? undefined : JSON.stringify(input),
   })
-  return { status: response.status, data: await response.json() }
+  return {
+    status: response.status,
+    data: await response.json(),
+    cookie: response.headers.get('set-cookie'),
+  }
 }
 async function account() {
   const email = `verify-${randomUUID()}@local.test`,
@@ -48,12 +50,15 @@ async function account() {
       })
     ).error,
   )
-  const client = createClient(env.SUPABASE_URL!, env.SUPABASE_ANON_KEY!, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    }),
-    login = await client.auth.signInWithPassword({ email, password })
-  assert.ifError(login.error)
-  return login.data.session!
+  assert.equal(
+    (await request('login', { email, password: 'incorrect-password' })).status,
+    401,
+  )
+  const login = await request('login', { email, password })
+  assert.equal(login.status, 200)
+  assert.equal(login.data.publisher.id, id)
+  assert.equal(login.cookie, null)
+  return { ...login.data, email, password }
 }
 const source = {
     loopId: randomUUID(),
@@ -234,35 +239,6 @@ try {
   assert(
     !(await request('games')).data.some((g: { id: string }) => g.id === gameId),
   )
-  const secret = randomBytes(32).toString('hex'),
-    challenge = createHash('sha256').update(secret).digest('hex'),
-    device = await request('device/start', { challenge })
-  assert.equal(device.status, 200)
-  assert.equal(new URL(device.data.url).origin, base)
-  assert.equal(
-    (await request('device/poll', { code: device.data.code, secret })).data
-      .pending,
-    true,
-  )
-  await new DeviceConnections(db, env.CATALOG_SECRET!, capture).approve(
-    users[0],
-    device.data.code,
-    { access_token: owner.access_token, refresh_token: owner.refresh_token },
-  )
-  assert.notEqual(
-    (await request('device/poll', { code: device.data.code, secret: 'wrong' }))
-      .status,
-    200,
-  )
-  assert.equal(
-    (await request('device/poll', { code: device.data.code, secret })).data
-      .access_token,
-    owner.access_token,
-  )
-  assert.notEqual(
-    (await request('device/poll', { code: device.data.code, secret })).status,
-    200,
-  )
   // Invalid bytes and forged source metadata never become ready releases.
   for (const invalid of [
     {
@@ -318,6 +294,11 @@ try {
       .error,
   )
   assert.equal((await request('me', undefined, owner.access_token)).status, 401)
+  assert.equal(
+    (await request('login', { email: owner.email, password: owner.password }))
+      .status,
+    401,
+  )
   assert.ifError(
     (await db.from('publishers').update({ enabled: true }).eq('id', users[0]))
       .error,
@@ -329,9 +310,16 @@ try {
     },
   })
   assert.notEqual(direct.status, 200)
-  assert.equal((await fetch(`${base}/dashboard`)).status, 404)
+  for (const route of [
+    '/dashboard',
+    '/login',
+    '/connect',
+    '/connect/complete',
+    '/api/device/start',
+  ])
+    assert.equal((await fetch(`${base}${route}`)).status, 404)
   console.log(
-    'PASS: saved-round provenance, desktop-only endpoints, signed uploads, immutable validation, restart retry, owner checks, promotion, rollback, unpublish, cross-instance one-time handoff, and read-only website.',
+    'PASS: saved-round provenance, desktop-only endpoints, signed uploads, immutable validation, restart retry, owner checks, promotion, rollback, unpublish, native email/password sign-in with no browser cookies, and read-only website.',
   )
 } finally {
   await db.from('games').update({ current_release_id: null }).eq('id', gameId)
@@ -342,7 +330,6 @@ try {
     .from('game-artifacts')
     .remove(ids.flatMap((id) => [`${id}.json`, `pending/${id}.json`]))
   for (const id of users) {
-    await db.from('desktop_connections').delete().eq('approved_by', id)
     await db.from('publishers').delete().eq('id', id)
     await db.auth.admin.deleteUser(id)
   }

@@ -9,17 +9,15 @@ Developers build locally with their harness accounts. They publish a completed
 saved round from Electron using a separate Supabase publisher account. The desktop
 owns listing metadata, builds, private previews, explicit promotion, release
 history, rollback, unpublish, and sign-out. The Next.js website only exposes a
-public game grid, player, and publisher profile. Its browser sign-in/connection
-pages are a utility for transferring a publisher session to Electron, not a web
-management surface. No manual artifact file input or independent import flow.
+public game grid, player, and publisher profile. Email/password login lives in the Electron publishing drawer; the website
+has no authentication UI or browser session. No manual artifact file input or independent import flow.
 
 Everything belongs in the monorepo: Next.js in `apps/web`, Electron in
 `apps/desktop`, shared UI in `packages/ui`, domain operations in `packages/data`,
 schema/migrations/generated types in `packages/db`, and artifact contracts/packing
 in `packages/publishing`. Shared components use the app logo and design tokens.
 
-Local Supabase owns publisher Auth, catalog metadata, immutable release envelopes,
-and one-time desktop connections. Local run history remains SQLite in Electron
+Local Supabase owns publisher Auth, catalog metadata, immutable release envelopes. Local run history remains SQLite in Electron
 main. The app never reads or transfers harness credentials. Publisher eligibility
 is administrator-verified monorepo access, with closed public signup for v1.
 

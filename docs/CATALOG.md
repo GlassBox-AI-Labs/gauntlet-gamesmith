@@ -50,8 +50,9 @@ reset UI are deferred; local admins use Supabase Auth administration.
 
 1. Open a run and click **Publish round N** for its latest completed saved round,
    or select a specific completed round and click **Publish**.
-2. **Sign in to publish** opens the browser's Supabase sign-in handoff. Approve
-   the connection you initiated; the browser then transfers the session to Electron.
+2. Enter your developer email and password directly in the publishing drawer and
+   click **Sign in to publish**. Supabase authenticates the account without opening
+   a browser. The password is cleared after each attempt and is never saved.
 3. Enter listing metadata and the relative shipping-output directory (default
    `dist`). An optional cover path must identify a raster image in that output.
 4. **Build & open private preview** builds the selected immutable saved revision
@@ -75,9 +76,11 @@ The app blocks quitting during an active publishing operation. Incomplete launch
 ownership fails closed for inspection; safe upload retry survives restart.
 
 Electron main stores the publisher session using OS-backed encryption; tokens
-never reach the renderer, agents, game build, or export. The browser handoff is
-one-time, challenge-bound, and expires after five minutes. Pending sessions are
-encrypted in Postgres so approval/polling can use different Next.js instances.
+never reach the renderer, agents, game build, or export.
+Email/password credentials cross the validated preload bridge once to main,
+which calls the catalog's small Supabase password-grant endpoint. Authentication
+requires HTTPS or a loopback catalog. The API sets no browser cookies; only tokens
+are encrypted on disk. The website has no account UI or auth middleware.
 Private previews last 30 minutes and survive server restart with the same
 `CATALOG_SECRET`. Treat their URLs as capabilities, not public links.
 
@@ -101,10 +104,12 @@ machine; v1 deliberately trusts allowlisted developers.
 ## Architecture and conventions
 
 `apps/web` uses Next.js App Router. Server Components read domain functions
-rather than their own HTTP endpoints. The only browser forms are sign-in and
-connection approval, implemented as Server Actions. Thin, authenticated Route
-Handlers implement the Electron protocol. Browser session cookies cannot call
-the release mutation endpoints; those require a publisher bearer token.
+rather than their own HTTP endpoints.
+There are no browser account forms or Server Actions in this browse-only
+site. Thin authenticated Route Handlers implement the Electron protocol, including
+Supabase email/password login. Release mutation endpoints require a publisher
+bearer token and accept no cookie authentication.
+
 
 `packages/data` owns validated domain operations with an injected typed Supabase
 client. Postgres RPCs own multi-table transactions and generation checks. Public
@@ -135,7 +140,7 @@ request body limit through scoped Storage upload URLs.
 V1 is local. The website is a standard Next.js project with Vercel root
 `apps/web`, workspace install, and `next build`. Hosted runtime configuration
 requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, a stable
-64-character hex `CATALOG_SECRET`, `CATALOG_ORIGIN`, and `GAME_ORIGIN` on a separate
+64-character hex `CATALOG_SECRET` and `GAME_ORIGIN` on a separate
 HTTPS domain. Service credentials are server-only. A hosted game-content/CDN
 adapter and deployment configuration remain required before a cloud launch;
 the local Node game host is not a Vercel Function. No cloud resources are deployed.
@@ -151,6 +156,5 @@ pnpm catalog:verify
 
 The integration check requires the running local service. It provisions temporary
 publishers and cleans up their data. It exercises real Auth, ownership, saved-round
-uploads, validation/retry, preview, promotion, rollback, unpublish, one-time
-connection transfer, and private-table denial. It refuses a non-local Supabase
+uploads, validation/retry, preview, promotion, rollback, unpublish, native email/password sign-in, and private-table denial. It refuses a non-local Supabase
 endpoint. Screenshots are PR attachments, not repository assets.

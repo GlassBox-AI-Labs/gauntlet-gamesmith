@@ -126,23 +126,6 @@ $$;
 ALTER FUNCTION "public"."catalog_games"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."consume_desktop_connection"("connection_code" "text", "connection_challenge" "text") RETURNS "text"
-    LANGUAGE "plpgsql"
-    SET "search_path" TO 'public', 'pg_temp'
-    AS $$
-declare c public.desktop_connections;
-begin
-  select * into c from public.desktop_connections where code=connection_code and challenge=connection_challenge and expires_at>now() for update;
-  if not found then raise exception 'Connection expired'; end if;
-  if c.sealed_session is null then return null; end if;
-  delete from public.desktop_connections where code=c.code;
-  return c.sealed_session;
-end $$;
-
-
-ALTER FUNCTION "public"."consume_desktop_connection"("connection_code" "text", "connection_challenge" "text") OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."games" (
     "id" "uuid" NOT NULL,
     "publisher_id" "uuid" NOT NULL,
@@ -192,34 +175,6 @@ $$;
 ALTER FUNCTION "public"."publisher_studio"("actor" "uuid") OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."start_desktop_connection"("connection_code" "text", "connection_challenge" "text") RETURNS "void"
-    LANGUAGE "plpgsql"
-    SET "search_path" TO 'public', 'pg_temp'
-    AS $$
-begin
-  perform pg_advisory_xact_lock(73125001);
-  delete from public.desktop_connections where expires_at < now();
-  if (select count(*) from public.desktop_connections) >= 100 then raise exception 'Too many pending connections'; end if;
-  insert into public.desktop_connections(code,challenge,expires_at) values(connection_code,connection_challenge,now()+interval '5 minutes');
-end $$;
-
-
-ALTER FUNCTION "public"."start_desktop_connection"("connection_code" "text", "connection_challenge" "text") OWNER TO "postgres";
-
-
-CREATE TABLE IF NOT EXISTS "public"."desktop_connections" (
-    "code" "text" NOT NULL,
-    "challenge" "text" NOT NULL,
-    "expires_at" timestamp with time zone NOT NULL,
-    "sealed_session" "text",
-    "approved_by" "uuid",
-    CONSTRAINT "desktop_connections_challenge_check" CHECK (("challenge" ~ '^[a-f0-9]{64}$'::"text"))
-);
-
-
-ALTER TABLE "public"."desktop_connections" OWNER TO "postgres";
-
-
 CREATE TABLE IF NOT EXISTS "public"."publication_events" (
     "id" bigint NOT NULL,
     "game_id" "uuid" NOT NULL,
@@ -254,11 +209,6 @@ CREATE TABLE IF NOT EXISTS "public"."publishers" (
 
 
 ALTER TABLE "public"."publishers" OWNER TO "postgres";
-
-
-ALTER TABLE ONLY "public"."desktop_connections"
-    ADD CONSTRAINT "desktop_connections_pkey" PRIMARY KEY ("code");
-
 
 
 ALTER TABLE ONLY "public"."games"
@@ -306,11 +256,6 @@ ALTER TABLE ONLY "public"."games"
 
 
 
-ALTER TABLE ONLY "public"."desktop_connections"
-    ADD CONSTRAINT "desktop_connections_approved_by_fkey" FOREIGN KEY ("approved_by") REFERENCES "public"."publishers"("id");
-
-
-
 ALTER TABLE ONLY "public"."games"
     ADD CONSTRAINT "games_publisher_id_fkey" FOREIGN KEY ("publisher_id") REFERENCES "public"."publishers"("id");
 
@@ -334,9 +279,6 @@ ALTER TABLE ONLY "public"."publishers"
 ALTER TABLE ONLY "public"."releases"
     ADD CONSTRAINT "releases_game_id_fkey" FOREIGN KEY ("game_id") REFERENCES "public"."games"("id");
 
-
-
-ALTER TABLE "public"."desktop_connections" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."games" ENABLE ROW LEVEL SECURITY;
@@ -538,11 +480,6 @@ GRANT ALL ON FUNCTION "public"."catalog_games"() TO "service_role";
 
 
 
-REVOKE ALL ON FUNCTION "public"."consume_desktop_connection"("connection_code" "text", "connection_challenge" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."consume_desktop_connection"("connection_code" "text", "connection_challenge" "text") TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."games" TO "service_role";
 
 
@@ -557,8 +494,6 @@ GRANT ALL ON FUNCTION "public"."publisher_studio"("actor" "uuid") TO "service_ro
 
 
 
-REVOKE ALL ON FUNCTION "public"."start_desktop_connection"("connection_code" "text", "connection_challenge" "text") FROM PUBLIC;
-GRANT ALL ON FUNCTION "public"."start_desktop_connection"("connection_code" "text", "connection_challenge" "text") TO "service_role";
 
 
 
@@ -571,13 +506,6 @@ GRANT ALL ON FUNCTION "public"."start_desktop_connection"("connection_code" "tex
 
 
 
-
-
-
-
-
-
-GRANT ALL ON TABLE "public"."desktop_connections" TO "service_role";
 
 
 
