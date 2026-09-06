@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shipchain"
+  short_description: "Ship a stacked branch and PR, then stay on it"
+  default_prompt: "Use $shipchain to test, sync with the latest main, resolve conflicts, and push this workspace as a new feature branch stacked on the current branch with a pull request — then stay on the new branch so further work builds on top of it."
