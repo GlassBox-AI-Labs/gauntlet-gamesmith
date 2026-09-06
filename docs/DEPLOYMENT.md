@@ -10,13 +10,24 @@ This deployment does not change packaging UX or add multiplayer.
 | Service | Configuration |
 | --- | --- |
 | Supabase | `glassbox` organization; `glassbox-arcade`, project ref `kxvftslyclbrcmxevwbj`; Free / Nano; `us-east-1` |
-| Catalog | Vercel project root `apps/web`; Next.js; Node 22; function region `iad1` |
-| Games | Separate Vercel project root `apps/game-host`; Next.js Route Handlers; Node 22; `iad1` |
+| Catalog | Vercel `glassbox3` Hobby team; `glassbox-arcade` (`prj_9s1HO1s9K3qWbr1YMMHnasM5Ma0H`); root `apps/web`; Next.js; Node 22; `iad1` |
+| Games | Same Hobby team; `glassbox-games` (`prj_SNLaAftPWyGfpqyjt7bEms21c00V`); root `apps/game-host`; Next.js Route Handlers; Node 22; `iad1` |
 
 Initial rollout is in progress. Supabase has been provisioned and the four migrations
-through `20260906152854_remove_browser_auth.sql` have been applied. Vercel project
-identifiers, public URLs, and the verified deployment commit are recorded here after
-the hosted smoke test succeeds. Do not interpret a local build as a live deployment.
+through `20260906152854_remove_browser_auth.sql` have been applied. Public signup is
+disabled, the email provider remains enabled, and a provisioned developer's password
+login has been verified. Both Vercel projects have production-only server environments,
+outside-root workspace access, Node 22, and Virginia functions configured. The game
+project's assigned production domain is `glassbox-games.vercel.app`. GitHub connection
+and the first deployments remain pending; no hosted game playback has been verified.
+
+Deployment ownership is the GlassBox account: Vercel user `glassboxailabs-7530`, team
+`glassbox3` (`team_Xdj5d9SOU4rIrCYN4lxD4hGe`). Connect its Git integration to the
+GlassBox GitHub identity before deployment.
+Stay on **Vercel Hobby and Supabase Free**. The public
+`GlassBox-AI-Labs/gauntlet-gamesmith` repository is eligible for Hobby Git integration;
+private organization repositories require a different plan. Do not change repository
+visibility or upgrade plans as part of this rollout.
 
 Keep **Include source files outside of the Root Directory** enabled in both Vercel
 projects so workspace packages and the root lockfile are available. Each app's
@@ -179,14 +190,15 @@ and any caveats in the PR or release record. Screenshots remain PR attachments.
   Supabase Storage. Large/popular catalogs can consume Free-tier egress quickly;
   monitor Storage/egress and Vercel usage before increasing the pilot audience.
   Per-file delivery/CDN invalidation and automatic artifact retention are deferred.
-- Watch Vercel errors and Supabase Auth/Storage/database usage. Keep spending within
-  the existing $20/month Vercel budget and Free Supabase plan; approve a larger
-  budget before paid add-ons, extra seats, or upgrading Supabase. Free projects
+- Watch Vercel errors and Supabase Auth/Storage/database usage. Keep both services on
+  their free plans. The operator explicitly declined Vercel Pro; paid plans, add-ons,
+  and extra seats require new authorization. Free Supabase projects
   may pause for inactivity; restore through Supabase before diagnosing app errors.
 - Keep a separate database backup procedure and private artifact backups before
   relying on this pilot for irreplaceable content. Free-tier backup guarantees are
   not equivalent to a paid production recovery plan.
 
 References: [Vercel monorepos](https://vercel.com/docs/monorepos),
+[Git deployment plan restrictions](https://vercel.com/docs/git),
 [function payloads and streaming](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions),
 [Supabase private downloads](https://supabase.com/docs/guides/storage/serving/downloads).
