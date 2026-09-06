@@ -86,7 +86,8 @@ export function ensureSkill(): SkillInstall {
 
 /** Attempt transcripts live with the project so a folder transfer is complete. */
 export function attemptsDir(workspaceDir: string, create = true): string {
-  return safeWorkspaceMetadataDir(workspaceDir, ['builds'], create)
+  // Persisted before the Build vocabulary rename; recovery and exports keep this path (ADR-020).
+  return safeWorkspaceMetadataDir(workspaceDir, ['runs'], create)
 }
 
 /** Non-secret process basics required to find binaries and run terminal tools. */

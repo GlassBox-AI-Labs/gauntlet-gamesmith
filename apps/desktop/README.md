@@ -36,6 +36,58 @@ Existing-folder execution consent does not grant private CLI transcript access o
 
 Generated workspace files are immutable publications. Final report snapshots live under `.gauntlet-gamesmith/reports/<build-id>/` and their exact relative path is recorded in the build log; SQLite and the Run tab remain the canonical live view. Claude implementer definitions use definition-addressed `gauntlet-implementer-v2-<digest>.md` names. The app never replaces legacy `gauntlet-report*.md`, `.claude/agents/implementer.md`, or an existing publication with different bytes. Retained generations are capped and require explicit operator cleanup when the cap is reached.
 
+### Chat with a build
+
+New builds use a continuing implementation lead across rounds. Each round
+still has its own process, saved source revision, independent critic, and accounting. The
+Chat can explain the lead's plan, decisions, failed approaches,
+verification, and remaining work when you ask. Saved notes stay behind the scenes;
+there is no separate lead status or notebook panel. Notes are saved when an attempt
+ends, and the assistant distinguishes recorded claims from actual verification.
+Your included directions take precedence over earlier plans and decisions.
+
+Explicit **Resume build** enables lead continuity for an existing build. Automatic
+recovery of historical builds retains their recorded behavior. Session lookup
+failures before any work can recover in a fresh session with the same frozen
+requirements. Imported builds use portable notebook recovery and fresh CLI sessions.
+The activity log records these changes. Codex continuation subtracts prior session
+usage so earlier rounds are not charged again; without a reliable baseline the
+app visibly starts a fresh session with saved memory.
+
+Each build has an initially empty **Chat** conversation in a collapsible right sidebar.
+Connect Codex on the Agents tab, then ask questions or describe changes. Attach
+files/images with the paperclip or drop them into Chat. Image previews and
+file chips stay with each message. You can send a file without text and clarify
+its purpose in the next reply. The chat
+assistant can inspect the workspace, consolidates feedback, and asks related
+clarifying questions together. Clear directions queue automatically. Messages and
+directions persist across rounds, app restarts, and folder export/import.
+The Build assistant also receives the lead's latest valid notebook and recent
+attempt reports. It answers separately from the lead and can explain recorded
+decisions while the lead works. Questions alone do not change requirements.
+
+Directions enter at the next implementation dispatch. The implementation and its
+critic share an immutable requirements snapshot. Explicit **Resume build** includes
+pending directions when retrying implementation, even in the same round. Automatic
+recovery keeps the interrupted attempt's snapshot; an active phase does not receive
+late messages. Included directions persist until newer steering changes them. Withdraw a
+pending direction before inclusion, or send another message to undo an included
+one. Chat does not resume stopped or passed builds. **Stop response** cancels only
+chat. Consults stay out of the rounds table and its attempt counts. Their prompts,
+tool events, and raw output remain in the build log; build-wide cost and token totals
+include chat. Attachments are saved as immutable copies outside the original
+Reference Pack. Confirmed directions name the copies to include at the next
+implementation boundary; the critic receives those same versions. Asset requests
+can schedule a 3D model rebuild or integrate a supplied replacement during
+implementation. A rebuild request is work for its first included round; its
+resulting requirement persists afterward. Originals remain available for history
+and export. Limits are 10 files per message, 20 MB per file, and 100 files/100 MB
+of steering attachments per build. Choose the chat model below the message box;
+the choice is saved per build and affects the next reply. An active reply keeps its
+original model and cost attribution. V1 offers the supported Codex models through
+the app's Codex profile, defaults to `gpt-5.6-sol`, and uses low effort independently
+of the build's implementation model.
+
 Run the TypeScript development app from the repository root:
 
 ```sh

@@ -230,7 +230,7 @@ const EVENT_PROJECTION_COLUMNS = `
 
 const BUILD_STATUSES = new Set<BuildStatus>(['running', 'passed', 'exhausted', 'stopped', 'failed'])
 const ATTEMPT_STATUSES = new Set<AttemptStatus>(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
-const PHASE_ROLES = new Set<PhaseRole>(['reference', 'implement', 'critique'])
+const PHASE_ROLES = new Set<PhaseRole>(['reference', 'implement', 'critique', 'consult'])
 const LOG_CHANNELS = new Set<LogChannel>(['prompt', 'thought', 'tool', 'output', 'search', 'media', 'usage', 'error', 'system'])
 const REVISION = /^[0-9a-f]{40,64}$/
 const SHA256 = /^[0-9a-f]{64}$/
@@ -2144,17 +2144,18 @@ export class Ledger {
     return this.db.prepare('SELECT 1 FROM phase_attempts WHERE build_id = ? AND role = ? LIMIT 1').get(buildId, role) !== undefined
   }
 
-  attemptAggregate(buildId: string): { costUsd: number; inputTokens: number; outputTokens: number } {
+  attemptAggregate(buildId: string): { costUsd: number; inputTokens: number; outputTokens: number; phaseAttemptCount: number } {
     const row = this.db.prepare(
       `SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd,
               COALESCE(SUM(input_tokens), 0) AS input_tokens,
-              COALESCE(SUM(output_tokens), 0) AS output_tokens
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COUNT(CASE WHEN role != 'consult' THEN 1 END) AS phase_attempt_count
        FROM phase_attempts WHERE build_id = ?`,
-    ).get(buildId) as { cost_usd: number; input_tokens: number; output_tokens: number }
+    ).get(buildId) as { cost_usd: number; input_tokens: number; output_tokens: number; phase_attempt_count: number }
     if (!Number.isFinite(row.cost_usd) || row.cost_usd < 0 || !Number.isSafeInteger(row.input_tokens) || row.input_tokens < 0 || !Number.isSafeInteger(row.output_tokens) || row.output_tokens < 0) {
       throw new Error('Canonical attempt totals exceed their safe projection range.')
     }
-    return { costUsd: row.cost_usd, inputTokens: row.input_tokens, outputTokens: row.output_tokens }
+    return { costUsd: row.cost_usd, inputTokens: row.input_tokens, outputTokens: row.output_tokens, phaseAttemptCount: row.phase_attempt_count }
   }
 
   attemptCount(buildId: string): number {
@@ -2163,7 +2164,7 @@ export class Ledger {
   }
 
   latestAttemptForBuild(buildId: string): PhaseAttempt | null {
-    const row = this.db.prepare('SELECT * FROM phase_attempts WHERE build_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(buildId) as AttemptRow | undefined
+    const row = this.db.prepare("SELECT * FROM phase_attempts WHERE build_id = ? AND role != 'consult' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(buildId) as AttemptRow | undefined
     return row ? toAttempt(row) : null
   }
 
@@ -2176,7 +2177,7 @@ export class Ledger {
 
   activeAttemptForBuild(buildId: string): PhaseAttempt | null {
     const rows = this.db.prepare(
-      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND role != 'consult' AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 2",
     ).all(buildId) as unknown as AttemptRow[]
     if (rows.length > 1) throw new Error('A build has multiple active attempts; recovery stopped.')
     return rows[0] ? toAttempt(rows[0]) : null
@@ -2184,14 +2185,14 @@ export class Ledger {
 
   oldestQueuedAttemptForBuild(buildId: string): PhaseAttempt | null {
     const row = this.db.prepare(
-      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND role != 'consult' AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1",
     ).get(buildId) as AttemptRow | undefined
     return row ? toAttempt(row) : null
   }
 
   latestInterruptedAttemptForBuild(buildId: string): PhaseAttempt | null {
     const row = this.db.prepare(
-      "SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT * FROM phase_attempts WHERE build_id = ? AND role != 'consult' AND status = 'interrupted' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).get(buildId) as AttemptRow | undefined
     return row ? toAttempt(row) : null
   }
@@ -2226,6 +2227,26 @@ export class Ledger {
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(buildId, round, excludedAttemptId) as { session_id: string } | undefined
     return normalizeSessionId(row?.session_id)
+  }
+
+  /** Bounded session candidates from strictly earlier implementations of this same build. */
+  priorLeadImplementations(attemptId: string): Array<Pick<PhaseAttempt, 'id' | 'round' | 'harness' | 'model' | 'sessionId' | 'summary'>> {
+    const rows = this.db.prepare(`SELECT id, round, harness, model, session_id, substr(summary, 1, 4000) AS summary FROM phase_attempts
+      WHERE build_id = (SELECT build_id FROM phase_attempts WHERE id = ?) AND role = 'implement'
+        AND rowid < (SELECT rowid FROM phase_attempts WHERE id = ?)
+      ORDER BY rowid DESC LIMIT 1000`).all(attemptId, attemptId) as unknown as Array<{
+        id: string; round: number; harness: PhaseAttempt['harness']; model: string | null; session_id: string | null; summary: string | null
+      }>
+    return rows.map(row => ({ id: row.id, round: row.round, harness: row.harness, model: row.model,
+      sessionId: normalizeSessionId(row.session_id), summary: row.summary }))
+  }
+
+  /** Full structured memory, independent of the truncated activity-log projection. */
+  leadEvents(buildId: string): BuildLogLine[] {
+    const size = this.db.prepare("SELECT count(*) AS count, coalesce(sum(length(CAST(text AS BLOB))),0) AS bytes FROM events WHERE build_id=? AND kind LIKE 'lead-%'").get(buildId) as { count: number; bytes: number }
+    if (size.count > 10000 || size.bytes > 8 * 1024 * 1024) throw new Error('Lead history exceeds its size limit.')
+    const rows = this.db.prepare("SELECT * FROM events WHERE build_id=? AND kind LIKE 'lead-%' ORDER BY seq LIMIT 10000").all(buildId) as unknown as EventRow[]
+    return rows.map(row => this.toLogLine(row, undefined))
   }
 
   previousImplementRevision(buildId: string, round: number): string | null {
@@ -2269,7 +2290,7 @@ export class Ledger {
 
   latestAttemptIdExcept(buildId: string, excludedAttemptId: string): string | null {
     const row = this.db.prepare(
-      'SELECT id FROM phase_attempts WHERE build_id = ? AND id <> ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+      "SELECT id FROM phase_attempts WHERE build_id = ? AND id <> ? AND role != 'consult' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     ).get(buildId, excludedAttemptId) as { id: string } | undefined
     return row?.id ?? null
   }
@@ -2325,7 +2346,7 @@ export class Ledger {
 
   nextQueuedAttempt(buildId: string): PhaseAttempt | null {
     const row = this.db
-      .prepare("SELECT * FROM phase_attempts WHERE build_id = ? AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
+      .prepare("SELECT * FROM phase_attempts WHERE build_id = ? AND role != 'consult' AND status = 'queued' ORDER BY created_at ASC, rowid ASC LIMIT 1")
       .get(buildId) as AttemptRow | undefined
     return row ? toAttempt(row) : null
   }
@@ -2791,6 +2812,19 @@ export class Ledger {
       this.patchAttempt(replacement.id, { revision: attempt.revision })
       return this.getAttempt(replacement.id)!
     })
+  }
+
+  steeringEvents(buildId: string): BuildLogLine[] {
+    const size = this.db.prepare("SELECT count(*) AS count, coalesce(sum(length(CAST(text AS BLOB))),0) AS bytes FROM events WHERE build_id=? AND kind LIKE 'steering-%'").get(buildId) as { count: number; bytes: number }
+    if (size.count > 10000 || size.bytes > 8 * 1024 * 1024) throw new Error('Steering history exceeds its size limit.')
+    const rows = this.db.prepare("SELECT * FROM events WHERE build_id=? AND kind LIKE 'steering-%' ORDER BY seq LIMIT 10000").all(buildId) as unknown as EventRow[]
+    return rows.map(row => this.toLogLine(row, undefined))
+  }
+
+  unfinishedConsults(): PhaseAttempt[] {
+    const rows = this.db.prepare("SELECT * FROM phase_attempts WHERE role='consult' AND status IN ('queued','running') LIMIT 101").all() as unknown as AttemptRow[]
+    if (rows.length > 100) throw new Error('Too many unfinished steering chats; manual intervention is required.')
+    return rows.map(toAttempt)
   }
 
   close(): void {

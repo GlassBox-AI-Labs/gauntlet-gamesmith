@@ -5,8 +5,9 @@ import { readChildAgents, type ChildStreamBoundary } from '../child-agents'
 import { codexTokens, readCodexUsage, usageForThread } from '../codex-usage'
 import type { Ledger } from '../ledger'
 import { estimateCostUsd, PRICE_TABLE_VERSION } from '../pricing'
-import { rateLimitPause } from '../rate-limit'
-import { translateCodexLine } from '../streams/codex-stream'
+import { createCodexStream } from '../streams/codex-stream'
+import { isMissingLeadSession } from '../../shared/lead'
+import { LeadContinuity } from '../lead-continuity'
 import type { ImplementOutcome } from './implement-finalize'
 import type { ExitInfo, LogGate, StreamParser } from './types'
 
@@ -46,10 +47,13 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
   const models = build.models
   const startedAtMs = Date.parse(ledger.getAttempt(attempt.id)?.startedAt ?? attempt.createdAt)
   const tokens = emptyTokens()
+  const lead = new LeadContinuity(ledger)
+  let usageBaseline = lead.usageBaseline(attempt)
   let threadId: string | null = null
   let lastAgentMessage = ''
-  let failure: string | null = null
-  let rateLimitNotice: string | null = null
+  let didWork = false
+  let missingSession = false
+  const stream = createCodexStream()
   let turns = 0
   /**
    * Codex reports the orchestrator's own usage exactly once, in the
@@ -66,7 +70,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
    * Subtract that inheritance instead of billing it to both attempts. A fresh
    * session inherits nothing.
    */
-  let inherited: TokenTotals | null = effectivePromptForAttempt(attempt.prompt).resumeRequested ? null : emptyTokens()
+  let inherited: TokenTotals | null = usageBaseline ?? (effectivePromptForAttempt(attempt.prompt).resumeRequested ? null : emptyTokens())
   let workers: AgentMetric[] = []
   let workerLimitReported = false
   let lastFlush = runtime.now()
@@ -147,10 +151,16 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
   const onLine = (line: string): void => {
     if (!line.trim()) return
     lastProgressAt = runtime.now()
-    const translated = translateCodexLine(line)
+    const translated = stream.onLine(line)
     if (!translated) return
     if (translated.threadStarted !== undefined) {
       threadId = translated.threadStarted
+      if (threadId && lead.sessionStarted(attempt, threadId)) {
+        usageBaseline = emptyTokens()
+        inherited = usageBaseline
+        liveTokens = null
+        plog('system', 'The CLI started a different lead session; continuing from saved memory with fresh usage accounting.')
+      }
       ledger.patchAttempt(attempt.id, { sessionId: threadId })
       // Capture the inheritance here rather than at the first poll: nothing of
       // this attempt has been spent yet when its thread is announced.
@@ -158,22 +168,21 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
       plog('system', `codex thread ${threadId?.slice(0, 8) ?? '?'}`)
     }
     for (const event of translated.events) plog(event.kind, event.text, event.agentId)
+    if (translated.events.some(event => ['tool', 'output', 'thought', 'search'].includes(event.channel))) didWork = true
     if (translated.summary !== undefined) lastAgentMessage = translated.summary
     if (translated.turn) {
-      // See artifact-phase-stream: a completed turn clears a survived error.
-      failure = null
       const turn = codexTokens(translated.turn.usage)
-      tokens.input += turn.input
-      tokens.output += turn.output
-      tokens.cacheRead += turn.cacheRead
-      tokens.cacheWrite += turn.cacheWrite
+      if (usageBaseline && translated.turn.usage) {
+        for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) tokens[key] = Math.max(0, turn[key] - usageBaseline[key])
+        if (threadId && translated.turn.usage) lead.recordUsage(attempt, threadId, turn)
+      } else if (!usageBaseline) {
+        tokens.input += turn.input
+        tokens.output += turn.output
+        tokens.cacheRead += turn.cacheRead
+        tokens.cacheWrite += turn.cacheWrite
+      }
       turns += 1
       flush(true)
-    }
-    if (translated.error) {
-      failure = translated.error
-      if (rateLimitPause(failure, 0)) rateLimitNotice = failure
-      plog('error', failure)
     }
   }
 
@@ -181,7 +190,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
     await runtime.finalize(exit, () => {
       pollWorkers()
       const metrics = metricsNow()
-      const error = exit.spawnError ?? failure ?? rateLimitNotice ?? (exit.code !== 0 && exit.code !== null ? `codex exited ${exit.code}` : null)
+      const error = exit.spawnError ?? stream.failure() ?? (exit.code !== 0 && exit.code !== null ? `codex exited ${exit.code}` : null)
       return {
         metrics,
         costUsd: Object.values(metrics.perModel).reduce((sum, model) => sum + (model.costUsd ?? 0), 0),
@@ -190,6 +199,8 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
         numTurns: turns,
         sessionId: threadId,
         summary: lastAgentMessage ? lastAgentMessage.slice(0, 4000) : null,
+        leadResponse: lastAgentMessage || null,
+        sessionUnavailable: !didWork && (missingSession || isMissingLeadSession(error ?? '')),
         error,
         logResult: null,
       }
@@ -198,7 +209,10 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
 
   return {
     onLine,
-    onStderr: (text) => plog('stderr', text.replace(/\s+/g, ' ').trim().slice(0, 400)),
+    onStderr: (text) => {
+      missingSession ||= isMissingLeadSession(text)
+      plog('stderr', text.replace(/\s+/g, ' ').trim().slice(0, 400))
+    },
     tick: () => flush(),
     progressAt: () => lastProgressAt,
     finalize,

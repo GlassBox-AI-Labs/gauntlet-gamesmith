@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 
+import type { SteeringApi } from '../../shared/steering'
 import type { HarnessApi } from '../../shared/harness'
 import type { BuildApi } from '../../shared/build'
 import type { OnboardingApi } from '../../shared/onboarding'
@@ -15,6 +16,7 @@ declare global {
     attachments: AttachmentApi
     harnesses: HarnessApi
     builds: BuildApi
+    steering: SteeringApi
     reports: ReportApi
     onboarding: OnboardingApi
   }

@@ -5,6 +5,7 @@ import type { Ledger } from '../ledger'
 import { planCompletion } from '../round-planner'
 import { captureRoundRevision } from '../round-revision'
 import { commitRunningAttempt } from '../attempt-transition'
+import { LeadContinuity } from '../lead-continuity'
 import type { ExitInfo } from './types'
 
 export interface ImplementOutcome {
@@ -17,6 +18,9 @@ export interface ImplementOutcome {
   summary: string | null
   error: string | null
   logResult: Record<string, unknown> | null
+  /** Full final response is parsed into bounded memory; it is never sent over IPC verbatim. */
+  leadResponse?: string | null
+  sessionUnavailable?: boolean
 }
 
 interface TerminalLog {
@@ -43,6 +47,7 @@ export interface ImplementFinalizeRuntime {
   persistBuildTerminal(status: 'exhausted' | 'stopped', reason: string): void
   finishBuild(status: 'exhausted' | 'stopped', reason: string): void
   broadcast(): void
+  copyRetryEvidence?(attemptId: string): void
 }
 
 function nonNegativeInteger(value: unknown): number | null {
@@ -110,9 +115,26 @@ export async function finalizeImplement(
   })
   const terminalMetric = { kind: 'metric', text: metricsText(outcome) }
 
+  const lead = new LeadContinuity(ledger)
+  const checkpoint = lead.checkpoint(attempt, outcome.leadResponse ?? outcome.summary)
+  if (checkpoint) {
+    const message = checkpoint.warning ?? `Saved the lead notebook for round ${attempt.round}.`
+    runtime.persistLog(checkpoint.warning ? 'error' : 'system', message)
+    runtime.notifyPersistedLog(checkpoint.warning ? 'error' : 'system', message)
+  }
+
   if (runtime.finishCancelled(exit, 'Implement attempt timed out.', terminalMetric)) return
   if (!runtime.verifyCritiqueTree(terminalMetric)) return
   if (outcome.error) {
+    if (lead.recoverUnavailableSession(attempt, outcome.sessionUnavailable === true, runtime.copyRetryEvidence)) {
+      runtime.persistLog(terminalMetric.kind, terminalMetric.text)
+      runtime.notifyPersistedLog(terminalMetric.kind, terminalMetric.text)
+      const message = 'Saved lead session was unavailable. Recovery is queued from durable memory with the same frozen steering requirements.'
+      runtime.persistLog('system', message)
+      runtime.notifyPersistedLog('system', message)
+      runtime.broadcast()
+      return
+    }
     if (await runtime.retryRateLimit(outcome.error, terminalMetric)) return
     runtime.failAttempt(outcome.error, `Implement build failed: ${outcome.error}`, terminalMetric)
     return

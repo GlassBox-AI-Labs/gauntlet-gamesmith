@@ -12,6 +12,34 @@ export interface CodexLineResult {
   turn?: { usage?: Record<string, number> }
   /** Failure message from turn.failed. */
   error?: string
+  /** A stream error that remains pending until a later turn.completed. */
+  streamError?: string
+}
+
+/** Keeps transport recovery separate from a terminal turn failure for every Codex role. */
+export function createCodexStream(): {
+  onLine(line: string): CodexLineResult | null
+  failure(): string | null
+} {
+  let terminalFailure: string | null = null
+  let pendingError: string | null = null
+  return {
+    onLine(line) {
+      const result = translateCodexLine(line)
+      if (!result) return null
+      if (result.error) terminalFailure = result.error
+      if (result.streamError) pendingError = result.streamError
+      if (result.turn && pendingError) {
+        if (!terminalFailure) result.events.push({
+          channel: 'system', kind: 'system',
+          text: 'Codex completed after recovering from a stream error. The earlier errors remain in the run log.',
+        })
+        pendingError = null
+      }
+      return result
+    },
+    failure: () => terminalFailure ?? pendingError,
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,8 +142,8 @@ export function translateCodexLine(line: string): CodexLineResult | null {
   }
   if (type === 'error') {
     const error = isRecord(obj.error) ? obj.error : null
-    out.error = String(obj.message ?? error?.message ?? 'codex stream error')
-    out.events.push({ channel: 'error', kind: 'error', text: trunc(out.error, 300) })
+    out.streamError = String(obj.message ?? error?.message ?? 'codex stream error')
+    out.events.push({ channel: 'error', kind: 'error', text: trunc(out.streamError, 300) })
     return out
   }
   out.events.push(systemEvent(`event "${type}"`, obj))

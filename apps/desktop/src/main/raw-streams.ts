@@ -205,11 +205,11 @@ function codexStream(roots: RawStreamRoots, threadId: string): string {
 export function resolveRawStreamPath(roots: RawStreamRoots, input: RawStreamInput): string {
   if (input.attemptId !== roots.attemptId || !isRecordId(roots.attemptId)) throw new Error('Raw stream does not belong to this attempt.')
   if (input.stream === 'stdout') {
-    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'builds')
+    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'runs')
     return containedFile(roots.workspaceDir, root, path.join(root, `${roots.attemptId}.out.ndjson`))
   }
   if (input.stream === 'stderr') {
-    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'builds')
+    const root = path.join(roots.workspaceDir, WORKSPACE_METADATA_DIR, 'runs')
     return containedFile(roots.workspaceDir, root, path.join(root, `${roots.attemptId}.err.log`))
   }
   const agent = parseAgentMetricId(input.agentId)

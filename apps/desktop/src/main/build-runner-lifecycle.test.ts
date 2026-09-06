@@ -11,6 +11,8 @@ import { IPC } from '../shared/ipc'
 import { resolveModels } from '../shared/models'
 import { composeImplementPrompt, composeResumePrompt } from '../shared/prompts'
 import { Ledger } from './ledger'
+import { SteeringStore } from './steering-store'
+import { LeadContinuity } from './lead-continuity'
 import { implementerAgentDefinition } from './delegation'
 import { accountLabelForProbe, BuildRunner, type BuildRunnerDeps } from './build-runner'
 import { referencePackFingerprint } from './phase-contracts'
@@ -136,6 +138,97 @@ afterEach(async () => {
 })
 
 describe('LoopRunner lifecycle boundary', () => {
+  it.each(['gpt-5.6-luna', 'claude-fable-5'])('launches round two with the same %s lead and newly included steering', model => {
+    let argv: string[] = []
+    const { ledger, runner, workspaceDir } = setup({ spawnChild: (_command, args) => { argv = args; throw new Error('fixture launch inspected') } })
+    const configured = { ...input(workspaceDir), orchestratorModel: model, referenceMode: 'skip' as const }
+    const models = resolveModels(configured, configured)
+    const build = ledger.createBuild({ prompt: 'Build the game.', workspaceDir, maxRounds: 3, budgetUsd: null, models })
+    const harness = model.startsWith('gpt-') ? 'codex' : 'claude'
+    const lead = new LeadContinuity(ledger), steering = new SteeringStore(ledger)
+    lead.enable(build.id)
+    const first = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness, prompt: 'First implementation' })
+    lead.prepare(first, first.prompt)
+    lead.checkpoint(first, `<lead-notebook>${JSON.stringify({ attemptId: first.id, plan: 'Tune combat', decisions: 'Use a fixed timestep', experiments: 'Variable step caused jitter', verification: 'Build passed', nextSteps: 'Improve enemy readability' })}</lead-notebook>`)
+    ledger.patchAttempt(first.id, { status: 'succeeded', model: `${model}-resolved-alias`, sessionId: 'run-lead-session' })
+    if (harness === 'codex') lead.recordUsage(first, 'run-lead-session', { input: 100, output: 25, cacheRead: 500, cacheWrite: 0 })
+    const critic = ledger.createAttempt({ buildId: build.id, round: 1, role: 'critique', harness: 'codex', prompt: 'Independent critique' })
+    ledger.patchAttempt(critic.id, { status: 'succeeded' })
+    const consult = ledger.createAttempt({ buildId: build.id, round: 1, role: 'consult', harness: 'codex', prompt: 'Steering' })
+    const source = steering.addSteeringMessage(build.id, 'user', 'Reduce enemy speed by 20%', consult.id)
+    steering.completeSteering(consult.id, { reply: 'Queued', directives: [{ text: 'Reduce enemy speed by 20%', sourceMessageIds: [source] }] })
+    ledger.patchBuild(build.id, { status: 'stopped', round: 1 })
+    expect(runner.resumeBuild(build.id).ok).toBe(true)
+    expect(argv).toContain('run-lead-session')
+    const prompt = harness === 'codex' ? argv.at(-1)! : argv[argv.indexOf('-p') + 1]
+    expect(prompt).toContain('Reduce enemy speed by 20%')
+    expect(prompt).toContain('Variable step caused jitter')
+    expect(prompt).toContain('implementation round 2')
+    expect(steering.steeringState(build.id).directives[0].firstRound).toBe(2)
+  })
+
+  it('sends pending steering to the actual implementation launch when explicitly resumed', async () => {
+    const prompts: string[] = []
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => { prompts.push(args.at(-1)!); throw new Error('fixture launch stopped') },
+    })
+    const started = runner.start({ ...input(workspaceDir), referenceMode: 'skip' })
+    await waitFor(() => ledger.getBuild(started.buildId!)?.status === 'failed')
+    const original = ledger.attemptsForBuild(started.buildId!)[0]
+    const store = new SteeringStore(ledger)
+    const consult = ledger.createAttempt({ buildId: started.buildId!, round: 1, role: 'consult', harness: 'codex', prompt: 'chat' })
+    const source = store.addSteeringMessage(started.buildId!, 'user', 'Add edge panning now', consult.id)
+    store.completeSteering(consult.id, { reply: 'Queued edge panning.', directives: [{ text: 'Add edge panning now', sourceMessageIds: [source] }] })
+    expect(runner.resumeBuild(started.buildId!)).toEqual({ ok: true, buildId: started.buildId! })
+    await waitFor(() => prompts.length === 2 && ledger.getBuild(started.buildId!)?.status === 'failed')
+    const retry = ledger.latestAttemptForBuild(started.buildId!)!
+    expect(retry.round).toBe(original.round)
+    expect(prompts[0]).not.toContain('Add edge panning now')
+    expect(prompts[1]).toContain('Add edge panning now')
+    expect(store.requirementsForAttempt(original.id)?.directives).toEqual([])
+    expect(store.requirementsForAttempt(retry.id)?.directives).toHaveLength(1)
+  })
+
+  it.each([
+    { completion: true, exitCode: 0, terminal: false, succeeds: true },
+    { completion: false, exitCode: 0, terminal: false, succeeds: false },
+    { completion: true, exitCode: 2, terminal: false, succeeds: false },
+    { completion: true, exitCode: 0, terminal: true, succeeds: false },
+  ])('finalizes a Codex retry from terminal evidence: %j', async ({ completion, exitCode, terminal, succeeds }) => {
+    const { ledger, runner, workspaceDir } = setup({
+      wait: async () => {},
+      spawnChild: (_command, _args, options) => {
+        const lines = [
+          { type: 'error', message: 'Reconnecting... 5/5 (websocket closed)' },
+          { type: 'item.completed', item: { type: 'error', message: 'Falling back from WebSockets to HTTPS transport.' } },
+          { type: 'item.completed', item: { type: 'agent_message', text: 'Completed the implementation.' } },
+          ...(terminal ? [{ type: 'turn.failed', error: { message: 'terminal failure' } }] : []),
+          ...(completion ? [{ type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 2 } }] : []),
+        ]
+        fs.writeSync(options.stdio[1], lines.map(line => JSON.stringify(line)).join('\n') + '\n')
+        fs.writeFileSync(path.join(workspaceDir, 'game.txt'), 'preserved game work')
+        const child = new EventEmitter() as ChildProcess
+        Object.assign(child, { pid: process.pid, unref: () => child })
+        queueMicrotask(() => child.emit('exit', exitCode))
+        return child
+      },
+    })
+    const started = runner.start({ ...input(workspaceDir), referenceMode: 'skip', maxRounds: 1 })
+    await waitFor(() => ledger.getBuild(started.buildId!)?.status !== 'running')
+    const attempt = ledger.attemptsForBuild(started.buildId!)[0]
+    expect(attempt.status).toBe(succeeds ? 'succeeded' : 'failed')
+    expect(attempt.summary).toBe('Completed the implementation.')
+    expect(ledger.eventsForAttempt(attempt.id).some(event => event.text.includes('Reconnecting... 5/5'))).toBe(true)
+    if (succeeds) {
+      expect(attempt.revision).toMatch(/^[0-9a-f]{40,64}$/)
+      expect(attempt.error).toBeNull()
+      expect(ledger.getBuild(started.buildId!)?.status).toBe('exhausted')
+    } else {
+      expect(attempt.revision).toBeNull()
+      expect(attempt.error).toBe(terminal ? 'terminal failure' : completion ? 'codex exited 2' : 'Reconnecting... 5/5 (websocket closed)')
+    }
+  })
+
   it('starts skipped study directly at implementation and preserves that policy across reload and Resume', async () => {
     const spawnChild = vi.fn(() => { throw new Error('fixture launch stopped') })
     const { ledger, runner, workspaceDir, deps } = setup({ spawnChild })
@@ -2006,7 +2099,7 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(env.GAUNTLET_CLAUDE_BIN).toBe('/trusted/bin/claude')
   })
 
-  it('resumes only the same-round session with the complete effective prompt', () => {
+  it('enables the continuing lead on explicit Resume with the complete effective prompt and saved usage', () => {
     let spawnedArgs: string[] | null = null
     const { ledger, runner, workspaceDir } = setup({
       spawnChild: (_command, args) => {
@@ -2029,14 +2122,16 @@ describe('LoopRunner lifecycle boundary', () => {
     })
     const basePrompt = composeImplementPrompt('Build the game.', 1, null, 'Work independently and verify the result.', `reference/${build.id}`)
     const interrupted = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'codex', prompt: basePrompt })
-    ledger.patchAttempt(interrupted.id, { status: 'cancelled', sessionId: 'same-round-thread', finishedAt: new Date().toISOString() })
+    ledger.patchAttempt(interrupted.id, { status: 'cancelled', model: models.orchestratorModel, sessionId: 'same-round-thread', finishedAt: new Date().toISOString() })
+    new LeadContinuity(ledger).recordUsage(interrupted, 'same-round-thread', { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })
     ledger.patchBuild(build.id, { status: 'stopped', round: 1 })
 
     expect(runner.resumeBuild(build.id)).toEqual({ ok: true, buildId: build.id })
 
     expect(spawnedArgs, JSON.stringify(ledger.eventsForBuild(build.id, 2_000))).not.toBeNull()
     expect(spawnedArgs).toContain('same-round-thread')
-    expect(spawnedArgs!.at(-1)).toBe(composeResumePrompt(basePrompt))
+    expect(spawnedArgs!.at(-1)).toContain(composeResumePrompt(basePrompt))
+    expect(spawnedArgs!.at(-1)).toContain('continuing implementation lead')
     expect(spawnedArgs!.at(-1)).toContain('<goal>\nBuild the game.\n</goal>')
   })
 

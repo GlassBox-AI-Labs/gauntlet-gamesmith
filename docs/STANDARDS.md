@@ -458,9 +458,11 @@ incomplete.
 
 **Default severity:** Major.
 
-- Every phase starts a fresh process. The only state that crosses a boundary is files on disk and
-  the previous verdict the implement prompt composer injects. Session resume is an optimization,
-  never a correctness dependency.
+- Every phase starts a fresh supervised process. Enabled implementation leads may continue their
+  prior CLI session and receive a saved notebook (ADR-027). The complete phase contract, frozen
+  operator directions, files on disk, and validated prior findings remain authoritative. Session
+  resume and model-written memory are optimizations, never correctness dependencies. Research and
+  critique sessions remain independent.
 - Findings are supplied and trusted across phases only through `composeImplementPrompt`. The app
   does not supply the implementer's transcript to the critic or prior critique evidence to the
   implementer; prompts explicitly exclude those sources, and no advancement decision trusts raw
@@ -475,7 +477,10 @@ incomplete.
   outputs do not create source drift.
 - The authoritative bare revision repository lives under the app-private user-data root. Workspace
   metadata and imported portable history never become Git ref/object authority.
-- A phase's inputs are named by exact path in its prompt and are immutable for the build's lifetime.
+- A phase's file inputs are named by exact path in its prompt. The reference pack is immutable for
+  the build's lifetime; steering text and attachments are frozen per implementation attempt and shared
+  by its critic. Automatic recovery reuses that snapshot; explicit Resume may include pending
+  directions in a new attempt without rewriting history (ADR-028/021/026).
   If an input is missing or invalid, the phase reports a process finding and fails closed rather
   than filling the gap from memory.
 

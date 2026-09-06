@@ -1,3 +1,4 @@
+import { SteeringSidebar } from './SteeringSidebar'
 import { newBuildOrchestratorEffort } from '../../../shared/models'
 import { withExistingBuildTrust } from '@/lib/trusted-action'
 import { DEFAULT_BUILD_PACE } from '../../../shared/build-presets'
@@ -630,6 +631,7 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
           )}
         </div>
       </main>
+      {build && snapshot && !selectedReport && !composing && <SteeringSidebar key={build.id} buildId={build.id} buildName={build.title} round={build.round} buildStatus={build.status}/>}
       <BuildComposerDialog open={composing} busy={busy || attachmentBusy} onOpenChange={setComposing}>
             <BuildForm
               settings={formSettings}

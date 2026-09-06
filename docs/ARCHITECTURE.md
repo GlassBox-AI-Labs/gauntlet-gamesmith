@@ -1,6 +1,6 @@
 # Gauntlet Gamesmith architecture
 
-This guide describes the desktop implementation as of 2026-09-05. Use it to find the owner of a
+This guide describes the desktop implementation as of 2026-09-06. Use it to find the owner of a
 behavior before changing or reviewing it. [STANDARDS.md](STANDARDS.md) defines review requirements;
 [DECISIONS.md](DECISIONS.md) records policy and architectural decisions. The original
 [HANDOFF.md](../HANDOFF.md) is historical: its `packages/contracts`, Zod, separate storage adapters,
@@ -83,6 +83,25 @@ The normal sequence is Reference Study → implement → critique → next imple
    verdict. A valid passing verdict ends the build. A valid non-passing verdict feeds its findings
    into the next implementation if limits permit. Invalid artifacts, failed processes, timeouts,
    cancellation, and stale inputs follow failure/retry paths; they cannot count as a pass.
+
+### Continuing lead and steering
+
+[`main/lead-continuity.ts`](../apps/desktop/src/main/lead-continuity.ts) selects a continuing
+implementation session and persists its dispatch, exact prompt, accounting baseline, and notebook
+checkpoints in mirrored ledger events. New builds enable it; explicit Resume enables existing builds.
+Each implementation still owns a separate process and immutable attempt. The scheduler and critic
+retain all advancement decisions. Missing private sessions and imported history recover from saved
+notes in fresh sessions; notes never prove verification or override current requirements (ADR-027).
+
+[`main/steering.ts`](../apps/desktop/src/main/steering.ts) supervises an independent read-only Codex
+consult. [`main/steering-store.ts`](../apps/desktop/src/main/steering-store.ts) persists messages,
+source-bound directions, and the immutable requirements shared by implementation and its critic.
+Explicit Resume can include pending directions in the same round; automatic recovery preserves the
+prior snapshot. Consults do not enter the phase queue or rounds table, but their events and costs
+remain visible. Attachments are immutable, verified copies outside the frozen Reference Pack.
+`window.steering` exposes validated operations. The existing Chat conversation answers questions about
+the lead using its saved memory; there is no additional lead panel or notebook IPC surface.
+Complete attempt and recovery events remain in the existing activity log (ADR-028/021/022/026/027).
 
 ### Asset compatibility
 

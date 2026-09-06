@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { translateCodexLine } from './codex-stream'
+import { createCodexStream, translateCodexLine } from './codex-stream'
 
 describe('translateCodexLine', () => {
   it('keeps every event in the captured Codex 0.147.0 visibility fixture visible', () => {
@@ -124,7 +124,8 @@ describe('translateCodexLine', () => {
 
   it('surfaces top-level errors and unfamiliar top-level and item events', () => {
     const error = translateCodexLine(JSON.stringify({ type: 'error', message: 'stream disconnected' }))!
-    expect(error.error).toBe('stream disconnected')
+    expect(error.error).toBeUndefined()
+    expect(error.streamError).toBe('stream disconnected')
     expect(error.events).toEqual([{ channel: 'error', kind: 'error', text: 'stream disconnected' }])
 
     expect(translateCodexLine(JSON.stringify({ type: 'item.updated', item: { type: 'todo_list' } }))?.events).toEqual([
@@ -141,5 +142,38 @@ describe('translateCodexLine', () => {
         text: 'unhandled codex item "future_item": {"type":"future_item","id":"x"}',
       },
     ])
+  })
+})
+
+describe('Codex stream recovery', () => {
+  it('retains an unresolved error until completion and keeps recovery visible', () => {
+    const stream = createCodexStream()
+    const reconnect = 'Reconnecting... 5/5 (stream disconnected before completion)'
+    expect(stream.onLine(JSON.stringify({ type: 'error', message: reconnect }))?.events)
+      .toContainEqual({ channel: 'error', kind: 'error', text: reconnect })
+    stream.onLine(JSON.stringify({ type: 'item.completed', item: { type: 'error', message: 'Falling back from WebSockets to HTTPS transport.' } }))
+    stream.onLine(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Implemented the game.' } }))
+    expect(stream.failure()).toBe(reconnect)
+    // Completion without usage is still positive completion evidence.
+    const completed = stream.onLine(JSON.stringify({ type: 'turn.completed' }))!
+    expect(stream.failure()).toBeNull()
+    expect(completed.events).toContainEqual({ channel: 'system', kind: 'system', text: expect.stringContaining('completed after recovering') })
+  })
+
+  it('keeps a terminal failure despite a later completion or transport notice', () => {
+    const stream = createCodexStream()
+    stream.onLine(JSON.stringify({ type: 'turn.failed', error: { message: 'terminal failure' } }))
+    stream.onLine(JSON.stringify({ type: 'error', message: 'stream disconnected' }))
+    const completed = stream.onLine(JSON.stringify({ type: 'turn.completed' }))!
+    expect(stream.failure()).toBe('terminal failure')
+    expect(completed.events).toEqual([])
+  })
+
+  it('does not use an earlier completion to forgive a later error', () => {
+    const stream = createCodexStream()
+    stream.onLine(JSON.stringify({ type: 'turn.completed' }))
+    stream.onLine(JSON.stringify({ type: 'error', error: { message: 'connection lost' } }))
+    stream.onLine(JSON.stringify({ type: 'turn.started' }))
+    expect(stream.failure()).toBe('connection lost')
   })
 })

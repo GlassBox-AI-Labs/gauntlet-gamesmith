@@ -135,6 +135,7 @@ export class WorkflowTail {
     initialOffsets: Record<string, number> = {},
     ownerRoot = dir,
     initialIdentities: Record<string, { dev: number; ino: number }> = {},
+    private readonly sinceMs = 0,
   ) {
     const absoluteDir = path.resolve(dir)
     try {
@@ -221,7 +222,10 @@ export class WorkflowTail {
         }
         budget.entries -= 1
         if (/^wf_[a-zA-Z0-9_-]{1,128}$/.test(entry.name)) {
-          if (entry.isDirectory() && !entry.isSymbolicLink()) runIds.push(entry.name)
+          if (entry.isDirectory() && !entry.isSymbolicLink()) {
+            const stat = fs.lstatSync(path.join(canonicalRoot, entry.name))
+            if ((stat.birthtimeMs || stat.mtimeMs) >= this.sinceMs) runIds.push(entry.name)
+          }
           else this.reportError(`unsafe-run:${entry.name}`, 'workflow-tail', `inspect workflow run ${entry.name}`, new Error('entry is not a regular directory'))
         }
         if (runIds.length >= MAX_WORKFLOW_RUNS) break

@@ -77,12 +77,12 @@ export function safePid(pid: unknown): pid is number {
 
 export function processMetaPath(workspaceDir: string, attemptId: string): string {
   if (!isRecordId(attemptId)) throw new Error('Invalid attempt id for process metadata.')
-  return path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'builds', `${attemptId}.json`)
+  return path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'runs', `${attemptId}.json`)
 }
 
 function processStartingMetaPath(workspaceDir: string, attemptId: string): string {
   if (!isRecordId(attemptId)) throw new Error('Invalid attempt id for starting process metadata.')
-  return path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'builds', `${attemptId}.starting.json`)
+  return path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'runs', `${attemptId}.starting.json`)
 }
 
 export function processStreamPaths(workspaceDir: string, attemptId: string): { outPath: string; errPath: string } {
@@ -90,7 +90,7 @@ export function processStreamPaths(workspaceDir: string, attemptId: string): { o
   // Path derivation must be side-effect free. Callers validate the registered
   // workspace identity before using these names; launch creates the owned attempt
   // directory explicitly in prepareProcessMeta.
-  const dir = path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'builds')
+  const dir = path.join(path.resolve(workspaceDir), WORKSPACE_METADATA_DIR, 'runs')
   return { outPath: path.join(dir, `${attemptId}.out.ndjson`), errPath: path.join(dir, `${attemptId}.err.log`) }
 }
 

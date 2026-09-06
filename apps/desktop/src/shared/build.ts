@@ -2,7 +2,7 @@ import type { HarnessKind } from './harness'
 import type { DeleteBuildsResult } from './reports'
 import type { OperationResult } from './result'
 
-export type PhaseRole = 'reference' | 'assets' | 'implement' | 'critique'
+export type PhaseRole = 'reference' | 'assets' | 'implement' | 'critique' | 'consult'
 
 /** Prefix on a requeued attempt's prompt marking it as a resume of an interrupted attempt. */
 export const RESUME_PREFIX = '[[gauntlet:resume]]\n'
@@ -17,6 +17,7 @@ export function markResumePrompt(prompt: string): string {
 
 /** The heading an attempt's execution prompt is logged (and backfilled) under. */
 export function attemptPromptLabel(attempt: { role: PhaseRole; round: number }): string {
+  if (attempt.role === 'consult') return 'Steering chat execution prompt'
   if (attempt.role === 'reference') return 'Reference Study execution prompt'
   if (attempt.role === 'assets') return 'Asset Build execution prompt'
   return `Round ${attempt.round} ${attempt.role === 'implement' ? 'implementer' : 'critic'} execution prompt`
@@ -200,6 +201,8 @@ export interface BuildSnapshot {
   detailTruncated?: boolean
   projectionWarning?: string | null
   aggregate?: {
+    /** Build phases only; chat consults retain their cost without counting as phase attempts. */
+    phaseAttemptCount?: number
     costUsd: number
     inputTokens: number
     outputTokens: number
@@ -229,6 +232,12 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   shot: 'media',
   metric: 'usage',
   'raw-stream': 'system',
+  'lead-enabled': 'system',
+  'lead-dispatch': 'system',
+  'lead-checkpoint': 'output',
+  'lead-usage': 'usage',
+  'lead-session-unavailable': 'error',
+  'lead-session-reset': 'system',
   error: 'error',
   stderr: 'error',
   system: 'system',

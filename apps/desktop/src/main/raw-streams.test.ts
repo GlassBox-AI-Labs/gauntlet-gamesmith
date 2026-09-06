@@ -95,7 +95,7 @@ describe('readRawStreamChunk', () => {
 describe('resolveRawStreamPath', () => {
   it('resolves build, archived child, workflow, and Codex streams from ids', () => {
     const input = roots()
-    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'builds')
+    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'runs')
     const childRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'agents', attemptId)
     const workflowRoot = path.join(input.claudeHome, 'projects', input.workspaceDir.replace(/[^a-zA-Z0-9-]/g, '-'), 'session-1', 'subagents', 'workflows', 'wf_build')
     const codexRoot = path.join(input.codexHome, 'sessions', '2026', '09', '02')
@@ -113,7 +113,7 @@ describe('resolveRawStreamPath', () => {
 
   it('refuses a symlink that escapes the owned root', () => {
     const input = roots()
-    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'builds')
+    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'runs')
     fs.mkdirSync(attemptRoot, { recursive: true })
     const outside = path.join(root!, 'outside.jsonl')
     fs.writeFileSync(outside, 'secret')
@@ -123,7 +123,7 @@ describe('resolveRawStreamPath', () => {
 
   it('refuses hard-linked raw files', () => {
     const input = roots()
-    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'builds')
+    const attemptRoot = path.join(input.workspaceDir, '.gauntlet-gamesmith', 'runs')
     fs.mkdirSync(attemptRoot, { recursive: true })
     const outside = path.join(root!, 'outside.jsonl')
     fs.writeFileSync(outside, 'secret')
@@ -137,7 +137,7 @@ describe('resolveRawStreamPath', () => {
     fs.mkdirSync(path.join(input.workspaceDir, '.gauntlet-gamesmith'), { recursive: true })
     fs.mkdirSync(outside)
     fs.writeFileSync(path.join(outside, `${attemptId}.out.ndjson`), '{}\n')
-    fs.symlinkSync(outside, path.join(input.workspaceDir, '.gauntlet-gamesmith', 'builds'))
+    fs.symlinkSync(outside, path.join(input.workspaceDir, '.gauntlet-gamesmith', 'runs'))
     expect(() => resolveRawStreamPath(input, { attemptId, stream: 'stdout' })).toThrow('unsafe path component')
   })
 
@@ -146,8 +146,8 @@ describe('resolveRawStreamPath', () => {
     const originalWorkspace = input.workspaceDir
     const movedWorkspace = `${originalWorkspace}-moved`
     const protectedRoot = path.join(root!, 'private-app-data')
-    const protectedBuilds = path.join(protectedRoot, '.gauntlet-gamesmith', 'builds')
-    fs.mkdirSync(path.join(originalWorkspace, '.gauntlet-gamesmith', 'builds'), { recursive: true })
+    const protectedBuilds = path.join(protectedRoot, '.gauntlet-gamesmith', 'runs')
+    fs.mkdirSync(path.join(originalWorkspace, '.gauntlet-gamesmith', 'runs'), { recursive: true })
     fs.mkdirSync(protectedBuilds, { recursive: true })
     fs.writeFileSync(path.join(protectedBuilds, `${attemptId}.out.ndjson`), 'private')
     fs.renameSync(originalWorkspace, movedWorkspace)

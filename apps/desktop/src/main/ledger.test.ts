@@ -860,7 +860,7 @@ describe('Ledger', () => {
     const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'claude', prompt: 'go' })
     expect(() => ledger.patchAttempt(attempt.id, { costUsd: Number.MAX_VALUE })).toThrow(/persisted safety range/)
     expect(() => ledger.patchAttempt(attempt.id, { inputTokens: 1_000_000_001 })).toThrow(/persisted safety range/)
-    expect(ledger.attemptAggregate(build.id)).toEqual({ costUsd: 0, inputTokens: 0, outputTokens: 0 })
+    expect(ledger.attemptAggregate(build.id)).toEqual({ costUsd: 0, inputTokens: 0, outputTokens: 0, phaseAttemptCount: 1 })
     ledger.close()
   })
 

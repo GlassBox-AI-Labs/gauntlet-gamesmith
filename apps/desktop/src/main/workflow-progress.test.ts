@@ -58,6 +58,13 @@ const runFile = {
 }
 
 describe('readWorkflowProgress', () => {
+  it('excludes completed workflow summaries from earlier lead turns', () => {
+    const dir = withAttempt(runFile)
+    const file = path.join(dir, fs.readdirSync(dir)[0])
+    const born = fs.statSync(file).birthtimeMs
+    expect(readWorkflowProgress(dir).runs).toHaveLength(1)
+    expect(readWorkflowProgress(dir, born + 1).runs).toEqual([])
+  })
   it('turns workflow agents into metric rows', () => {
     const progress = readWorkflowProgress(withAttempt(runFile))
     expect(progress.runs).toEqual([

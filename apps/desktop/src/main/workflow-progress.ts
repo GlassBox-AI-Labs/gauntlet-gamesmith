@@ -85,7 +85,7 @@ function trim(value: unknown, max: number): string | undefined {
  * the directory does not exist, which is the normal case for a run whose
  * orchestrator never reached for a workflow.
  */
-export function readWorkflowProgress(dir: string): WorkflowProgress {
+export function readWorkflowProgress(dir: string, sinceMs = 0): WorkflowProgress {
   const files: string[] = []
   let directory: fs.Dir | null = null
   try {
@@ -119,6 +119,7 @@ export function readWorkflowProgress(dir: string): WorkflowProgress {
       descriptor = fs.openSync(path.join(dir, file), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
       const stat = fs.fstatSync(descriptor)
       if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_ATTEMPT_FILE_BYTES) continue
+      if ((stat.birthtimeMs || stat.mtimeMs) < sinceMs) continue
       if (stat.size > remainingBytes) {
         warning = `Workflow progress projection reached its ${MAX_TOTAL_READ_BYTES}-byte aggregate read limit; remaining summaries were omitted this poll.`
         continue

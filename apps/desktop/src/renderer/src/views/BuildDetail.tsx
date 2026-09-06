@@ -58,6 +58,20 @@ function fmtTs(iso: string): string {
   return Number.isNaN(date.getTime()) ? '' : date.toTimeString().slice(0, 8)
 }
 
+function sumAttempts(attempts: PhaseAttempt[], now: number) {
+  return attempts.reduce(
+    (sum, attempt) => ({
+      costUsd: sum.costUsd + (attempt.costUsd ?? 0),
+      inputTokens: sum.inputTokens + (attempt.inputTokens ?? 0),
+      outputTokens: sum.outputTokens + (attempt.outputTokens ?? 0),
+      durationMs: sum.durationMs + (runtimeMs(attempt, now) ?? 0),
+      bestScore: Math.max(sum.bestScore, attempt.verdict?.score ?? 0),
+      hasScore: sum.hasScore || Boolean(attempt.verdict),
+    }),
+    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
+  )
+}
+
 function AttemptModelSummary({ models }: { models: BuildSnapshot['build']['models'] }): React.JSX.Element {
   const implementer = models.subagentModel ? `${modelLabel(models.subagentModel)} · ${models.subagentEffort}` : 'orchestrator · solo'
   const criticHarness = HARNESS_LABELS[harnessFor(models.criticModel)]
@@ -277,13 +291,14 @@ export function BuildDetail({
   const build = snapshot.build
   const running = build.status === 'running'
   const now = useNow(running)
-  const liveAttempt = snapshot.attempts.find((attempt) => attempt.status === 'running') ?? null
+  const liveAttempt = snapshot.attempts.find((attempt) => attempt.role !== 'consult' && attempt.status === 'running') ?? null
   const referenceAttempts = snapshot.attempts.filter((attempt) => attempt.role === 'reference')
   const activeReferenceAttempt = referenceAttempts.at(-1)
   const activeReferenceStudy = activeReferenceAttempt
     ? referenceStudies.get(activeReferenceAttempt.id)
     : [...referenceStudies.values()].at(-1)
   const visibleAttempts = selectedRound == null ? snapshot.attempts : snapshot.attempts.filter((attempt) => attempt.round === selectedRound)
+  const tableAttempts = visibleAttempts.filter((attempt) => attempt.role !== 'consult')
   const visibleAttemptIds = new Set(visibleAttempts.map((attempt) => attempt.id))
   const visibleLines = selectedRound == null ? lines : lines.filter((line) => line.attemptId && visibleAttemptIds.has(line.attemptId))
   const rawStreams = build.playTrusted ? rawStreamLinks(visibleAttempts, visibleLines) : []
@@ -331,29 +346,20 @@ export function BuildDetail({
   const critiqueRubric = exactCritiquePrompt ?? buildCriticPrompt(build.prompt, 1, referenceRoot)
   const detailStatus = selectedRound == null
     ? build.status
-    : visibleAttempts.some((attempt) => attempt.status === 'running') ? 'running' : (visibleAttempts.at(-1)?.status ?? 'queued')
+    : tableAttempts.some((attempt) => attempt.status === 'running') ? 'running' : (tableAttempts.at(-1)?.status ?? 'queued')
   const selectedCritique = selectedRound == null ? undefined : critiqueRounds.find((round) => round.round === selectedRound)
-  const visibleTotals = visibleAttempts.reduce(
-    (sum, attempt) => ({
-      costUsd: sum.costUsd + (attempt.costUsd ?? 0),
-      inputTokens: sum.inputTokens + (attempt.inputTokens ?? 0),
-      outputTokens: sum.outputTokens + (attempt.outputTokens ?? 0),
-      durationMs: sum.durationMs + (runtimeMs(attempt, now) ?? 0),
-      bestScore: Math.max(sum.bestScore, attempt.verdict?.score ?? 0),
-      hasScore: sum.hasScore || Boolean(attempt.verdict),
-    }),
-    { costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, bestScore: 0, hasScore: false },
-  )
+  const visibleTotals = sumAttempts(visibleAttempts, now)
+  const tableTotals = sumAttempts(tableAttempts, now)
   const totals = selectedRound == null && snapshot.aggregate
     ? { ...visibleTotals, ...snapshot.aggregate }
-    : visibleTotals
-  const attemptCount = selectedRound == null ? (snapshot.totalAttempts ?? visibleAttempts.length) : visibleAttempts.length
+    : selectedRound == null ? visibleTotals : tableTotals
+  const attemptCount = selectedRound == null ? (snapshot.aggregate?.phaseAttemptCount ?? tableAttempts.length) : tableAttempts.length
   const totalTokens = totals.inputTokens + totals.outputTokens
   const buildStartMs = Date.parse(build.createdAt)
   const buildEndMs = running ? now : Date.parse(build.updatedAt)
   const visibleElapsedMs = selectedRound == null && Number.isFinite(buildStartMs) && Number.isFinite(buildEndMs)
     ? Math.max(0, buildEndMs - buildStartMs)
-    : visibleAttempts.reduce<number | null>((latest, attempt) => {
+    : tableAttempts.reduce<number | null>((latest, attempt) => {
         const elapsed = elapsedThroughAttemptMs(build.createdAt, attempt)
         return elapsed == null ? latest : Math.max(latest ?? 0, elapsed)
       }, null)
@@ -439,7 +445,7 @@ export function BuildDetail({
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <Badge className={`border px-2.5 py-1 text-[11px] uppercase tracking-wide ${STATUS_STYLES[detailStatus] ?? ''}`}>{detailStatus}</Badge>
         <span className="text-sm text-[#ded9d6]">
-          {selectedRound == null ? liveAttempt?.role === 'reference' ? 'reference study · rounds not started' : `round ${build.round}/${build.maxRounds}` : visibleAttempts.length === 1 ? '1 attempt' : `${visibleAttempts.length} attempts`}
+          {selectedRound == null ? liveAttempt?.role === 'reference' ? 'reference study · rounds not started' : `round ${build.round}/${build.maxRounds}` : tableAttempts.length === 1 ? '1 attempt' : `${tableAttempts.length} attempts`}
         </span>
         <span className="font-mono text-sm text-[#9fb2c8]">${totals.costUsd.toFixed(2)} equivalent API cost</span>
         <span className="font-mono text-sm text-[#b7cbe0]" title={`${totalTokens.toLocaleString()} combined tokens`}>{fmtTokens(totalTokens)} tokens</span>
@@ -490,7 +496,7 @@ export function BuildDetail({
         <div className="mb-5 flex flex-wrap gap-2">
           {canLoadNewerAttempts && <button type="button" onClick={onLoadNewestAttempts} disabled={loadingOlderAttempts} className="inline-flex items-center gap-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50">Newest attempts</button>}
           {canLoadOlderAttempts && <button type="button" onClick={onLoadOlderAttempts} disabled={loadingOlderAttempts} className="inline-flex items-center gap-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50">{loadingOlderAttempts && <LoaderCircle className="size-3.5 animate-spin" />}Load older attempts</button>}
-          <span className="self-center text-xs text-[#77706d]">Showing attempts {(snapshot.attemptOffset ?? 0) + 1}–{(snapshot.attemptOffset ?? 0) + snapshot.attempts.length} of {snapshot.totalAttempts ?? snapshot.attempts.length}</span>
+          <span className="self-center text-xs text-[#77706d]">{tableAttempts.length} phase attempts on this page</span>
         </div>
       )}
       {renameError && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{renameError}</p>}
@@ -569,7 +575,7 @@ export function BuildDetail({
               <colgroup><col className="w-8" /><col className="w-[58px]" /><col className="w-[76px]" /><col className="w-[160px]" /><col className="w-[88px]" /><col className="w-[58px]" /><col className="w-[70px]" /><col className="w-[120px]" /><col className="w-[85px]" /></colgroup>
               <TableHeader><TableRow className="border-[#3b3636] hover:bg-transparent"><TableHead className="w-8 px-1" /><TableHead className="px-2 text-[11px] text-[#68615f]">Round</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Role</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Model</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Status</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Score</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="Equivalent API cost estimate">API cost</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]">Tokens in/out</TableHead><TableHead className="px-2 text-[11px] text-[#68615f]" title="How long this attempt itself ran">Runtime</TableHead></TableRow></TableHeader>
               <TableBody className="text-xs">
-                {visibleAttempts.map((attempt) => (
+                {tableAttempts.map((attempt) => (
                   <AttemptRow
                     key={attempt.id}
                     attempt={attempt}
@@ -581,11 +587,11 @@ export function BuildDetail({
                   />
                 ))}
                 <TableRow className="border-t-2 border-[#4a4342] bg-[#181414] font-medium hover:bg-[#181414]">
-                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">{canLoadOlderAttempts && selectedRound == null ? 'Loaded page' : 'Total'} · {visibleAttempts.length} attempts</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">{visibleTotals.hasScore ? `best ${visibleTotals.bestScore.toFixed(2)}` : '—'}</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${visibleTotals.costUsd.toFixed(2)}</TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title={`${(visibleTotals.inputTokens + visibleTotals.outputTokens).toLocaleString()} combined tokens · ${visibleTotals.inputTokens.toLocaleString()} input (including cache) / ${visibleTotals.outputTokens.toLocaleString()} output`}><div>{fmtTokens(visibleTotals.inputTokens + visibleTotals.outputTokens)} total</div><div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(visibleTotals.inputTokens)} / {fmtTokens(visibleTotals.outputTokens)}</div></TableCell>
-                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title="Sum of the runtimes of the loaded attempts">{fmtDuration(visibleTotals.durationMs)}</TableCell>
+                  <TableCell colSpan={5} className="px-4 py-3 text-[11px] uppercase tracking-wide text-[#8f8885]">{canLoadOlderAttempts && selectedRound == null ? 'Loaded page' : 'Total'} · {tableAttempts.length} attempts</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#f2d98c]">{tableTotals.hasScore ? `best ${tableTotals.bestScore.toFixed(2)}` : '—'}</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[#b7cbe0]">${tableTotals.costUsd.toFixed(2)}</TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title={`${(tableTotals.inputTokens + tableTotals.outputTokens).toLocaleString()} combined tokens · ${tableTotals.inputTokens.toLocaleString()} input (including cache) / ${tableTotals.outputTokens.toLocaleString()} output`}><div>{fmtTokens(tableTotals.inputTokens + tableTotals.outputTokens)} total</div><div className="mt-0.5 text-[10px] text-[#77706d]">{fmtTokens(tableTotals.inputTokens)} / {fmtTokens(tableTotals.outputTokens)}</div></TableCell>
+                  <TableCell className="px-2 py-3 font-mono text-[11px] text-[#c2bbb7]" title="Sum of the runtimes of the loaded attempts">{fmtDuration(tableTotals.durationMs)}</TableCell>
                 </TableRow>
               </TableBody>
             </Table>
