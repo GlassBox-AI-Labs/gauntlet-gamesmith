@@ -95,6 +95,22 @@ describe('translateCodexLine', () => {
     ])
   })
 
+  it('keeps the end of a failing command output, where the reason is', () => {
+    // The shape that filled a real run's log: a playtest harness that streams
+    // per-wave telemetry and prints its verdict on the last line.
+    const output = `${'wave 1/3 score 0 active 8 '.repeat(40)}{"ok":false,"problems":["Timed out in wave 3"]}`
+    const t = translateCodexLine(
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'command_execution', command: 'node tools/browser-check.mjs', exit_code: 1, status: 'failed', aggregated_output: output },
+      }),
+    )!
+    const [, failure] = t.events
+    // The verdict survives; head truncation would have cut exactly this.
+    expect(failure.text.endsWith('{"ok":false,"problems":["Timed out in wave 3"]}')).toBe(true)
+    expect(failure.text.startsWith('command failed: …')).toBe(true)
+  })
+
   it('attributes native subagent start and terminal status events to their full thread id', () => {
     const line = (item: Record<string, unknown>): string => JSON.stringify({ type: 'item.completed', item })
     const id = '01995d1e-0a2b-7e01-b3c4-8b1f2a3d4e5f'
