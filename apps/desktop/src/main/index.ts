@@ -5,7 +5,7 @@ import crypto from 'node:crypto'
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import fixPath from 'fix-path'
 import type { AccountRotation, AccountsResult, AccountsState, HarnessAction, HarnessKind } from '../shared/harness'
 import { IPC } from '../shared/ipc'
@@ -79,6 +79,7 @@ import { settleQuitSupervisors } from './quit-settlement'
 import { readExactFileDescriptor } from './bounded-fd'
 import { resolveUserDataOverride } from './user-data-dir'
 import { configureAgentWritableRoots } from './cli-executable'
+import { listArtifactLocations, listGameAssetGallery, parseArtifactLocationKind, resolveArtifactLocation } from './workspace-artifacts'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
@@ -405,6 +406,43 @@ function registerLoopIpc(): void {
       return success(readRawStreamChunk(streamPath, input.offset, input.identity))
     } catch (error) {
       return failure(redactedErrorMessage(error, 'Could not read raw stream.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.artifacts, (_event, value: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const loop = ledger.getLoop(assertLoopId(value))
+      if (!loop) return failure('Run not found.')
+      const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
+      return success(listArtifactLocations(workspaceDir, loop.id))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not inspect run artifacts.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.assetGallery, (_event, value: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const loop = ledger.getLoop(assertLoopId(value))
+      if (!loop) return failure('Run not found.')
+      const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
+      return success(listGameAssetGallery(workspaceDir, loop.id))
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not inspect generated game assets.'))
+    }
+  })
+  ipcMain.handle(IPC.loop.revealArtifact, async (_event, loopValue: unknown, kindValue: unknown) => {
+    try {
+      if (!ledger) return failure('Run history is not ready.')
+      const loop = ledger.getLoop(assertLoopId(loopValue))
+      if (!loop) return failure('Run not found.')
+      const workspaceDir = ledger.assertLoopWorkspaceIdentity(loop.id)
+      const kind = parseArtifactLocationKind(kindValue)
+      const directory = resolveArtifactLocation(workspaceDir, loop.id, kind)
+      if (!directory) return failure('That artifact folder does not exist or is not safely contained by the project.')
+      const openError = await shell.openPath(directory)
+      return openError ? failure(`Could not open artifact folder: ${openError}`) : success(undefined)
+    } catch (error) {
+      return failure(redactedErrorMessage(error, 'Could not open run artifacts.'))
     }
   })
   ipcMain.handle(IPC.loop.report, (_event, value: unknown) => {

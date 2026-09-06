@@ -13,6 +13,7 @@ function workspace(): string {
   tempDirs.push(dir)
   fs.mkdirSync(path.join(dir, 'critique', 'round-1', 'shots'), { recursive: true })
   fs.mkdirSync(path.join(dir, 'reference', 'images'), { recursive: true })
+  fs.mkdirSync(path.join(dir, '.img2threejs', 'hero'), { recursive: true })
   return dir
 }
 
@@ -68,6 +69,18 @@ describe('media server', () => {
     const partial = await get(`${server.baseUrl}/loop-1/critique/round-1/shots/frame.png`, { Range: 'bytes=2-5' })
     expect(partial).toMatchObject({ status: 206, body: '2345' })
     expect(partial.headers['content-range']).toBe('bytes 2-5/10')
+  })
+
+  it('serves rendered sculptor evidence without exposing project source', async () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, '.img2threejs', 'hero', 'preview.png'), 'preview')
+    fs.mkdirSync(path.join(dir, 'src', 'assets'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'src', 'assets', 'hero.ts'), 'source')
+    const server = await createMediaServer(() => dir)
+    servers.push(server)
+
+    expect(await get(`${server.baseUrl}/loop-1/.img2threejs/hero/preview.png`)).toMatchObject({ status: 200, body: 'preview' })
+    expect((await get(`${server.baseUrl}/loop-1/src/assets/hero.ts`)).status).toBe(404)
   })
 
   it('rejects a wrong token, traversal, and malformed ranges', async () => {

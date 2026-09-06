@@ -323,6 +323,31 @@ export interface RawStreamChunk {
   identity: string
 }
 
+export type ArtifactLocationKind = 'workspace' | 'assets' | 'sculpt-evidence' | 'reference' | 'critique'
+
+export interface ArtifactLocation {
+  kind: ArtifactLocationKind
+  label: string
+  relativePath: string
+  exists: boolean
+  /** Immediate children only, so browsing never triggers an unbounded recursive scan. */
+  itemCount: number
+}
+
+export interface GameAssetGalleryItem {
+  /** Stable, filename-safe factory name such as `crystal-maiden`. */
+  slug: string
+  label: string
+  /** Workspace-relative TypeScript factory path. */
+  factoryPath: string
+  /** Workspace-relative sculptor directory, when evidence exists. */
+  evidencePath: string | null
+  /** Workspace-relative image served by the authenticated loopback media server. */
+  previewPath: string | null
+  /** Immediate evidence files only; intentionally not a recursive scan. */
+  evidenceCount: number
+}
+
 export interface PlayState {
   running: boolean
   url: string | null
@@ -413,6 +438,12 @@ export interface LoopApi {
   log(loopId: string, limit?: number): Promise<LoopLogLine[]>
   prompt(loopId: string, role: RunRole, round: number): Promise<OperationResult<{ runId: string; prompt: string }>>
   readStream(input: ReadRawStreamInput): Promise<OperationResult<RawStreamChunk>>
+  /** Fixed browse targets inside the run workspace with immediate-child counts. */
+  artifacts(loopId: string): Promise<OperationResult<ArtifactLocation[]>>
+  /** Procedural asset factories under src/assets paired with their safest rendered sculptor evidence. */
+  assetGallery(loopId: string): Promise<OperationResult<GameAssetGalleryItem[]>>
+  /** Open a validated artifact folder in the operating system file browser. */
+  revealArtifact(loopId: string, kind: ArtifactLocationKind): Promise<OperationResult<void>>
   report(loopId: string): Promise<OperationResult<string>>
   exportRun(loopId: string): Promise<RunTransferResult>
   importRun(): Promise<RunTransferResult>

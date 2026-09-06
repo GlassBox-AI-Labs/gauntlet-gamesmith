@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, FolderOpen, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
 import { agentFilterKey, ALL_LOG_FILTER, lineMatchesFilter, LogFilterStrip, logLineColor, type LogFilterState } from '@/components/LogFilter'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,14 +9,17 @@ import { useStickToBottom } from '@/lib/use-stick-to-bottom'
 import { CritiqueRoundView } from '@/views/CritiquePanel'
 import { PromptBrowser } from '@/views/PromptBrowser'
 import { RawStreamBrowser } from '@/views/RawStreamBrowser'
+import { AssetGallery } from '@/views/AssetGallery'
 import { ReferenceStudyPanel } from '@/views/ReferenceStudyPanel'
 import { HARNESS_LABELS } from '../../../shared/harness'
-import type { AgentMetric, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, RawStreamChunk, ReadRawStreamInput, ReferenceStudy, RunRecord } from '../../../shared/loop'
+import type { AgentMetric, ArtifactLocation, ArtifactLocationKind, CritiqueRound, LoopLogLine, LoopRecord, LoopSnapshot, PlayState, RawStreamChunk, ReadRawStreamInput, ReferenceStudy, RunRecord } from '../../../shared/loop'
 import { harnessFor, modelLabel } from '../../../shared/models'
 import { buildCriticPrompt, buildImplementPromptPreview } from '../../../shared/prompts'
 import { referenceRootForLoop } from '../../../shared/reference-path'
 import type { OperationResult } from '../../../shared/result'
 import { elapsedThroughRunMs, elapsedToRunStartMs, runtimeMs } from '../../../shared/run-timing'
+
+type DetailTab = 'activity' | 'references' | 'artifacts'
 
 const STATUS_STYLES: Record<string, string> = {
   running: 'bg-amber-500/15 text-amber-300 border-amber-500/40',
@@ -268,11 +271,31 @@ export function RunDetail({
   const [renameBusy, setRenameBusy] = useState(false)
   const [titleDraft, setTitleDraft] = useState(snapshot.loop.title)
   const [renameError, setRenameError] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<'activity' | 'references'>('activity')
+  const [detailTab, setDetailTab] = useState<DetailTab>('activity')
+  const [artifacts, setArtifacts] = useState<ArtifactLocation[]>([])
+  const [artifactBusy, setArtifactBusy] = useState(false)
+  const [artifactError, setArtifactError] = useState<string | null>(null)
   const [logFilter, setLogFilter] = useState<LogFilterState>(ALL_LOG_FILTER)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedRawStream, setSelectedRawStream] = useState<RawStreamLink | null>(null)
   const log = useStickToBottom(lines)
+
+  useEffect(() => {
+    if (detailTab !== 'artifacts') return
+    let disposed = false
+    setArtifactBusy(true)
+    setArtifactError(null)
+    void window.loops.artifacts(snapshot.loop.id).then((result) => {
+      if (disposed) return
+      if (result.ok) setArtifacts(result.value)
+      else setArtifactError(result.error)
+    }).catch((cause: unknown) => {
+      if (!disposed) setArtifactError(cause instanceof Error ? cause.message : 'Could not inspect run artifacts.')
+    }).finally(() => {
+      if (!disposed) setArtifactBusy(false)
+    })
+    return () => { disposed = true }
+  }, [detailTab, snapshot.loop.id])
 
   const loop = snapshot.loop
   const running = loop.status === 'running'
@@ -386,9 +409,19 @@ export function RunDetail({
     }
   }
 
-  const selectDetailTab = (tab: 'activity' | 'references'): void => {
+  const selectDetailTab = (tab: DetailTab): void => {
     setDetailTab(tab)
     onScrollTop()
+  }
+
+  const revealArtifact = async (kind: ArtifactLocationKind): Promise<void> => {
+    setArtifactError(null)
+    try {
+      const result = await window.loops.revealArtifact(loop.id, kind)
+      if (!result.ok) setArtifactError(result.error)
+    } catch (cause) {
+      setArtifactError(cause instanceof Error ? cause.message : 'Could not open that artifact folder.')
+    }
   }
 
   return (
@@ -503,6 +536,7 @@ export function RunDetail({
             Reference assets
             {activeReferenceStudy && <span className="rounded-full border border-[#49413a] bg-amber-500/[0.07] px-1.5 py-0.5 font-mono text-[9px] text-amber-300/80">{activeReferenceStudy.pack.images.length + activeReferenceStudy.pack.motion.length + activeReferenceStudy.pack.videos.length}</span>}
           </button>
+          <button type="button" role="tab" aria-selected={detailTab === 'artifacts'} aria-controls="run-artifacts-panel" onClick={() => selectDetailTab('artifacts')} className={`relative px-3 py-2.5 text-[12px] transition-colors ${detailTab === 'artifacts' ? 'text-sky-200 after:absolute after:inset-x-0 after:bottom-[-1px] after:h-px after:bg-sky-300' : 'text-[#77706d] hover:text-[#c9c3c0]'}`}>Artifacts</button>
         </div>
       )}
 
@@ -515,6 +549,27 @@ export function RunDetail({
               <div className="py-10 text-center"><div className="text-sm text-[#aaa4a1]">No Reference Study was recorded for this run.</div><div className="mt-1 text-xs text-[#68615f]">Reference assets appear here for runs created with the Reference Study workflow.</div></div>
             )}
           </div>
+        </section>
+      ) : selectedRound == null && detailTab === 'artifacts' ? (
+        <section id="run-artifacts-panel" role="tabpanel" className="overflow-hidden rounded-lg border border-[#332e2e] bg-[#151212]">
+          <div className="border-b border-[#2f2a2b] px-4 py-3">
+            <h2 className="text-sm font-medium text-[#ded9d6]">Generated folders</h2>
+            <p className="mt-1 text-[11px] text-[#77706d]">Browse project output, procedural asset factories, sculptor evidence, references, and critique captures in your file browser.</p>
+          </div>
+          {artifactBusy && <div className="flex items-center gap-2 px-4 py-8 text-xs text-[#77706d]"><LoaderCircle className="size-3.5 animate-spin" /> Inspecting folders…</div>}
+          {artifactError && <p role="alert" className="m-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">{artifactError}</p>}
+          {!artifactBusy && artifacts.map((artifact) => (
+            <div key={artifact.kind} className="flex items-center gap-3 border-b border-[#292425] px-4 py-3 last:border-b-0">
+              <FolderOpen className={`size-4 shrink-0 ${artifact.exists ? 'text-sky-300' : 'text-[#514b49]'}`} aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <div className={`text-xs ${artifact.exists ? 'text-[#ded9d6]' : 'text-[#68615f]'}`}>{artifact.label}</div>
+                <div className="mt-0.5 truncate font-mono text-[10px] text-[#68615f]" title={artifact.relativePath}>{artifact.relativePath}</div>
+              </div>
+              <span className="whitespace-nowrap font-mono text-[10px] text-[#77706d]">{artifact.exists ? `${artifact.itemCount} items` : 'not created'}</span>
+              <Button variant="outline" className="border-[#494343] bg-transparent text-[#aaa4a1] hover:bg-white/5 hover:text-white" disabled={!artifact.exists} aria-label={`Open ${artifact.label}`} onClick={() => void revealArtifact(artifact.kind)}><FolderOpen /> Open</Button>
+            </div>
+          ))}
+          <AssetGallery loopId={loop.id} onOpenEvidence={() => void revealArtifact('sculpt-evidence')} />
         </section>
       ) : (
         <section id="run-activity-panel" role={selectedRound == null ? 'tabpanel' : undefined}>

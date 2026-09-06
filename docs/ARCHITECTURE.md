@@ -185,8 +185,12 @@ Raw streams remain under `.gauntlet-gamesmith/runs/` and `.gauntlet-gamesmith/ag
 portable evidence and may contain sensitive CLI output. Log projections are bounded and redacted.
 [`main/raw-streams.ts`](../apps/desktop/src/main/raw-streams.ts) exposes bounded reads through
 ownership-checked IPC when the operator opens a log link, while
-[`main/media-server.ts`](../apps/desktop/src/main/media-server.ts) serves validated evidence media.
-The renderer reads neither arbitrary paths nor databases.
+[`main/media-server.ts`](../apps/desktop/src/main/media-server.ts) serves validated evidence media,
+including rendered sculptor previews under `.img2threejs/`; project source is never served.
+[`main/workspace-artifacts.ts`](../apps/desktop/src/main/workspace-artifacts.ts) backs the Artifacts
+tab: it lists fixed, symlink-checked browse targets inside the workspace, indexes `src/assets` factories
+against their sculptor evidence for the in-app gallery, and opens folders through the OS file browser
+without executing project code. The renderer reads neither arbitrary paths nor databases.
 
 ## Working on this architecture
 
