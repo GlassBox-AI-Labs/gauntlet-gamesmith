@@ -32,7 +32,7 @@ export function resolveMediaFile(
   if (relativePath.length === 0 || relativePath.length > 4_096 || relativePath.includes('\\') || relativePath.includes('\0')) return null
   const segments = relativePath.split('/')
   const rootName = segments.shift()
-  if ((rootName !== 'critique' && rootName !== 'reference') || segments.length === 0) return null
+  if ((rootName !== 'critique' && rootName !== 'reference' && rootName !== '.img2threejs') || segments.length === 0) return null
   if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) return null
   const mime = MIME[path.extname(segments.at(-1)!).toLowerCase()]
   if (!mime) return null
@@ -62,7 +62,8 @@ export interface MediaServerHandle {
 /**
  * Loopback media server for critique screenshots and gameplay video.
  * URL shape: http://127.0.0.1:<port>/<token>/<loopId>/<relPath>, where relPath
- * must stay inside the loop workspace's critique/ or reference/ directories.
+ * must stay inside the loop workspace's critique/, reference/, or sculptor
+ * evidence directories. Project source is never served or executed here.
  */
 export function createMediaServer(resolveWorkspace: (loopId: string) => string | WorkspaceRootIdentity | null): Promise<MediaServerHandle> {
   const token = crypto.randomUUID()
