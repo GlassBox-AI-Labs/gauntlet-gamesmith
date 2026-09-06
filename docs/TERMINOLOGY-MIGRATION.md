@@ -1,6 +1,6 @@
 # Terminology migration — Build / round / phase attempt
 
-**Status:** PR 1 code complete, pending a manual check against real histories. PR 2 not started.
+**Status:** PR 1 shipped and verified against the real registry ([#65](https://github.com/GlassBox-AI-Labs/gauntlet-gamesmith/pull/65)). PR 2 not started.
 
 The word "run" means two opposite things in this codebase. It is the whole job in the UI
 (the sidebar's "Runs", `new-run-workspace.ts`, `ReportRunRow`) and it is a single attempt by a
@@ -112,8 +112,13 @@ destroy user data and the only part with real logic rather than mechanical renam
       run once; import a pre-rename project folder end to end; reject a ledger holding both
       vocabularies. 931 tests pass.
 - [x] `pnpm typecheck` and `pnpm test`.
-- [ ] Manual check: open the app against real existing histories and confirm they load, export, and
-      re-import.
+- [x] Manual check against the real registry. The app was opened on the live
+      `~/Library/Application Support/Gauntlet Gamesmith/ledger.db`; the migration ran and wrote
+      `ledger.db.pre-build-rename`. Row counts match the backup exactly (11 builds, 32 attempts,
+      12,162 events), `PRAGMA foreign_key_check` is clean, there are no orphaned attempts or events,
+      SQLite rewrote the foreign key to `REFERENCES "builds"(id)` on its own, and no `loops` or
+      `runs` table remains. The operator confirmed the history lists and opens normally. Export and
+      re-import against real data were not separately exercised; they are covered by tests.
 
 **Known one-way step.** A project folder migrated by this build will be rejected by an older build
 of the app as an unsupported schema. Single user, forward-only; not worth building for.
