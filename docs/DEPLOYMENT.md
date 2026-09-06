@@ -235,6 +235,15 @@ records. It does not use real Challenger mailboxes.
 
 ## Manually provision a publisher
 
+If Electron reports that account creation is unavailable, confirm that the catalog
+has been deployed with `/api/signup`, `/api/verify-email`, and
+`/api/resend-verification`. A 404 HTML response from `/api/signup` means the hosted
+catalog is older than the desktop account form; it is not an invalid password.
+Older desktop builds surface this as `Unexpected token '<' ... is not valid JSON`.
+Deploy the catalog after completing the migration and email setup above, and use
+the matching desktop build. A GET to the signup route should return 405 when the
+POST-only route exists, rather than the Next.js 404 page.
+
 For an explicit developer exception outside the enrollment domain, verify monorepo
 access and load the production
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` into the admin command's environment:
