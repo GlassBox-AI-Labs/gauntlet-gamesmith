@@ -1,8 +1,8 @@
 # Multiplayer V1
 
-Gamesmith supports optional guest races through Vercel WebSockets and shared
-Redis. Supabase handles publisher accounts and saved releases. The public site
-still only browses/plays games; publishing stays in Electron.
+The `@glassbox/multiplayer` package supports optional guest races through Vercel
+WebSockets and shared Redis. Supabase handles publisher accounts and saved
+releases. The public site still only browses/plays games; publishing stays in Electron.
 
 ## Game integration
 

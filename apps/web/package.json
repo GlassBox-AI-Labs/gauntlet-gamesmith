@@ -14,7 +14,7 @@
   "dependencies": {
     "@gauntlet/data": "workspace:*",
     "@gauntlet/db": "workspace:*",
-    "@gauntlet/multiplayer": "workspace:*",
+    "@glassbox/multiplayer": "workspace:*",
     "@gauntlet/publishing": "workspace:*",
     "@gauntlet/ui": "workspace:*",
     "@supabase/supabase-js": "2.99.3",

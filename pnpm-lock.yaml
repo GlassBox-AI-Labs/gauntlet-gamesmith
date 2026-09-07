@@ -147,15 +147,15 @@ importers:
       '@gauntlet/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@gauntlet/multiplayer':
-        specifier: workspace:*
-        version: link:../../packages/multiplayer
       '@gauntlet/publishing':
         specifier: workspace:*
         version: link:../../packages/publishing
       '@gauntlet/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@glassbox/multiplayer':
+        specifier: workspace:*
+        version: link:../../packages/multiplayer
       '@supabase/supabase-js':
         specifier: 2.99.3
         version: 2.99.3
@@ -217,12 +217,12 @@ importers:
       '@gauntlet/db':
         specifier: workspace:*
         version: link:../db
-      '@gauntlet/multiplayer':
-        specifier: workspace:*
-        version: link:../multiplayer
       '@gauntlet/publishing':
         specifier: workspace:*
         version: link:../publishing
+      '@glassbox/multiplayer':
+        specifier: workspace:*
+        version: link:../multiplayer
       '@supabase/supabase-js':
         specifier: 2.99.3
         version: 2.99.3

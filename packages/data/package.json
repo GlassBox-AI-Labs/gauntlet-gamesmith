@@ -20,7 +20,7 @@
     "@gauntlet/publishing": "workspace:*",
     "@supabase/supabase-js": "2.99.3",
     "zod": "4.3.6",
-    "@gauntlet/multiplayer": "workspace:*"
+    "@glassbox/multiplayer": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

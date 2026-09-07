@@ -1,4 +1,4 @@
-import { MANIFEST_FILE, multiplayerManifest } from '@gauntlet/multiplayer'
+import { MANIFEST_FILE, multiplayerManifest } from '@glassbox/multiplayer'
 import { assetPath, uuid, MIME, type GameArtifact } from '@gauntlet/publishing'
 import type { Catalog } from './catalog'
 import type { Capture } from '../errors'

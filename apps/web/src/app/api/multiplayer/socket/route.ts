@@ -1,6 +1,6 @@
 import { experimental_upgradeWebSocket } from '@vercel/functions'
-import { attachRelay } from '@gauntlet/multiplayer/server'
-import { MAX_MESSAGE_BYTES } from '@gauntlet/multiplayer'
+import { attachRelay } from '@glassbox/multiplayer/server'
+import { MAX_MESSAGE_BYTES } from '@glassbox/multiplayer'
 import { multiplayerServer } from '@/lib/multiplayer'
 import { randomUUID } from 'node:crypto'
 export const runtime = 'nodejs'

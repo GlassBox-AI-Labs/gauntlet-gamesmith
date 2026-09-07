@@ -40,7 +40,7 @@
     "catalog:verify:accounts": "pnpm --filter @gauntlet/web exec tsx scripts/verify-accounts.ts",
     "db:test": "supabase test db --workdir packages/db",
     "multiplayer:redis": "node scripts/multiplayer-redis.mjs",
-    "multiplayer:test": "pnpm --filter @gauntlet/multiplayer test",
-    "multiplayer:smoke": "pnpm --filter @gauntlet/multiplayer smoke"
+    "multiplayer:test": "pnpm --filter @glassbox/multiplayer test",
+    "multiplayer:smoke": "pnpm --filter @glassbox/multiplayer smoke"
   }
 }

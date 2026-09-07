@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { MultiplayerCatalog } from './multiplayer'
-import { MultiplayerServer, type RoomStore } from '@gauntlet/multiplayer/server'
+import { MultiplayerServer, type RoomStore } from '@glassbox/multiplayer/server'
 import type { Catalog } from './catalog'
 const gameId = randomUUID(), releaseId = randomUUID(), secret = 'a'.repeat(64)
 function fixture() {

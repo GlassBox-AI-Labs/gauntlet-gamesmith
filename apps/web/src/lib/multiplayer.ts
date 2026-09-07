@@ -1,6 +1,6 @@
 import 'server-only'
-import { RedisRoomStore } from '@gauntlet/multiplayer/redis'
-import { MultiplayerServer } from '@gauntlet/multiplayer/server'
+import { RedisRoomStore } from '@glassbox/multiplayer/redis'
+import { MultiplayerServer } from '@glassbox/multiplayer/server'
 import { config } from './config'
 let server: MultiplayerServer | undefined
 export function multiplayerServer() {

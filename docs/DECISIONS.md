@@ -814,7 +814,7 @@ publishing. Creating and playing games continue to require no platform account.
 
 ## ADR-030 — Three-minute guest multiplayer through a shared relay (2026-09-06)
 
-**Decision.** Ship an optional `@gauntlet/multiplayer` module. The catalog authorizes
+**Decision.** Ship an optional `@glassbox/multiplayer` module. The catalog authorizes
 guests against the exact ready release and public/preview access. The game host
 injects its launch capability only when the validated build declares
 `gamesmith.multiplayer.json`. Electron bundles the browser SDK into each scaffold

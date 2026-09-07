@@ -1,9 +1,9 @@
 import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import { randomUUID } from 'node:crypto'
-import { RedisRoomStore } from '@gauntlet/multiplayer/redis'
-import { MultiplayerServer, attachRelay } from '@gauntlet/multiplayer/server'
-import { MAX_MESSAGE_BYTES } from '@gauntlet/multiplayer'
+import { RedisRoomStore } from '@glassbox/multiplayer/redis'
+import { MultiplayerServer, attachRelay } from '@glassbox/multiplayer/server'
+import { MAX_MESSAGE_BYTES } from '@glassbox/multiplayer'
 const port = Number(process.env.MULTIPLAYER_PORT ?? 4312), instance = randomUUID()
 const store = new RedisRoomStore(process.env.MULTIPLAYER_REDIS_URL!, process.env.MULTIPLAYER_NAMESPACE ?? 'gamesmith-local', () => console.error('Local multiplayer Redis disconnected'))
 const service = new MultiplayerServer(store, process.env.CATALOG_SECRET!, process.env.MULTIPLAYER_SOCKET_URL ?? `ws://127.0.0.1:${port}`)

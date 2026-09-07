@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { joinInput, MANIFEST_FILE, multiplayerManifest } from '@gauntlet/multiplayer'
-import { MultiplayerServer, roomScope } from '@gauntlet/multiplayer/server'
+import { joinInput, MANIFEST_FILE, multiplayerManifest } from '@glassbox/multiplayer'
+import { MultiplayerServer, roomScope } from '@glassbox/multiplayer/server'
 import type { Catalog } from './catalog'
 const requestSchema = z.discriminatedUnion('action', [
   joinInput.extend({ action: z.literal('join') }),
