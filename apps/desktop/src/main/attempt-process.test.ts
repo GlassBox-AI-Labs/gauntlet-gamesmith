@@ -10,8 +10,8 @@ import {
   interruptNewProcessGroup,
   interruptProcessGroup,
   prepareProcessMeta,
-  processMatches,
   processGroupIdentity,
+  processMatches,
   processMetaPath,
   readProcessIdentity,
   readProcessMeta,
@@ -343,8 +343,8 @@ describe('processGroupIdentity', () => {
     // A group whose every member has exited is an answer, not a probe failure:
     // treating it as a failure is what killed a healthy 43-minute attempt.
     const child = spawnSync('/bin/sh', ['-c', 'echo $$'], { encoding: 'utf8' })
-    const departed = Number(child.stdout.trim())
-    expect(safePid(departed)).toBe(true)
-    expect(processGroupIdentity(departed)).toEqual([])
+    const departedGroup = Number(child.stdout.trim())
+    expect(safePid(departedGroup)).toBe(true)
+    expect(processGroupIdentity(departedGroup)).toEqual([])
   })
 })

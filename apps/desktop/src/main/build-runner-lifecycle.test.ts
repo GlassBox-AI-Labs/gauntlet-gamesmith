@@ -1101,6 +1101,49 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('is observable again'))).toBe(true)
   })
 
+  it('stops waiting on a dead leader whose group stays unobservable, and keeps owning it', () => {
+    const polls: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: process.pid, unref: () => child })
+    const identity = readProcessIdentity(process.pid)!
+    let clock = Date.now()
+    let probeBlind = false
+    const { ledger, runner, workspaceDir } = setup({
+      now: () => clock,
+      wait: async () => {},
+      spawnChild: () => child,
+      signalProcess: () => {},
+      processGroupIdentity: () => {
+        if (probeBlind) throw new Error('Process-group identity probe failed: spawnSync /bin/ps ETIMEDOUT')
+        return [`${process.pid}:${identity}`]
+      },
+      processGroupStillOwned: () => true,
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+      repeat: (work) => {
+        polls.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+    })
+
+    const started = runner.start(input(workspaceDir))
+    const attempt = ledger.attemptsForBuild(started.buildId!)[0]
+    child.emit('exit', 0)
+    probeBlind = true
+    polls.forEach((poll) => poll())
+
+    // Inside the tolerance window a blind probe changes nothing.
+    const gaveUp = (): boolean => ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('interrupting what may remain'))
+    expect(gaveUp()).toBe(false)
+
+    clock += 61_000
+    polls.forEach((poll) => poll())
+
+    expect(gaveUp()).toBe(true)
+    // Ownership is never dropped on evidence the app could not gather.
+    expect(ledger.attemptProcessOwnership(attempt.id)).not.toBeNull()
+  })
+
   it('re-attaches a codex implement build with the codex reader, not the claude one', async () => {
     const polls: (() => void)[] = []
     let spawned = false

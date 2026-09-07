@@ -430,11 +430,16 @@ export type ProcessInterruptOutcome = 'gone' | 'unresolved'
 export function processGroupIdentity(groupId: number): string[] {
   if (!safePid(groupId)) return []
   let result: ReturnType<typeof spawnSync>
+  // Ask only about this group. A full table scan is orders of magnitude more
+  // work and, on a loaded machine, times out and reads as a failure to observe
+  // a perfectly healthy attempt. Only BSD `ps -g` selects by process group;
+  // GNU `ps -g` means something else, so non-macOS keeps the portable scan and
+  // the pgid filter below does the selecting.
+  const args = process.platform === 'darwin'
+    ? ['-g', String(groupId), '-o', 'pid=,pgid=,lstart=']
+    : ['-axo', 'pid=,pgid=,lstart=']
   try {
-    // Ask only about this group. A full `ps -axo` table scan is orders of
-    // magnitude more work and, on a loaded machine, times out and reads as a
-    // failure to observe a perfectly healthy attempt.
-    result = spawnSync('/bin/ps', ['-g', String(groupId), '-o', 'pid=,pgid=,lstart='], {
+    result = spawnSync('/bin/ps', args, {
       cwd: '/',
       env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' },
       encoding: 'utf8',
