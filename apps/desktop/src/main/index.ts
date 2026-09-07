@@ -681,6 +681,8 @@ function createWindow(): BrowserWindow {
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
+      // Keep publication/log updates live while the game preview owns focus.
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -837,6 +839,7 @@ if (hasSingleInstanceLock) {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
     const attachments = createBuildAttachments(protectedWorkspaceRoots)
+    app.once('will-quit', () => attachments.dispose())
     registerAttachmentIpc(attachments, () => mainWindow)
     ledger = new Ledger(path.join(app.getPath('userData'), 'ledger.db'), { protectedRoots: protectedWorkspaceRoots })
     buildRunner = new BuildRunner(ledger, (channel, payload) => mainWindow?.webContents.send(channel, payload), {

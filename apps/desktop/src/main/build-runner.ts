@@ -932,9 +932,11 @@ export class BuildRunner {
       workspaceDir = captured.workspaceDir
       scaffold = scaffoldEngine(workspaceDir, captured.workspaceIdentity)
     } catch (error) {
+      context?.release()
       return { ok: false, error: `Cannot use workspace: ${redactedErrorMessage(error, 'The selected path is unsafe.')}` }
     }
     if (this.quarantinedUnknownLaunch(workspaceDir)) {
+      context?.release()
       return { ok: false, error: `${UNKNOWN_LAUNCH_OWNERSHIP} This workspace is quarantined against another editor launch because process exit was never observed.` }
     }
 
@@ -969,6 +971,7 @@ export class BuildRunner {
         return created
       })
     } catch (error) {
+      context?.release()
       return { ok: false, error: `Could not start build: ${redactedErrorMessage(error, 'History could not be created.')}` }
     }
     this.broadcast(build.id)

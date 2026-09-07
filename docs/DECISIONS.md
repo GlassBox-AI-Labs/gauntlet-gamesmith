@@ -854,3 +854,74 @@ hidden:
 
 Every one of these leaves a process running, which is exactly the behaviour that
 already existed; none of them signals a process that is not ours.
+
+## ADR-031 — Three-minute guest multiplayer through a shared relay (2026-09-06)
+
+**Decision.** Ship an optional `@glassbox/multiplayer` module. The catalog authorizes
+guests against the exact ready release and public/preview access. The game host
+injects its launch capability only when the validated build declares
+`gamesmith.multiplayer.json`. Electron bundles the browser SDK into each scaffold
+and puts its usage contract in the visible implementation prompt. Games use a
+small join/room/connect/publish/leave interface with game-defined state and optional
+presentation helpers.
+
+Vercel's WebSocket beta handles connections in US `iad1`, with a shared Redis
+store for atomic room membership, deadlines, duplicate suppression and pub/sub.
+Use no process-local room ownership: each socket can reach a different instance.
+A lobby lasts 30 seconds, countdown 4 seconds, and active match 180 seconds.
+The first guest can start sooner. At most six guests share a game/release/access
+scope. Signed guest tickets reconnect within that fixed deadline; reconnecting
+never extends a match. Supabase remains the platform's publisher identity and
+release database. No gamer signup, physical database per game, gameplay writes
+to Postgres, Colyseus process, or always-running game server is introduced here.
+
+**Reason.** A short relay session fits the platform's current Vercel deployment
+and lets different game genres use the same guest protocol and snapshot timing
+in local previews and hosted play. Open-world exploration can run as a short
+shared session within the same limits. Cross-instance Redis coordination is required even for a single
+Vercel project. Colyseus's authoritative room process would require a different
+runtime/adapter; it is a future option behind the same game-facing seam.
+
+**Limits.** This is client-authoritative, low-stakes movement. It does not provide
+anti-cheat, authoritative combat/shared rigid-body physics, migration across
+regions, resume after reload, persistent scores or rewards. A disconnected lobby
+seat lasts until the lobby deadline if its leave request cannot reach the server.
+Smoothing uses an adaptive 80–180 ms buffer and at most 80 ms extrapolation;
+it cannot repair arbitrary packet loss or invalid game simulation. Test controls
+delay incoming state; they do not emulate every property of a poor network.
+Redis Free and Vercel Hobby quotas are development limits, not a promise of free
+unlimited concurrency. No automatic billing upgrade is enabled.
+
+## ADR-032 — Disk snapshots for larger reference attachments (2026-09-06)
+
+**Decision.** Supersede ADR-018's in-memory draft storage with private, chunked disk
+snapshots. Copy at most 1 MiB at a time, yield during ingestion, preserve source
+identity checks, and show progress through validated main/preload/renderer IPC.
+Allow 4,000 files, 1 GiB per file and 1.5 GiB total; retain secret/generated-file
+exclusions. Prepared snapshots hold leases until copied or released on a failed
+build start. An oversized inline image preview does not detach the source asset.
+Publishing streams its existing bounded artifact envelope directly to storage
+and automatically retries transient transfer failures three times. Completion
+still validates its digest. This does not increase the separate 24 MiB shipping
+artifact limit or disable safety checks. Drafts remain local and are discarded
+on normal app exit; created builds keep their frozen provenance and files.
+
+
+## ADR-033 — Genre-neutral multiplayer state and presentation (2026-09-07)
+
+**Decision.** The shared multiplayer module serves different game genres. Keep
+room/session lifecycle and flat game-defined state independent of presentation.
+`SnapshotBuffer` owns adaptive timing, ordering and bounded history while games
+supply interpolation and optional extrapolation/discontinuity rules.
+`TransformBuffer` provides spatial presentation in all three axes with quaternion
+rotation; non-spatial games need no position fields. Retain `PoseBuffer` as an
+optional compatibility adapter for existing track-motion integrations.
+
+**Consequences.** Agent instructions, generated SDK declarations, examples and
+verification describe sessions and game-defined mechanics. Open-world exploration,
+platformers, puzzles, party games and other genres share the same six-guest,
+180-second limits. World size does not remove those limits or provide persistent
+worlds. State relay is lossy latest-state delivery, not a reliable event or
+transaction channel; games own idempotency and conflict semantics. No new server
+authority, persistent inventory, world streaming or monetization is implied.
+Historical racing validation stays labeled as one concrete integration example.

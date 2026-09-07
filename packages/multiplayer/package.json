@@ -1,0 +1,32 @@
+{
+  "name": "@glassbox/multiplayer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./server": "./src/server.ts",
+    "./redis": "./src/redis.ts",
+    "./smoothing": "./src/smoothing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "esbuild src/browser.ts --bundle --platform=browser --format=esm --target=es2022 --minify --outfile=dist/gamesmith.js",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "redis": "6.2.1",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.27.7",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "ws": "8.18.3"
+  }
+}

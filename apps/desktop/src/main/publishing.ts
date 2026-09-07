@@ -1,3 +1,4 @@
+import { uploadArtifact } from './artifact-upload'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
@@ -401,14 +402,7 @@ export class Publishing {
           )
         )
           throw new Error('Untrusted artifact upload URL.')
-        const uploaded = await fetch(uploadUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(artifact),
-          signal: AbortSignal.timeout(120000),
-        })
-        if (!uploaded.ok && uploaded.status !== 409 && uploaded.status !== 400)
-          throw new Error('Artifact transfer failed. Retry this saved round.')
+        await uploadArtifact(uploadUrl, artifact, text => this.log(buildId, text))
       }
       const release = await this.request(
         'releases/complete',
