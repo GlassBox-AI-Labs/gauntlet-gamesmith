@@ -147,6 +147,32 @@ export function strayGroupIds(groups: DescendantGroups, coveredGroupIds: readonl
   return [...groups.keys()].filter((pgid) => !covered.has(pgid)).sort((left, right) => left - right)
 }
 
+/**
+ * Recorded groups that are now running with no parent: every member has been
+ * reparented to init, so nothing is waiting on them any more. These are the
+ * processes an agent has genuinely left behind, and the operator should see
+ * them while they run rather than only when the phase ends (VIS-001).
+ */
+export function orphanedGroupIds(
+  rows: readonly ProcessTableRow[],
+  groups: DescendantGroups,
+  leaderGroupId: number,
+): number[] {
+  const members = new Map<number, ProcessTableRow[]>()
+  for (const row of rows) {
+    if (!groups.has(row.pgid)) continue
+    const found = members.get(row.pgid)
+    if (found) found.push(row)
+    else members.set(row.pgid, [row])
+  }
+  const orphaned: number[] = []
+  for (const [pgid, rowsInGroup] of members) {
+    if (pgid === leaderGroupId) continue
+    if (rowsInGroup.every((row) => row.ppid === 1)) orphaned.push(pgid)
+  }
+  return orphaned.sort((left, right) => left - right)
+}
+
 /** Read the whole process table. Throws when it cannot be read at all. */
 export function scanProcessTable(): ProcessTableRow[] {
   const result = spawnSync('/bin/ps', ['-Ao', 'pid=,ppid=,pgid=,lstart='], {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  orphanedGroupIds,
   parseProcessTable,
   processIdentityOf,
   strayGroupIds,
@@ -162,6 +163,33 @@ describe('choosing which groups the sweep signals', () => {
 
   it('returns nothing when the attempt never escaped its own group', () => {
     expect(strayGroupIds(new Map([[LEADER, new Set<string>()]]), [LEADER])).toEqual([])
+  })
+})
+
+describe('spotting what an agent has left running', () => {
+  it('reports a tracked group once every member has been reparented to init', () => {
+    const rows = [leader(), row(2000, 1, 2000)]
+    const groups = track([[leader(), row(2000, LEADER, 2000)]])
+    expect(orphanedGroupIds(rows, groups, LEADER)).toEqual([2000])
+  })
+
+  it('says nothing while the group still has a parent waiting on it', () => {
+    const rows = [leader(), row(2000, LEADER, 2000)]
+    expect(orphanedGroupIds(rows, track([rows]), LEADER)).toEqual([])
+  })
+
+  it('says nothing about a group with one live parented member left', () => {
+    const rows = [leader(), row(2000, 1, 2000), row(2001, LEADER, 2000)]
+    expect(orphanedGroupIds(rows, track([rows]), LEADER)).toEqual([])
+  })
+
+  it('never reports the attempt leader group itself', () => {
+    const rows = [row(LEADER, 1, LEADER, 'Mon Sep  7 00:00:01 2026')]
+    expect(orphanedGroupIds(rows, track([rows]), LEADER)).toEqual([])
+  })
+
+  it('ignores a group it never tracked', () => {
+    expect(orphanedGroupIds([row(7000, 1, 7000)], new Map(), LEADER)).toEqual([])
   })
 })
 

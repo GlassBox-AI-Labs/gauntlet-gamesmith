@@ -59,6 +59,7 @@ import type { ExitInfo, LogGate, StreamParser } from './roles/types'
 import { planCompletion, planResume, planStart } from './round-planner'
 import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
 import {
+  orphanedGroupIds,
   scanProcessTable,
   strayGroupIds,
   trackDescendantGroups,
@@ -103,8 +104,14 @@ const MAX_ACCOUNT_ROTATIONS = 3
 const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
 // How long the supervisor tolerates a process group it cannot observe at all
 // before it stops waiting on an already-dead leader. Ownership is retained.
-/** How often the whole process table is read to find groups that left the attempt's own. */
-const DESCENDANT_SCAN_MS = 10_000
+/**
+ * How often the whole process table is read to find groups that left the
+ * attempt's own. A group is only recordable while something still links it to
+ * the attempt, so this interval is the width of the race: a command that
+ * backgrounds a process and exits immediately can vanish between two samples.
+ * One scan costs ~20ms, so sampling this often spends about 1% of a core.
+ */
+const DESCENDANT_SCAN_MS = 2_000
 const PROBE_BLIND_LIMIT_MS = 60_000
 // How often a still-blind probe repeats itself in the build log (VIS-001).
 const PROBE_BLIND_LOG_MS = 30_000
@@ -269,6 +276,8 @@ export class BuildRunner {
   private lastDescendantScan = new Map<string, number>()
   /** Rate limit for reporting a process table we cannot read at all. */
   private descendantScanWarnedAt = new Map<string, number>()
+  /** Escaped groups already announced as left running, so each is reported once. */
+  private reportedOrphanGroups = new Map<string, Set<number>>()
   /** Child streams of the build being driven; also pumped while awaiting stragglers. */
   private childTail: { buildId: string; attemptId: string; boundary: ChildStreamBoundary; tailer: ChildStreamTailer } | null = null
   /** IPC notifications queued until their enclosing ledger transaction commits. */
@@ -1474,6 +1483,20 @@ export class BuildRunner {
     const groups = this.descendantGroups.get(attemptId) ?? (new Map() as DescendantGroups)
     trackDescendantGroups(rows, leaderPid, groups)
     this.descendantGroups.set(attemptId, groups)
+    // Surface what the agent has left running as it happens, not only when the
+    // phase ends and it is signalled (VIS-001).
+    const reported = this.reportedOrphanGroups.get(attemptId) ?? new Set<number>()
+    this.reportedOrphanGroups.set(attemptId, reported)
+    for (const pgid of orphanedGroupIds(rows, groups, leaderPid)) {
+      if (reported.has(pgid)) continue
+      reported.add(pgid)
+      this.controlLog(
+        buildId,
+        attemptId,
+        'system',
+        `Agent work left process group ${pgid} running with no parent; it is tracked and will be stopped when this phase ends.`,
+      )
+    }
   }
 
   /**
@@ -1487,6 +1510,7 @@ export class BuildRunner {
     this.descendantGroups.delete(attemptId)
     this.lastDescendantScan.delete(attemptId)
     this.descendantScanWarnedAt.delete(attemptId)
+    this.reportedOrphanGroups.delete(attemptId)
     if (!groups) return
     const report = this.controlReporter(buildId, attemptId)
     for (const pgid of strayGroupIds(groups, [leaderGroupId])) {

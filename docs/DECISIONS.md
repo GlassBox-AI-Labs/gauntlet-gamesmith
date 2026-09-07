@@ -828,10 +828,29 @@ nothing to ask at stop time.
 
 **Consequences.** Stop, timeouts, the hard cap and ordinary completion all reach
 what an agent left running; the leaked dev servers and headless browsers of
-issue #73 no longer accumulate or burn CPU after a build ends. A group whose PGID
-is recycled by an unrelated process fails the identity check and is left alone,
-so the sweep can miss a group rather than signal a stranger's. Two gaps are
-accepted: a group created while the app was closed is never recorded, because
-attempts survive app quit by design and only sampling can see them; and a group
-created and orphaned entirely between two samples is missed. Both leave the
-process running, which is the behaviour that already existed.
+issue #73 no longer accumulate or burn CPU after a build ends. A tracked group
+that loses its last parent is also reported in the build log while it runs, not
+only when it is signalled (VIS-001). A group whose PGID is recycled by an
+unrelated process fails the identity check and is left alone, so the sweep errs
+toward missing a group rather than signalling a stranger's.
+
+Sampling buys this at the cost of a race, and three gaps are accepted rather than
+hidden:
+
+1. **A group created and orphaned between two samples is never recorded.** The
+   sample interval is the width of that window. It is set to two seconds — one
+   scan costs about 20ms, so this spends roughly 1% of a core — but a command
+   that backgrounds a process and exits immediately can still slip through, and
+   that includes the minimal reproduction given in issue #73 (`npx vite preview &`
+   followed at once by Stop). The processes in the actual incident ran for hours
+   with a live parent chain and are comfortably caught.
+2. **Tracking is in memory and dies with the app.** Attempts survive app quit by
+   design, so an attempt re-attached after a relaunch loses every group recorded
+   before the quit and can only re-find groups that still have a parent link.
+   Persisting the groups would mean widening the canonical process-ownership
+   record; that is not done here.
+3. **Groups leaked before this change are not swept.** There is no launch-time
+   sweep of pre-existing orphans.
+
+Every one of these leaves a process running, which is exactly the behaviour that
+already existed; none of them signals a process that is not ours.
