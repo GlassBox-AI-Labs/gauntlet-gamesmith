@@ -15,7 +15,7 @@ import { implementerAgentDefinition } from './delegation'
 import { accountLabelForProbe, BuildRunner, type BuildRunnerDeps } from './build-runner'
 import { referencePackFingerprint } from './phase-contracts'
 import { PRICE_TABLE_VERSION } from './pricing'
-import { configureRoundRevisionStorage } from './round-revision'
+import { captureRoundRevision, configureRoundRevisionStorage } from './round-revision'
 import { completeProcessMeta, prepareProcessMeta, processMetaPath, processStreamPaths, readProcessIdentity, readProcessMeta } from './attempt-process'
 import { verdictArtifactRelativePath } from './verdict'
 
@@ -2335,6 +2335,162 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(spawnedArgs).toContain('same-round-thread')
     expect(spawnedArgs!.at(-1)).toBe(composeResumePrompt(basePrompt))
     expect(spawnedArgs!.at(-1)).toContain('<goal>\nBuild the game.\n</goal>')
+  })
+
+  /**
+   * A build parked with one critique left to run. The reference pack is frozen,
+   * the implementation has an immutable revision, and the critique is bound to
+   * it — the exact shape Resume finds after a critic is interrupted.
+   */
+  function buildAwaitingCritique(
+    ledger: Ledger,
+    workspaceDir: string,
+    critique: { status: 'queued' | 'cancelled'; sessionId?: string },
+  ): { buildId: string; attemptId: string; revision: string; sourceFile: string } {
+    const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
+    const build = ledger.createBuild({ prompt: 'Build the game.', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const referenceRoot = writeReadyReferencePack(workspaceDir, build.id)
+    const reference = ledger.createAttempt({ buildId: build.id, round: 0, role: 'reference', harness: 'codex', prompt: 'research' })
+    ledger.patchAttempt(reference.id, { status: 'succeeded', finishedAt: new Date().toISOString() })
+    ledger.appendEvent({
+      buildId: build.id,
+      attemptId: reference.id,
+      ts: new Date().toISOString(),
+      kind: 'artifact',
+      channel: 'system',
+      text: `Reference Pack frozen at sha256:${referencePackFingerprint(workspaceDir, path.relative(workspaceDir, referenceRoot))}`,
+    })
+    const sourceFile = path.join(workspaceDir, 'game.js')
+    fs.writeFileSync(sourceFile, 'the implementation')
+    const revision = captureRoundRevision({ workspaceDir, buildId: build.id, round: 1 })
+    const implement = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'codex', prompt: 'implement' })
+    ledger.patchAttempt(implement.id, { status: 'succeeded', revision, finishedAt: new Date().toISOString() })
+    const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'critique', harness: 'claude', prompt: 'judge it' })
+    ledger.patchAttempt(attempt.id, {
+      revision,
+      ...(critique.status === 'cancelled'
+        ? { status: 'cancelled' as const, sessionId: critique.sessionId, error: 'Timed out.', finishedAt: new Date().toISOString() }
+        : {}),
+    })
+    ledger.patchBuild(build.id, { status: 'stopped', round: 1 })
+    return { buildId: build.id, attemptId: attempt.id, revision, sourceFile }
+  }
+
+  /** The claude CLI takes its prompt after `-p`, not as the trailing argument. */
+  const claudePrompt = (args: string[]): string => args[args.indexOf('-p') + 1]
+
+  it('resumes an interrupted critic into its own session instead of judging from scratch', () => {
+    let spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => {
+        spawnedArgs = args
+        throw new Error('stop after inspecting resume launch')
+      },
+    })
+    const { buildId } = buildAwaitingCritique(ledger, workspaceDir, { status: 'cancelled', sessionId: 'critic-thread' })
+
+    expect(runner.resumeBuild(buildId)).toEqual({ ok: true, buildId })
+
+    expect(spawnedArgs, JSON.stringify(ledger.eventsForBuild(buildId, 2_000))).not.toBeNull()
+    // The hour of judging already paid for is continued, not discarded.
+    expect(spawnedArgs!.slice(0, 2)).toEqual(['--resume', 'critic-thread'])
+    // The contract is still rebuilt in full behind the resume preamble, because
+    // the verdict filename is scoped to this attempt and not the previous one.
+    const sent = claudePrompt(spawnedArgs!)
+    expect(sent.startsWith(composeResumePrompt(''))).toBe(true)
+    expect(sent).toContain(verdictArtifactRelativePath(1, ledger.attemptsForBuild(buildId).at(-1)!.id).split('/').at(-1))
+  })
+
+  it('never lets a resumed critic adopt the implementer thread from the same round', () => {
+    let spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => {
+        spawnedArgs = args
+        throw new Error('stop after inspecting resume launch')
+      },
+    })
+    const { buildId } = buildAwaitingCritique(ledger, workspaceDir, { status: 'cancelled' })
+    const implement = ledger.attemptsForBuild(buildId).find((attempt) => attempt.role === 'implement')!
+    ledger.patchAttempt(implement.id, { sessionId: 'implementer-thread' })
+
+    expect(runner.resumeBuild(buildId)).toEqual({ ok: true, buildId })
+
+    expect(spawnedArgs).not.toBeNull()
+    expect(spawnedArgs).not.toContain('--resume')
+    expect(spawnedArgs).not.toContain('implementer-thread')
+    // With no session of its own it still cold-starts under the preamble, which
+    // points it at the evidence its predecessor left on disk.
+    expect(claudePrompt(spawnedArgs!).startsWith(composeResumePrompt(''))).toBe(true)
+  })
+
+  it('judges a workspace the operator changed between rounds instead of failing the build', () => {
+    let spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: (_command, args) => {
+        spawnedArgs = args
+        throw new Error('stop after inspecting rebound launch')
+      },
+    })
+    const { buildId, attemptId, revision, sourceFile } = buildAwaitingCritique(ledger, workspaceDir, { status: 'queued' })
+    fs.writeFileSync(sourceFile, 'the implementation, plus an operator edit')
+    fs.writeFileSync(path.join(workspaceDir, 'operator-notes.md'), 'kept, not reverted')
+
+    expect(runner.resumeBuild(buildId)).toEqual({ ok: true, buildId })
+
+    const rebound = ledger.getAttempt(attemptId)!
+    expect(rebound.revision).not.toBe(revision)
+    expect(rebound.revision).toMatch(/^[0-9a-f]{40,64}$/)
+    // The critic actually launched against the changed source.
+    expect(spawnedArgs).not.toBeNull()
+    expect(claudePrompt(spawnedArgs!)).toContain(rebound.revision!)
+    // The operator's files are still there; nothing was restored over them.
+    expect(fs.readFileSync(sourceFile, 'utf8')).toBe('the implementation, plus an operator edit')
+    expect(fs.existsSync(path.join(workspaceDir, 'operator-notes.md'))).toBe(true)
+
+    const log = ledger.eventsForBuild(buildId, 2_000).map((event) => event.text).join('\n')
+    expect(log).toContain('game.js')
+    expect(log).toContain('operator-notes.md')
+    expect(log).toContain(`re-bound to revision ${rebound.revision}`)
+  })
+
+  it('lets a working critic run past the old one-hour wall clock, and still stops a runaway', async () => {
+    const polls: Array<() => void> = []
+    const signals: Array<0 | NodeJS.Signals> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: process.pid, unref: () => child })
+    let now = Date.now()
+    const { ledger, runner, workspaceDir } = setup({
+      now: () => now,
+      wait: async () => {},
+      spawnChild: () => child,
+      signalProcess: (_pid, signal) => { signals.push(signal) },
+      processGroupStillOwned: () => true,
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+      repeat: (work) => { polls.push(work); return { unref: () => undefined } as unknown as NodeJS.Timeout },
+      cancelRepeat: () => {},
+    })
+    const { buildId, attemptId } = buildAwaitingCritique(ledger, workspaceDir, { status: 'queued' })
+
+    expect(runner.resumeBuild(buildId)).toEqual({ ok: true, buildId })
+    await waitFor(() => polls.length > 0)
+
+    // Every stream line is progress, so a critic that is still playing the game
+    // keeps resetting the idle clock. It used to die at 60 minutes regardless.
+    const { outPath } = processStreamPaths(workspaceDir, attemptId)
+    const stillWorking = (elapsedMs: number): void => {
+      now = Date.parse(ledger.getAttempt(attemptId)!.startedAt!) + elapsedMs
+      fs.appendFileSync(outPath, `${JSON.stringify({ type: 'system', subtype: 'progress' })}\n`)
+      polls[0]()
+    }
+
+    for (const hours of [1.02, 2, 3, 3.9]) stillWorking(hours * 60 * 60_000)
+    expect(signals).toEqual([])
+
+    // The ceiling is still a real backstop for a process that never ends. The
+    // exact signal list is left to the interrupt path, which also sweeps any
+    // stray descendant group; all this asserts is that the attempt was stopped.
+    stillWorking(4 * 60 * 60_000 + 1_000)
+    expect(signals).toContain('SIGINT')
   })
 
   it('leaves the released unmarked implementer agent untouched and writes a versioned owned agent', () => {

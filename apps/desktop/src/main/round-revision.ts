@@ -25,6 +25,10 @@ const EXCLUDED_PATHS = [
   `:(exclude)${LEGACY_BUILD_METADATA_DIR}`,
   `:(exclude)${LEGACY_BUILD_METADATA_DIR}/**`,
   ':(exclude)gauntlet-report-v1.md',
+  // A Finder artifact is never game source. Left in, browsing the project
+  // folder while a critic runs was enough to reject the whole critique.
+  ':(exclude).DS_Store',
+  ':(exclude,glob)**/.DS_Store',
   ':(exclude,glob)**/node_modules/**',
   ':(exclude)node_modules',
   ':(exclude)critique',
@@ -305,20 +309,45 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
   return revision
 }
 
-/** Compare the current playable source to the immutable tree a critic was assigned. */
-export function workspaceMatchesRevision(workspaceDir: string, buildId: string, revision: string): boolean {
+/**
+ * Stage the current playable source against one immutable revision and hand the
+ * scratch index to `read`. Both the drift question ("did anything change?") and
+ * the drift answer ("which files?") go through here so they cannot disagree.
+ */
+function withComparisonIndex<T>(workspaceDir: string, buildId: string, revision: string, read: (indexFile: string) => T): T {
   assertRevision(revision)
   ensureRepository(workspaceDir, buildId)
-  const expectedTree = git(workspaceDir, buildId, ['show', '-s', '--format=%T', revision])
-  const actualTree = withTemporaryIndex((indexFile) => {
+  return withTemporaryIndex((indexFile) => {
     git(workspaceDir, buildId, ['read-tree', revision], indexFile)
     // Files present in the immutable revision remain tracked even when they
     // live below an ignored build/dist directory, so their edits/deletions are
     // detected. Newly created project-ignored outputs are not source drift.
     git(workspaceDir, buildId, ['add', '-A', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
-    return git(workspaceDir, buildId, ['write-tree'], indexFile)
+    return read(indexFile)
   })
+}
+
+/** Compare the current playable source to the immutable tree a critic was assigned. */
+export function workspaceMatchesRevision(workspaceDir: string, buildId: string, revision: string): boolean {
+  const expectedTree = git(workspaceDir, buildId, ['show', '-s', '--format=%T', revision])
+  const actualTree = withComparisonIndex(workspaceDir, buildId, revision, (indexFile) =>
+    git(workspaceDir, buildId, ['write-tree'], indexFile),
+  )
   return actualTree === expectedTree
+}
+
+/**
+ * The source paths that changed since a revision was captured. A stale critique
+ * is only actionable when the operator can see which files moved (VIS-001), so
+ * the drift check reports names rather than only a tree hash. The list is
+ * bounded because it is written into the build log.
+ */
+export function revisionDriftPaths(workspaceDir: string, buildId: string, revision: string, limit = 10): { paths: string[]; total: number } {
+  const output = withComparisonIndex(workspaceDir, buildId, revision, (indexFile) =>
+    git(workspaceDir, buildId, ['diff-index', '--cached', '--name-only', revision], indexFile),
+  )
+  const paths = output.split('\n').map((line) => line.trim()).filter(Boolean)
+  return { paths: paths.slice(0, Math.max(0, limit)), total: paths.length }
 }
 
 /** Materialize a temporary playable checkout for one immutable round revision. */

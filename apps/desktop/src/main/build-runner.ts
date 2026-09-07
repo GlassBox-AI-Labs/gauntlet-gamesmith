@@ -18,7 +18,7 @@ import type {
 import { channelForKind, markResumePrompt, attemptPromptLabel } from '../shared/build'
 import { IPC } from '../shared/ipc'
 import { describeModels, harnessFor, isUltracode, resolveModels } from '../shared/models'
-import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt, effectivePromptForAttempt } from '../shared/prompts'
+import { buildCriticPrompt, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from '../shared/prompts'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { referencePackDir, referenceRootForBuild } from '../shared/reference-path'
 import {
@@ -56,7 +56,7 @@ import { finalizeImplement, type ImplementOutcome } from './roles/implement-fina
 import { createReferenceProtocol } from './roles/reference'
 import type { ExitInfo, LogGate, StreamParser } from './roles/types'
 import { planCompletion, planResume, planStart } from './round-planner'
-import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
+import { captureRoundRevision, revisionDriftPaths, workspaceMatchesRevision } from './round-revision'
 import {
   orphanedGroupIds,
   scanProcessTable,
@@ -93,8 +93,15 @@ import { boundedBuildSnapshot } from './ipc-projection'
  */
 const IMPLEMENT_IDLE_MS = 40 * 60_000
 const IMPLEMENT_HARD_CAP_MS = 12 * 60 * 60_000
-const CRITIQUE_TIMEOUT_MS = 60 * 60_000
-const REFERENCE_TIMEOUT_MS = 60 * 60_000
+// Critique and reference used one constant for both limits, which made the
+// idle rule a wall clock: a critic that had played the game for an hour and was
+// still working was interrupted mid-scenario, discarding $13.51 of gathered
+// evidence. They get the same shape as implement — a generous idle limit, and a
+// ceiling roughly five times the longest either phase has ever taken.
+const CRITIQUE_IDLE_MS = 40 * 60_000
+const CRITIQUE_HARD_CAP_MS = 4 * 60 * 60_000
+const REFERENCE_IDLE_MS = 40 * 60_000
+const REFERENCE_HARD_CAP_MS = 4 * 60 * 60_000
 /** No observable worker startup or post-terminal write for this long settles its stream. */
 const CHILD_QUIET_MS = CHILD_STARTUP_GRACE_MS
 const MAX_CRITIQUE_ATTEMPTS = 2
@@ -1097,8 +1104,8 @@ export class BuildRunner {
                   ? this.makeImplementParser(build, active, gate, childBoundary, meta.workflowOffsets, meta.workflowIdentities)
                   : this.makeCodexImplementParser(build, active, gate, childBoundary)
                 : this.makeCritiqueParser(build, active, gate)
-          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
-          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_TIMEOUT_MS : CRITIQUE_TIMEOUT_MS
+          const idle = active.role === 'implement' ? IMPLEMENT_IDLE_MS : active.role === 'reference' ? REFERENCE_IDLE_MS : CRITIQUE_IDLE_MS
+          const cap = active.role === 'implement' ? IMPLEMENT_HARD_CAP_MS : active.role === 'reference' ? REFERENCE_HARD_CAP_MS : CRITIQUE_HARD_CAP_MS
           const recoveredGroup = ownership.groupIdentities
           void this.driveAttempt(build, active, meta, idle, cap, parser, gate, null, recoveredGroup, childBoundary)
           continue
@@ -1326,7 +1333,10 @@ export class BuildRunner {
           round: prior.round,
           role: prior.role,
           harness: harnessFor(prior.role === 'critique' ? build.models.criticModel : build.models.orchestratorModel),
-          prompt: prior.role === 'implement' ? markResumePrompt(prior.prompt) : prior.prompt,
+          // Reference alone still cold-starts: its own prompt already tells it
+          // to audit the pack it left behind, and it holds no session worth
+          // continuing once its artifact is on disk.
+          prompt: prior.role === 'implement' || prior.role === 'critique' ? markResumePrompt(prior.prompt) : prior.prompt,
         })
         if (prior.revision) this.ledger.patchAttempt(retry.id, { revision: prior.revision })
         if (prior.role === 'implement') this.copyCritiqueTreeBaseline(prior.id, retry.id)
@@ -2551,9 +2561,9 @@ export class BuildRunner {
     if (!driveFailed) void this.executeNext(build.id)
   }
 
-  /** Session id of an earlier attempt for this exact round, if reported. */
-  private lastImplementSessionId(buildId: string, round: number, exceptAttemptId: string): string | null {
-    return this.ledger.latestImplementSessionId(buildId, round, exceptAttemptId)
+  /** Session id of an earlier attempt at this exact phase, if reported. */
+  private lastPhaseSessionId(buildId: string, role: PhaseRole, round: number, exceptAttemptId: string): string | null {
+    return this.ledger.latestSessionIdForRole(buildId, role, round, exceptAttemptId)
   }
 
   private castFor(build: BuildRecord): CastEntry[] {
@@ -2611,7 +2621,7 @@ export class BuildRunner {
     const parser = this.makeReferenceParser(build, attempt, gate, childBoundary)
     const spawned = this.spawnDetached(build, attempt, executable.command, plan.args, executable.env)
     if (!spawned) return
-    await this.driveAttempt(build, attempt, spawned.meta, REFERENCE_TIMEOUT_MS, REFERENCE_TIMEOUT_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
+    await this.driveAttempt(build, attempt, spawned.meta, REFERENCE_IDLE_MS, REFERENCE_HARD_CAP_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
   }
 
   private makeReferenceParser(build: BuildRecord, attempt: PhaseAttempt, gate: LogGate, childBoundary: ChildStreamBoundary): StreamParser {
@@ -2689,7 +2699,7 @@ export class BuildRunner {
     }
     const childBoundary = this.prepareChildStreams(build, attempt)
 
-    const priorSessionId = build.playTrusted ? this.lastImplementSessionId(build.id, attempt.round, attempt.id) : null
+    const priorSessionId = build.playTrusted ? this.lastPhaseSessionId(build.id, 'implement', attempt.round, attempt.id) : null
     const effective = effectivePromptForAttempt(attempt.prompt)
     const isResume = effective.resumeRequested && priorSessionId != null
     const prompt = effective.prompt
@@ -2848,6 +2858,70 @@ export class BuildRunner {
 
   // ---------------------------------------------------------------- critique
 
+  /**
+   * Name the source that moved since a critique's revision was captured. Purely
+   * for the operator: a bare tree hash says drift happened but not what changed,
+   * and the answer is usually the operator's own work (VIS-001).
+   */
+  private logRevisionDrift(build: BuildRecord, attempt: PhaseAttempt, revision: string, lead: string): void {
+    let detail = ''
+    try {
+      const drift = revisionDriftPaths(build.workspaceDir, build.id, revision)
+      const rest = drift.total - drift.paths.length
+      detail = drift.total === 0 ? '' : ` ${drift.paths.join(', ')}${rest > 0 ? ` (+${rest} more)` : ''}`
+    } catch (error) {
+      // Never let the explanation break the path it is explaining.
+      detail = ` (changed paths unavailable: ${redactedErrorMessage(error, 'drift listing failed')})`
+    }
+    this.log(build.id, attempt.id, 'artifact', `${lead} since revision ${revision.slice(0, 12)} was captured:${detail}`)
+  }
+
+  /**
+   * Judge the workspace as it stands instead of refusing to start.
+   *
+   * A critique whose revision is stale before it has judged anything has
+   * nothing to corrupt — the drift is almost always the operator's own work
+   * between rounds, and reverting it is not the app's call (ADR-038). So the
+   * current source is captured as a fresh revision, chained to the one the
+   * implementer produced, and the critique is re-bound to it. The check that
+   * runs *after* a critic has judged stays fatal: there, the evidence really is
+   * split across two versions of the game.
+   *
+   * Returns false when the workspace cannot be captured at all, having already
+   * failed the attempt.
+   */
+  private rebindStaleCritique(build: BuildRecord, attempt: PhaseAttempt): boolean {
+    const stale = attempt.revision
+    if (!stale) return false
+    this.logRevisionDrift(build, attempt, stale, 'Project source changed')
+    try {
+      const revision = captureRoundRevision({
+        workspaceDir: build.workspaceDir,
+        buildId: build.id,
+        round: attempt.round,
+        parentRevision: stale,
+      })
+      this.ledger.patchAttempt(attempt.id, { revision })
+      attempt.revision = revision
+      this.log(
+        build.id,
+        attempt.id,
+        'artifact',
+        `Round ${attempt.round} critique re-bound to revision ${revision} (parent ${stale.slice(0, 12)}); this verdict covers the workspace as it stands, including changes made outside the build.`,
+      )
+      return true
+    } catch (error) {
+      const message = redactedErrorMessage(error, 'Round revision capture failed.')
+      this.failAttemptAndBuild(
+        build,
+        attempt,
+        `Could not re-bind the critique to the changed workspace: ${message}`,
+        `Round ${attempt.round} critique could not capture the changed workspace: ${message}`,
+      )
+      return false
+    }
+  }
+
   private async executeCritique(build: BuildRecord, attempt: PhaseAttempt): Promise<void> {
     const models = build.models
     if (!this.verifyReferenceBoundary(build, attempt)) return
@@ -2856,16 +2930,7 @@ export class BuildRunner {
       this.failAttemptAndBuild(build, attempt, 'Critique has no implementation revision binding.', `Round ${attempt.round} critique has no implementation revision binding.`)
       return
     }
-    if (!workspaceMatchesRevision(build.workspaceDir, build.id, attempt.revision)) {
-      this.log(build.id, attempt.id, 'error', `Stale critique rejected before launch: workspace no longer matches revision ${attempt.revision}.`)
-      this.failAttemptAndBuild(
-        build,
-        attempt,
-        'Workspace changed after implementation revision capture.',
-        `Workspace changed before round ${attempt.round} critique could judge revision ${attempt.revision.slice(0, 12)}.`,
-      )
-      return
-    }
+    if (!workspaceMatchesRevision(build.workspaceDir, build.id, attempt.revision) && !this.rebindStaleCritique(build, attempt)) return
     let verdictPath: string
     try {
       verdictPath = prepareVerdictArtifact(build.workspaceDir, attempt.round, attempt.id)
@@ -2879,13 +2944,19 @@ export class BuildRunner {
       )
       return
     }
+    // The contract is always rebuilt here, because the verdict filename is
+    // attempt-scoped. Only the resume marker survives from the queued row — and
+    // it has to be read before spawnDetached overwrites that row's prompt.
+    const resumeRequested = effectivePromptForAttempt(attempt.prompt).resumeRequested
+    const priorSessionId = build.playTrusted ? this.lastPhaseSessionId(build.id, 'critique', attempt.round, attempt.id) : null
+    const isResume = resumeRequested && priorSessionId != null
     this.log(
       build.id,
       attempt.id,
       'system',
-      `● Round ${attempt.round} — critique (${attempt.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
+      `● Round ${attempt.round} — critique (${attempt.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)${isResume ? ' — continuing interrupted session' : ''}`,
     )
-    const exactPrompt = buildCriticPrompt(
+    const contract = buildCriticPrompt(
       build.prompt,
       attempt.round,
       this.referenceDir(build.id),
@@ -2894,18 +2965,22 @@ export class BuildRunner {
       engineGateRules(),
       models.referenceMode,
     )
+    // Resume is context, not a replacement: the preamble still points a cold
+    // critic at the evidence its predecessor left under critique/round-N.
+    const exactPrompt = resumeRequested ? composeResumePrompt(contract) : contract
     const plan = critiquePlan({
       models,
       prompt: exactPrompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
+      resumeId: isResume ? priorSessionId : null,
     })
     const executable = this.executableEnvironment(build, attempt, plan.env)
     const gate: LogGate = { suppress: false }
     const parser = this.makeCritiqueParser(build, attempt, gate)
     const spawned = this.spawnDetached(build, attempt, executable.command, plan.args, executable.env, exactPrompt)
     if (!spawned) return
-    await this.driveAttempt(build, attempt, spawned.meta, CRITIQUE_TIMEOUT_MS, CRITIQUE_TIMEOUT_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
+    await this.driveAttempt(build, attempt, spawned.meta, CRITIQUE_IDLE_MS, CRITIQUE_HARD_CAP_MS, parser, gate, spawned.own, spawned.groupIdentity, childBoundary)
   }
 
   private makeCritiqueParser(build: BuildRecord, attempt: PhaseAttempt, gate: LogGate): StreamParser {
@@ -2926,6 +3001,7 @@ export class BuildRunner {
       verifyReference: (terminalLog) => this.verifyReferenceBoundary(build, attempt, terminalLog),
       failOrRetry: (error, label, maxAttempts, prompt, terminalLog) => this.failOrRetryPhase(build, attempt, error, label, maxAttempts, prompt, terminalLog),
       overBudget: () => this.overBudget(build.id),
+      reportRevisionDrift: (revision) => this.logRevisionDrift(build, attempt, revision, 'Project source changed while the critic judged it'),
       finishBuild: (status, reason) => this.finishBuild(build.id, status, reason),
       persistBuildTerminal: (status, reason) => this.persistBuildTerminal(build.id, status, reason),
       implementPrompt: (round, verdict) => this.nextImplementPrompt(build, round, verdict),

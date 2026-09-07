@@ -7,6 +7,7 @@ import {
   checkoutRoundRevision,
   cleanupRoundCheckout,
   configureRoundRevisionStorage,
+  revisionDriftPaths,
   roundRevisionRepositoryPath,
   workspaceMatchesRevision,
 } from './round-revision'
@@ -178,6 +179,45 @@ describe('round revisions', () => {
     expect(workspaceMatchesRevision(dir, LOOP_ID, revision)).toBe(true)
     fs.writeFileSync(path.join(dir, 'game.js'), 'critic changed source')
     expect(workspaceMatchesRevision(dir, LOOP_ID, revision)).toBe(false)
+  })
+
+  it('never reads a Finder artifact as source drift', () => {
+    const dir = workspace()
+    fs.mkdirSync(path.join(dir, 'src'))
+    fs.writeFileSync(path.join(dir, 'game.js'), 'frozen')
+    fs.writeFileSync(path.join(dir, '.DS_Store'), 'finder state')
+    fs.writeFileSync(path.join(dir, 'src', '.DS_Store'), 'finder state')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+
+    // Browsing the project folder while a critic runs was enough to reject the
+    // whole critique before these paths were excluded.
+    fs.writeFileSync(path.join(dir, '.DS_Store'), 'finder state, changed')
+    fs.writeFileSync(path.join(dir, 'src', '.DS_Store'), 'finder state, changed')
+
+    expect(workspaceMatchesRevision(dir, LOOP_ID, revision)).toBe(true)
+    expect(revisionDriftPaths(dir, LOOP_ID, revision).paths).toEqual([])
+  })
+
+  it('names the source files that drifted, bounded for the build log', () => {
+    const dir = workspace()
+    fs.mkdirSync(path.join(dir, 'src'))
+    for (let i = 0; i < 4; i += 1) fs.writeFileSync(path.join(dir, 'src', `file-${i}.ts`), 'frozen')
+    fs.mkdirSync(path.join(dir, 'critique'), { recursive: true })
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+
+    fs.writeFileSync(path.join(dir, 'src', 'file-1.ts'), 'operator edit')
+    fs.writeFileSync(path.join(dir, 'src', 'file-3.ts'), 'operator edit')
+    fs.writeFileSync(path.join(dir, 'src', 'added.ts'), 'operator addition')
+    fs.writeFileSync(path.join(dir, 'critique', 'evidence.txt'), 'critic-owned, not drift')
+
+    const all = revisionDriftPaths(dir, LOOP_ID, revision)
+    expect(all.total).toBe(3)
+    expect(all.paths).toEqual(['src/added.ts', 'src/file-1.ts', 'src/file-3.ts'])
+
+    // The list goes into a log line, so it truncates while still reporting the count.
+    const capped = revisionDriftPaths(dir, LOOP_ID, revision, 2)
+    expect(capped.total).toBe(3)
+    expect(capped.paths).toEqual(['src/added.ts', 'src/file-1.ts'])
   })
 
   it.each(['build/game.js', 'nested/dist-assets/game.js'])('detects critic mutation of playable output %s', (relative) => {
