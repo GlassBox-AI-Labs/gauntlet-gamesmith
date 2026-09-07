@@ -624,6 +624,46 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(signals).toContainEqual([-leaderPid, 'SIGINT'])
   })
 
+  // A scan that never succeeds protects nothing; the operator has to be able to
+  // see that, rather than believing Stop reaches everything (VIS-001).
+  it('reports a process table it cannot read at all', () => {
+    const leaderPid = 2_000_000_000
+    const identity = readProcessIdentity(process.pid)!
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      scanProcessTable: () => { throw new Error('ps unavailable.') },
+      processGroupIdentity: () => [`${leaderPid}:${identity}`],
+      processGroupStillOwned: () => false,
+      signalProcess: () => {},
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    const attempt = ledger.attemptsForBuild(started.buildId!)[0]
+    for (const tick of ticks) tick()
+
+    expect(ledger.eventsForAttempt(attempt.id).some((event) =>
+      event.text.includes('Could not read the process table') && event.text.includes('ps unavailable.'),
+    )).toBe(true)
+  })
+
   it('leaves an escaped group alone when its group id was recycled', () => {
     const leaderPid = 2_000_000_000
     const strayPid = leaderPid - 7

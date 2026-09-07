@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { safePid } from './attempt-process'
+import { PROCESS_LSTART, safePid } from './attempt-process'
 
 /**
  * Stopping an attempt signals its process group, which covers every descendant
@@ -27,7 +27,8 @@ import { safePid } from './attempt-process'
 // so a pathological `ps` cannot exhaust memory.
 const TABLE_LIMIT_BYTES = 4 * 1024 * 1024
 const TABLE_PROBE_TIMEOUT_MS = 5_000
-const LSTART = /^\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/
+// Captured loosely, then held to the canonical `PROCESS_LSTART` grammar: these
+// identities are handed to the canonical group stop, so the two must agree.
 const ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3} \w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})\s*$/
 /** A descendant tree far larger than this is a runaway; stop walking it. */
 const MAX_TRACKED_PIDS = 10_000
@@ -58,7 +59,7 @@ export function parseProcessTable(stdout: string): ProcessTableRow[] {
     const ppid = Number(match[2])
     const pgid = Number(match[3])
     if (!safePid(pid) || !safePid(pgid) || !Number.isSafeInteger(ppid) || ppid < 0) continue
-    if (!LSTART.test(match[4])) continue
+    if (!PROCESS_LSTART.test(match[4])) continue
     rows.push({ pid, ppid, pgid, lstart: match[4] })
   }
   return rows
