@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from './models'
 import { markResumePrompt } from './build'
-import { ASSET_WAVE_SIZE, IMPLEMENT_VERIFY_CYCLES, MACOS_BROWSER_SANDBOX_RULE, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from './prompts'
+import { ASSET_WAVE_SIZE, IMPLEMENT_VERIFY_CYCLES, MACOS_BROWSER_SANDBOX_RULE, MOTION_FRAMES_RULE, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt, referenceReadingInstructions } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
 const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
@@ -122,7 +122,7 @@ describe('build prompts', () => {
     expect(prompt).toContain('./reference/build-123/journey.md')
     expect(prompt).toContain('./reference/build-123/story.md')
     expect(prompt).toContain('VIEW the relevant stills, motion frames, and ordered journey shots')
-    expect(prompt).toContain('WATCH the gameplay clip')
+    expect(prompt).toContain(MOTION_FRAMES_RULE)
     expect(prompt).toContain('You are the implementation orchestrator and own the integrated game')
     expect(prompt).toContain('ship at least three complete, distinct, playable levels/stages/missions')
     expect(prompt).toContain('If it classifies the game as non-level-based')
@@ -331,6 +331,27 @@ describe('sculpting inside the implement prompt', () => {
     expect(prompt).toContain('WIRE THEM UP, not to sculpt')
     expect(prompt).toContain('Do NOT hand-edit a generated factory')
     expect(prompt).toContain('model that one yourself')
+  })
+})
+
+describe('the unwatchable gameplay clip', () => {
+  it('states the video limit once and carries it into every prompt that cites the pack', () => {
+    expect(MOTION_FRAMES_RULE).toContain('no tool plays video or audio for you')
+    expect(MOTION_FRAMES_RULE).toContain('never claim to have watched or listened to the clip')
+
+    expect(buildReferencePrompt('Build a game like Control', 'reference/build-123', 'FAN-OUT-RULES')).toContain(MOTION_FRAMES_RULE)
+    expect(composeImplementPrompt('Build a game like Control', 1, null, rules, 'reference/build-123', contract)).toContain(MOTION_FRAMES_RULE)
+    expect(buildCriticPrompt('Build it', 2, 'reference/build-1', 'a'.repeat(40), 'verdict.json', gateRules)).toContain(MOTION_FRAMES_RULE)
+    expect(referenceReadingInstructions('reference/build-123')).toContain(MOTION_FRAMES_RULE)
+  })
+
+  it('never tells an agent to watch the clip or score sound it cannot hear', () => {
+    const critic = buildCriticPrompt('Build it', 2, 'reference/build-1', 'a'.repeat(40), 'verdict.json', gateRules)
+
+    expect(critic).toContain('you cannot hear the game, so do not score audio')
+    for (const prompt of [buildReferencePrompt('Build a game like Control', 'reference/build-123', 'FAN-OUT-RULES'), critic, composeImplementPrompt('Build it', 1, null, rules, 'reference/build-123', contract)]) {
+      expect(prompt).not.toContain('WATCH')
+    }
   })
 })
 
