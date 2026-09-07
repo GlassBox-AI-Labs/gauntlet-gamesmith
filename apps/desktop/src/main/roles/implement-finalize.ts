@@ -118,7 +118,7 @@ export async function finalizeImplement(
   const lead = new LeadContinuity(ledger)
   const checkpoint = lead.checkpoint(attempt, outcome.leadResponse ?? outcome.summary)
   if (checkpoint) {
-    const message = checkpoint.warning ?? `Saved the lead notebook for round ${attempt.round}.`
+    const message = checkpoint.warning ?? `Saved the orchestrator notebook for round ${attempt.round}.`
     runtime.persistLog(checkpoint.warning ? 'error' : 'system', message)
     runtime.notifyPersistedLog(checkpoint.warning ? 'error' : 'system', message)
   }
@@ -129,7 +129,7 @@ export async function finalizeImplement(
     if (lead.recoverUnavailableSession(attempt, outcome.sessionUnavailable === true, runtime.copyRetryEvidence)) {
       runtime.persistLog(terminalMetric.kind, terminalMetric.text)
       runtime.notifyPersistedLog(terminalMetric.kind, terminalMetric.text)
-      const message = 'Saved lead session was unavailable. Recovery is queued from durable memory with the same frozen steering requirements.'
+      const message = 'Saved orchestrator session was unavailable. Recovery is queued from durable memory with the same frozen steering requirements.'
       runtime.persistLog('system', message)
       runtime.notifyPersistedLog('system', message)
       runtime.broadcast()

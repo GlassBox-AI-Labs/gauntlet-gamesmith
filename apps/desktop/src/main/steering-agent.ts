@@ -106,7 +106,7 @@ export function createConsultAgent(privateDir: string, environment: (kind: Harne
       sessionId = id
       if (input.resumeId && id !== input.resumeId) baseline = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
       try { input.onSession?.(id) } catch (error) {
-        failure = error instanceof Error ? error.message : 'Could not retain the lead session.'
+        failure = error instanceof Error ? error.message : 'Could not retain the orchestrator session.'
         queueMicrotask(() => { void stop() })
       }
     }
@@ -159,12 +159,12 @@ export function createConsultAgent(privateDir: string, environment: (kind: Harne
         meta = completeProcessMeta(input.workspaceDir, input.attemptId, marker, child.pid!, undefined, { outDev: outStat.dev, outIno: outStat.ino, errDev: errStat.dev, errIno: errStat.ino })
         save(meta)
         input.onStarted?.(version)
-        emit({ kind: 'raw-stream', channel: 'system', text: 'Lead Chat raw output streams opened.' })
+        emit({ kind: 'raw-stream', channel: 'system', text: 'Orchestrator Chat raw output streams opened.' })
         if (input.signal.aborted) abort()
         else child.stdin.end(input.prompt)
       } catch (error) { failure = error instanceof Error ? error.message : 'Unable to record chat process ownership.'; void stop() }
     })
-    child.on('error', error => { failure = `Could not start the lead: ${error.message}` })
+    child.on('error', error => { failure = `Could not start the orchestrator: ${error.message}` })
     child.stdout.on('data', (chunk: Buffer) => {
       if (!recordChunk(out!, chunk)) return
       buffer += decoder.write(chunk)
@@ -187,7 +187,7 @@ export function createConsultAgent(privateDir: string, environment: (kind: Harne
         if (gone) fs.rmSync(privatePath, { force: true })
         if (!gone) failure = 'Chat process ownership could not be settled. Restart the app before continuing this conversation.'
         if (harness === 'codex') failure ||= stream.failure() ?? ''
-        if (failure || code !== 0 || !text) throw Object.assign(new Error(failure || `The lead returned no response (exit ${code}). Check its connection on the Agents tab.`), { tokens, sessionId, cumulativeTokens, unresolved: !gone, sessionUnavailable: !didWork && (missingSession || isMissingLeadSession(failure)) })
+        if (failure || code !== 0 || !text) throw Object.assign(new Error(failure || `The orchestrator returned no response (exit ${code}). Check its connection on the Agents tab.`), { tokens, sessionId, cumulativeTokens, unresolved: !gone, sessionUnavailable: !didWork && (missingSession || isMissingLeadSession(failure)) })
         return { text, tokens, sessionId, ...(harness === 'codex' ? { cumulativeTokens } : {}) }
       })().then(resolve, reject)
     })

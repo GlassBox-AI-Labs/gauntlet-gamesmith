@@ -159,7 +159,7 @@ export function createCodexImplementProtocol(runtime: CodexImplementRuntime): St
         usageBaseline = emptyTokens()
         inherited = usageBaseline
         liveTokens = null
-        plog('system', 'The CLI started a different lead session; continuing from saved memory with fresh usage accounting.')
+        plog('system', 'The CLI started a different orchestrator session; continuing from saved memory with fresh usage accounting.')
       }
       ledger.patchAttempt(attempt.id, { sessionId: threadId })
       // Capture the inheritance here rather than at the first poll: nothing of

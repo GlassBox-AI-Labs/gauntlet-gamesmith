@@ -296,7 +296,7 @@ export function createClaudeImplementProtocol(runtime: ClaudeImplementRuntime): 
       }
       sessionId = reportedSession ?? sessionId
       if (reportedSession && new LeadContinuity(ledger).sessionStarted(attempt, reportedSession)) {
-        plog('system', 'The CLI started a different lead session; this turn uses saved memory instead of the previous conversation.')
+        plog('system', 'The CLI started a different orchestrator session; this turn uses saved memory instead of the previous conversation.')
       }
       if (model || sessionId) ledger.patchAttempt(attempt.id, { ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}) })
       plog('system', `session ${sessionId?.slice(0, 8) ?? '?'} · model ${model ?? '?'}`)

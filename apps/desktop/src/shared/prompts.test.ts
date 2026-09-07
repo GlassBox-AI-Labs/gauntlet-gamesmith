@@ -392,8 +392,8 @@ describe('lead and steering prompt contracts', () => {
 
   it('keeps questions separate from directions and states when the lead receives them', () => {
     const prompt = buildSteeringPrompt({})
-    expect(prompt).toContain('You are the continuing implementation lead')
-    expect(prompt).toContain('This is the same lead conversation used for implementation')
+    expect(prompt).toContain('You are the orchestrator')
+    expect(prompt).toContain('This is the same orchestrator conversation used for implementation')
     expect(prompt).toContain('State when a detail is missing or stale')
     expect(prompt).toContain('A question, hypothetical, or tentative idea alone must not create a directive')
     expect(prompt).toContain('next implementation dispatch')

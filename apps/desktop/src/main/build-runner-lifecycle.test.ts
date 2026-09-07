@@ -2473,7 +2473,7 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(spawnedArgs, JSON.stringify(ledger.eventsForBuild(build.id, 2_000))).not.toBeNull()
     expect(spawnedArgs).toContain('same-round-thread')
     expect(spawnedArgs!.at(-1)).toContain(composeResumePrompt(basePrompt))
-    expect(spawnedArgs!.at(-1)).toContain('continuing implementation lead')
+    expect(spawnedArgs!.at(-1)).toContain('You are the orchestrator')
     expect(spawnedArgs!.at(-1)).toContain('<goal>\nBuild the game.\n</goal>')
   })
 

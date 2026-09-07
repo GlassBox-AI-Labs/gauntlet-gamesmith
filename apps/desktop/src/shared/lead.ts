@@ -45,12 +45,12 @@ export interface LeadState {
 }
 
 export function parseLeadNotebook(value: unknown): LeadNotebook {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid lead notebook.')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid orchestrator notebook.')
   const record = value as Record<string, unknown>
   const result = {} as LeadNotebook
   for (const key of LEAD_NOTEBOOK_FIELDS) {
     const text = record[key]
-    if (typeof text !== 'string' || text.length > 4000) throw new Error(`Invalid lead notebook field: ${key}.`)
+    if (typeof text !== 'string' || text.length > 4000) throw new Error(`Invalid orchestrator notebook field: ${key}.`)
     result[key] = text
   }
   return result
@@ -60,10 +60,10 @@ export function extractLeadNotebook(response: string, attemptId: string): LeadNo
   const start = response.lastIndexOf('<lead-notebook>')
   if (start === -1) return null
   const end = response.indexOf('</lead-notebook>', start)
-  if (end === -1 || end - start > 30000) throw new Error('Incomplete or oversized lead notebook.')
+  if (end === -1 || end - start > 30000) throw new Error('Incomplete or oversized orchestrator notebook.')
   const value: unknown = JSON.parse(response.slice(start + '<lead-notebook>'.length, end))
   if (!value || typeof value !== 'object' || (value as Record<string, unknown>).attemptId !== attemptId) {
-    throw new Error('Lead notebook belongs to a different attempt.')
+    throw new Error('Orchestrator notebook belongs to a different attempt.')
   }
   return parseLeadNotebook(value)
 }
@@ -74,11 +74,11 @@ export function isMissingLeadSession(text: string): boolean {
 }
 
 export function parseLeadUsage(value: unknown): TokenTotals {
-  if (!value || typeof value !== 'object') throw new Error('Invalid lead usage baseline.')
+  if (!value || typeof value !== 'object') throw new Error('Invalid orchestrator usage baseline.')
   const record = value as Record<string, unknown>, tokens = {} as TokenTotals
   for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
     const n = record[key]
-    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) throw new Error('Invalid lead usage baseline.')
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) throw new Error('Invalid orchestrator usage baseline.')
     tokens[key] = n
   }
   return tokens

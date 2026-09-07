@@ -101,32 +101,32 @@ export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { bu
     catch (error) { if (mounted.current) setError(String(error)) }
   }
   const timing = buildStatus === 'running' ? 'New directions enter the next implementation attempt' : ['stopped', 'failed'].includes(buildStatus) ? 'Resume includes queued directions when retrying implementation' : 'Directions wait for another implementation attempt'
-  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Chat for ${buildName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
+  return <aside className={`steering-run-sidebar ${collapsed ? 'is-collapsed' : ''}`} aria-label={`Chat with orchestrator for ${buildName}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault() }} onDrop={event => { event.preventDefault(); if (event.dataTransfer.files.length) void attach(Array.from(event.dataTransfer.files)) }}>
     <div className="steering-sidebar-header">
       <button aria-label={collapsed ? 'Expand chat' : 'Collapse chat'} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}</button>
-      {!collapsed && <div><h2>Chat</h2><p>{buildName} · Round {round}</p></div>}
+      {!collapsed && <div><h2>Chat</h2><p>Chat with orchestrator · Round {round}</p></div>}
     </div>
     {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Chat{state.responding ? ' · Replying' : state.queued ? ' · Waiting' : ''}</button>}
     <div className="steering-sidebar-expanded" hidden={collapsed}>
       <div className="steering-chat" role="log" aria-label="Build conversation" aria-live="polite">
         {!loaded && !error && <span className="steering-thinking">Loading conversation…</span>}
         {state.messages.map(message => <div key={message.id} className={`steering-message ${message.role}`}>
-          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Build lead'}</span>}
+          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Orchestrator'}</span>}
           {!!message.attachments?.length && <div className="steering-attachments">{message.attachments.map(file => <Attachment key={file.id} file={file} buildId={buildId} />)}</div>}
           {message.content && <p>{message.content}</p>}
-          {message.role === 'user' && message.delivery && <small className="steering-direction-status">{{ queued: 'Waiting for the lead', running: 'Lead is replying', succeeded: 'Answered', failed: 'Reply failed', cancelled: 'Cancelled', interrupted: 'Reply interrupted' }[message.delivery]}</small>}
+          {message.role === 'user' && message.delivery && <small className="steering-direction-status">{{ queued: 'Waiting for orchestrator', running: 'Orchestrator is replying', succeeded: 'Answered', failed: 'Reply failed', cancelled: 'Cancelled', interrupted: 'Reply interrupted' }[message.delivery]}</small>}
           {state.directives.filter(d => d.messageId === message.id).map(d => <div className="steering-direction-status" key={d.id} title={d.text}>
             <span>{d.withdrawn ? 'Withdrawn' : d.firstRound != null ? `Included in round ${d.firstRound} · persists` : 'Queued · ' + timing.toLowerCase()}</span>
             {!d.withdrawn && !d.firstAttemptId && <button onClick={() => void withdraw(d.id)} aria-label={`Withdraw direction: ${d.text}`}>Withdraw</button>}
           </div>)}
         </div>)}
-        {state.responding && <div className="steering-thinking"><LoaderCircle size={14} className="animate-spin" />The lead is replying…</div>}
+        {state.responding && <div className="steering-thinking"><LoaderCircle size={14} className="animate-spin" />Orchestrator is replying…</div>}
         {error && <p className="steering-error" role="alert">{error}{!loaded && <button type="button" onClick={() => setLoadVersion(value => value + 1)}>Retry</button>}</p>}
         <div ref={bottom} />
       </div>
       <form className="steering-compose" onSubmit={event => { event.preventDefault(); void send() }}>
         {!!files.length && <div className="steering-attachments">{files.map(file => <Attachment key={file.id} file={file} onRemove={sending ? undefined : () => remove(file.id)} />)}</div>}
-        <textarea aria-label="Message chat" placeholder="Message…" value={draft} maxLength={MAX_STEERING_MESSAGE} disabled={sending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
+        <textarea aria-label="Message orchestrator" placeholder="Message orchestrator…" value={draft} maxLength={MAX_STEERING_MESSAGE} disabled={sending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
         <div className="steering-compose-actions">
           <button type="button" className="steering-attach-button" aria-label="Attach files or images" title="Attach files or images, or drop them here" disabled={attaching || sending} onClick={() => void attach()}>{attaching ? <LoaderCircle size={16} className="animate-spin" /> : <Paperclip size={16} />}</button>
           {busy && <button type="button" onClick={() => void cancel()}>{state.responding ? 'Stop response' : 'Cancel waiting message'}</button>}

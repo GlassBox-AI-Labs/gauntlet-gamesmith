@@ -1800,7 +1800,7 @@ export class BuildRunner {
       try {
         if (!await this.deps.drainChat(buildId)) return
       } catch (error) {
-        this.log(buildId, null, 'error', `Lead Chat could not settle: ${redactedErrorMessage(error, 'Unknown Chat error.')}`)
+        this.log(buildId, null, 'error', `Orchestrator Chat could not settle: ${redactedErrorMessage(error, 'Unknown Chat error.')}`)
         return
       } finally { this.chatBarriers.delete(buildId) }
       if (this.current || this.terminatingBuilds.has(buildId)) return
@@ -2741,7 +2741,7 @@ export class BuildRunner {
       build.id,
       attempt.id,
       'system',
-      `● Round ${attempt.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${continuing ? continuing.resumeId ? ' — continuing build lead' : ' — starting lead session' : isResume ? ' — continuing interrupted session' : ''}`,
+      `● Round ${attempt.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${continuing ? continuing.resumeId ? ' — continuing orchestrator' : ' — starting orchestrator session' : isResume ? ' — continuing interrupted session' : ''}`,
     )
     const plan = implementPlan({
       models,

@@ -57,7 +57,7 @@ export class SteeringService {
       if (existing.content !== redactLogText(input.content) || JSON.stringify([...new Set(existing.attachments?.map(file => file.sourceId) ?? [])].sort()) !== JSON.stringify([...input.attachmentIds].sort())) throw new Error('Message ID already used.')
       return state
     }
-    if (state.queued >= MAX_QUEUED_CHAT_MESSAGES) throw new Error('Up to 20 messages can wait for the lead. Let it catch up before sending more.')
+    if (state.queued >= MAX_QUEUED_CHAT_MESSAGES) throw new Error('Up to 20 messages can wait for the orchestrator. Let it catch up before sending more.')
     if (this.ledger.unfinishedConsults().length >= 100) throw new Error('Chat queues are full. Let the pending replies finish before sending more.')
     if (state.messages.reduce((n, message) => n + message.content.length, input.content.length) > 200000) throw new Error('This conversation has reached its context limit.')
     const prepared = this.attachmentStore.prepare(build.id, input.attachmentIds, state.messages.flatMap(message => message.attachments ?? []))
@@ -139,7 +139,7 @@ export class SteeringService {
         workspaceDir: build.workspaceDir, attemptId: attempt.id, signal: controller.signal,
         imagePaths: this.attachmentStore.verify(build.id, (message.attachments ?? []).filter(file => file.kind === 'image')),
         onSession: sessionId => {
-          if (lead.sessionStarted(attempt, sessionId)) this.store.addSteeringMessage(build.id, 'system', 'The lead session was recovered using saved context.', attempt.id)
+          if (lead.sessionStarted(attempt, sessionId)) this.store.addSteeringMessage(build.id, 'system', 'The orchestrator session was recovered using saved context.', attempt.id)
           this.ledger.patchAttempt(attempt.id, { sessionId })
         },
         onStarted: cliVersion => {
@@ -217,7 +217,7 @@ export class SteeringService {
       this.ledger.patchAttempt(attempt.id, { status: settled ? 'interrupted' : 'running',
         error: settled ? 'Chat interrupted by app restart.' : 'Chat process ownership remains unresolved.', finishedAt: settled ? new Date().toISOString() : null })
       this.store.addSteeringMessage(attempt.buildId, 'system', settled
-        ? 'The previous reply was interrupted. Send another message to continue with the lead.'
+        ? 'The previous reply was interrupted. Send another message to continue with the orchestrator.'
         : 'The previous Chat process could not be safely identified. Chat remains paused.', attempt.id)
     }
   }

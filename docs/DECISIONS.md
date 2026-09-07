@@ -1077,3 +1077,18 @@ and raw events remain visible in the build log without adding rows to the phase 
 or unlimited context. A question can wait for a long phase to finish. Imported builds,
 missing sessions, or unavailable Codex accounting baselines use saved memory in fresh
 sessions. The application still owns phase scheduling, limits, and independent critique.
+
+## ADR-037 — Use the existing Orchestrator name in Chat (2026-09-07)
+
+**Status:** accepted; updates the operator-facing vocabulary in ADR-035/036.
+
+**Decision.** Keep the sidebar title **Chat** and identify its existing context line
+as **Chat with orchestrator**. Attribute replies to **Orchestrator** and use that
+name in waiting/reply status, recovery messages, and self-description prompts.
+The operator is talking to the same orchestrator selected when creating the build;
+“Build lead” and “Build assistant” are not additional product roles. No extra UI
+element or model selection control is introduced.
+
+This is a wording change. Session scheduling, process ownership, queued directions,
+and accounting remain unchanged. Keep existing internal identifiers, event kinds,
+and prompt-envelope markers compatible; do not rewrite historical messages.

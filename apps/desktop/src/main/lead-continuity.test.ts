@@ -181,7 +181,7 @@ describe('continuing run lead with steering', () => {
     const next = implementation(2)
     const invalid = lead.checkpoint(next, `<lead-notebook>${JSON.stringify({ ...notebook, attemptId: next.id, plan: 'x'.repeat(4001) })}</lead-notebook>`)
     expect(invalid?.notebook).toBeNull()
-    expect(invalid?.warning).toContain('Invalid lead notebook field')
+    expect(invalid?.warning).toContain('Invalid orchestrator notebook field')
   })
 
   it('retains the latest valid notebook beyond a page of failed attempts', () => {
@@ -220,7 +220,7 @@ describe('continuing run lead with steering', () => {
     expect((captured as ConsultInput | null)?.resumeId).toBe(SESSION)
     expect((captured as ConsultInput | null)?.model).toBe(build.models.orchestratorModel)
     expect((captured as ConsultInput | null)?.prompt).toContain('Variable timestep caused jitter')
-    expect((captured as ConsultInput | null)?.prompt).toContain('You are the continuing implementation lead')
+    expect((captured as ConsultInput | null)?.prompt).toContain('You are the orchestrator')
     resolve({ text: JSON.stringify({ reply: 'I observed jitter with variable timesteps.', directives: [] }), tokens: null, sessionId: SESSION })
     await service.drain(build.id)
     expect(new SteeringStore(ledger).steeringState(build.id).directives).toEqual([])

@@ -10,11 +10,11 @@ import { usageForThread } from './codex-usage'
 
 function record(text: string): Record<string, unknown> {
   const value: unknown = JSON.parse(text)
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid lead history.')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid orchestrator history.')
   return value as Record<string, unknown>
 }
 function bounded(value: unknown, max: number): string {
-  if (typeof value !== 'string' || value.length > max) throw new Error('Invalid lead history text.')
+  if (typeof value !== 'string' || value.length > max) throw new Error('Invalid orchestrator history text.')
   return value
 }
 
@@ -24,7 +24,7 @@ export class LeadContinuity {
 
   private append(buildId: string, attemptId: string | null, kind: string, value: unknown): void {
     const text = JSON.stringify(value)
-    if (Buffer.byteLength(text) > 60000) throw new Error('Lead memory exceeds its checkpoint size limit.')
+    if (Buffer.byteLength(text) > 60000) throw new Error('Orchestrator memory exceeds its checkpoint size limit.')
     const attempt = attemptId ? this.ledger.getAttempt(attemptId) : null
     this.ledger.appendEvent({ buildId, attemptId, kind, text, ts: new Date().toISOString(),
       channel: channelForKind(kind),
@@ -38,10 +38,10 @@ export class LeadContinuity {
   private dispatch(event: BuildLogLine): LeadDispatch {
     this.assertImplementationEvent(event)
     const value = record(event.text)
-    if (value.mode !== 'new' && value.mode !== 'continued' && value.mode !== 'recovered') throw new Error('Invalid lead continuation mode.')
+    if (value.mode !== 'new' && value.mode !== 'continued' && value.mode !== 'recovered') throw new Error('Invalid orchestrator continuation mode.')
     const fromAttemptId = value.fromAttemptId !== undefined ? value.fromAttemptId : value.fromRunId
     const resumeId = value.resumeId === null ? null : normalizeSessionId(value.resumeId)
-    if (value.resumeId !== null && !resumeId) throw new Error('Invalid lead session history.')
+    if (value.resumeId !== null && !resumeId) throw new Error('Invalid orchestrator session history.')
     return { attemptId: event.attemptId!, round: event.round!, mode: value.mode,
       fromAttemptId: fromAttemptId === null ? null : bounded(fromAttemptId, 100), resumeId, reason: bounded(value.reason, 1000),
       usageBaseline: value.usageBaseline == null ? null : parseLeadUsage(value.usageBaseline) }
@@ -49,7 +49,7 @@ export class LeadContinuity {
 
   private assertImplementationEvent(event: BuildLogLine): void {
     const attempt = event.attemptId ? this.ledger.getAttempt(event.attemptId) : null
-    if (!attempt || attempt.buildId !== event.buildId || !['implement', 'consult'].includes(attempt.role) || attempt.round !== event.round) throw new Error('Lead history is not bound to a lead turn.')
+    if (!attempt || attempt.buildId !== event.buildId || !['implement', 'consult'].includes(attempt.role) || attempt.round !== event.round) throw new Error('Orchestrator history is not bound to an orchestrator turn.')
   }
 
   private readCheckpoint(event: BuildLogLine): LeadCheckpoint {
@@ -85,7 +85,7 @@ export class LeadContinuity {
     return this.ledger.transaction(() => {
       const build = this.ledger.getBuild(attempt.buildId)!
       const state = this.state(attempt.buildId)
-      if (!state.enabled || !['implement', 'consult'].includes(attempt.role)) throw new Error('Continuing lead is not enabled for this turn.')
+      if (!state.enabled || !['implement', 'consult'].includes(attempt.role)) throw new Error('Orchestrator continuity is not enabled for this turn.')
       const events = this.ledger.leadEvents(attempt.buildId)
       const saved = events.find(event => event.kind === 'lead-dispatch' && event.attemptId === attempt.id)
       if (saved) {
@@ -112,11 +112,11 @@ export class LeadContinuity {
       const hasHistory = prior.length > 0 || state.checkpoints.length > 0
       const mode = resumeId ? 'continued' : hasHistory ? 'recovered' : 'new'
       const reason = resumeId
-        ? `Continuing the lead from round ${candidate!.round}; current requirements override earlier decisions.`
-        : !hasHistory ? 'Starting the build lead; its session and notebook carry forward across implementation rounds.'
-          : !build.playTrusted ? 'Fresh lead session for transferred history; restoring portable memory without adopting imported CLI sessions.'
+        ? `Continuing the orchestrator from round ${candidate!.round}; current requirements override earlier decisions.`
+        : !hasHistory ? 'Starting the orchestrator; its session and notebook carry forward across implementation rounds.'
+          : !build.playTrusted ? 'Fresh orchestrator session for transferred history; restoring portable memory without adopting imported CLI sessions.'
             : usageUnavailable ? 'Prior session usage is unavailable; restoring memory in a fresh session so earlier rounds are not charged again.'
-            : 'A prior lead session is unavailable; restoring saved memory in a fresh session.'
+            : 'A prior orchestrator session is unavailable; restoring saved memory in a fresh session.'
       const dispatch: LeadDispatch = { attemptId: attempt.id, round: attempt.round, mode, fromAttemptId: candidate?.id ?? prior[0]?.id ?? null, resumeId, reason, usageBaseline }
       const notebook = state.latestNotebook
       const recent = state.checkpoints[0] ?? null
@@ -149,7 +149,7 @@ export class LeadContinuity {
     const expected = event ? this.dispatch(event).resumeId : null
     if (!expected || expected === sessionId) return false
     if (!events.some(event => event.kind === 'lead-session-reset' && event.attemptId === attempt.id)) {
-      this.append(attempt.buildId, attempt.id, 'lead-session-reset', { sessionId, reason: 'The CLI started a different session than requested. This lead is using the supplied saved memory; its earlier conversation was not continued.' })
+      this.append(attempt.buildId, attempt.id, 'lead-session-reset', { sessionId, reason: 'The CLI started a different session than requested. The orchestrator is using the supplied saved memory; its earlier conversation was not continued.' })
     }
     return true
   }
@@ -164,8 +164,8 @@ export class LeadContinuity {
     try {
       notebook = extractLeadNotebook(response ?? '', attempt.id)
       if (!notebook) warning = 'No structured notebook was returned. The attempt report is saved; earlier notebook entries may be stale.'
-      if (notebook && Buffer.byteLength(JSON.stringify(notebook)) > 40000) throw new Error('Lead notebook exceeds its byte limit.')
-    } catch (error) { notebook = null; warning = error instanceof Error ? error.message : 'Invalid lead notebook.' }
+      if (notebook && Buffer.byteLength(JSON.stringify(notebook)) > 40000) throw new Error('Orchestrator notebook exceeds its byte limit.')
+    } catch (error) { notebook = null; warning = error instanceof Error ? error.message : 'Invalid orchestrator notebook.' }
     const checkpoint: LeadCheckpoint = { attemptId: attempt.id, round: attempt.round, createdAt: new Date().toISOString(),
       notebook, report: response?.slice(0, 4000) || null, warning }
     this.append(attempt.buildId, attempt.id, 'lead-checkpoint', checkpoint)
@@ -180,7 +180,7 @@ export class LeadContinuity {
     if (!dispatch?.resumeId) return false
     const build = this.ledger.getBuild(attempt.buildId)!
     if (build.budgetUsd && build.totalCostUsd + (this.ledger.getAttempt(attempt.id)?.costUsd ?? 0) >= build.budgetUsd) return false
-    return commitRunningAttempt(this.ledger, attempt.buildId, attempt.id, { status: 'interrupted', error: 'Saved lead session was unavailable; queued recovery from durable memory.' }, () => {
+    return commitRunningAttempt(this.ledger, attempt.buildId, attempt.id, { status: 'interrupted', error: 'Saved orchestrator session was unavailable; queued recovery from durable memory.' }, () => {
       this.append(attempt.buildId, attempt.id, 'lead-session-unavailable', { sessionId: dispatch.resumeId, reason: 'CLI rejected the saved session before any work. Recovering in a fresh session.' })
       const retry = this.ledger.createAttempt({ buildId: attempt.buildId, round: attempt.round, role: 'implement', harness: attempt.harness, prompt: markResumePrompt(this.ledger.getAttempt(attempt.id)!.prompt) })
       onQueued(retry.id)
