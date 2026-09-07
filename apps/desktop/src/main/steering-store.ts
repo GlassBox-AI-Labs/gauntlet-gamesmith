@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import type { Ledger } from './ledger'
 import type { PhaseAttempt } from '../shared/build'
 import type { SteeringMessage, SteeringReply, SteeringState, RequirementSnapshot } from '../shared/steering'
-import { DEFAULT_STEERING_MODEL, steeringModel, steeringAttachments, steeringAssetChanges, steeringIds, type SteeringAttachment } from '../shared/steering'
+import { steeringAttachments, steeringAssetChanges, steeringIds, type SteeringAttachment } from '../shared/steering'
 import { withOperatorDirections } from '../shared/prompts'
 
 type StoredObject = Record<string, unknown>
@@ -35,18 +35,20 @@ export class SteeringStore {
   }
 
   steeringState(buildId: string): SteeringState {
-    if (!this.ledger.getBuild(buildId)) throw new Error('Build not found.')
+    const build = this.ledger.getBuild(buildId)
+    if (!build) throw new Error('Build not found.')
     const messages: SteeringMessage[] = [], directives: SteeringState['directives'] = []
-    let model: string = DEFAULT_STEERING_MODEL
     for (const { kind, value, attemptId } of this.records(buildId)) {
       if (kind === 'steering-model') {
-        model = steeringModel(value.model)
+        // Historical model preferences remain in the log; Chat now inherits the build model.
+        continue
       } else if (kind === 'steering-message') {
         const { role } = value
         if (role !== 'user' && role !== 'assistant' && role !== 'system') throw new Error('Invalid stored steering role.')
         messages.push({
           id: boundedText(value.id, 100), buildId, role, content: typeof value.content === 'string' && value.content.length <= 16000 ? value.content : boundedText(value.content, 16000), attachments: steeringAttachments(value.attachments, buildId),
           createdAt: boundedText(value.createdAt, 100), attemptId,
+          ...(role === 'user' && attemptId ? { delivery: this.ledger.getAttempt(attemptId)?.status } : {}),
         })
       } else if (kind === 'steering-directive') {
         if (!Array.isArray(value.sourceMessageIds) || value.sourceMessageIds.length > 1000) throw new Error('Invalid stored direction sources.')
@@ -68,12 +70,9 @@ export class SteeringStore {
         }
       }
     }
-    return { buildId, model, messages, directives, busy: this.ledger.unfinishedConsults().some(r => r.buildId === buildId) }
-  }
-
-  setModel(buildId: string, value: unknown): void {
-    const model = steeringModel(value)
-    if (this.steeringState(buildId).model !== model) this.append(buildId, null, 'steering-model', { model })
+    const unfinished = this.ledger.unfinishedConsults().filter(attempt => attempt.buildId === buildId)
+    return { buildId, model: build.models.orchestratorModel, messages, directives, busy: unfinished.length > 0,
+      responding: unfinished.some(attempt => attempt.status === 'running'), queued: unfinished.filter(attempt => attempt.status === 'queued').length }
   }
 
   private append(buildId: string, attemptId: string | null, kind: string, value: unknown): void {

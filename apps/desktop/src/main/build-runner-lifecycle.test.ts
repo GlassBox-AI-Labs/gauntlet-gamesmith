@@ -12,6 +12,8 @@ import { resolveModels } from '../shared/models'
 import { composeImplementPrompt, composeResumePrompt } from '../shared/prompts'
 import { Ledger } from './ledger'
 import { SteeringStore } from './steering-store'
+import { SteeringService } from './steering'
+import type { ConsultResult } from './steering-agent'
 import { LeadContinuity } from './lead-continuity'
 import { implementerAgentDefinition } from './delegation'
 import { accountLabelForProbe, BuildRunner, type BuildRunnerDeps } from './build-runner'
@@ -2097,6 +2099,49 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(command).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CODEX_BIN).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CLAUDE_BIN).toBe('/trusted/bin/claude')
+  })
+
+  it('waits for Chat before dispatching and respects Stop during that wait', async () => {
+    let release!: (settled: boolean) => void
+    const pending = new Promise<boolean>(resolve => { release = resolve })
+    const spawnChild = vi.fn(() => { throw new Error('Unexpected launch') })
+    const { runner, workspaceDir, ledger } = setup({ drainChat: () => pending, spawnChild })
+    const started = runner.start({ ...input(workspaceDir), referenceMode: 'skip' })
+    expect(started.ok).toBe(true)
+    const build = ledger.latestBuild()!
+    expect(spawnChild).not.toHaveBeenCalled()
+    runner.stop(build.id)
+    release(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(spawnChild).not.toHaveBeenCalled()
+    expect(ledger.getBuild(build.id)?.status).toBe('stopped')
+  })
+
+  it('includes directions answered in Chat before freezing an explicit Resume attempt', async () => {
+    let chat!: SteeringService, answer!: (result: ConsultResult) => void, spawnedArgs: string[] | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      drainChat: id => chat.drain(id),
+      spawnChild: (_command, args) => { spawnedArgs = args; throw new Error('Captured launch') },
+    })
+    const configured = { ...input(workspaceDir), referenceMode: 'skip' as const }
+    const build = ledger.createBuild({ prompt: 'Build the game.', workspaceDir, maxRounds: 2, budgetUsd: null, models: resolveModels(configured, configured, configured) })
+    const interrupted = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'codex', prompt: 'Implement' })
+    const store = new SteeringStore(ledger); store.freezeAttemptRequirements(interrupted.id)
+    ledger.patchAttempt(interrupted.id, { status: 'cancelled' }); ledger.patchBuild(build.id, { status: 'stopped', round: 1 })
+    chat = new SteeringService(ledger, async input => { input.onStarted?.('fixture'); return new Promise(resolve => { answer = resolve }) }, () => {})
+    const sourceId = '10000000-0000-4000-8000-000000000009'
+    chat.message({ buildId: build.id, messageId: sourceId, content: 'Make the enemies slower.' })
+    await Promise.resolve()
+    expect(runner.resumeBuild(build.id).ok).toBe(true)
+    expect(spawnedArgs).toBeNull()
+    answer({ text: JSON.stringify({ reply: 'I’ll slow the enemies down.', directives: [{ text: 'Make the enemies slower.', sourceMessageIds: [sourceId], attachmentIds: [], assetChanges: [] }] }), tokens: null, sessionId: null })
+    await chat.drain(build.id)
+    await waitFor(() => spawnedArgs !== null)
+    const retried = ledger.latestAttemptForBuildByRole(build.id, 'implement')!
+    expect(store.requirementsForAttempt(interrupted.id)?.directives).toEqual([])
+    expect(store.requirementsForAttempt(retried.id)?.directives[0].text).toBe('Make the enemies slower.')
+    expect(spawnedArgs!.at(-1)).toContain('Make the enemies slower.')
+    await chat.shutdown()
   })
 
   it('enables the continuing lead on explicit Resume with the complete effective prompt and saved usage', () => {

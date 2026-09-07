@@ -34,7 +34,7 @@ import {
   removeAccount,
   switchAccount,
 } from './accounts'
-import { subscriptionEnv, cliHome, harnessesRoot } from './harness-env'
+import { subscriptionEnv, cliHomeEnv, cliHome, harnessesRoot } from './harness-env'
 import { HarnessLoginManager } from './harness-login'
 import { subscriptionAuthError } from './harness-status'
 import {
@@ -846,6 +846,7 @@ if (hasSingleInstanceLock) {
       protectedRoots: protectedWorkspaceRoots,
       prepareContext: (ids) => attachments.prepare(ids),
       rotateAccount,
+      drainChat: buildId => steering?.drain(buildId) ?? Promise.resolve(true),
     })
     mediaGate = new MediaBaseGate(() => startMediaServer((buildId) => {
       const build = ledger?.getBuild(buildId)
@@ -859,9 +860,10 @@ if (hasSingleInstanceLock) {
     }))
     steering = new SteeringService(
       ledger,
-      createConsultAgent(path.join(app.getPath('userData'), 'consults'), () => subscriptionEnv({ CODEX_HOME: cliHome('codex') }, process.env, 'codex')),
+      createConsultAgent(path.join(app.getPath('userData'), 'consults'), kind => subscriptionEnv(cliHomeEnv(kind, cliHome(kind)), process.env, kind)),
       (channel, payload) => mainWindow?.webContents.send(channel, payload),
       new SteeringAttachments(ledger, attachments),
+      { harnessHome: cliHome },
     )
     await steering.recover()
     registerSteeringIpc(steering)
@@ -876,6 +878,7 @@ if (hasSingleInstanceLock) {
       })
     }
     buildRunner.recoverAll()
+    steering.resumeQueued()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()

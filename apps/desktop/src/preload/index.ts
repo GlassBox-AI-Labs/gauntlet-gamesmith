@@ -116,7 +116,6 @@ contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)
 
 const steering:SteeringApi={
-  setModel:input=>ipcRenderer.invoke(IPC.steering.setModel,input),
   preview:input=>ipcRenderer.invoke(IPC.steering.preview,input),
   history:id=>ipcRenderer.invoke(IPC.steering.history,id),
   send:input=>ipcRenderer.invoke(IPC.steering.send,input),

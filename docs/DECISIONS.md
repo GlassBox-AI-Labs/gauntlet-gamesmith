@@ -638,7 +638,7 @@ rebuilding it. No additional loop phase or consult table row is introduced.
 
 ## ADR-022 — Per-build steering model selection (2026-09-05)
 
-**Status:** accepted.
+**Status:** superseded by ADR-029. Historical preferences remain in the event log.
 
 **Decision.** The Chat composer offers the supported Codex models from the
 shared model catalog. Selection is independent of implementation/critique models
@@ -679,7 +679,7 @@ critic never evaluates against directions absent from its implementation.
 
 ## ADR-027 — Continuing implementation lead with integrated steering (2026-09-06)
 
-**Status:** accepted.
+**Status:** accepted; ADR-029 supersedes the separate-assistant Chat behavior below.
 
 **Decision.** New builds retain one implementation lead session across rounds, with
 fresh independent research and critique sessions. Explicit Resume enables this
@@ -742,3 +742,46 @@ or grant the lead authority to override an app stop condition.
 original event bytes. Readers accept the earlier `fromRunId` and `implementationRunId` fields
 and project them as attempt IDs; new events use the Build vocabulary. Raw stream and process
 ownership paths stay under `.gauntlet-gamesmith/runs/`, as required by ADR-020.
+
+## ADR-029 — Chat is a turn with the build lead (2026-09-06)
+
+**Status:** accepted; supersedes ADR-022 and the separate consult behavior in ADR-028/027.
+
+**Decision.** Chat continues the same local implementation lead session and inherits the
+build's orchestrator model and effort, captured when each message is sent. The existing
+sidebar stays labelled **Chat**, and replies are attributed to **Build lead**. Remove the
+separate Chat model picker and its write IPC. Existing model preference events remain
+readable history. No additional panel, notebook selector, or status strip is introduced.
+
+Persist each message and its queued consult attempt together. While any phase or earlier
+reply is active, messages wait in a bounded FIFO (20 waiting messages). Before the runner
+launches another phase, it awaits Chat drainage after process ownership has settled.
+Each turn receives only its own and earlier user messages, previous replies, current
+directions, and saved lead memory. Both Claude and Codex use the same app-owned harness
+profile as implementation. Chat has read-only tools and a constrained reply schema; it
+can answer questions and record directions, but cannot implement or start phases.
+
+Session selection follows completed lead dispatch order rather than attempt creation
+order: a queued implementation may predate the Chat turn it must continue. Legacy
+independent consult IDs never become lead sessions. Preserve the requested and returned
+session IDs and complete raw events. Codex charges only the turn's cumulative usage
+delta; Claude records per-turn usage. Imported history still recovers from portable
+memory without adopting private session IDs. Lookup rejection fails the current Chat
+reply visibly, marks that session unavailable, and lets the next turn recover fresh.
+
+Questions do not alter requirements. Confirmed directions enter the next implementation
+dispatch; its critic receives the identical frozen requirements. Explicit Resume waits
+for queued Chat turns before capturing pending directions for the retry. Automatic
+recovery retains its original snapshot. Chat answers stopped/completed builds without
+restarting them. Stop response cancels only the current Chat turn; when no reply is
+active, Cancel waiting message cancels the oldest undelivered message.
+
+Unstarted messages survive application restart. Started replies are safely settled and
+marked interrupted, not automatically replayed. Unresolved process ownership blocks
+Chat and the next phase. Status appears inline with each message. Consult accounting
+and raw events remain visible in the build log without adding rows to the phase table.
+
+**Limits.** Continuity means a persisted CLI conversation, not an always-running process
+or unlimited context. A question can wait for a long phase to finish. Imported builds,
+missing sessions, or unavailable Codex accounting baselines use saved memory in fresh
+sessions. The application still owns phase scheduling, limits, and independent critique.

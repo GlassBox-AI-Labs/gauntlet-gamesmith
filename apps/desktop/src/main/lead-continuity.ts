@@ -3,7 +3,7 @@ import type { Ledger } from './ledger'
 import type { BuildLogLine, PhaseAttempt, TokenTotals } from '../shared/build'
 import { channelForKind, markResumePrompt } from '../shared/build'
 import { extractLeadNotebook, parseLeadNotebook, parseLeadUsage, type LeadCheckpoint, type LeadDispatch, type LeadState } from '../shared/lead'
-import { composeLeadPrompt } from '../shared/prompts'
+import { composeLeadPrompt, composeLeadChatPrompt } from '../shared/prompts'
 import { normalizeSessionId } from '../shared/session-id'
 import { commitRunningAttempt } from './attempt-transition'
 import { usageForThread } from './codex-usage'
@@ -49,7 +49,7 @@ export class LeadContinuity {
 
   private assertImplementationEvent(event: BuildLogLine): void {
     const attempt = event.attemptId ? this.ledger.getAttempt(event.attemptId) : null
-    if (!attempt || attempt.buildId !== event.buildId || attempt.role !== 'implement' || attempt.round !== event.round) throw new Error('Lead history is not bound to an implementation attempt.')
+    if (!attempt || attempt.buildId !== event.buildId || !['implement', 'consult'].includes(attempt.role) || attempt.round !== event.round) throw new Error('Lead history is not bound to a lead turn.')
   }
 
   private readCheckpoint(event: BuildLogLine): LeadCheckpoint {
@@ -85,7 +85,7 @@ export class LeadContinuity {
     return this.ledger.transaction(() => {
       const build = this.ledger.getBuild(attempt.buildId)!
       const state = this.state(attempt.buildId)
-      if (!state.enabled || attempt.role !== 'implement') throw new Error('Continuing lead is not enabled for this implementation.')
+      if (!state.enabled || !['implement', 'consult'].includes(attempt.role)) throw new Error('Continuing lead is not enabled for this turn.')
       const events = this.ledger.leadEvents(attempt.buildId)
       const saved = events.find(event => event.kind === 'lead-dispatch' && event.attemptId === attempt.id)
       if (saved) {
@@ -120,7 +120,9 @@ export class LeadContinuity {
       const dispatch: LeadDispatch = { attemptId: attempt.id, round: attempt.round, mode, fromAttemptId: candidate?.id ?? prior[0]?.id ?? null, resumeId, reason, usageBaseline }
       const notebook = state.latestNotebook
       const recent = state.checkpoints[0] ?? null
-      const prompt = composeLeadPrompt(basePrompt, { dispatch, notebook, recentReport: recent?.report ?? prior[0]?.summary ?? null })
+      const prompt = attempt.role === 'consult'
+        ? composeLeadChatPrompt(basePrompt, dispatch)
+        : composeLeadPrompt(basePrompt, { dispatch, notebook, recentReport: recent?.report ?? prior[0]?.summary ?? null })
       this.ledger.patchAttempt(attempt.id, { prompt, promptSha256: createHash('sha256').update(prompt).digest('hex') })
       this.append(attempt.buildId, attempt.id, 'lead-dispatch', dispatch)
       return { prompt, resumeId, reason }
@@ -134,6 +136,10 @@ export class LeadContinuity {
 
   recordUsage(attempt: PhaseAttempt, sessionId: string, tokens: TokenTotals): void {
     this.append(attempt.buildId, attempt.id, 'lead-usage', { sessionId, tokens: parseLeadUsage(tokens) })
+  }
+
+  rejectSession(attempt: PhaseAttempt, sessionId: string): void {
+    this.append(attempt.buildId, attempt.id, 'lead-session-unavailable', { sessionId, reason: 'The CLI rejected this session before any work. The next turn will recover from saved context.' })
   }
 
   /** Detect a CLI silently choosing another session; memory continuity and usage must remain honest. */

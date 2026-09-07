@@ -205,7 +205,16 @@ export function critiquePlan(ctx: PlanContext): SpawnPlan {
  * slice to codex and reports back — so it is the cheapest one on the list.
  */
 
-/** A steering consult never resumes a phase session or receives write permissions. */
-export function consultPlan(model:string,schemaPath:string,imagePaths:string[] = []):string[] {
-  return ['exec','--ignore-user-config','--ephemeral','--sandbox','read-only','--skip-git-repo-check','--json','--output-schema',schemaPath,'--model',model,'-c','model_reasoning_effort="low"',...imagePaths.flatMap(file=>['--image',file]),'-']
+/** Read-only conversation turn in the implementation lead's persisted session. */
+export function consultPlan(model: string, schemaPath: string, imagePaths: string[] = [], resumeId?: string | null, effort = 'low', schemaJson = '{}'): string[] {
+  if (harnessFor(model) === 'claude') return [
+    '-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--effort', effort,
+    ...(resumeId ? ['--resume', resumeId] : []),
+    '--safe-mode', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+    '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob', '--json-schema', schemaJson,
+  ]
+  return ['exec', ...(resumeId ? ['resume', resumeId] : []), '--ignore-user-config',
+    '-c', 'sandbox_mode="read-only"', '--disable', 'code_mode', '--skip-git-repo-check',
+    '--json', '--output-schema', schemaPath, '--model', model, '-c', `model_reasoning_effort=${effort}`,
+    ...imagePaths.flatMap(file => ['--image', file]), '-']
 }

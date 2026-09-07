@@ -34,7 +34,7 @@ it('sends immutable image copies to the consult and shares them with implementat
   let calls = 0, imagePaths: string[] = []
   const service = new SteeringService(ledger, async input => {
     calls++; imagePaths = input.imagePaths ?? []
-    const source = store.steeringState(build.id).messages.at(-1)!, id = source.attachments![0].id
+    const source = store.steeringState(build.id).messages.find(message => message.role === 'user')!, id = source.attachments![0].id
     expect(input.prompt).toContain(id)
     return { text: JSON.stringify({ reply: 'I’ll rebuild the player using this image.', directives: [{ text: 'Rebuild the player to match this reference.', sourceMessageIds: [source.id], attachmentIds: [id], assetChanges: [{ target: 'player', operation: 'sculpt', attachmentIds: [id] }] }] }), tokens: null, sessionId: null }
   }, () => {}, files)
@@ -114,7 +114,7 @@ it('rejects attachments without source authorization and passes image paths as s
   const reply = { reply: 'Ready', directives: [{ text: 'Replace player', sourceMessageIds: ['user'], attachmentIds: ['invented'], assetChanges: [] }] }
   expect(() => parseSteeringReply(JSON.stringify(reply), new Set(['user']), [message])).toThrow('outside your instructions')
   expect(() => steeringInput({ buildId: 'run', messageId: 'message', content: '', attachmentIds: Array.from({ length: 11 }, (_, index) => `id-${index}`) })).toThrow()
-  const input = { attemptId: 'id', model: 'model', prompt: 'prompt', workspaceDir: root, signal: new AbortController().signal, imagePaths: ['/path with spaces/image.png'] }
+  const input = { attemptId: 'id', model: 'gpt-5.6-sol', prompt: 'prompt', workspaceDir: root, signal: new AbortController().signal, imagePaths: ['/path with spaces/image.png'] }
   const args = consultArgs(input, '/schema.json')
   expect(args.slice(-3)).toEqual(['--image', '/path with spaces/image.png', '-'])
 })

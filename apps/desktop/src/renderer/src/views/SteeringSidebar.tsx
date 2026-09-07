@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, File, Paperclip, PanelRightClose, PanelRightOpen, LoaderCircle, X } from 'lucide-react'
 import type { SteeringState, SteeringAttachment } from '../../../shared/steering'
-import { DEFAULT_STEERING_MODEL, STEERING_MODEL_CHOICES, MAX_STEERING_MESSAGE, MAX_STEERING_FILES } from '../../../shared/steering'
+import { MAX_STEERING_MESSAGE, MAX_STEERING_FILES } from '../../../shared/steering'
 import type { BuildAttachment } from '../../../shared/attachments'
 import './steering.css'
 
@@ -23,12 +23,11 @@ function Attachment({ file, buildId, onRemove }: { file: BuildAttachment | Steer
 
 export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { buildStatus: string; buildName: string; buildId: string; round: number }) {
   const [collapsed, setCollapsed] = useState(false)
-  const [state, setState] = useState<SteeringState>({ buildId, model: DEFAULT_STEERING_MODEL, messages: [], directives: [], busy: false })
+  const [state, setState] = useState<SteeringState>({ buildId, model: '', messages: [], directives: [], busy: false, responding: false, queued: 0 })
   const [draft, setDraft] = useState('')
   const [files, setFiles] = useState<BuildAttachment[]>([])
   const [attaching, setAttaching] = useState(false)
   const [sending, setSending] = useState(false)
-  const [savingModel, setSavingModel] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [loadVersion, setLoadVersion] = useState(0)
@@ -76,19 +75,8 @@ export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { bu
     draftFiles.current = draftFiles.current.filter(file => file.id !== id)
     setFiles(draftFiles.current); release([id])
   }
-  async function selectModel(model: string) {
-    if (savingModel || sending || !loaded) return
-    const version = updated.current
-    setSavingModel(true); setError('')
-    try {
-      const result = await window.steering.setModel({ buildId, model })
-      if (!result.ok) throw new Error(result.error)
-      if (mounted.current && updated.current === version) setState(result.value)
-    } catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : 'Could not save the chat model.') }
-    finally { if (mounted.current) setSavingModel(false) }
-  }
   async function send() {
-    if ((!draft.trim() && !files.length) || busy || attaching || savingModel || !loaded) return
+    if ((!draft.trim() && !files.length) || sending || attaching || !loaded) return
     const content = draft.trim(), version = updated.current, attachmentIds = files.map(file => file.id)
     const key = JSON.stringify({ content, attachmentIds })
     if (retry.current?.key !== key) retry.current = { key, id: crypto.randomUUID() }
@@ -118,20 +106,21 @@ export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { bu
       <button aria-label={collapsed ? 'Expand chat' : 'Collapse chat'} aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelRightOpen size={18} /> : <PanelRightClose size={18} />}</button>
       {!collapsed && <div><h2>Chat</h2><p>{buildName} · Round {round}</p></div>}
     </div>
-    {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Chat{busy ? ' · Thinking' : ''}</button>}
+    {collapsed && <button className="steering-rail-label" onClick={() => setCollapsed(false)}>Chat{state.responding ? ' · Replying' : state.queued ? ' · Waiting' : ''}</button>}
     <div className="steering-sidebar-expanded" hidden={collapsed}>
-      <div className="steering-chat" role="log" aria-label="Run conversation" aria-live="polite">
+      <div className="steering-chat" role="log" aria-label="Build conversation" aria-live="polite">
         {!loaded && !error && <span className="steering-thinking">Loading conversation…</span>}
         {state.messages.map(message => <div key={message.id} className={`steering-message ${message.role}`}>
-          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Build assistant'}</span>}
+          {message.role !== 'system' && <span>{message.role === 'user' ? 'You' : 'Build lead'}</span>}
           {!!message.attachments?.length && <div className="steering-attachments">{message.attachments.map(file => <Attachment key={file.id} file={file} buildId={buildId} />)}</div>}
           {message.content && <p>{message.content}</p>}
+          {message.role === 'user' && message.delivery && <small className="steering-direction-status">{{ queued: 'Waiting for the lead', running: 'Lead is replying', succeeded: 'Answered', failed: 'Reply failed', cancelled: 'Cancelled', interrupted: 'Reply interrupted' }[message.delivery]}</small>}
           {state.directives.filter(d => d.messageId === message.id).map(d => <div className="steering-direction-status" key={d.id} title={d.text}>
             <span>{d.withdrawn ? 'Withdrawn' : d.firstRound != null ? `Included in round ${d.firstRound} · persists` : 'Queued · ' + timing.toLowerCase()}</span>
             {!d.withdrawn && !d.firstAttemptId && <button onClick={() => void withdraw(d.id)} aria-label={`Withdraw direction: ${d.text}`}>Withdraw</button>}
           </div>)}
         </div>)}
-        {busy && <div className="steering-thinking"><LoaderCircle size={14} className="animate-spin" />Thinking…</div>}
+        {state.responding && <div className="steering-thinking"><LoaderCircle size={14} className="animate-spin" />The lead is replying…</div>}
         {error && <p className="steering-error" role="alert">{error}{!loaded && <button type="button" onClick={() => setLoadVersion(value => value + 1)}>Retry</button>}</p>}
         <div ref={bottom} />
       </div>
@@ -140,10 +129,8 @@ export function SteeringSidebar({ buildStatus, buildName, buildId, round }: { bu
         <textarea aria-label="Message chat" placeholder="Message…" value={draft} maxLength={MAX_STEERING_MESSAGE} disabled={sending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
         <div className="steering-compose-actions">
           <button type="button" className="steering-attach-button" aria-label="Attach files or images" title="Attach files or images, or drop them here" disabled={attaching || sending} onClick={() => void attach()}>{attaching ? <LoaderCircle size={16} className="animate-spin" /> : <Paperclip size={16} />}</button>
-          <select aria-label="Chat model" title="Codex model for the next reply · saved for this run" value={state.model} disabled={!loaded || savingModel || sending} onChange={event => void selectModel(event.target.value)}>
-            {STEERING_MODEL_CHOICES.map(model => <option key={model.id} value={model.id}>{model.label.replace('Codex · ', '')}</option>)}
-          </select>
-          {busy ? <button type="button" onClick={() => void cancel()}>Stop response</button> : <button type="submit" aria-label="Send message" disabled={!loaded || attaching || savingModel || (!draft.trim() && !files.length)}><ArrowUp size={17} /></button>}
+          {busy && <button type="button" onClick={() => void cancel()}>{state.responding ? 'Stop response' : 'Cancel waiting message'}</button>}
+          <button type="submit" aria-label="Send message" disabled={!loaded || sending || attaching || (!draft.trim() && !files.length)}><ArrowUp size={17} /></button>
         </div>
       </form>
       <p className="steering-footnote">{timing}</p>

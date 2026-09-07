@@ -175,6 +175,8 @@ export interface BuildRunnerDeps {
   validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
   prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
+  /** Drain queued conversation turns after process settlement, before another phase. */
+  drainChat?(buildId: string): Promise<boolean>
 }
 
 const DEFAULT_DEPS: BuildRunnerDeps = {
@@ -235,6 +237,7 @@ interface Attachment {
 }
 
 export class BuildRunner {
+  private chatBarriers = new Set<string>()
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
   private retryTimers = new Map<string, NodeJS.Timeout>()
@@ -1271,7 +1274,7 @@ export class BuildRunner {
         })
         if (prior.revision) this.ledger.patchAttempt(retry.id, { revision: prior.revision })
         if (prior.role === 'implement') this.copyCritiqueTreeBaseline(prior.id, retry.id)
-        if (prior.role === 'implement') new SteeringStore(this.ledger).includePendingOnResume(retry.id)
+        if (prior.role === 'implement') this.log(buildId, retry.id, 'lead-resume-request', 'Resume will include pending directions after queued Chat turns are answered.')
         this.log(buildId, null, 'system', `Build resumed by user — retrying round ${prior.round} ${prior.role}.`)
       } else if (resume.kind === 'queue-implement') {
         this.ledger.patchBuild(buildId, { round: resume.round })
@@ -1637,7 +1640,17 @@ export class BuildRunner {
   }
 
   private async executeNext(buildId: string): Promise<void> {
-    if (this.current || this.terminatingBuilds.has(buildId)) return
+    if (this.current || this.terminatingBuilds.has(buildId) || this.chatBarriers.has(buildId)) return
+    if (this.deps.drainChat) {
+      this.chatBarriers.add(buildId)
+      try {
+        if (!await this.deps.drainChat(buildId)) return
+      } catch (error) {
+        this.log(buildId, null, 'error', `Lead Chat could not settle: ${redactedErrorMessage(error, 'Unknown Chat error.')}`)
+        return
+      } finally { this.chatBarriers.delete(buildId) }
+      if (this.current || this.terminatingBuilds.has(buildId)) return
+    }
     const build = this.ledger.getBuild(buildId)
     if (!build || build.status !== 'running') return
     if (!this.verifyWorkspaceBoundary(build)) return
@@ -2454,6 +2467,7 @@ export class BuildRunner {
     const models = build.models
     const harness = harnessFor(models.orchestratorModel)
     const steering = new SteeringStore(this.ledger)
+    if (this.ledger.eventsForAttempt(attempt.id, 'lead-resume-request', 1).length) steering.includePendingOnResume(attempt.id)
     const effective = effectivePromptForAttempt(attempt.prompt)
     steering.freezeAttemptRequirements(attempt.id, effective.prompt)
     const requirements = steering.requirementsForAttempt(attempt.id)!

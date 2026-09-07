@@ -209,17 +209,20 @@ describe('continuing run lead with steering', () => {
     expect(ledger.leadEvents(build.id).filter(event => event.kind === 'lead-session-reset')).toHaveLength(1)
   })
 
-  it('gives steering the saved notebook while keeping its consult separate and read-only', async () => {
+  it('resumes the implementation lead for a discussion turn with its saved notebook', async () => {
     const { build, lead, implementation, finish } = setup()
     const attempt = implementation(1); lead.prepare(attempt, attempt.prompt); finish(attempt)
     let captured: ConsultInput | null = null
     let resolve!: (result: ConsultResult) => void
     const service = new SteeringService(ledger, async input => { captured = input; return new Promise(done => { resolve = done }) }, () => {})
     service.message({ buildId: build.id, messageId: '10000000-0000-4000-8000-000000000002', content: 'Why a fixed timestep?', attachmentIds: [] })
+    await Promise.resolve()
+    expect((captured as ConsultInput | null)?.resumeId).toBe(SESSION)
+    expect((captured as ConsultInput | null)?.model).toBe(build.models.orchestratorModel)
     expect((captured as ConsultInput | null)?.prompt).toContain('Variable timestep caused jitter')
-    expect((captured as ConsultInput | null)?.prompt).toContain('You are not the implementation lead')
-    resolve({ text: JSON.stringify({ reply: 'The lead recorded jitter with variable timesteps.', directives: [] }), tokens: null, sessionId: null })
-    await service.shutdown()
+    expect((captured as ConsultInput | null)?.prompt).toContain('You are the continuing implementation lead')
+    resolve({ text: JSON.stringify({ reply: 'I observed jitter with variable timesteps.', directives: [] }), tokens: null, sessionId: SESSION })
+    await service.drain(build.id)
     expect(new SteeringStore(ledger).steeringState(build.id).directives).toEqual([])
   })
 })

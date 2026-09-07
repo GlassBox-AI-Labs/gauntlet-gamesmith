@@ -2229,12 +2229,15 @@ export class Ledger {
     return normalizeSessionId(row?.session_id)
   }
 
-  /** Bounded session candidates from strictly earlier implementations of this same build. */
+  /** Completed lead turns in dispatch order, including Chat; queued phase rows may predate Chat. */
   priorLeadImplementations(attemptId: string): Array<Pick<PhaseAttempt, 'id' | 'round' | 'harness' | 'model' | 'sessionId' | 'summary'>> {
     const rows = this.db.prepare(`SELECT id, round, harness, model, session_id, substr(summary, 1, 4000) AS summary FROM phase_attempts
-      WHERE build_id = (SELECT build_id FROM phase_attempts WHERE id = ?) AND role = 'implement'
-        AND rowid < (SELECT rowid FROM phase_attempts WHERE id = ?)
-      ORDER BY rowid DESC LIMIT 1000`).all(attemptId, attemptId) as unknown as Array<{
+      WHERE build_id = (SELECT build_id FROM phase_attempts WHERE id = ?) AND id <> ?
+        AND status NOT IN ('queued', 'running')
+        AND (role = 'implement' OR (role = 'consult' AND EXISTS (
+          SELECT 1 FROM events WHERE attempt_id = phase_attempts.id AND kind = 'lead-dispatch')))
+      ORDER BY COALESCE((SELECT MAX(seq) FROM events WHERE attempt_id = phase_attempts.id AND kind = 'lead-dispatch'), 0) DESC,
+        rowid DESC LIMIT 1000`).all(attemptId, attemptId) as unknown as Array<{
         id: string; round: number; harness: PhaseAttempt['harness']; model: string | null; session_id: string | null; summary: string | null
       }>
     return rows.map(row => ({ id: row.id, round: row.round, harness: row.harness, model: row.model,
@@ -2822,7 +2825,7 @@ export class Ledger {
   }
 
   unfinishedConsults(): PhaseAttempt[] {
-    const rows = this.db.prepare("SELECT * FROM phase_attempts WHERE role='consult' AND status IN ('queued','running') LIMIT 101").all() as unknown as AttemptRow[]
+    const rows = this.db.prepare("SELECT * FROM phase_attempts WHERE role='consult' AND status IN ('queued','running') ORDER BY created_at, rowid LIMIT 101").all() as unknown as AttemptRow[]
     if (rows.length > 100) throw new Error('Too many unfinished steering chats; manual intervention is required.')
     return rows.map(toAttempt)
   }

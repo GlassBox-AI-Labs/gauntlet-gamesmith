@@ -233,6 +233,7 @@ const KIND_CHANNEL: Record<string, LogChannel> = {
   metric: 'usage',
   'raw-stream': 'system',
   'lead-enabled': 'system',
+  'lead-chat-queued': 'system',
   'lead-dispatch': 'system',
   'lead-checkpoint': 'output',
   'lead-usage': 'usage',

@@ -93,15 +93,20 @@ Each implementation still owns a separate process and immutable attempt. The sch
 retain all advancement decisions. Missing private sessions and imported history recover from saved
 notes in fresh sessions; notes never prove verification or override current requirements (ADR-027).
 
-[`main/steering.ts`](../apps/desktop/src/main/steering.ts) supervises an independent read-only Codex
-consult. [`main/steering-store.ts`](../apps/desktop/src/main/steering-store.ts) persists messages,
+[`main/steering.ts`](../apps/desktop/src/main/steering.ts) owns a durable FIFO of read-only Chat
+turns in the implementation lead's session, using the build's model and effort for either harness.
+The runner drains Chat after process settlement and before dispatching the next phase. Completed
+Chat and implementation turns share session selection in dispatch order, including Codex usage baselines.
+Unstarted turns survive restart; interrupted turns are not automatically replayed.
+[`main/steering-store.ts`](../apps/desktop/src/main/steering-store.ts) persists messages,
 source-bound directions, and the immutable requirements shared by implementation and its critic.
 Explicit Resume can include pending directions in the same round; automatic recovery preserves the
 prior snapshot. Consults do not enter the phase queue or rounds table, but their events and costs
 remain visible. Attachments are immutable, verified copies outside the frozen Reference Pack.
 `window.steering` exposes validated operations. The existing Chat conversation answers questions about
-the lead using its saved memory; there is no additional lead panel or notebook IPC surface.
-Complete attempt and recovery events remain in the existing activity log (ADR-028/021/022/026/027).
+the lead directly, with inline waiting/reply status and no separate model picker or lead panel.
+Historical independent consults never supply a lead session ID.
+Complete attempt and recovery events remain in the existing activity log (ADR-029, refining ADR-028/026/027).
 
 ### Asset compatibility
 

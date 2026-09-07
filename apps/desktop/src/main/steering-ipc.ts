@@ -13,7 +13,6 @@ export function registerSteeringIpc(service:SteeringService):void {
     return image.resize({ width: 256, height: 256 }).toDataURL()
   })
   handle(IPC.steering.history,value=>service.history(value))
-  handle(IPC.steering.setModel,value=>service.setModel(value))
   handle(IPC.steering.send,value=>service.message(value))
   handle(IPC.steering.cancel,value=>service.cancel(value))
   handle(IPC.steering.withdraw,value=>service.withdraw(value))

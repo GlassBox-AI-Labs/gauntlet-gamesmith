@@ -8,11 +8,9 @@ import { SteeringStore } from './steering-store'
 import { MODEL_IDS, resolveModels } from '../shared/models'
 import { Ledger } from './ledger'
 import { copyBuildFolder } from './build-transfer'
-import { SteeringService } from './steering'
-import { consultArgs, type ConsultInput, type ConsultResult } from './steering-agent'
+import { consultArgs } from './steering-agent'
 import { parseSteeringReply, steeringInput } from '../shared/steering'
 import type { BuildModels } from '../shared/build'
-import { estimateCostUsd } from './pricing'
 
 const models:BuildModels=resolveModels({}, {})
 let store:SteeringStore
@@ -107,7 +105,6 @@ describe('steering boundaries',()=>{
   })
   it('keeps full requirement snapshots and consult history through folder export and import', async () => {
     const build = setup()
-    store.setModel(build.id, MODEL_IDS.codexLuna)
     direction(build.id, 'Use touch controls. ' + 'A'.repeat(5000))
     const attempt = store.freezeAttemptRequirements(implementation(build.id, 1).id)
     ledger.patchAttempt(attempt.id, {status:'succeeded'})
@@ -160,102 +157,20 @@ describe('steering boundaries',()=>{
   })
 })
 
-describe('chat service isolation',()=>{
-  it('persists each run’s model and freezes it for an active reply and its cost', async () => {
-    const build = setup(), calls: ConsultInput[] = []
-    let finish!: (result: ConsultResult) => void
-    const service = new SteeringService(ledger, input => { calls.push(input); return new Promise(resolve => { finish = resolve }) }, () => {})
-    const other = ledger.createBuild({ prompt: 'Other game', workspaceDir: dir, maxRounds: 3, budgetUsd: null, models })
-    expect(service.history(build.id).model).toBe(MODEL_IDS.codexSol)
-    expect(service.setModel({ buildId: build.id, model: MODEL_IDS.codexAstra }).model).toBe(MODEL_IDS.codexAstra)
-    expect(service.history(other.id).model).toBe(MODEL_IDS.codexSol)
-    service.message({ buildId: build.id, messageId: 'first', content: 'Explain the current goal.' })
-    service.setModel({ buildId: build.id, model: MODEL_IDS.codexLuna })
-    const tokens = { input: 100, output: 50, cacheRead: 20, cacheWrite: 0 }
-    finish({ text: JSON.stringify({ reply: 'Build a game.', directives: [] }), tokens, sessionId: null })
-    await new Promise(resolve => setTimeout(resolve, 0))
-    const first = ledger.getAttempt(calls[0].attemptId)!
-    expect(calls[0].model).toBe(MODEL_IDS.codexAstra)
-    expect(first.model).toBe(MODEL_IDS.codexAstra)
-    expect(first.costUsd).toBe(estimateCostUsd(MODEL_IDS.codexAstra, tokens))
-    service.message({ buildId: build.id, messageId: 'second', content: 'What should we refine?' })
-    expect(calls[1].model).toBe(MODEL_IDS.codexLuna)
-    finish({ text: JSON.stringify({ reply: 'Which part feels off?', directives: [] }), tokens: null, sessionId: null })
-    await new Promise(resolve => setTimeout(resolve, 0))
-    expect(ledger.attemptAggregate(build.id).phaseAttemptCount).toBe(0)
-    ledger.close(); ledger = new Ledger(path.join(dir, 'ledger.db')); store = new SteeringStore(ledger)
-    expect(store.steeringState(build.id).model).toBe(MODEL_IDS.codexLuna)
-  })
-  it('rejects unsupported model choices and invalid run IDs without changing preferences', () => {
-    const build = setup()
-    const service = new SteeringService(ledger, async () => { throw new Error('Must not start a consult') }, () => {})
-    for (const value of [null, {}, { buildId: '../invalid', model: MODEL_IDS.codexSol }, { buildId: 'missing', model: MODEL_IDS.codexSol }, ...[MODEL_IDS.claudeOpus, 'gpt-made-up', null, 3].map(model => ({ buildId: build.id, model }))]) expect(() => service.setModel(value)).toThrow()
-    expect(service.history(build.id).model).toBe(MODEL_IDS.codexSol)
-    expect(ledger.attemptsForBuild(build.id)).toHaveLength(0)
-  })
-  it('records one idempotent consult, accepts grounded directives and counts cost without becoming phase work',async()=>{
-    const build=setup(),phase=implementation(build.id,1)
-    ledger.patchAttempt(phase.id,{status:'running'})
-    let resolve!:(result:ConsultResult)=>void
-    let seen:ConsultInput|undefined
-    const service=new SteeringService(ledger,input=>{seen=input;return new Promise(r=>{resolve=r})},()=>{})
-    const input={buildId:build.id,messageId:'request-1',content:'Add dash'}
-    expect(service.message(input).busy).toBe(true)
-    expect(service.message(input).messages).toHaveLength(1)
-    expect(ledger.nextQueuedAttempt(build.id)).toBeNull()
-    expect(seen?.workspaceDir).toBe(build.workspaceDir)
-    resolve({text:JSON.stringify({reply:'Add a short dash.',directives:[{text:'Add a short dash.',sourceMessageIds:['request-1']}]}),tokens:{input:100,output:50,cacheRead:0,cacheWrite:0},sessionId:'independent-chat-session'})
-    await new Promise(r=>setTimeout(r,0))
-    const state=service.history(build.id)
-    expect(state.busy).toBe(false);expect(state.directives).toHaveLength(1)
-    expect(ledger.getAttempt(phase.id)?.status).toBe('running')
-    const consult=ledger.attemptsForBuild(build.id).find(r=>r.role==='consult')!
-    expect(consult.status).toBe('succeeded');expect(consult.costUsd).toBeGreaterThan(0);expect(consult.sessionId).toBe('independent-chat-session')
-    expect(ledger.getBuild(build.id)?.totalCostUsd).toBe(consult.costUsd)
-    expect(ledger.attemptAggregate(build.id)).toMatchObject({phaseAttemptCount:1,costUsd:consult.costUsd})
-  })
-  it('cancels only the consult and can recover an interrupted chat without queuing phase work',async()=>{
-    const build=setup(),phase=implementation(build.id,1)
-    ledger.patchAttempt(phase.id,{status:'running'})
-    const service=new SteeringService(ledger,input=>new Promise((_,reject)=>input.signal.addEventListener('abort',()=>reject(new Error('Stopped.')))),()=>{})
-    service.message({buildId:build.id,messageId:'cancel-me',content:'Maybe change combat?'})
-    service.cancel(build.id)
-    await new Promise(r=>setTimeout(r,0))
-    expect(service.history(build.id).directives).toEqual([])
-    expect(ledger.getAttempt(phase.id)?.status).toBe('running')
-    const abandoned=ledger.createAttempt({buildId:build.id,round:1,role:'consult',harness:'codex',prompt:'interrupted'})
-    ledger.patchAttempt(abandoned.id,{status:'running'})
-    await service.recover()
-    expect(ledger.getAttempt(abandoned.id)?.status).toBe('interrupted')
-    expect(ledger.nextQueuedAttempt(build.id)).toBeNull()
-  })
-  it('waits for chat cancellation on quit while the implementation stays running', async () => {
-    const build=setup(), phase=implementation(build.id,1)
-    ledger.patchAttempt(phase.id,{status:'running'})
-    const service=new SteeringService(ledger,input=>new Promise((_,reject)=>input.signal.addEventListener('abort',()=>setTimeout(()=>reject(new Error('Stopped.')),10))),()=>{})
-    service.message({buildId:build.id,messageId:'quit',content:'Add dash'})
-    expect(service.hasUnfinished()).toBe(true)
-    expect(await service.shutdown()).toBe(true)
-    expect(service.hasUnfinished()).toBe(false)
-    expect(ledger.getAttempt(phase.id)?.status).toBe('running')
-  })
-  it('fails malformed model output without saving partial directives',async()=>{
-    const build=setup()
-    const service=new SteeringService(ledger,async()=>({text:JSON.stringify({reply:'Sure',directives:[{text:'Delete everything',sourceMessageIds:['invented']}]}),tokens:null,sessionId:null}),()=>{})
-    service.message({buildId:build.id,messageId:'question',content:'How do abilities work?'})
-    await new Promise(r=>setTimeout(r,0))
-    expect(service.history(build.id).directives).toEqual([])
-    expect(ledger.attemptsForBuild(build.id)[0].status).toBe('failed')
-  })
-})
-
 describe('input and agent contract',()=>{
   it('rejects malformed and oversized IPC data',()=>{
     for(const value of [null,{}, {buildId:'x',messageId:'y',content:' '},{buildId:'../x',messageId:'y',content:'a'},{buildId:'x',messageId:'y',content:'a'.repeat(12001)}])expect(()=>steeringInput(value)).toThrow()
     expect(()=>parseSteeringReply('{"reply":"ok","directives":null}',new Set())).toThrow()
   })
-  it('forces a separate read-only session with a constrained reply schema',()=>{
-    const args=consultArgs({attemptId:'consult',prompt:'p',model:'m',workspaceDir:'/workspace',signal:new AbortController().signal},'/private/schema.json')
-    expect(args).toContain('read-only');expect(args).toContain('--ignore-user-config');expect(args).toContain('--ephemeral');expect(args).toContain('--output-schema');expect(args).not.toContain('resume');expect(args).not.toContain('--continue')
+  it('resumes the lead in read-only mode with a constrained reply schema',()=>{
+    const args=consultArgs({attemptId:'consult',prompt:'p',model:MODEL_IDS.codexSol,resumeId:'lead-thread',effort:'high',workspaceDir:'/workspace',signal:new AbortController().signal},'/private/schema.json')
+    expect(args).toContain('sandbox_mode="read-only"');expect(args).toContain('--ignore-user-config');expect(args).not.toContain('--ephemeral');expect(args).toContain('--output-schema');expect(args.slice(0,3)).toEqual(['exec','resume','lead-thread']);expect(args).not.toContain('--continue')
+  })
+  it('resumes Claude with only read tools and without exposing customization or edit tools', () => {
+    const args = consultArgs({ attemptId: 'consult', prompt: 'p', model: MODEL_IDS.claudeFable, resumeId: 'lead-thread', effort: 'high', workspaceDir: '/workspace', signal: new AbortController().signal }, '/private/schema.json')
+    expect(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2)).toEqual(['--resume', 'lead-thread'])
+    expect(args.slice(args.indexOf('--tools'), args.indexOf('--tools') + 2)).toEqual(['--tools', 'Read,Grep,Glob'])
+    expect(args).toContain('--safe-mode'); expect(args).toContain('--strict-mcp-config'); expect(args).toContain('dontAsk')
+    expect(args).toContain('--json-schema'); expect(args).not.toContain('--bare'); expect(args).not.toContain('--dangerously-skip-permissions')
   })
 })

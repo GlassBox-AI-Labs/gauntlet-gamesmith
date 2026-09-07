@@ -1,16 +1,11 @@
 import type { OperationResult } from './result'
 import { isRecordId } from './record-id'
 import { MAX_CONTEXT_FILE_BYTES } from './attachments'
-import { AGENT_MODEL_CHOICES, isCodexModel, MODEL_IDS } from './models'
+import type { AttemptStatus } from './build'
 
 export const MAX_STEERING_MESSAGE = 12_000
 export const MAX_STEERING_FILES = 10
-export const DEFAULT_STEERING_MODEL = MODEL_IDS.codexSol
-export const STEERING_MODEL_CHOICES = AGENT_MODEL_CHOICES.filter(choice => isCodexModel(choice.id))
-export function steeringModel(value: unknown): string {
-  if (typeof value !== 'string' || !STEERING_MODEL_CHOICES.some(choice => choice.id === value)) throw new Error('Choose a supported Codex steering model.')
-  return value
-}
+export const MAX_QUEUED_CHAT_MESSAGES = 20
 export interface SteeringAttachment {
   id: string
   sourceId: string
@@ -33,6 +28,7 @@ export interface SteeringMessage {
   createdAt: string
   attemptId: string | null
   attachments?: SteeringAttachment[]
+  delivery?: AttemptStatus
 }
 export interface SteeringDirective {
   id: string
@@ -59,10 +55,11 @@ export interface SteeringState {
   messages: SteeringMessage[]
   directives: SteeringDirective[]
   busy: boolean
+  responding: boolean
+  queued: number
 }
 export interface SteeringApi {
   history(buildId: string): Promise<OperationResult<SteeringState>>
-  setModel(input: { buildId: string; model: string }): Promise<OperationResult<SteeringState>>
   send(input: { buildId: string; messageId: string; content: string; attachmentIds?: string[] }): Promise<OperationResult<SteeringState>>
   preview(input: { buildId: string; attachmentId: string }): Promise<OperationResult<string>>
   cancel(buildId: string): Promise<OperationResult<void>>
@@ -70,7 +67,7 @@ export interface SteeringApi {
   onUpdate(listener: (state: SteeringState) => void): () => void
 }
 export function steeringId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[\w-]{1,100}$/.test(value)) throw new Error('Invalid run or message ID.')
+  if (typeof value !== 'string' || !/^[\w-]{1,100}$/.test(value)) throw new Error('Invalid build or message ID.')
   return value
 }
 export function steeringIds(value: unknown, limit = 100): string[] {
