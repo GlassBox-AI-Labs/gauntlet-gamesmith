@@ -3,3 +3,16 @@ apps/desktop/out/
 dist/
 dist-*/
 .DS_Store
+.catalog/
+.env.local
+apps/web/build/
+supabase/.temp/
+supabase/.branches/
+
+.next/
+.vercel/
+.env.production.local
+.env.preview.local
+*.tsbuildinfo
+packages/db/supabase/.temp/
+packages/db/supabase/.branches/
