@@ -90,6 +90,14 @@ MULTIPLAYER_TEST_REDIS=redis://127.0.0.1:56329 pnpm multiplayer:test
 pnpm build
 ```
 
+To verify a deployment, save its actual private-preview URL as `{"url":"..."}`
+in a private JSON file outside Git. Then run
+`pnpm multiplayer:smoke /absolute/path/to/preview.json`. This spends one real
+three-minute test match. It checks guest matching, leave, state delivery under
+incoming delay, a forced TCP disconnect, identity-preserving reconnect and the
+original server deadline. Output excludes preview URLs and tickets. Optional
+`MULTIPLAYER_SMOKE_RESULT` writes the resulting metrics JSON outside the repo.
+
 The Redis integration test uses independent adapters and removes only its own
 random namespace. Without `MULTIPLAYER_TEST_REDIS` that one test is skipped.
 Do not store builds, credentials or screenshot catalogs in Git.

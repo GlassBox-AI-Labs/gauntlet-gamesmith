@@ -1,6 +1,6 @@
 import { createClient } from 'redis'
 import { randomUUID, randomInt } from 'node:crypto'
-import { COUNTDOWN_MS, LOBBY_MS, ROOM_LIFETIME_MS, SESSION_MS, type Room, type Player, type MultiplayerManifest, type Snapshot } from './index'
+import { COUNTDOWN_MS, LOBBY_MS, ROOM_LIFETIME_MS, SESSION_MS, roomSchema, type Room, type Player, type MultiplayerManifest, type Snapshot } from './index'
 import type { RoomRef, RoomStore, Ticket } from './server'
 
 // Atomic room changes are shared by every Vercel instance. Redis TIME owns deadlines.
@@ -91,7 +91,10 @@ export class RedisRoomStore implements RoomStore {
     await this.connect()
     const p = this.prefix(ref.scope)
     const result = await this.command.eval(ROOM, { keys: [`${p}open`], arguments: [op, ref.roomId, `${p}room:`, explicit ? '1' : '0', JSON.stringify(room), player, String(LOBBY_MS), String(COUNTDOWN_MS), String(SESSION_MS), String(ROOM_LIFETIME_MS)] })
-    return JSON.parse(String(result)) as Room
+    const resultRoom = JSON.parse(String(result))
+    // Managed Redis Lua engines can omit cjson.null object fields on encode.
+    // Normalize the wire contract here so local and hosted clients see nulls.
+    return roomSchema.parse({ ...resultRoom, ...(op === 'leave' && !Array.isArray(resultRoom.players) && Object.keys(resultRoom.players ?? {}).length === 0 ? { players: [] } : {}), startAt: resultRoom.startAt ?? null, endAt: resultRoom.endAt ?? null })
   }
   join(scope: string, gameId: string, releaseId: string, player: Player, manifest: MultiplayerManifest, roomId?: string): Promise<Room> {
     const id = roomId ?? randomUUID()

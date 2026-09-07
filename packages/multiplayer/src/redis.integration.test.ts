@@ -13,11 +13,14 @@ describe.skipIf(!url)('shared Redis room protocol', () => {
     const input={scope,gameId:randomUUID(),releaseId:randomUUID(),name:'One',manifest:{version:1,mode:'relay',maxPlayers:6,sessionSeconds:180} as const}
     try {
       const first=await serverA.join(input),second=await serverB.join({...input,name:'Two'})
+      expect(first.room.startAt).toBeNull(); expect(first.room.endAt).toBeNull()
       expect(second.room.id).toBe(first.room.id); expect(second.room.players).toHaveLength(2)
       const ref=serverA.verify(first.ticket), other=serverB.verify(second.ticket)
       await expect(b.start(other)).rejects.toThrow('first player')
       const room=await a.start(ref); expect(room.endAt!-room.startAt!).toBe(180000)
       const separate=await serverB.join(input); expect(separate.room.id).not.toBe(room.id)
+      await b.leave(serverB.verify(separate.ticket))
+      await expect(b.read(serverB.verify(separate.ticket))).rejects.toThrow('expired')
       const key=`${namespace}:{${scope}}:room:${room.id}`
       await raw.set(key,JSON.stringify({...room,startAt:Date.now()-1000,endAt:Date.now()+30000}),{PXAT:room.expiresAt})
       const received: unknown[]=[]; const off=await b.subscribe(ref,s=>received.push(s))

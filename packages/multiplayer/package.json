@@ -13,7 +13,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "esbuild src/browser.ts --bundle --platform=browser --format=esm --target=es2022 --minify --outfile=dist/gamesmith.js"
+    "build": "esbuild src/browser.ts --bundle --platform=browser --format=esm --target=es2022 --minify --outfile=dist/gamesmith.js",
+    "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
     "redis": "6.2.1",
@@ -21,10 +22,11 @@
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.27.7",
+    "tsx": "4.21.0",
     "typescript": "5.9.3",
     "vitest": "4.1.11",
-    "ws": "8.18.3",
-    "@types/ws": "8.18.1",
-    "esbuild": "0.27.7"
+    "ws": "8.18.3"
   }
 }
