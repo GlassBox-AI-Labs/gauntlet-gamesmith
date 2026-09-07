@@ -42,6 +42,7 @@ function driveProtocol(prompt: string, steps: (string | (() => void))[]): {
   const parser = createCodexImplementProtocol({
     ledger: {
       getAttempt: () => attempt,
+      leadEvents: () => [],
       patchAttempt: (_id: string, patch: { metrics?: AttemptMetrics }) => { if (patch.metrics) metrics = patch.metrics },
     } as unknown as Ledger,
     build: { id: 'build-1', models: resolveModels({ orchestratorModel: 'gpt-6-astra', subagentModel: 'gpt-5.6-sol' }, null) } as BuildRecord,

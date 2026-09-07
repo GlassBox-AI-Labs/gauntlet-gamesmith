@@ -1,3 +1,7 @@
+import { SteeringAttachments } from './steering-attachments'
+import { SteeringService } from './steering'
+import { createConsultAgent } from './steering-agent'
+import { registerSteeringIpc } from './steering-ipc'
 import { Publishing, registerPublishingIpc } from './publishing'
 import { trustExistingBuild } from './trust-ipc'
 import { createBuildAttachments } from './build-attachments'
@@ -31,7 +35,7 @@ import {
   removeAccount,
   switchAccount,
 } from './accounts'
-import { cliHome, harnessesRoot } from './harness-env'
+import { subscriptionEnv, cliHomeEnv, cliHome, harnessesRoot } from './harness-env'
 import { HarnessLoginManager } from './harness-login'
 import { subscriptionAuthError } from './harness-status'
 import {
@@ -83,6 +87,7 @@ import { configureAgentWritableRoots } from './cli-executable'
 
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
+let steering: SteeringService | null = null
 let publishing: Publishing | null = null
 let buildRunner: BuildRunner | null = null
 let mediaGate: MediaBaseGate | null = null
@@ -835,7 +840,7 @@ if (!hasSingleInstanceLock) {
 }
 
 if (hasSingleInstanceLock) {
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     const appIcon = developmentAppIconPath(app.getAppPath(), app.isPackaged)
     if (process.platform === 'darwin' && appIcon) app.dock?.setIcon(appIcon)
     const attachments = createBuildAttachments(protectedWorkspaceRoots)
@@ -846,6 +851,7 @@ if (hasSingleInstanceLock) {
       protectedRoots: protectedWorkspaceRoots,
       prepareContext: (ids) => attachments.prepare(ids),
       rotateAccount,
+      drainChat: buildId => steering?.drain(buildId) ?? Promise.resolve(true),
     })
     mediaGate = new MediaBaseGate(() => startMediaServer((buildId) => {
       const build = ledger?.getBuild(buildId)
@@ -857,6 +863,15 @@ if (hasSingleInstanceLock) {
         return null
       }
     }))
+    steering = new SteeringService(
+      ledger,
+      createConsultAgent(path.join(app.getPath('userData'), 'consults'), kind => subscriptionEnv(cliHomeEnv(kind, cliHome(kind)), process.env, kind)),
+      (channel, payload) => mainWindow?.webContents.send(channel, payload),
+      new SteeringAttachments(ledger, attachments),
+      { harnessHome: cliHome },
+    )
+    await steering.recover()
+    registerSteeringIpc(steering)
     publishing = new Publishing(ledger, line => mainWindow?.webContents.send(IPC.build.log, line))
     registerPublishingIpc(publishing)
     registerIpc()
@@ -870,6 +885,7 @@ if (hasSingleInstanceLock) {
       })
     }
     buildRunner.recoverAll()
+    steering.resumeQueued()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
@@ -923,7 +939,8 @@ app.on('before-quit', (event) => {
   const stopAgents = choice === 1
   const settleAgents = stopAgents || forcedAgentSettlement
   const settlePlay = hasActivePlay()
-  if (!settleAgents && !settlePlay) return
+  const settleChat = steering?.hasUnfinished() ?? false
+  if (!settleAgents && !settlePlay && !settleChat) return
   // Play ownership is intentionally in-memory, and a requested agent stop
   // relies on timers that must finish before Electron exits. Hold the app
   // open until both identity-bound supervisors prove absence.
@@ -933,7 +950,13 @@ app.on('before-quit', (event) => {
     try {
       const settlement = await settleQuitSupervisors(
         async () => !settleAgents || !buildRunner || await buildRunner.stopForQuitAndWait(),
-        async () => { if (settlePlay) await stopAllPlayAndWait() },
+        async () => {
+          const results = await Promise.allSettled([
+            settlePlay ? stopAllPlayAndWait() : Promise.resolve(),
+            settleChat ? steering!.shutdown().then(settled => { if (!settled) throw new Error('Steering chat process ownership is unresolved.') }) : Promise.resolve(),
+          ])
+          for (const result of results) if (result.status === 'rejected') throw result.reason
+        },
       )
       if (!settlement.ok) {
         dialog.showErrorBox(`${APP_NAME} could not finish quitting safely`, settlement.error)

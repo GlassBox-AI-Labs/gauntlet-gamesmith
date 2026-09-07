@@ -23,7 +23,7 @@ export interface PlanContext {
   prompt: string
   claudeHome: string
   codexHome: string
-  /** Session/thread to continue, when the app is picking up an interrupted attempt. */
+  /** Session/thread to continue across implementation rounds or interrupted attempts. */
   resumeId?: string | null
   /** Optional Codex compatibility output; machine decisions never trust it. */
   outFile?: string | null
@@ -204,3 +204,17 @@ export function critiquePlan(ctx: PlanContext): SpawnPlan {
  * The claude model that fronts a codex worker. It writes no code — it hands the
  * slice to codex and reports back — so it is the cheapest one on the list.
  */
+
+/** Read-only conversation turn in the implementation lead's persisted session. */
+export function consultPlan(model: string, schemaPath: string, imagePaths: string[] = [], resumeId?: string | null, effort = 'low', schemaJson = '{}'): string[] {
+  if (harnessFor(model) === 'claude') return [
+    '-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--effort', effort,
+    ...(resumeId ? ['--resume', resumeId] : []),
+    '--safe-mode', '--strict-mcp-config', '--permission-mode', 'dontAsk',
+    '--tools', 'Read,Grep,Glob', '--allowedTools', 'Read,Grep,Glob', '--json-schema', schemaJson,
+  ]
+  return ['exec', ...(resumeId ? ['resume', resumeId] : []), '--ignore-user-config',
+    '-c', 'sandbox_mode="read-only"', '--disable', 'code_mode', '--skip-git-repo-check',
+    '--json', '--output-schema', schemaPath, '--model', model, '-c', `model_reasoning_effort=${effort}`,
+    ...imagePaths.flatMap(file => ['--image', file]), '-']
+}

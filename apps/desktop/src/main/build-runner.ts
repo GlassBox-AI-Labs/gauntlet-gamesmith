@@ -1,3 +1,6 @@
+import { SteeringAttachments } from './steering-attachments'
+import { steeringCastWork } from './steering-assets'
+import { SteeringStore } from './steering-store'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -85,6 +88,7 @@ import { ChildStreamTailer } from './streams/child-tailer'
 import { prepareVerdictArtifact } from './verdict'
 import { assertWorkspaceBoundary, captureWorkspaceIdentity } from './workspace-boundary'
 import { boundedBuildSnapshot } from './ipc-projection'
+import { LeadContinuity } from './lead-continuity'
 
 /**
  * How long a build may make no progress before we call it stuck. This is idle
@@ -197,6 +201,8 @@ export interface BuildRunnerDeps {
   ensureBrowser(): typeof ensureBrowser extends () => infer R ? R : never
   prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
+  /** Drain queued conversation turns after process settlement, before another phase. */
+  drainChat?(buildId: string): Promise<boolean>
 }
 
 const DEFAULT_DEPS: BuildRunnerDeps = {
@@ -261,6 +267,7 @@ interface Attachment {
 }
 
 export class BuildRunner {
+  private chatBarriers = new Set<string>()
   private current: Attachment | null = null
   private stopRequested = new Set<string>()
   private retryTimers = new Map<string, NodeJS.Timeout>()
@@ -336,6 +343,14 @@ export class BuildRunner {
 
   /** Fail closed when a later phase sees a changed frozen Reference Pack. */
   private verifyReferenceBoundary(build: BuildRecord, attempt: PhaseAttempt, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      const requirements = new SteeringStore(this.ledger).requirementsForAttempt(attempt.id)
+      if (requirements) new SteeringAttachments(this.ledger).verify(build.id, requirements.attachments ?? [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Steering attachment verification failed.'
+      this.failAttemptAndBuild(build, attempt, message, message, terminalLog)
+      return false
+    }
     if (!this.verifySuppliedContext(build, attempt, terminalLog)) return false
     if (build.models.referenceMode === 'skip') return true
     const pack = scanReferencePack(build.workspaceDir, this.referenceDir(build.id), build)
@@ -397,6 +412,14 @@ export class BuildRunner {
   }
 
   private ensureReferenceSourceBaseline(build: BuildRecord, attempt: PhaseAttempt, terminalLog?: { kind: string; text: string }): boolean {
+    try {
+      const requirements = new SteeringStore(this.ledger).requirementsForAttempt(attempt.id)
+      if (requirements) new SteeringAttachments(this.ledger).verify(build.id, requirements.attachments ?? [])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Steering attachment verification failed.'
+      this.failAttemptAndBuild(build, attempt, message, message, terminalLog)
+      return false
+    }
     if (!this.verifySuppliedContext(build, attempt, terminalLog)) return false
     try {
       if (attempt.revision) {
@@ -947,6 +970,7 @@ export class BuildRunner {
     try {
       build = this.atomicLogs(() => {
         const created = this.ledger.createBuild({ prompt, workspaceDir, maxRounds, budgetUsd, models })
+        new LeadContinuity(this.ledger).enable(created.id)
         this.log(created.id, null, 'system', `Build started — workspace ${workspaceDir}, max ${maxRounds} rounds${budgetUsd ? `, budget $${budgetUsd}` : ''}.`)
         this.log(created.id, null, 'system', scaffold.created.length
           ? `Engine scaffolded — ${scaffold.created.join(', ')}.`
@@ -1314,6 +1338,7 @@ export class BuildRunner {
     let earlyResult: StartBuildResult | null = null
     this.atomicLogs(() => {
       this.ledger.patchBuild(buildId, { status: 'running', stopReason: null })
+      new LeadContinuity(this.ledger).enable(buildId)
       if (resume.kind === 'continue-queued') {
         this.log(buildId, null, 'system', `Build resumed by user — continuing the already queued round ${resume.attempt.round} ${resume.attempt.role}.`)
       } else if (resume.kind === 'retry') {
@@ -1330,6 +1355,7 @@ export class BuildRunner {
         })
         if (prior.revision) this.ledger.patchAttempt(retry.id, { revision: prior.revision })
         if (prior.role === 'implement') this.copyCritiqueTreeBaseline(prior.id, retry.id)
+        if (prior.role === 'implement') this.log(buildId, retry.id, 'lead-resume-request', 'Resume will include pending directions after queued Chat turns are answered.')
         this.log(buildId, null, 'system', `Build resumed by user — retrying round ${prior.round} ${prior.role}.`)
       } else if (resume.kind === 'queue-implement') {
         this.ledger.patchBuild(buildId, { round: resume.round })
@@ -1771,7 +1797,17 @@ export class BuildRunner {
   }
 
   private async executeNext(buildId: string): Promise<void> {
-    if (this.current || this.terminatingBuilds.has(buildId)) return
+    if (this.current || this.terminatingBuilds.has(buildId) || this.chatBarriers.has(buildId)) return
+    if (this.deps.drainChat) {
+      this.chatBarriers.add(buildId)
+      try {
+        if (!await this.deps.drainChat(buildId)) return
+      } catch (error) {
+        this.log(buildId, null, 'error', `Orchestrator Chat could not settle: ${redactedErrorMessage(error, 'Unknown Chat error.')}`)
+        return
+      } finally { this.chatBarriers.delete(buildId) }
+      if (this.current || this.terminatingBuilds.has(buildId)) return
+    }
     const build = this.ledger.getBuild(buildId)
     if (!build || build.status !== 'running') return
     if (!this.verifyWorkspaceBoundary(build)) return
@@ -2645,9 +2681,14 @@ export class BuildRunner {
   private async executeImplement(build: BuildRecord, attempt: PhaseAttempt): Promise<void> {
     const models = build.models
     const harness = harnessFor(models.orchestratorModel)
+    const steering = new SteeringStore(this.ledger)
+    if (this.ledger.eventsForAttempt(attempt.id, 'lead-resume-request', 1).length) steering.includePendingOnResume(attempt.id)
+    const effective = effectivePromptForAttempt(attempt.prompt)
+    steering.freezeAttemptRequirements(attempt.id, effective.prompt)
+    const requirements = steering.requirementsForAttempt(attempt.id)!
     if (!this.verifyReferenceBoundary(build, attempt)) return
     if (!this.verifyCritiqueTreeBoundary(build, attempt, true)) return
-    const wanted = this.wantedCast(build, this.verdictForRound(build.id, attempt.round - 1))
+    const wanted = models.assetModel ? steeringCastWork(requirements, this.wantedCast(build, this.verdictForRound(build.id, attempt.round - 1)), this.castFor(build)) : []
     if (wanted.length > 0) {
       const skill = ensureSkill()
       if (!skill.dir) {
@@ -2690,22 +2731,27 @@ export class BuildRunner {
     const childBoundary = this.prepareChildStreams(build, attempt)
 
     const priorSessionId = build.playTrusted ? this.lastImplementSessionId(build.id, attempt.round, attempt.id) : null
-    const effective = effectivePromptForAttempt(attempt.prompt)
     const isResume = effective.resumeRequested && priorSessionId != null
-    const prompt = effective.prompt
+    const assetRules = wanted.length && requirements.assetWork?.some(change => change.operation === 'sculpt') ? `\n\n${sculptorRules(models, this.referenceDir(build.id))}` : ''
+    const frozenPrompt = steering.freezeAttemptRequirements(attempt.id, effective.prompt + assetRules).prompt
+    const lead = new LeadContinuity(this.ledger)
+    const continuing = lead.state(build.id).enabled ? lead.prepare(attempt, frozenPrompt, harness === 'codex' ? this.deps.harnessHome('codex') : undefined) : null
+    const prompt = continuing?.prompt ?? frozenPrompt
+    if (continuing) this.log(build.id, attempt.id, 'system', continuing.reason)
+    this.send(IPC.steering.update, new SteeringStore(this.ledger).steeringState(build.id))
 
     this.log(
       build.id,
       attempt.id,
       'system',
-      `● Round ${attempt.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${isResume ? ' — continuing interrupted session' : ''}`,
+      `● Round ${attempt.round} — implement (${harness} ${models.orchestratorModel}, effort ${models.orchestratorEffort})${continuing ? continuing.resumeId ? ' — continuing orchestrator' : ' — starting orchestrator session' : isResume ? ' — continuing interrupted session' : ''}`,
     )
     const plan = implementPlan({
       models,
       prompt,
       claudeHome: this.deps.harnessHome('claude'),
       codexHome: this.deps.harnessHome('codex'),
-      resumeId: isResume ? priorSessionId : null,
+      resumeId: continuing ? continuing.resumeId : isResume ? priorSessionId : null,
     })
     const executable = this.executableEnvironment(build, attempt, plan.env)
     const gate: LogGate = { suppress: false }
@@ -2836,6 +2882,7 @@ export class BuildRunner {
       finishCancelled: (finalExit, reason, terminalLog) => this.finishCancelledAttempt(build, attempt, finalExit, reason, terminalLog),
       verifyCritiqueTree: (terminalLog) => this.verifyCritiqueTreeBoundary(build, attempt, false, terminalLog),
       retryRateLimit: (error, terminalLog) => this.retryRateLimit(build, attempt, error, terminalLog),
+      copyRetryEvidence: retryId => this.copyCritiqueTreeBaseline(attempt.id, retryId),
       failAttempt: (error, reason, terminalLog) => { this.failAttemptAndBuild(build, attempt, error, reason, terminalLog) },
       verifyReference: (terminalLog) => this.verifyReferenceBoundary(build, attempt, terminalLog),
       persistLog: (kind, text) => { this.persistLog(build.id, attempt.id, kind, text) },
@@ -2885,7 +2932,7 @@ export class BuildRunner {
       'system',
       `● Round ${attempt.round} — critique (${attempt.harness} ${models.criticModel}, effort ${models.criticEffort}, fresh eyes)`,
     )
-    const exactPrompt = buildCriticPrompt(
+    let exactPrompt = buildCriticPrompt(
       build.prompt,
       attempt.round,
       this.referenceDir(build.id),
@@ -2894,6 +2941,9 @@ export class BuildRunner {
       engineGateRules(),
       models.referenceMode,
     )
+    exactPrompt = new SteeringStore(this.ledger).freezeAttemptRequirements(attempt.id, exactPrompt).prompt
+    new SteeringAttachments(this.ledger).verify(build.id, new SteeringStore(this.ledger).requirementsForAttempt(attempt.id)?.attachments ?? [])
+    this.send(IPC.steering.update, new SteeringStore(this.ledger).steeringState(build.id))
     const plan = critiquePlan({
       models,
       prompt: exactPrompt,

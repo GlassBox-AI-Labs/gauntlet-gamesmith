@@ -1,3 +1,4 @@
+import type { SteeringApi, SteeringState } from '../shared/steering'
 import type { PublishingApi } from '../shared/publishing'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
@@ -120,6 +121,19 @@ const attachments: AttachmentApi = {
 contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)
 
+const steering:SteeringApi={
+  preview:input=>ipcRenderer.invoke(IPC.steering.preview,input),
+  history:id=>ipcRenderer.invoke(IPC.steering.history,id),
+  send:input=>ipcRenderer.invoke(IPC.steering.send,input),
+  cancel:id=>ipcRenderer.invoke(IPC.steering.cancel,id),
+  withdraw:input=>ipcRenderer.invoke(IPC.steering.withdraw,input),
+  onUpdate:listener=>{
+    const wrapped=(_event:Electron.IpcRendererEvent,state:SteeringState)=>listener(state)
+    ipcRenderer.on(IPC.steering.update,wrapped)
+    return ()=>{ipcRenderer.removeListener(IPC.steering.update,wrapped)}
+  },
+}
+contextBridge.exposeInMainWorld('steering',steering)
 const publishing: PublishingApi = {
   history: loopId => ipcRenderer.invoke(IPC.publishing.history, loopId),
   previewRelease: input => ipcRenderer.invoke(IPC.publishing.previewRelease, input),
