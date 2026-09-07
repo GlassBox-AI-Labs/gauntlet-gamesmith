@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BuildSnapshot } from '../../../shared/build'
-import { applySnapshotUpdate, olderAttemptPageOffset, pruneExpandedBuilds, pruneVisibleRoundCounts, selectSnapshotInList } from './build-pages'
+import { applySnapshotUpdate, olderAttemptPageOffset, pruneExpandedBuilds, selectSnapshotInList } from './build-pages'
 
 function snapshot(offset: number, attemptIds: string[], totalAttempts = 500): BuildSnapshot {
   return {
@@ -64,6 +64,5 @@ describe('bounded build-page state', () => {
     current.attempts = Array.from({ length: 8 }, (_, index) => ({ id: `build-${index}`, round: index + 1 } as BuildSnapshot['attempts'][number]))
 
     expect([...pruneExpandedBuilds(new Set(['old-1', 'current', 'old-2']), [current])]).toEqual(['current'])
-    expect(pruneVisibleRoundCounts({ 'old-1': 999, current: 999 }, [current], 3)).toEqual({ current: 8 })
   })
 })
