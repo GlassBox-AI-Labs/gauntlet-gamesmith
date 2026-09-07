@@ -2,6 +2,7 @@ import { SteeringAttachments } from './steering-attachments'
 import { SteeringService } from './steering'
 import { createConsultAgent } from './steering-agent'
 import { registerSteeringIpc } from './steering-ipc'
+import { Publishing, registerPublishingIpc } from './publishing'
 import { trustExistingBuild } from './trust-ipc'
 import { createBuildAttachments } from './build-attachments'
 import { registerAttachmentIpc } from './attachment-ipc'
@@ -87,6 +88,7 @@ import { configureAgentWritableRoots } from './cli-executable'
 let mainWindow: BrowserWindow | null = null
 let ledger: Ledger | null = null
 let steering: SteeringService | null = null
+let publishing: Publishing | null = null
 let buildRunner: BuildRunner | null = null
 let mediaGate: MediaBaseGate | null = null
 
@@ -867,6 +869,8 @@ if (hasSingleInstanceLock) {
     )
     await steering.recover()
     registerSteeringIpc(steering)
+    publishing = new Publishing(ledger, line => mainWindow?.webContents.send(IPC.build.log, line))
+    registerPublishingIpc(publishing)
     registerIpc()
     registerBuildIpc()
     registerReportIpc()
@@ -898,6 +902,11 @@ if (hasSingleInstanceLock) {
 let playQuitPending = false
 let playQuitSettled = false
 app.on('before-quit', (event) => {
+  if (publishing?.isBusy()) {
+    event.preventDefault()
+    dialog.showErrorBox('Publishing is still running', 'Wait for account authentication or game preparation to finish, then quit. The build log shows progress.')
+    return
+  }
   if (playQuitSettled) return
   const active = buildRunner?.activeAttempt()
   const forcedAgentSettlement = buildRunner?.quitSettlementPending() ?? false

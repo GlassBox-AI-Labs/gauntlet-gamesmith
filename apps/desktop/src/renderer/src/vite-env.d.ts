@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { SteeringApi } from '../../shared/steering'
+import type { PublishingApi } from '../../shared/publishing'
 import type { HarnessApi } from '../../shared/harness'
 import type { BuildApi } from '../../shared/build'
 import type { OnboardingApi } from '../../shared/onboarding'
@@ -12,6 +13,7 @@ import type { AttachmentApi } from '../../shared/attachments'
 
 declare global {
   interface Window {
+    publishing: PublishingApi
     buildContext?: BuildContextApi
     attachments: AttachmentApi
     harnesses: HarnessApi

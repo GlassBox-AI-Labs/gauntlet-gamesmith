@@ -1,6 +1,7 @@
 /** Canonical IPC channel names shared by main and preload. */
 export const IPC = {
   steering: {preview:'steering:preview',history:'steering:history',send:'steering:send',cancel:'steering:cancel',withdraw:'steering:withdraw',update:'steering:update'},
+  publishing: { signUp: 'publishing:sign-up', verifyEmail: 'publishing:verify-email', resendVerification: 'publishing:resend-verification', history: 'publishing:history', previewRelease: 'publishing:preview-release', unpublish: 'publishing:unpublish', cancelSignIn: 'publishing:cancel-sign-in', status: 'publishing:status', signIn: 'publishing:sign-in', signOut: 'publishing:sign-out', prepare: 'publishing:prepare', publish: 'publishing:publish' },
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',

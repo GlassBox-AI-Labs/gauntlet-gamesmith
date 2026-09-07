@@ -1,4 +1,5 @@
 import type { SteeringApi, SteeringState } from '../shared/steering'
+import type { PublishingApi } from '../shared/publishing'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { HarnessApi, HarnessKind, LoginEvent, TerminalDataEvent } from '../shared/harness'
 import { IPC } from '../shared/ipc'
@@ -128,3 +129,18 @@ const steering:SteeringApi={
   },
 }
 contextBridge.exposeInMainWorld('steering',steering)
+const publishing: PublishingApi = {
+  history: loopId => ipcRenderer.invoke(IPC.publishing.history, loopId),
+  previewRelease: input => ipcRenderer.invoke(IPC.publishing.previewRelease, input),
+  unpublish: input => ipcRenderer.invoke(IPC.publishing.unpublish, input),
+  cancelSignIn: () => ipcRenderer.invoke(IPC.publishing.cancelSignIn),
+  status: () => ipcRenderer.invoke(IPC.publishing.status),
+  signIn: (input) => ipcRenderer.invoke(IPC.publishing.signIn, input),
+  signUp: (input) => ipcRenderer.invoke(IPC.publishing.signUp, input),
+  verifyEmail: (input) => ipcRenderer.invoke(IPC.publishing.verifyEmail, input),
+  resendVerification: (input) => ipcRenderer.invoke(IPC.publishing.resendVerification, input),
+  signOut: () => ipcRenderer.invoke(IPC.publishing.signOut),
+  prepare: input => ipcRenderer.invoke(IPC.publishing.prepare, input),
+  publish: input => ipcRenderer.invoke(IPC.publishing.publish, input),
+}
+contextBridge.exposeInMainWorld('publishing', publishing)

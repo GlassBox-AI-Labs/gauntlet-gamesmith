@@ -560,50 +560,6 @@ agrees with it. Reviewers should reject a new `phases` table, any reintroduction
 for either the job or an attempt, and any use of "build" as a bare noun for compilation in
 operator-visible text.
 
-## ADR-028 — Build-scoped conversational steering (2026-09-05)
-
-**Status:** accepted.
-
-**Decision.** Steering is an initially empty conversation in a collapsible right
-sidebar at the build level. A separate, read-only Codex consult answers questions,
-consolidates related feedback, and batches material clarification questions into
-ordinary replies. Clear instructions queue without redundant confirmation;
-questions and tentative ideas alone do not change requirements. Schema-validated
-new directions must cite actual user messages, including the latest message.
-
-Directions persist across rounds. Later directions supersede earlier conflicts;
-undoing an included direction is another steer. Pending directions may be withdrawn.
-At the first implementation dispatch, freeze the cumulative directions for that
-logical round. Its critic and automatic retries receive the same immutable snapshot.
-ADR-026 adds an explicit Resume boundary for pending directions.
-Chat arriving after that boundary waits for the next implementation. No phase is
-interrupted or injected with new chat. Chat never restarts a stopped/completed build.
-Historical implementations without a snapshot retain their original requirements.
-
-**Storage and lifecycle.** Messages, directions, withdrawals, and requirement
-snapshots are append-only events in the existing mirrored ledgers. Full event reads
-are separate from truncated log projections. No schema migration is needed. Export
-and import retain history, source IDs, snapshots, and consult attempts. Imported
-history remains read-only until the existing build/folder trust flow grants execution.
-Consults are excluded from phase scheduling, resume decisions, the rounds table,
-and phase-attempt counts. Build-wide cost/token totals and the activity log still
-include chat; table totals describe only its visible phase rows. The round attached
-to a consult records when the conversation happened, not when steering was applied.
-Each consult has
-its own attempt, exact prompt/hash, raw streams, session ID, model, CLI version,
-account/machine provenance, tokens, and equivalent API cost. Cancellation and quit
-settlement supervise its own captured process group. Incomplete process ownership
-quarantines chat; restart never automatically retries a conversation.
-
-**V1 limits.** Uses the app's Codex profile at low effort, defaulting to gpt-5.6-sol; a Codex
-connection is required even for Claude implementation builds. Conversations are bounded
-at 250,000 prompt characters and 24,000 cumulative direction characters; reaching a
-limit returns an explicit error rather than silently forgetting history. The frozen
-reference pack is evidence, not something chat edits. A passed build does not gain an
-automatic extra round. Supporting reference refreshes, larger conversations, or
-in-flight phase injection requires a separate design.
-
-
 ## ADR-021 — Immutable attachments in build steering (2026-09-05)
 
 **Status:** accepted.
@@ -638,7 +594,7 @@ rebuilding it. No additional loop phase or consult table row is introduced.
 
 ## ADR-022 — Per-build steering model selection (2026-09-05)
 
-**Status:** superseded by ADR-029. Historical preferences remain in the event log.
+**Status:** superseded by ADR-033. Historical preferences remain in the event log.
 
 **Decision.** The Chat composer offers the supported Codex models from the
 shared model catalog. Selection is independent of implementation/critique models
@@ -649,11 +605,215 @@ Changing the selection during a reply applies to the next message. Selection
 does not start an attempt, create a rounds-table row, or clear conversation history.
 V1 remains on the app's Codex connection at low effort.
 
+## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
 
+**Status:** accepted. Narrowly supersedes ADR-003's no-app-auth/no-Supabase policy
+for publishing; local loops and their SQLite history are unchanged.
 
-## ADR-026 — Explicit Resume includes pending steering (2026-09-06)
+**Context.** Developers need to publish a finished game to a shared catalog while
+keeping local game creation independent of a platform account. The first release
+runs on a developer LAN; hosted US deployment and multiplayer follow later.
 
-**Status:** accepted; refines ADR-028.
+**Decision.** Keep the catalog and publishing module in this monorepo. Local
+Supabase owns publisher Auth, catalog metadata, and release artifacts. Provision
+only developers whose monorepo access an administrator has verified; public signup
+is disabled. CLI authentication remains entirely separate (ADR-002, PROC-001).
+
+Desktop Publish operates on a completed immutable round, builds with installed
+dependencies, packages a bounded static output, and opens a private preview before
+explicit promotion. Export is not a publishing artifact. Releases are immutable;
+games have stable URLs and a transactionally updated current-release pointer.
+Failed uploads preserve the existing release. Updates, rollback, and unpublish
+are owner-controlled and reject stale generation values.
+
+Serve executable game content on a separate sandboxed origin without account
+credentials. Keep the local Supabase ports on loopback; expose only the catalog
+and game-content host to the trusted LAN. The initial supported runtime is static
+browser games with relative assets and no persistent player state or networking.
+Publishing progress and build output remain visible in both local event ledgers.
+
+**Consequences.** Creating/playing games locally still needs no platform account.
+Publishing introduces container/runtime setup and a separate OS-protected desktop
+session. Future hosted Vercel/CDN deployment targets one shared Supabase project
+per environment and starts in the US. Future multiplayer uses a shared pluggable
+module with guest access and game-dependent authority; it is not part of v1.
+Payments, creator monetization, and platform billing are deferred.
+
+## ADR-024 — Desktop publishing and a browse-only Next.js website (2026-09-06)
+
+**Status:** accepted; refines ADR-023 and supersedes the earlier web studio/import
+proposal in the initial publishing design.
+
+**Decision.** Electron owns all publisher management, including metadata, build,
+preview, promotion, release history, rollback, unpublish, and sign-out. Publications
+originate from saved loop rounds, not user-selected artifact files. The website
+exposes public browsing/play and publisher attribution. Its only account utility
+is the Supabase sign-in/one-time desktop connection handoff.
+
+Use Next.js App Router, server-rendered public reads, Server Actions for browser
+auth forms, and thin Route Handlers for the desktop protocol. Extract reusable
+renderer primitives and theme tokens to `packages/ui`; put framework-independent
+domain operations in `packages/data`. Follow the Othram schema.sql/generated-types
+workflow in `packages/db`, with idempotent migrations and transactional RPCs.
+
+**Consequences.** Small authenticated metadata requests authorize direct, scoped
+Supabase Storage uploads; game envelopes do not pass through Next.js function body
+limits. Server validation binds the artifact to the recorded source revision.
+One-time challenge-bound connections are durable in Postgres with encrypted
+sessions, and signing secrets are shared across Next.js instances. Publishing
+bearer credentials stay in Electron main. Web cookies do not authorize release
+mutation endpoints. Provenance is not machine attestation; v1 publishers are
+allowlisted developers. Game-content hosting remains a separate local process
+until the hosted CDN adapter is delivered. UI flow screenshots are PR attachments,
+not source-controlled catalog assets.
+
+## ADR-025 — Publisher email/password login inside Electron (2026-09-06)
+
+**Status:** accepted; supersedes ADR-024's browser account handoff.
+
+**Decision.** Put the Supabase email/password form in the Electron publishing
+drawer. Main validates the IPC payload and exchanges credentials through the
+catalog's small password-grant endpoint. The server verifies publisher eligibility
+before returning a session. Main keeps tokens in OS-backed encrypted storage and
+returns only publisher status to the renderer. Passwords are transient and cleared
+after every attempt; no password, token, or auth response is logged or exported.
+Require HTTPS or loopback for password submission.
+
+**Consequences.** Remove the website's login/connection pages, Server Actions,
+cookie clients, auth middleware, and durable device-handoff state. The website is
+exclusively browsing/play. The API authenticates Electron but creates no browser
+session. Existing encrypted desktop publisher sessions continue to refresh. V1
+still uses provisioned developer accounts; public signup remains deferred.
+
+## ADR-026 — Hosted catalog and a separate Vercel game origin (2026-09-06)
+
+**Decision.** Deploy the existing browse-only Next.js catalog and a separate
+Next.js game-content project on Vercel, backed by one dedicated Supabase Free
+project in Northern Virginia. Keep both function regions in `iad1`. Share game
+serving policy in `packages/data` with the local Node adapter; stream responses
+to support assets larger than the buffered function payload limit. Each request
+checks publication or preview expiry before using the process-local artifact cache.
+Game responses remain `no-store`; CDN caching with bounded revocation is deferred.
+
+**Reason.** The local HTTP server cannot run unchanged as a Vercel Function, and
+executable game content must not share the publisher API origin. The separate
+project makes the boundary explicit without adding another hosting vendor. Private
+Supabase artifact envelopes and existing release validation remain unchanged.
+
+**Consequences.** Cold game instances fetch the full artifact envelope; usage limits
+must be monitored during this small pilot. Production secrets are server-only and
+are not shared with arbitrary preview deployments. Hosted rollout and rollback
+are documented in `DEPLOYMENT.md`. This supersedes the local-only hosting boundary
+in ADR-024/025; it does not change the publishing UI or add multiplayer.
+
+## ADR-027 — Verified Challenger email enrollment (2026-09-06)
+
+**Status:** accepted; supersedes the provisioned-only signup policy in ADR-023/025.
+
+**Decision.** Anyone who owns and verifies an email at the exact domain
+`challenger.gauntletai.com` can publish for the pilot. Electron owns signup,
+email/password login, email-code verification, and resend. The public website remains
+browse/play only. Supabase email confirmation must be enabled and its confirmation
+template displays an OTP; no browser callback or app deep link is required.
+
+The server validates Supabase identity and calls an administrative transaction that
+reads the current Auth email and confirmation timestamp. It enrolls eligible users
+idempotently and records domain-based access separately from existing provisioned
+developer exceptions. No client metadata grants privileges. Domain access is rechecked
+on authenticated publishing requests; disabled accounts are never re-enabled by login.
+Passwords and verification codes are transient and cleared after each attempt. Only
+tokens are stored in Electron main's existing OS-encrypted, origin-specific session.
+
+**Consequences.** Repository invitations and Vercel accounts are unnecessary for
+Challenger publishers. Hosted enrollment needs custom SMTP capable of mailing these
+addresses; Supabase's built-in project-team sender is insufficient. Local Supabase
+captures the same confirmation email for testing. Platform deployment owns the
+infrastructure; publishers create their own accounts and publish their own games.
+The hosted rollout applied the migration and configured Resend Free with a verified
+`gauntletgamesmith.com` sender, a domain-scoped sending key in Supabase, and the same
+confirmation-code template. Signup and email confirmation are enabled. Deployment
+IDs, DNS, email limits, verification results, and rollback are in `DEPLOYMENT.md`.
+
+## ADR-028 — Automatic saved-round packaging (2026-09-06)
+
+**Context.** Publishers should not need to know output directories or asset paths
+to share a game. Requiring listing prose also blocks a first preview unnecessarily.
+
+**Decision.** Electron compiles the selected immutable saved round and detects the
+one browser output produced by that compilation. A bounded scan compares files
+before and after compilation, excludes private/reference trees and links, and never
+selects the source root. Existing artifact validation remains authoritative. Missing,
+stale, or ambiguous output fails with details in the visible log. Packaging does not
+require an LLM or a manual directory input.
+
+The app prefills title and URL; description and controls are optional. Blank
+description receives a short branded default compatible with the initial hosted API.
+Recognizably named raster artwork within the validated artifact becomes the cover;
+otherwise the catalog uses its placeholder. No cover path field is exposed.
+
+**Consequences.** Publishers can proceed directly to **Preview game**, then publish
+the reviewed release. The compilation script must produce one static browser output
+below the source root; unsupported games need another implementation round. Output
+detection and cover selection appear in the existing build log.
+
+## ADR-029 — Inclusive publisher account copy (2026-09-06)
+
+**Decision.** Account forms and errors use neutral language about creating an
+account, verifying email, and sharing games. New generated public handles use
+`creator-` and the fallback public name is `Game creator`. Existing profile names
+and URLs remain stable. Rejected signup explains that publishing is in early
+access and needs an approved email, without branding the app for one cohort.
+
+**Consequences.** This changes presentation, not enrollment policy: the exact
+verified email domain in ADR-027 and explicit developer exceptions still govern
+publishing. Creating and playing games continue to require no platform account.
+
+## ADR-030 — Build-scoped conversational steering (2026-09-05)
+
+**Status:** accepted.
+
+**Decision.** Steering is an initially empty conversation in a collapsible right
+sidebar at the build level. A separate, read-only Codex consult answers questions,
+consolidates related feedback, and batches material clarification questions into
+ordinary replies. Clear instructions queue without redundant confirmation;
+questions and tentative ideas alone do not change requirements. Schema-validated
+new directions must cite actual user messages, including the latest message.
+
+Directions persist across rounds. Later directions supersede earlier conflicts;
+undoing an included direction is another steer. Pending directions may be withdrawn.
+At the first implementation dispatch, freeze the cumulative directions for that
+logical round. Its critic and automatic retries receive the same immutable snapshot.
+ADR-031 adds an explicit Resume boundary for pending directions.
+Chat arriving after that boundary waits for the next implementation. No phase is
+interrupted or injected with new chat. Chat never restarts a stopped/completed build.
+Historical implementations without a snapshot retain their original requirements.
+
+**Storage and lifecycle.** Messages, directions, withdrawals, and requirement
+snapshots are append-only events in the existing mirrored ledgers. Full event reads
+are separate from truncated log projections. No schema migration is needed. Export
+and import retain history, source IDs, snapshots, and consult attempts. Imported
+history remains read-only until the existing build/folder trust flow grants execution.
+Consults are excluded from phase scheduling, resume decisions, the rounds table,
+and phase-attempt counts. Build-wide cost/token totals and the activity log still
+include chat; table totals describe only its visible phase rows. The round attached
+to a consult records when the conversation happened, not when steering was applied.
+Each consult has
+its own attempt, exact prompt/hash, raw streams, session ID, model, CLI version,
+account/machine provenance, tokens, and equivalent API cost. Cancellation and quit
+settlement supervise its own captured process group. Incomplete process ownership
+quarantines chat; restart never automatically retries a conversation.
+
+**V1 limits.** Uses the app's Codex profile at low effort, defaulting to gpt-5.6-sol; a Codex
+connection is required even for Claude implementation builds. Conversations are bounded
+at 250,000 prompt characters and 24,000 cumulative direction characters; reaching a
+limit returns an explicit error rather than silently forgetting history. The frozen
+reference pack is evidence, not something chat edits. A passed build does not gain an
+automatic extra round. Supporting reference refreshes, larger conversations, or
+in-flight phase injection requires a separate design.
+
+## ADR-031 — Explicit Resume includes pending steering (2026-09-06)
+
+**Status:** accepted; refines ADR-030.
 
 **Context.** Repeated implementation failures can keep an operator's directions
 queued indefinitely when every retry inherits the first attempt's requirements.
@@ -677,9 +837,9 @@ unchanged except where the operator explicitly steers them.
 whole round to succeed first. Historical attempts remain reproducible, and the
 critic never evaluates against directions absent from its implementation.
 
-## ADR-027 — Continuing implementation lead with integrated steering (2026-09-06)
+## ADR-032 — Continuing implementation lead with integrated steering (2026-09-06)
 
-**Status:** accepted; ADR-029 supersedes the separate-assistant Chat behavior below.
+**Status:** accepted; ADR-033 supersedes the separate-assistant Chat behavior below.
 
 **Decision.** New builds retain one implementation lead session across rounds, with
 fresh independent research and critique sessions. Explicit Resume enables this
@@ -710,9 +870,9 @@ session; they are untrusted working evidence subordinate to the current phase
 protocol and frozen operator requirements. These events use the existing portable
 schema, with bounded full reads separate from log projections.
 
-Steering remains the separate read-only consult defined by ADR-028. It receives
+Steering remains the separate read-only consult defined by ADR-030. It receives
 the latest valid notebook and recent reports, explicitly speaks as the steering
-assistant, and queues clear directions without redundant confirmation. ADR-026's
+assistant, and queues clear directions without redundant confirmation. ADR-031's
 explicit Resume boundary still includes pending directions; automatic recovery
 and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
@@ -743,9 +903,9 @@ original event bytes. Readers accept the earlier `fromRunId` and `implementation
 and project them as attempt IDs; new events use the Build vocabulary. Raw stream and process
 ownership paths stay under `.gauntlet-gamesmith/runs/`, as required by ADR-020.
 
-## ADR-029 — Chat is a turn with the build lead (2026-09-06)
+## ADR-033 — Chat is a turn with the build lead (2026-09-06)
 
-**Status:** accepted; supersedes ADR-022 and the separate consult behavior in ADR-028/027.
+**Status:** accepted; supersedes ADR-022 and the separate consult behavior in ADR-030/032.
 
 **Decision.** Chat continues the same local implementation lead session and inherits the
 build's orchestrator model and effort, captured when each message is sent. The existing
