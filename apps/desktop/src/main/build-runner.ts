@@ -94,6 +94,11 @@ const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
 const MAX_ACCOUNT_ROTATIONS = 3
 const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
+// How long the supervisor tolerates a process group it cannot observe at all
+// before it stops waiting on an already-dead leader. Ownership is retained.
+const PROBE_BLIND_LIMIT_MS = 60_000
+// How often a still-blind probe repeats itself in the build log (VIS-001).
+const PROBE_BLIND_LOG_MS = 30_000
 const MAX_STREAM_READ_BYTES = 1024 * 1024
 const MAX_PARTIAL_LINE_CHARS = 256 * 1024
 const UNTRUSTED_HISTORY_MESSAGE = 'Untrusted history (imported or created before trust provenance shipped) is read-only; start a new trusted build in this workspace.'
@@ -2276,6 +2281,58 @@ export class BuildRunner {
     }
     let driveFailed = false
     let workspaceSafe = true
+    // Assume the group is still there until a probe says otherwise; an
+    // unanswered probe must never be read as "the child is gone". A successful
+    // answer is kept across ticks so a later blind tick has something to stand on.
+    let descendantsRemain = true
+    let blindSince: number | null = null
+    let blindLoggedAt = 0
+    /**
+     * Refresh owned-group membership. Returns 'give-up' only when the leader has
+     * exited and the group has been completely unobservable long enough that
+     * waiting for it can no longer end.
+     */
+    const observeGroup = (leaderDead: boolean, now: number): 'observed' | 'blind' | 'give-up' => {
+      try {
+        const refreshed = this.deps.processGroupIdentity(meta.pid)
+        if (blindSince !== null) {
+          this.controlLog(build.id, attempt.id, 'system', `Process group ${meta.pid} is observable again.`)
+          blindSince = null
+        }
+        if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
+          let advanced = false
+          for (const identity of refreshed) {
+            if (!capturedGroupIdentity.has(identity)) advanced = true
+            capturedGroupIdentity.add(identity)
+          }
+          if (advanced) {
+            const union = [...groupSnapshot()]
+            this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
+            meta.groupIdentities = union
+          }
+        }
+        const captured = groupSnapshot()
+        descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
+        return 'observed'
+      } catch (error) {
+        // Failing to look is not proof the group is gone. Keep the last known
+        // answer and keep supervising instead of discarding finished paid work.
+        const message = error instanceof Error ? error.message : String(error)
+        if (blindSince === null) {
+          blindSince = now
+          blindLoggedAt = now
+          this.controlLog(build.id, attempt.id, 'error', `Process-group probe failed; the attempt keeps running while retrying: ${message}`)
+          return 'blind'
+        }
+        const blindFor = now - blindSince
+        if (leaderDead && blindFor > PROBE_BLIND_LIMIT_MS) return 'give-up'
+        if (now - blindLoggedAt >= PROBE_BLIND_LOG_MS) {
+          blindLoggedAt = now
+          this.controlLog(build.id, attempt.id, 'error', `Process group ${meta.pid} has been unobservable for ${Math.round(blindFor / 1_000)}s; still retrying: ${message}`)
+        }
+        return 'blind'
+      }
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         const interval = this.deps.repeat(() => {
@@ -2300,21 +2357,20 @@ export class BuildRunner {
               )
             }
             const leaderDead = own ? own.exited : !processMatches(meta)
-            const refreshed = this.deps.processGroupIdentity(meta.pid)
-            if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
-              let advanced = false
-              for (const identity of refreshed) {
-                if (!capturedGroupIdentity.has(identity)) advanced = true
-                capturedGroupIdentity.add(identity)
-              }
-              if (advanced) {
-                const union = [...groupSnapshot()]
-                this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
-                meta.groupIdentities = union
-              }
+            if (observeGroup(leaderDead, now) === 'give-up') {
+              this.controlLog(
+                build.id,
+                attempt.id,
+                'error',
+                `Process group ${meta.pid} has been unobservable since its leader exited; interrupting what may remain and finishing the attempt with ownership retained.`,
+              )
+              // Descendants may still be writing to the workspace, so escalate
+              // before finalizing (PROC-003). Ownership stays with the app.
+              this.interruptCaptured(meta, groupSnapshot(), build.id, attempt.id)
+              this.deps.cancelRepeat(interval)
+              resolve()
+              return
             }
-            const captured = groupSnapshot()
-            const descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
             if (leaderDead && !descendantsRemain) {
               this.deps.cancelRepeat(interval)
               resolve()
@@ -2371,14 +2427,14 @@ export class BuildRunner {
       }
       if (this.current?.attemptId === attempt.id) this.current = null
       const captured = groupSnapshot()
-      let descendantsRemain = captured.length > 0
+      let stillOwnedAtExit = captured.length > 0
       try {
-        descendantsRemain &&= this.deps.processGroupStillOwned(meta.pid, captured)
+        stillOwnedAtExit &&= this.deps.processGroupStillOwned(meta.pid, captured)
       } catch (error) {
-        descendantsRemain = true
+        stillOwnedAtExit = true
         this.controlLog(build.id, attempt.id, 'error', `Final process-group absence could not be verified; canonical ownership is retained: ${error instanceof Error ? error.message : String(error)}`)
       }
-      if (!descendantsRemain && this.ledger.attemptProcessOwnership(attempt.id)) this.ledger.clearAttemptProcessOwnership(attempt.id)
+      if (!stillOwnedAtExit && this.ledger.attemptProcessOwnership(attempt.id)) this.ledger.clearAttemptProcessOwnership(attempt.id)
       // Retain the workspace process snapshot as portable replay evidence.
       // Canonical ownership is cleared only in SQLite after verified absence.
     }

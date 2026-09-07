@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,7 +7,7 @@ import type { BuildRecord, PlayState, PlayStateEvent } from '../shared/build'
 import { redactedErrorMessage } from '../shared/redact-log'
 import { sanitizedExecutablePath } from './harness-env'
 import { cleanupRoundCheckout } from './round-revision'
-import { safePid } from './attempt-process'
+import { processGroupIdentity, safePid } from './attempt-process'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 import { readExactFileDescriptor } from './bounded-fd'
 import { assertBuildWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
@@ -26,29 +26,6 @@ interface PlayRuntime {
   setInterval(callback: () => void, intervalMs: number): NodeJS.Timeout
   clearInterval(timer: NodeJS.Timeout): void
   timeoutMs: number
-}
-
-/** Capture stable member identities before signaling a detached process group. */
-export function processGroupIdentity(groupId: number): string[] {
-  if (!safePid(groupId)) throw new Error('Process-group identity probe requires a safe group id.')
-  const result = spawnSync('/bin/ps', ['-axo', 'pid=,pgid=,lstart='], {
-    cwd: '/',
-    env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' },
-    encoding: 'utf8',
-    timeout: 1_000,
-    maxBuffer: 1024 * 1024,
-  })
-  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') {
-    throw new Error('Process-group identity probe failed; group absence is unknown.')
-  }
-  const identities: string[] = []
-  for (const line of result.stdout.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/)
-    if (!match || Number(match[2]) !== groupId) continue
-    const pid = Number(match[1])
-    if (safePid(pid)) identities.push(`${pid}:${match[3]}`)
-  }
-  return identities.sort()
 }
 
 export function processGroupStillOwned(groupId: number, identity: readonly string[]): boolean {

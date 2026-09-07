@@ -609,6 +609,46 @@ pinned version lives in one constant in `main/browser.ts`; raising it re-downloa
 because the cache stamp no longer matches. Anything that clears the app's data directory costs one
 re-download.
 
+## ADR-022 — A failed process probe means "unknown", never "dead" (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The attempt supervisor asked `/bin/ps` for the members of the child's process group,
+2.5 times a second, for the whole life of an attempt. The question was expensive — a full
+process-table scan — and the deadline was one second. Any throw landed in the drive loop's catch,
+which treated every supervision error as fatal and failed the attempt and the build. Playing a game
+from the app while an attempt was running was enough to push one `ps` past its second, and one such
+second discarded 43 minutes and $24 of finished implementation work (issue #54). `ETIMEDOUT` from
+`ps` means the app could not look. It says nothing about whether the child is alive.
+
+**Decision.** Not being able to observe a process group never ends an attempt.
+
+The supervision tick catches probe failures and keeps the last successful answer. The attempt keeps
+running, the failure is logged, and a still-blind probe repeats itself in the log every 30 seconds so
+the operator is not left in silence (VIS-001). When the probe recovers, that is logged too.
+
+The one bounded exception: once the leader has exited *and* the group has been completely
+unobservable for 60 seconds, waiting can no longer end on its own, so the supervisor escalates to the
+captured group and finalizes the attempt. Ownership stays with the app in that case, because absence
+was never proved — Play, Export, and quit stay gated until it is (PROC-003).
+
+The probe itself asks a cheaper question. `ps -g <pgid>` returns only that group's members and
+answers in about 3 ms instead of 33 ms, and it is allowed 5 seconds instead of 1. A BSD `ps` exits
+non-zero with no output for a group with no members; that is read as an empty group, not a failure.
+GNU `ps -g` selects something else, so non-macOS keeps the portable table scan — the app only ships
+for macOS, but its tests run on Linux.
+
+**Rejected.** Counting consecutive failures, as the issue proposed. The count would be a proxy for
+elapsed time at a tick rate that may change; the supervisor measures the time directly.
+
+**Also rejected for now.** Sampling group liveness slower than the 400 ms drive tick. Each tick still
+makes two probes, but at roughly 3 ms each that is under 2% of one core, and every lifecycle test
+fixture encodes the current cadence. The cost that mattered was the per-probe cost, and that is gone.
+
+**Consequences.** A loaded machine slows the supervisor down instead of destroying work. A genuinely
+dead group is still detected within one tick of the leader exiting, because that path needs a
+successful probe rather than a failed one.
+
 ## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
 
 **Status:** accepted. Narrowly supersedes ADR-003's no-app-auth/no-Supabase policy
