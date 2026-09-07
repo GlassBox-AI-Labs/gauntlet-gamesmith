@@ -252,7 +252,7 @@ function registerBuildIpc(): void {
       if (claudeError) return { ok: false, error: claudeError }
       const codexError = needsCodex ? subscriptionAuthError('Codex', codexStatus) : null
       if (codexError) return { ok: false, error: codexError }
-      return buildRunner.start({ ...input, ...models }, 'new-child')
+      return buildRunner.start({ ...input, ...models })
     } catch (error) {
       return { ok: false, error: redactedErrorMessage(error, 'Invalid build input.') }
     }

@@ -40,8 +40,7 @@ import { browserCacheDir, browserReady, ensureBrowser, cliHome, ensureSkill, sub
 import { PLAYWRIGHT_VERSION, browserNotice } from './browser'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
-import { defaultBuildTitle, type Ledger, type AttemptProcessOwnership } from './ledger'
-import { createNewBuildWorkspace } from './new-build-workspace'
+import { type Ledger, type AttemptProcessOwnership } from './ledger'
 import { publishOwnedWorkspaceFile, publishOwnedWorkspaceSnapshot, writeWorkspaceFileSafely } from './owned-workspace-write'
 import type { PreparedContext } from './build-attachments'
 import { phaseTreeFingerprint, referencePackFingerprint } from './phase-contracts'
@@ -893,7 +892,12 @@ export class BuildRunner {
     }
   }
 
-  start(input: StartBuildInput, workspaceMode: 'exact' | 'new-child' = 'exact'): StartBuildResult {
+  /**
+   * The runner uses the workspace it was handed and does not invent directories. A build almost
+   * always continues a game that already exists — its source, its history and its saved rounds
+   * are in the chosen folder.
+   */
+  start(input: StartBuildInput): StartBuildResult {
     if (this.current) return { ok: false, error: 'A build is already running. Stop it first.' }
     try {
       const owner = this.retainedProcessOwnership()
@@ -922,13 +926,9 @@ export class BuildRunner {
     let workspaceDir: string
     let scaffold: ReturnType<typeof scaffoldEngine>
     try {
-      const captured = workspaceMode === 'new-child'
-        ? createNewBuildWorkspace(requestedWorkspace, defaultBuildTitle(prompt), this.deps.protectedRoots())
-        : (() => {
-            const exact = assertWorkspaceBoundary(requestedWorkspace, this.deps.protectedRoots())
-            fs.mkdirSync(exact, { recursive: true })
-            return captureWorkspaceIdentity(exact, this.deps.protectedRoots())
-          })()
+      const exact = assertWorkspaceBoundary(requestedWorkspace, this.deps.protectedRoots())
+      fs.mkdirSync(exact, { recursive: true })
+      const captured = captureWorkspaceIdentity(exact, this.deps.protectedRoots())
       workspaceDir = captured.workspaceDir
       scaffold = scaffoldEngine(workspaceDir, captured.workspaceIdentity)
     } catch (error) {
