@@ -238,7 +238,7 @@ describe('Ledger', () => {
     expect(build.playTrusted).toBe(true)
     expect(build.workspaceIdentity).toMatchObject({ dev: expect.any(Number), ino: expect.any(Number) })
     expect(ledger.assertBuildWorkspaceIdentity(build.id)).toBe(build.workspaceDir)
-    expect(build.models.criticModel).toBe('gpt-5.6-sol')
+    expect(build.models.criticModel).toBe('claude-opus-5')
 
     const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'claude', prompt: 'p1' })
     expect(ledger.nextQueuedAttempt(build.id)!.id).toBe(attempt.id)

@@ -925,3 +925,47 @@ worlds. State relay is lossy latest-state delivery, not a reliable event or
 transaction channel; games own idempotency and conflict semantics. No new server
 authority, persistent inventory, world streaming or monetization is implied.
 Historical racing validation stays labeled as one concrete integration example.
+
+## ADR-034: Layered run-config controls: investment scrubber, per-role meters, cross-family critic (2026-09-07)
+
+**Status:** accepted.
+
+**Context.** The run composer exposed every role as a flat pair of dropdowns, one for
+model and one for effort, uniform across the board. That hid the deliberate non-uniformity of
+the presets (leads outrank workers, the critic sits outside the implementer's family) and it
+gated the critic behind a `referenceMode === 'web'` conditional, so a files-only or skip build
+showed no critic control even though the critic always runs. Two axes changing at once through
+identical dropdowns read as noise rather than a decision.
+
+**Decision.** The composer presents the configuration in two layers over the same four field
+groups (`impl`, `critic`, `research`, `assets`), which remain the single source of truth that
+drives the build. The collapsed default is one investment scrubber (the build pace) that ties
+model tier and effort together, with a small badge next to the scrubber naming the critic's
+family. An Advanced expander decouples the two axes into a Model tier lean and an Effort lean,
+gives each role a clickable model-tier meter and a five-cell effort meter, and adds a
+Cross-family toggle, off by default, that reveals per-role family pills so a single role
+(typically the critic) can move to the other family without disturbing the rest. Blue reads
+as model tier, amber as effort. The critic is always present regardless of reference mode.
+
+**Preset shape.** The staircase is not flat across roles. The orchestrator sets the level and
+the critic mirrors it, same model and same effort, so fresh eyes judge on equal footing; a
+cross-family critic is a deliberate move through the toggle, not the default. The subagent sits
+one model tier and one effort step below the orchestrator at every pace, research fans out on a
+cheaper tier, and sculptors track the workers. Balanced is Opus at high effort for the
+orchestrator and critic, Sonnet a step down for the subagent.
+
+**Compatibility.** No schema, IPC, or prompt change. Model tier ordering lives in
+`MODEL_LADDER` in `shared/models.ts`, ascending per family; `buildPreset` and `presetSlices`
+take separate model and effort paces so the collapsed scrubber passes one value for both while
+the two leans move them apart. The subagent's model and effort derive from the orchestrator's by
+stepping one rung down each ladder, so the one-below rule holds at every pace without a
+hand-kept table. Off-capable roles (subagents, research, sculptors) keep `null` as their off
+state; the orchestrator and critic have no off control. New builds continue to store only
+`AGENT_EFFORTS` values (ADR-019); the orchestrator effort is normalized for display through
+`newBuildOrchestratorEffort`.
+
+**Consequences.** The meter is the shape of the level, not a number to read, which is what the
+operator asked for over a dropdown. The leans and per-role meters are view state, not persisted:
+they write the same field groups the pace does, so a hand edit still flips the draft to Custom
+and the collapsed scrubber steps aside until a preset is chosen again. Reintroducing a flat,
+uniform picker or re-gating the critic on reference mode would regress this decision.
