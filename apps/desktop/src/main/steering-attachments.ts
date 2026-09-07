@@ -4,8 +4,7 @@ import path from 'node:path'
 import type { Ledger } from './ledger'
 import type { createBuildAttachments } from './build-attachments'
 import { assertOwnedDirectoryBoundary, captureOwnedDirectory, readOwnedFile } from './owned-tree'
-import { MAX_CONTEXT_BYTES, MAX_CONTEXT_FILES, MAX_CONTEXT_FILE_BYTES } from '../shared/attachments'
-import { MAX_STEERING_FILES, steeringAttachments, type SteeringAttachment } from '../shared/steering'
+import { MAX_STEERING_FILES, MAX_STEERING_FILE_BYTES, MAX_STEERING_BUILD_FILES, MAX_STEERING_BUILD_BYTES, steeringAttachments, type SteeringAttachment } from '../shared/steering'
 
 const IMAGE = /\.(png|jpe?g|webp|gif)$/i
 const hash = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex')
@@ -16,9 +15,13 @@ export class SteeringAttachments {
 
   prepare(buildId: string, ids: string[], existing: SteeringAttachment[]) {
     if (ids.length && !this.drafts) throw new Error('Attachment selection is unavailable.')
-    const sources = ids.length ? this.drafts!.snapshot(ids) : []
+    const sources = ids.length ? this.drafts!.snapshot(ids, {
+      maxFiles: Math.min(MAX_STEERING_FILES, MAX_STEERING_BUILD_FILES - existing.length),
+      maxFileBytes: MAX_STEERING_FILE_BYTES,
+      maxBytes: MAX_STEERING_BUILD_BYTES - existing.reduce((sum, file) => sum + file.bytes, 0),
+    }) : []
     if (sources.length > MAX_STEERING_FILES) throw new Error('Attach up to 10 files per message.')
-    if (existing.length + sources.length > MAX_CONTEXT_FILES || [...existing.map(file => file.bytes), ...sources.map(file => file.bytes.length)].reduce((sum, bytes) => sum + bytes, 0) > MAX_CONTEXT_BYTES) throw new Error('This build is limited to 100 steering files and 100 MB of attachments.')
+    if (existing.length + sources.length > MAX_STEERING_BUILD_FILES || [...existing.map(file => file.bytes), ...sources.map(file => file.bytes.length)].reduce((sum, bytes) => sum + bytes, 0) > MAX_STEERING_BUILD_BYTES) throw new Error('This build is limited to 100 steering files and 100 MB of attachments.')
     const files: SteeringAttachment[] = sources.map(source => {
       const id = crypto.randomUUID(), leaf = `file-${path.basename(source.name).replace(/[^a-zA-Z0-9._-]/g, '_').slice(-100)}`
       return { id, sourceId: source.sourceId, name: source.name, kind: IMAGE.test(source.name) ? 'image' : 'file', bytes: source.bytes.length, sha256: hash(source.bytes), path: `.gauntlet-gamesmith/steering/${buildId}/${id}/${leaf}` }
@@ -52,7 +55,7 @@ export class SteeringAttachments {
     this.ledger.assertBuildWorkspaceIdentity(buildId)
     const build = this.ledger.getBuild(buildId)!
     const boundary = captureOwnedDirectory(build.workspaceDir, path.join(build.workspaceDir, path.dirname(file.path)), build)
-    const bytes = readOwnedFile(boundary, path.basename(file.path), MAX_CONTEXT_FILE_BYTES, 'Steering attachment')
+    const bytes = readOwnedFile(boundary, path.basename(file.path), MAX_STEERING_FILE_BYTES, 'Steering attachment')
     if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) throw new Error(`Steering attachment changed or is missing: ${file.name}`)
     return bytes
   }

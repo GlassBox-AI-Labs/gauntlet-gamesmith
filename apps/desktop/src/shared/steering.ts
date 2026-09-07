@@ -1,10 +1,12 @@
 import type { OperationResult } from './result'
 import { isRecordId } from './record-id'
-import { MAX_CONTEXT_FILE_BYTES } from './attachments'
 import type { AttemptStatus } from './build'
 
 export const MAX_STEERING_MESSAGE = 12_000
 export const MAX_STEERING_FILES = 10
+export const MAX_STEERING_FILE_BYTES = 20 * 1024 * 1024
+export const MAX_STEERING_BUILD_FILES = 100
+export const MAX_STEERING_BUILD_BYTES = 100 * 1024 * 1024
 export const MAX_QUEUED_CHAT_MESSAGES = 20
 export interface SteeringAttachment {
   id: string
@@ -89,7 +91,7 @@ export function steeringAttachments(value: unknown, buildId: string): SteeringAt
   const files = value.map(raw => {
     if (!raw || typeof raw !== 'object') throw new Error('Invalid stored steering attachment.')
     const file = raw as SteeringAttachment
-    if (!isRecordId(file.id) || !isRecordId(file.sourceId) || typeof file.name !== 'string' || !file.name || file.name.length > 240 || !['image', 'file'].includes(file.kind) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_CONTEXT_FILE_BYTES || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('Invalid stored steering attachment.')
+    if (!isRecordId(file.id) || !isRecordId(file.sourceId) || typeof file.name !== 'string' || !file.name || file.name.length > 240 || !['image', 'file'].includes(file.kind) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_STEERING_FILE_BYTES || typeof file.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('Invalid stored steering attachment.')
     const prefix = `.gauntlet-gamesmith/steering/${buildId}/${file.id}/`
     if (typeof file.path !== 'string' || !file.path.startsWith(prefix) || !/^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,119}$/.test(file.path.slice(prefix.length))) throw new Error('Invalid stored steering attachment path.')
     return { id: file.id, sourceId: file.sourceId, name: file.name, kind: file.kind, path: file.path, bytes: file.bytes, sha256: file.sha256 }

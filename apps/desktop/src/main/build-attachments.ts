@@ -118,8 +118,18 @@ export function createBuildAttachments(protectedRoots: () => string[]) {
       if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(entry.source) !== entry.source || stat.dev !== entry.dev || stat.ino !== entry.ino) throw new Error('The original folder moved or changed. Add it again.')
       return entry.source
     },
-    snapshot(value: unknown): { sourceId: string; name: string; bytes: Buffer }[] {
-      return ids(value).map(get).flatMap(entry => entry.files.map(file => ({ sourceId: entry.item.id, name: file.name, bytes: file.bytes })))
+    snapshot(value: unknown, limits: { maxFiles: number; maxFileBytes: number; maxBytes: number }): { sourceId: string; name: string; bytes: Buffer }[] {
+      const selected = ids(value).map(get).flatMap(entry => entry.files.map(file => ({ sourceId: entry.item.id, file })))
+      // Check metadata before allocating buffers: a reference folder can be much
+      // larger than the caller's conversation attachment budget.
+      if (selected.length > limits.maxFiles || selected.some(({ file }) => file.bytes > limits.maxFileBytes) || selected.reduce((sum, { file }) => sum + file.bytes, 0) > limits.maxBytes) {
+        throw new Error(`Attach up to ${Math.max(0, limits.maxFiles)} files, ${limits.maxFileBytes / 1048576} MB per file, and ${Math.max(0, Math.floor(limits.maxBytes / 1048576))} MB remaining.`)
+      }
+      return selected.map(({ sourceId, file }) => {
+        const bytes = readOwnedFile(cache, file.cacheName, file.bytes, 'Attachment snapshot')
+        if (bytes.length !== file.bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error('Attachment snapshot changed before publication.')
+        return { sourceId, name: file.name, bytes }
+      })
     },
     prepare(value: unknown): PreparedContext | null {
       const selected = ids(value).map(get)

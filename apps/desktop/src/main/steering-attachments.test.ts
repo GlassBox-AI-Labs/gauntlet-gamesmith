@@ -15,6 +15,7 @@ import { parseSteeringReply, steeringAttachments, steeringInput, type SteeringMe
 import { consultArgs } from './steering-agent'
 
 let root: string, ledger: Ledger
+const draftStores: ReturnType<typeof createBuildAttachments>[] = []
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9kAAAAASUVORK5CYII=', 'base64')
 function setup() {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'steering-files-'))
@@ -22,15 +23,16 @@ function setup() {
   ledger = new Ledger(path.join(root, 'ledger.db'))
   const build = ledger.createBuild({ prompt: 'Build a game', workspaceDir, maxRounds: 5, budgetUsd: null, models: resolveModels({}, {}) })
   const drafts = createBuildAttachments(() => []), files = new SteeringAttachments(ledger, drafts), store = new SteeringStore(ledger)
+  draftStores.push(drafts)
   return { build, drafts, files, store }
 }
-afterEach(() => { try { ledger?.close() } catch {} if (root) fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { for (const store of draftStores.splice(0)) store.dispose(); try { ledger?.close() } catch {} if (root) fs.rmSync(root, { recursive: true, force: true }) })
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
 it('sends immutable image copies to the consult and shares them with implementation and critique across export/import', async () => {
   const { build, drafts, files, store } = setup()
   const original = path.join(root, 'character.png'); fs.writeFileSync(original, png)
-  const [draft] = drafts.add([original]); fs.writeFileSync(original, 'changed after selection')
+  const [draft] = await drafts.add([original]); fs.writeFileSync(original, 'changed after selection')
   let calls = 0, imagePaths: string[] = []
   const service = new SteeringService(ledger, async input => {
     calls++; imagePaths = input.imagePaths ?? []
@@ -72,7 +74,7 @@ it('sends immutable image copies to the consult and shares them with implementat
 it('accepts an attachment-only question, preserves it through clarification, and applies a direct replacement only after confirmation', async () => {
   const { build, drafts, files, store } = setup()
   const original = path.join(root, 'player.glb'); fs.writeFileSync(original, 'model fixture')
-  const [draft] = drafts.add([original])
+  const [draft] = await drafts.add([original])
   const service = new SteeringService(ledger, async () => {
     const users = store.steeringState(build.id).messages.filter(message => message.role === 'user')
     const id = users[0].attachments![0].id
@@ -94,10 +96,10 @@ it('accepts an attachment-only question, preserves it through clarification, and
   expect(store.requirementsForAttempt(first.id)?.attachments).toEqual([])
 })
 
-it('rejects altered, linked, cross-run, and traversal attachment reads', () => {
+it('rejects altered, linked, cross-run, and traversal attachment reads', async () => {
   const { build, drafts, files } = setup()
   const original = path.join(root, 'reference.png'); fs.writeFileSync(original, png)
-  const [draft] = drafts.add([original]), prepared = files.prepare(build.id, [draft.id], [])
+  const [draft] = await drafts.add([original]), prepared = files.prepare(build.id, [draft.id], [])
   prepared.publish()
   const file = prepared.files[0], absolute = path.join(build.workspaceDir, file.path)
   fs.writeFileSync(absolute, 'modified')
@@ -117,4 +119,21 @@ it('rejects attachments without source authorization and passes image paths as s
   const input = { attemptId: 'id', model: 'gpt-5.6-sol', prompt: 'prompt', workspaceDir: root, signal: new AbortController().signal, imagePaths: ['/path with spaces/image.png'] }
   const args = consultArgs(input, '/schema.json')
   expect(args.slice(-3)).toEqual(['--image', '/path with spaces/image.png', '-'])
+})
+
+it('keeps Chat limits when the reference picker accepts larger files and folders', async () => {
+  const { build, drafts, files } = setup()
+  const large = path.join(root, 'scene.glb')
+  fs.writeFileSync(large, ''); fs.truncateSync(large, 20 * 1024 * 1024 + 1)
+  const [largeDraft] = await drafts.add([large])
+  expect(() => files.prepare(build.id, [largeDraft.id], [])).toThrow('20 MB per file')
+
+  const folder = path.join(root, 'references'); fs.mkdirSync(folder)
+  for (let n = 0; n < 11; n++) fs.writeFileSync(path.join(folder, `reference-${n}.txt`), 'Reference')
+  const [folderDraft] = await drafts.add([folder])
+  expect(() => files.prepare(build.id, [folderDraft.id], [])).toThrow('10 files')
+
+  const [smallDraft] = await drafts.add([path.join(folder, 'reference-0.txt')])
+  const [file] = files.prepare(build.id, [smallDraft.id], []).files
+  expect(() => steeringAttachments([{ ...file, bytes: largeDraft.bytes }], build.id)).toThrow('Invalid stored steering attachment')
 })
