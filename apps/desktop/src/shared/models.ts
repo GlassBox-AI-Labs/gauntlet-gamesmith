@@ -70,6 +70,36 @@ export function isCodexModel(id: string | null | undefined): boolean {
   return !!id && id.startsWith('gpt-')
 }
 
+/**
+ * Each family's models ordered from cheapest/fastest to most capable. This is
+ * the ladder the model-tier meters and the cross-family swap read: tier N in one
+ * family maps to tier N in the other. Kept here, next to the ids, so the ordering
+ * lives with the model list and not scattered through the UI.
+ */
+export const MODEL_LADDER: Record<HarnessKind, readonly string[]> = {
+  claude: [MODEL_IDS.claudeSonnet, MODEL_IDS.claudeOpus, MODEL_IDS.claudeFable, MODEL_IDS.claudeFable51],
+  codex: [MODEL_IDS.codexLuna, MODEL_IDS.codexTerra, MODEL_IDS.codexSol, MODEL_IDS.codexAstra],
+}
+
+/** Position of a model within its family ladder, or 0 when it is not a current pick. */
+export function modelTier(id: string | null | undefined): number {
+  const ladder = MODEL_LADDER[harnessFor(id)]
+  const at = id ? ladder.indexOf(id) : -1
+  return at < 0 ? 0 : at
+}
+
+/** The model at a tier in a family, clamped to the ladder's ends. */
+export function modelAtTier(family: HarnessKind, tier: number): string {
+  const ladder = MODEL_LADDER[family]
+  return ladder[Math.max(0, Math.min(ladder.length - 1, tier))]
+}
+
+/** The same tier in the other family, the model a cross-family pill switches a role to. */
+export function crossFamilyModel(id: string): string {
+  const other: HarnessKind = harnessFor(id) === 'claude' ? 'codex' : 'claude'
+  return modelAtTier(other, modelTier(id))
+}
+
 /** Which CLI a model runs on. Every role derives its harness this way. */
 export function harnessFor(model: string | null | undefined): HarnessKind {
   return isCodexModel(model) ? 'codex' : 'claude'

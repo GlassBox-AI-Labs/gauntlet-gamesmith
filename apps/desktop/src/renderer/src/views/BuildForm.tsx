@@ -1,22 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import { Gauge, Paperclip, Sparkles } from 'lucide-react'
-import { ModelSelectItems } from '@/components/ModelSelectItems'
 import { BuildAttachmentChips } from '@/components/BuildAttachmentChips'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { AgentsView } from './AgentsView'
 import { DEFAULT_BUILD_PACE, BUILD_PACES, presetSlices, type BuildPace } from '../../../shared/build-presets'
-import { harnessFor } from '../../../shared/models'
+import {
+  crossFamilyModel,
+  describeCritic,
+  harnessFor,
+  MODEL_LADDER,
+  modelAtTier,
+  modelLabel,
+  modelTier,
+} from '../../../shared/models'
 import type { BuildAttachment, AttachmentResult } from '../../../shared/attachments'
 import type { ReferenceMode } from '../../../shared/build'
 import { Check, ChevronDown, FolderGit2, FolderPlus, LoaderCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   AGENT_EFFORTS,
   type AssetFields,
   newBuildOrchestratorEffort,
-  SOLO_SUBAGENT,
   type CriticFields,
   type ImplementerFields,
   type ResearchFields,
@@ -89,6 +94,111 @@ function ProjectChooser({
   )
 }
 
+const EFFORT_ONLY = AGENT_EFFORTS as readonly string[]
+function effortIndex(effort: string): number {
+  const at = EFFORT_ONLY.indexOf(effort)
+  return at < 0 ? 0 : at
+}
+
+/**
+ * A row of clickable cells filled up to the chosen level. Blue reads as model
+ * tier, amber as effort, so the two axes stay distinct at a glance. This is the
+ * one control the operator wanted over a dropdown: the level is the shape.
+ */
+function Meter({ value, levels, onChange, tone, label, disabled }: {
+  value: number
+  levels: number
+  onChange: (level: number) => void
+  tone: 'model' | 'effort'
+  label: string
+  disabled?: boolean
+}): React.JSX.Element {
+  const filled = tone === 'model' ? 'bg-[#6f8fd6]' : 'bg-[#d6a24e]'
+  return (
+    <div role="group" aria-label={label} className={`flex items-center gap-1 ${disabled ? 'pointer-events-none opacity-40' : ''}`}>
+      {Array.from({ length: levels }, (_, i) => (
+        <button
+          type="button"
+          key={i}
+          disabled={disabled}
+          aria-label={`${label}: level ${i + 1} of ${levels}`}
+          aria-pressed={i === value}
+          onClick={() => onChange(i)}
+          className={`h-5 w-3.5 rounded-[3px] transition-colors ${i <= value ? filled : 'bg-[#332e2d]'} ${i === value ? 'ring-1 ring-white/50' : ''}`}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One agent's model tier and effort. `model === null` is the role turned off
+ * (Solo/no fan-out/by hand), available only where `offLabel` is given; the
+ * orchestrator and critic always run. The model meter walks the role's own
+ * family ladder; the family pills, shown only when cross-family is on, jump the
+ * same tier into the other family so a single role (typically the critic) can
+ * differ without moving the rest.
+ */
+function RoleRow({ label, model, effort, offLabel, crossFamily, onModel, onEffort }: {
+  label: string
+  model: string | null
+  effort: string
+  offLabel?: string
+  crossFamily: boolean
+  onModel: (model: string | null) => void
+  onEffort: (effort: string) => void
+}): React.JSX.Element {
+  const off = model === null
+  const family = harnessFor(model)
+  const ladder = MODEL_LADDER[family]
+  return (
+    <div className="grid grid-cols-[104px_1fr] items-start gap-3 max-sm:grid-cols-1">
+      <span className="pt-1 text-xs text-[#7d7772]">{label}</span>
+      <div className="grid gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          {offLabel && (
+            <button
+              type="button"
+              aria-pressed={off}
+              onClick={() => onModel(off ? modelAtTier(family, modelTier(model)) : null)}
+              className={`rounded-full border px-2 py-0.5 text-[10px] ${off ? 'border-[#5b534f] bg-[#2a2523] text-[#d7cfca]' : 'border-transparent text-[#8b807a] hover:text-[#c9c1bc]'}`}
+            >
+              {off ? offLabel : 'On'}
+            </button>
+          )}
+          {!off && (
+            <>
+              <Meter tone="model" label={`${label} model tier`} levels={ladder.length} value={modelTier(model)} onChange={(t) => onModel(modelAtTier(family, t))} />
+              <span className="min-w-[96px] text-[11px] text-[#b3a9a3]">{modelLabel(model)}</span>
+            </>
+          )}
+        </div>
+        {!off && (
+          <div className="flex flex-wrap items-center gap-3">
+            <Meter tone="effort" label={`${label} effort`} levels={EFFORT_ONLY.length} value={effortIndex(effort)} onChange={(i) => onEffort(EFFORT_ONLY[i])} />
+            <span className="min-w-[96px] text-[11px] text-[#8f857f]">{effort}</span>
+          </div>
+        )}
+        {crossFamily && !off && (
+          <div role="group" aria-label={`${label} model family`} className="flex items-center gap-1">
+            {(['claude', 'codex'] as const).map((f) => (
+              <button
+                type="button"
+                key={f}
+                aria-pressed={family === f}
+                onClick={() => { if (family !== f) onModel(crossFamilyModel(model)) }}
+                className={`rounded-full px-2 py-0.5 text-[10px] ${family === f ? 'bg-[#332925] text-[#f0e9e5]' : 'text-[#8b807a] hover:text-[#c9c1bc]'}`}
+              >
+                {f === 'claude' ? 'Claude' : 'Codex'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export interface BuildFormSettings { pace: BuildPace; custom: boolean; initialized: boolean }
 
 export interface BuildFormProps {
@@ -153,6 +263,12 @@ export function BuildForm({
 }: BuildFormProps): React.JSX.Element {
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [modelsOpen, setModelsOpen] = useState(false)
+  // The two Advanced leans and the per-role family toggle are view state: they
+  // set the same four field groups the collapsed scrubber does, so nothing here
+  // needs to persist. Leans track the pace until the operator moves them apart.
+  const [modelLean, setModelLean] = useState<BuildPace>(settings.pace)
+  const [effortLean, setEffortLean] = useState<BuildPace>(settings.pace)
+  const [crossFamily, setCrossFamily] = useState(false)
   const { pace, custom } = settings
   const setPace = (next: BuildPace): void => onSettingsChange((current) => ({ ...current, pace: next, initialized: true }))
   const setCustom = (next: boolean): void => onSettingsChange((current) => ({ ...current, custom: next }))
@@ -187,8 +303,16 @@ export function BuildForm({
     return () => { disposed = true; remove(); window.removeEventListener('focus', onFocus) }
   }, [agentsOpen])
   const applyPace = (next: BuildPace, tools = connected, sculpting = assets.assetModel !== null): void => {
-    const preset = presetSlices(next, tools, sculpting)
-    setPace(next); setCustom(false)
+    const preset = presetSlices(next, next, tools, sculpting)
+    setPace(next); setCustom(false); setModelLean(next); setEffortLean(next)
+    onImplChange(preset.impl); onCriticChange(preset.critic); onResearchChange(preset.research); onAssetsChange(preset.assets)
+  }
+  // The Advanced leans decouple what the pace ties together. Applying them is a
+  // hand edit (custom), so the collapsed scrubber steps aside until a preset is
+  // chosen again; per-role meters then nudge individual roles off the lean.
+  const applyLeans = (model: BuildPace, effort: BuildPace): void => {
+    const preset = presetSlices(model, effort, connected, assets.assetModel !== null)
+    setModelLean(model); setEffortLean(effort); setCustom(true)
     onImplChange(preset.impl); onCriticChange(preset.critic); onResearchChange(preset.research); onAssetsChange(preset.assets)
   }
   useEffect(() => {
@@ -263,6 +387,7 @@ export function BuildForm({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
             <label title={custom ? 'Reset models to change pace' : 'Build pace'} className={`flex items-center gap-2 text-[11px] text-[#b2a7a1] ${custom ? 'opacity-40' : ''}`}><Gauge className="size-3.5" /><input aria-label="Speed to quality" type="range" min="0" max={BUILD_PACES.length - 1} step="1" value={pace} aria-valuetext={BUILD_PACES[pace]} disabled={custom || busy || checking} onChange={(event) => applyPace(Number(event.target.value) as BuildPace)} className="h-1 w-20 accent-[#b9ada7]" /><span className="w-[60px]">{BUILD_PACES[pace]}</span></label>
             <button type="button" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)} className="flex items-center gap-1 text-[11px] text-[#a29791] hover:text-white">Build options{custom ? ' · Custom' : ''}<ChevronDown className={`size-3 ${optionsOpen ? 'rotate-180' : ''}`} /></button>
+            <span title={describeCritic(critic.criticModel, impl.orchestratorModel)} className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${harnessFor(critic.criticModel) !== harnessFor(impl.orchestratorModel) ? 'border-[#42557d] bg-[#1a2230] text-[#a9c1ea]' : 'border-[#4a423f] bg-[#241f1e] text-[#a99e98]'}`}>Critic · {harnessFor(critic.criticModel) === 'codex' ? 'Codex' : 'Claude'}{harnessFor(critic.criticModel) !== harnessFor(impl.orchestratorModel) ? ' · cross-family' : ''}</span>
             <div className="ml-auto flex items-center gap-3">
               <button type="button" disabled={busy || contextBusy} onClick={() => void add(() => window.attachments.pick(), true)} aria-label="Attach files or folders" title="Attach files or folders" className="grid size-9 place-items-center rounded text-[#a49790] hover:text-white disabled:opacity-40"><Paperclip aria-hidden="true" className="size-4" /></button>
               <Button disabled={busy || contextBusy || checking} onClick={attemptCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create build</Button>
@@ -278,125 +403,25 @@ export function BuildForm({
               <div><p className="mb-2 text-[10px] uppercase tracking-wide text-[#a2958f]">Reference study</p><div className="flex flex-wrap gap-1 rounded-lg bg-[#151111] p-1">{(['web', 'files', 'skip'] as const).map((mode) => <button type="button" key={mode} aria-pressed={referenceMode === mode} onClick={() => onReferenceModeChange(mode)} className={`flex-1 rounded-md px-3 py-2 text-xs ${referenceMode === mode ? 'bg-[#332925] text-[#f0e9e5]' : 'text-[#9c8e87]'}`}>{mode === 'web' ? 'Web + files' : mode === 'files' ? 'Files only' : 'Skip'}</button>)}</div><p className="mt-2 text-[11px] text-[#a2958f]">{referenceMode === 'skip' ? 'Start implementation directly. No reference agent or web reference research.' : referenceMode === 'files' ? 'A reference agent studies supplied files only. No web research or researcher fan-out.' : 'A reference agent researches the web and studies supplied files.'}</p></div>
               <label className="flex items-center gap-2 text-xs text-[#c6bbb5]"><input type="checkbox" disabled={referenceMode === 'skip'} checked={referenceMode !== 'skip' && assets.assetModel !== null} onChange={(event) => onAssetsChange({ assetModel: event.target.checked ? impl.orchestratorModel : null, assetEffort: 'high' })} />3D model sculpting{referenceMode === 'skip' && <span className="text-[10px] text-[#958780]">Requires a reference cast; implementation builds assets itself.</span>}</label>
               <div className="grid grid-cols-2 gap-3"><label className="grid gap-1 text-[11px] text-[#b2a49d]">Maximum rounds<input aria-label="Maximum rounds" type="number" min="1" max="100" value={maxRounds} onChange={(event) => onMaxRoundsChange(event.target.value)} className="h-9 rounded border border-[#3a3432] bg-[#120f0f] px-3" /></label><label className="grid gap-1 text-[11px] text-[#b2a49d]">Budget · equivalent API cost ($)<input aria-label="Equivalent API cost budget" type="number" min="0.01" step="any" value={budget} onChange={(event) => onBudgetChange(event.target.value)} placeholder="No ceiling" className="h-9 rounded border border-[#3a3432] bg-[#120f0f] px-3" /></label></div>
-              <div className="border-t border-[#302b2a] pt-3"><button type="button" aria-expanded={modelsOpen} onClick={() => setModelsOpen(!modelsOpen)} className="flex w-full items-center gap-2 text-left text-[11px] text-[#afa099]"><Sparkles className="size-3" />Fine-tune model configuration<span className="ml-auto">{custom ? 'Custom' : `From ${BUILD_PACES[pace]}`}</span><ChevronDown className={`size-3 ${modelsOpen ? 'rotate-180' : ''}`} /></button>
-                {modelsOpen && <div className="mt-3">{custom && <button type="button" onClick={() => applyPace(pace)} className="mb-3 text-xs text-[#d7b6a4]">Reset to {BUILD_PACES[pace]}</button>}
-      <div className="mb-4 grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
-        <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-          <span className="text-xs text-[#7d7772]">Orchestrator</span>
-          <Select
-            value={impl.orchestratorModel}
-            onValueChange={(value) => changeImpl({
-              ...impl,
-              orchestratorModel: value,
-              // Keep new builds on explicit reasoning efforts (ADR-019).
-              // A historical setting must not re-enable automatic delegation.
-              orchestratorEffort: newBuildOrchestratorEffort(impl.orchestratorEffort),
-            })}
-          >
-            <SelectTrigger aria-label="Orchestrator model"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <ModelSelectItems />
-            </SelectContent>
-          </Select>
-          <Select value={impl.orchestratorEffort} onValueChange={(value) => changeImpl({ ...impl, orchestratorEffort: value })}>
-            <SelectTrigger aria-label="Orchestrator effort"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {AGENT_EFFORTS.map((effort) => (
-                <SelectItem key={effort} value={effort}>
-                  {effort}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-          <span className="text-xs text-[#7d7772]">Subagents</span>
-          <Select
-            value={impl.subagentModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeImpl({ ...impl, subagentModel: value === SOLO_SUBAGENT ? null : value })}
-          >
-            <SelectTrigger aria-label="Subagent model"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <ModelSelectItems />
-              <SelectItem value={SOLO_SUBAGENT}>Solo — orchestrator codes</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={impl.subagentEffort}
-            onValueChange={(value) => changeImpl({ ...impl, subagentEffort: value })}
-            disabled={impl.subagentModel === null}
-          >
-            <SelectTrigger aria-label="Subagent effort" className={impl.subagentModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        {impl.subagentModel === null && <p className="text-xs text-[#958780]">The orchestrator writes the code itself, without subagents.</p>}
-        <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-          <span className="text-xs text-[#7d7772]">Research</span>
-          <Select
-            value={research.researchModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeResearch({ ...research, researchModel: value === SOLO_SUBAGENT ? null : value })}
-          >
-            <SelectTrigger aria-label="Researcher model"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <ModelSelectItems />
-              <SelectItem value={SOLO_SUBAGENT}>none (no fan-out)</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={research.researchEffort}
-            onValueChange={(value) => changeResearch({ ...research, researchEffort: value })}
-            disabled={research.researchModel === null}
-          >
-            <SelectTrigger aria-label="Researcher effort" className={research.researchModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        {referenceMode === 'web' && <>
-        <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-          <span className="text-xs text-[#7d7772]">Critic</span>
-          <Select value={critic.criticModel} onValueChange={(value) => changeCritic({ ...critic, criticModel: value })}>
-            <SelectTrigger aria-label="Critic model"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <ModelSelectItems />
-            </SelectContent>
-          </Select>
-          <Select value={critic.criticEffort} onValueChange={(value) => changeCritic({ ...critic, criticEffort: value })}>
-            <SelectTrigger aria-label="Critic effort"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        </>}
-        <div className="grid grid-cols-[92px_1fr_1fr] items-center gap-2.5 max-sm:grid-cols-1">
-          <span className="text-xs text-[#7d7772]">Asset sculptors</span>
-          <Select
-            value={assets.assetModel ?? SOLO_SUBAGENT}
-            onValueChange={(value) => changeAssets({ ...assets, assetModel: value === SOLO_SUBAGENT ? null : value })}
-          >
-            <SelectTrigger aria-label="Asset model"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <ModelSelectItems />
-              <SelectItem value={SOLO_SUBAGENT}>none (implement by hand)</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={assets.assetEffort}
-            onValueChange={(value) => changeAssets({ ...assets, assetEffort: value })}
-            disabled={assets.assetModel === null}
-          >
-            <SelectTrigger aria-label="Asset effort" className={assets.assetModel === null ? 'opacity-50' : undefined}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {AGENT_EFFORTS.map((effort) => <SelectItem key={effort} value={effort}>{effort}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+              <div className="border-t border-[#302b2a] pt-3">
+                <button type="button" aria-expanded={modelsOpen} onClick={() => setModelsOpen(!modelsOpen)} className="flex w-full items-center gap-2 text-left text-[11px] text-[#afa099]"><Sparkles className="size-3" />Advanced · per-role models &amp; effort<span className="ml-auto">{custom ? 'Custom' : `From ${BUILD_PACES[pace]}`}</span><ChevronDown className={`size-3 ${modelsOpen ? 'rotate-180' : ''}`} /></button>
+                {modelsOpen && <div className="mt-3 grid gap-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                      <div className="flex items-center gap-2"><span className="w-[58px] text-[11px] text-[#8f8681]">Model tier</span><Meter tone="model" label="Model tier lean" levels={BUILD_PACES.length} value={modelLean} onChange={(v) => applyLeans(v as BuildPace, effortLean)} disabled={busy} /></div>
+                      <div className="flex items-center gap-2"><span className="w-[58px] text-[11px] text-[#8f8681]">Effort</span><Meter tone="effort" label="Effort lean" levels={BUILD_PACES.length} value={effortLean} onChange={(v) => applyLeans(modelLean, v as BuildPace)} disabled={busy} /></div>
+                    </div>
+                    <label className="flex items-center gap-2 text-[11px] text-[#b2a7a1]" title="Let a single role run on the other model family"><input type="checkbox" checked={crossFamily} onChange={(event) => setCrossFamily(event.target.checked)} />Cross-family per role</label>
+                  </div>
+                  {custom && <button type="button" onClick={() => applyPace(pace)} className="justify-self-start text-xs text-[#d7b6a4]">Reset to {BUILD_PACES[pace]}</button>}
+                  <div className="grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
+                    <RoleRow label="Orchestrator" crossFamily={crossFamily} model={impl.orchestratorModel} effort={newBuildOrchestratorEffort(impl.orchestratorEffort)} onModel={(m) => changeImpl({ ...impl, orchestratorModel: m ?? impl.orchestratorModel })} onEffort={(e) => changeImpl({ ...impl, orchestratorEffort: e })} />
+                    <RoleRow label="Subagents" crossFamily={crossFamily} offLabel="Solo, orchestrator codes" model={impl.subagentModel} effort={impl.subagentEffort} onModel={(m) => changeImpl({ ...impl, subagentModel: m })} onEffort={(e) => changeImpl({ ...impl, subagentEffort: e })} />
+                    {referenceMode === 'web' && <RoleRow label="Research" crossFamily={crossFamily} offLabel="No fan-out" model={research.researchModel} effort={research.researchEffort} onModel={(m) => changeResearch({ ...research, researchModel: m })} onEffort={(e) => changeResearch({ ...research, researchEffort: e })} />}
+                    <RoleRow label="Critic" crossFamily={crossFamily} model={critic.criticModel} effort={critic.criticEffort} onModel={(m) => changeCritic({ ...critic, criticModel: m ?? critic.criticModel })} onEffort={(e) => changeCritic({ ...critic, criticEffort: e })} />
+                    <p className="text-[11px] leading-relaxed text-[#8f857f]">{describeCritic(critic.criticModel, impl.orchestratorModel)}</p>
+                    {referenceMode !== 'skip' && <RoleRow label="Asset sculptors" crossFamily={crossFamily} offLabel="By hand, no sculptors" model={assets.assetModel} effort={assets.assetEffort} onModel={(m) => changeAssets({ ...assets, assetModel: m })} onEffort={(e) => changeAssets({ ...assets, assetEffort: e })} />}
+                  </div>
                 </div>}
               </div>
             </fieldset>

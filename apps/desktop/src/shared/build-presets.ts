@@ -10,22 +10,28 @@ const CLAUDE_WORKERS = [null, M.claudeSonnet, M.claudeSonnet, M.claudeOpus, M.cl
 const CODEX_WORKERS = [null, M.codexLuna, M.codexTerra, M.codexSol, M.codexAstra] as const
 const EFFORTS = ['medium', 'medium', 'high', 'high', 'max'] as const
 
-/** Only model configuration changes; reference mode, budget and rounds belong to the caller. */
-export function buildPreset(pace: BuildPace, connected: { claude: boolean; codex: boolean }, sculpting: boolean): ImplementerFields & CriticFields & ResearchFields & AssetFields {
+/**
+ * Only model configuration changes; reference mode, budget and rounds belong to
+ * the caller. `modelPace` picks each role's model along its staircase and
+ * `effortPace` picks the effort; the collapsed investment scrubber passes the
+ * same value for both, while the Advanced "Model tier" and "Effort" leans move
+ * them apart.
+ */
+export function buildPreset(modelPace: BuildPace, effortPace: BuildPace, connected: { claude: boolean; codex: boolean }, sculpting: boolean): ImplementerFields & CriticFields & ResearchFields & AssetFields {
   const useClaude = connected.claude || !connected.codex
-  const primary = (useClaude ? CLAUDE_LEADS : CODEX_LEADS)[pace]
-  const worker = (useClaude ? CLAUDE_WORKERS : CODEX_WORKERS)[pace]
-  const effort = EFFORTS[pace]
+  const primary = (useClaude ? CLAUDE_LEADS : CODEX_LEADS)[modelPace]
+  const worker = (useClaude ? CLAUDE_WORKERS : CODEX_WORKERS)[modelPace]
+  const effort = EFFORTS[effortPace]
   return {
     orchestratorModel: primary,
     orchestratorEffort: effort,
     subagentModel: worker,
     subagentEffort: effort,
-    criticModel: (connected.codex ? CODEX_LEADS : CLAUDE_LEADS)[pace],
+    criticModel: (connected.codex ? CODEX_LEADS : CLAUDE_LEADS)[modelPace],
     criticEffort: effort,
-    researchModel: pace === 0 ? null : connected.codex
-      ? pace < 3 ? M.codexLuna : M.codexSol
-      : pace < 3 ? M.claudeSonnet : M.claudeOpus,
+    researchModel: modelPace === 0 ? null : connected.codex
+      ? modelPace < 3 ? M.codexLuna : M.codexSol
+      : modelPace < 3 ? M.claudeSonnet : M.claudeOpus,
     researchEffort: effort,
     assetModel: sculpting ? worker ?? primary : null,
     assetEffort: effort,
@@ -42,13 +48,13 @@ export function buildPreset(pace: BuildPace, connected: { claude: boolean; codex
  * configured by hand started on the preset's models instead. Each setter gets
  * only its own fields.
  */
-export function presetSlices(pace: BuildPace, connected: { claude: boolean; codex: boolean }, sculpting: boolean): {
+export function presetSlices(modelPace: BuildPace, effortPace: BuildPace, connected: { claude: boolean; codex: boolean }, sculpting: boolean): {
   impl: ImplementerFields
   critic: CriticFields
   research: ResearchFields
   assets: AssetFields
 } {
-  const preset = buildPreset(pace, connected, sculpting)
+  const preset = buildPreset(modelPace, effortPace, connected, sculpting)
   return {
     impl: {
       orchestratorModel: preset.orchestratorModel,
