@@ -1,0 +1,72 @@
+@import '../splash-base.css';
+
+/* The how it works page. Every rule is scoped to #how; breakpoints are container queries on the .page article. */
+#how .wrap { max-width: 1160px; margin-inline: auto; padding-inline: var(--pad); }
+#how .nav {
+  position: sticky; top: 0; z-index: 30; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 24px;
+  height: 68px; padding-inline: var(--pad); background: rgba(7, 8, 12, 0.76); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--line);
+}
+#how .brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+#how .brand img { width: 32px; height: 32px; border-radius: 8px; }
+#how .back { justify-self: center; display: inline-flex; align-items: center; gap: 8px; color: var(--fg-2); text-decoration: none; font-size: 0.92rem; white-space: nowrap; }
+#how .back:hover { color: var(--fg); }
+#how .back .icon { transform: rotate(180deg); }
+#how .nav .btn { padding: 0.7em 1.05em; font-size: 0.92rem; }
+#how header.top { padding: clamp(56px, 8cqi, 110px) 0 clamp(36px, 5cqi, 64px); }
+#how header.top p { margin-top: 18px; color: var(--fg-2); font-size: clamp(1.05rem, 1.4cqi, 1.2rem); max-width: 44ch; }
+
+#how .phases { position: relative; padding-left: 44px; }
+#how .rail { position: absolute; left: 6px; top: 12px; bottom: 12px; width: 1px; background: var(--grad); opacity: 0.6; }
+#how .phase { --p: clamp(40px, 5cqi, 72px); position: relative; display: grid; grid-template-columns: 5fr 7fr; gap: clamp(24px, 4cqi, 56px); padding: var(--p) 0; border-top: 1px solid var(--line); align-items: start; }
+#how .phase:first-of-type { border-top: 0; }
+#how .node { position: absolute; left: -44px; top: calc(var(--p) + 8px); width: 13px; height: 13px; background: var(--bg); border: 1px solid var(--cyan); transform: rotate(45deg) scale(0.85); }
+#how .phase.hot .node { background: var(--cyan); }
+#how .phase h2 { font-size: clamp(1.6rem, 3cqi, 2.4rem); }
+#how .phase .line { margin-top: 12px; color: var(--fg-2); max-width: 36ch; }
+#how .phase .log { list-style: none; margin: 22px 0 0; padding: 14px 16px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); font-family: var(--mono); font-size: 0.74rem; line-height: 1.6; display: grid; gap: 8px; color: var(--fg-2); }
+#how .phase .log li { display: grid; grid-template-columns: 60px 1fr; gap: 12px; }
+#how .phase .log time { color: var(--fg-3); }
+#how .phase .log .k { color: var(--cyan); margin-right: 8px; }
+#how .phase .log .err .k { color: var(--fg); }
+#how .shots { display: grid; gap: 16px; }
+#how .shot { border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; background: var(--bg-2); box-shadow: var(--shadow); }
+#how .shot img { width: 100%; height: auto; display: block; }
+#how .shot figcaption { padding: 10px 14px; font-family: var(--mono); font-size: 0.72rem; color: var(--fg-3); border-top: 1px solid var(--line); }
+#how .record { margin-top: 20px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+#how .record .score { font-family: var(--display); font-weight: 800; font-size: 2.6rem; letter-spacing: -0.04em; line-height: 1; color: var(--cyan); }
+#how .record .fail { font-family: var(--mono); font-size: 0.74rem; padding: 5px 9px; border: 1px solid var(--cyan); color: var(--cyan); text-transform: uppercase; letter-spacing: 0.08em; }
+#how .record .file { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); }
+#how .summary { margin-top: 14px; color: var(--fg); max-width: 40ch; }
+#how .finding { margin-top: 12px; display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; color: var(--fg-2); max-width: 40ch; font-size: 0.95rem; }
+#how .finding .sev { font-family: var(--mono); font-size: 0.68rem; padding: 3px 7px; border: 1px solid var(--line-2); color: var(--fg-2); margin-top: 3px; }
+/* Return bracket between the Build and Critique nodes: it lives inside the Build phase and reaches the Critique node through that phase padding, so no script is needed. */
+#how .ret { position: absolute; left: -44px; top: calc(var(--p) + 14px); bottom: calc(-1 * (var(--p) + 15px)); width: 30px; border: 1px solid var(--cyan); border-right: 0; border-radius: 14px 0 0 14px; opacity: 0.9; pointer-events: none; transform: translateX(-24px); }
+#how .ret::before { content: ''; position: absolute; top: -5px; right: -1px; width: 8px; height: 8px; border-top: 1px solid var(--cyan); border-right: 1px solid var(--cyan); transform: rotate(-45deg) translate(-1px, 1px); }
+#how .ret-label { position: absolute; left: 0; top: calc(50% + 60px); transform: rotate(-90deg); transform-origin: left top; font-family: var(--mono); font-size: 0.68rem; color: var(--cyan); white-space: nowrap; pointer-events: none; }
+#how .close { padding: clamp(48px, 6cqi, 88px) 0 clamp(40px, 5cqi, 64px); display: grid; grid-template-columns: 7fr 5fr; gap: var(--gap, 40px); align-items: end; border-top: 1px solid var(--line); }
+#how .close .big { font-family: var(--display); font-weight: 500; font-size: clamp(1.3rem, 2.2cqi, 1.8rem); letter-spacing: -0.02em; line-height: 1.3; max-width: 30ch; text-wrap: balance; }
+#how .close .note { margin-top: 14px; font-size: 0.88rem; color: var(--fg-3); max-width: 44ch; }
+#how footer { border-top: 1px solid var(--line); padding: 36px 0 44px; display: grid; grid-template-columns: auto 1fr auto; gap: 24px; align-items: center; font-size: 0.86rem; color: var(--fg-3); }
+#how footer .maker { display: inline-flex; align-items: center; gap: 10px; color: var(--fg); font-family: var(--display); font-weight: 700; letter-spacing: -0.02em; font-size: 1.05rem; }
+#how footer .maker .gbx { width: 28px; height: 28px; }
+#how footer .maker small { font-weight: 500; letter-spacing: 0.22em; font-size: 0.66rem; color: var(--fg-3); margin-left: 2px; }
+#how footer .mid { text-align: center; }
+#how footer .mid span + span::before { content: '·'; margin: 0 10px; color: var(--fg-3); }
+#how footer a { color: var(--fg-2); text-decoration: none; }
+#how footer .line { grid-column: 1 / -1; font-size: 0.8rem; }
+@container page (max-width: 980px) {
+  #how .nav { grid-template-columns: auto 1fr auto; gap: 12px; }
+  #how .back span { display: none; }
+}
+@container page (max-width: 760px) {
+  #how .nav { height: 60px; padding-inline: 16px; }
+  #how .brand { font-size: 0.95rem; }
+  #how .brand img { width: 28px; height: 28px; }
+  #how .nav .btn { font-size: 0.84rem; padding: 0.62em 0.85em; }
+  #how .phases { padding-left: 28px; }
+  #how .phase { grid-template-columns: 1fr; }
+  #how .node { left: -28px; }
+  #how .ret, #how .ret-label { display: none; }
+  #how .close, #how footer { grid-template-columns: 1fr; }
+  #how footer .mid { text-align: left; }
+}

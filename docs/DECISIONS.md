@@ -992,3 +992,19 @@ per-request access checks, and no-store responses.
 and local serving uses the same policy. Static directory prefixes support common
 dynamic model/texture names. This does not promise arbitrary runtime URL inference,
 missing-file repair, backend emulation, or compatibility with every game engine.
+
+## ADR-038 — The web home is the splash; the catalog lives at /games (2026-09-07)
+
+**Context.** The catalog grid was the root page of the web app, so the first thing a visitor
+saw was a list of published games with no explanation of the product that made them.
+
+**Decision.** `/` renders the Vitrine splash for Gauntlet Gamesmith and `/how` the run
+walkthrough, both as Server Components with page-scoped CSS, fonts from `next/font`, and one
+small Client Component for scroll reveal, the blind-pair slider, and the hero particle field.
+The arcade chrome moves into an `(arcade)` route group, and the catalog grid, game pages, and
+publisher pages live under it at `/games`, `/games/[slug]`, and `/publishers/[handle]`. Every
+link that meant "all games" points at `/games`; the brand link still points at `/`.
+
+**Consequences.** Bookmarks to `/` now land on the splash rather than the grid. The splash owns
+its own tokens under `.page`, so the arcade theme and `@gauntlet/ui` are untouched. Copy on the
+splash is the approved content spec; changing it is a content decision, not a layout one.
