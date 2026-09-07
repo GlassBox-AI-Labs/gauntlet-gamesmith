@@ -683,9 +683,12 @@ tokens are stored in Electron main's existing OS-encrypted, origin-specific sess
 **Consequences.** Repository invitations and Vercel accounts are unnecessary for
 Challenger publishers. Hosted enrollment needs custom SMTP capable of mailing these
 addresses; Supabase's built-in project-team sender is insufficient. Local Supabase
-captures the same confirmation email for testing. Deployment of this policy is owned
-by the operator; the initially deployed provisioned-only version remains until they
-apply the migration, configure email confirmation/delivery, and deploy this change.
+captures the same confirmation email for testing. Platform deployment owns the
+infrastructure; publishers create their own accounts and publish their own games.
+The hosted rollout applied the migration and configured Resend Free with a verified
+`gauntletgamesmith.com` sender, a domain-scoped sending key in Supabase, and the same
+confirmation-code template. Signup and email confirmation are enabled. Deployment
+IDs, DNS, email limits, verification results, and rollback are in `DEPLOYMENT.md`.
 
 ## ADR-028 — Automatic saved-round packaging (2026-09-06)
 

@@ -12,12 +12,14 @@ This deployment does not change packaging UX or add multiplayer.
 | Supabase | `glassbox` organization; `glassbox-arcade`, project ref `kxvftslyclbrcmxevwbj`; Free / Nano; `us-east-1` |
 | Catalog | Vercel `glassbox3` Hobby team; `glassbox-arcade` (`prj_9s1HO1s9K3qWbr1YMMHnasM5Ma0H`); root `apps/web`; Next.js; Node 22; `iad1` |
 | Games | Same Hobby team; `glassbox-games` (`prj_SNLaAftPWyGfpqyjt7bEms21c00V`); root `apps/game-host`; Next.js Route Handlers; Node 22; `iad1` |
+| Signup email | Resend Free; GlassBox account `glassboxailabs@gmail.com`; verified `gauntletgamesmith.com`; `us-east-1` |
 
 The public catalog is live at **https://gauntletgamesmith.com**. The Vercel-managed
 domain belongs to the GlassBox team and points to `glassbox-arcade`; game execution
-uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all four
-migrations through `20260906152854_remove_browser_auth.sql`. Public signup is disabled
-and the email provider remains enabled. Both Vercel projects use production-only
+uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all five
+migrations through `20260906225000_challenger_publishers.sql`. Signup and the email
+provider are enabled, email confirmation is required, and anonymous signup is disabled.
+Custom SMTP sends confirmation codes through Resend. Both Vercel projects use production-only
 server environments, outside-root workspace access, Node 22, and Virginia functions.
 
 Initial production deployments on 2026-09-06 were built directly from GitHub commit
@@ -28,11 +30,23 @@ Initial production deployments on 2026-09-06 were built directly from GitHub com
 | Games | `dpl_H6kmxBk3UgYjDhf4GixEP7bPoyTq` | Ready, `iad1` |
 | Catalog | `dpl_BSypmAdud46mNEJVD8nrZ71iZTQu` | Ready, custom domain and HTTPS active |
 
-The initial hosted read-only smoke passed with an empty catalog, and the provisioned
-developer signed in through the production API and Electron. No game was uploaded
-or published during that check; hosted gameplay and large-asset streaming are still
-unverified. The operator took over deployment after this point. The Challenger signup
-change below is tested locally and **has not been applied to hosted Supabase or Vercel**.
+The catalog was updated on 2026-09-06 to commit
+`dc3a25258f643e5b7ac48b4308a451bfc4e6243c`, deployment
+`dpl_BCk2wWL1qqx6QkqqVcgXgfN88LMK`
+(`glassbox-arcade-fdc856smu-glassbox3.vercel.app`). It is Ready in `iad1` and serves the
+custom domain. This deploy includes Challenger signup and the matching desktop protocol.
+The game deployment remains unchanged. The initial catalog deployment above is a prior
+version, not the current signup-capable version.
+
+Hosted read-only smoke passed again with **0 games**. The signup route now returns
+405 to GET and structured JSON for invalid-domain POST requests. A temporary Auth
+signup using an alias of the GlassBox inbox required confirmation and delivered the
+correct verification-code email to Gmail. The test Auth user was removed; it created
+no publisher profile. Provisioned publisher login previously passed through the
+production API and Electron. Full Challenger signup/code exchange passed locally;
+the first real Challenger signup remains for the publisher to complete in Electron.
+No cloud game has been uploaded or published by deployment verification. Hosted
+gameplay and large-asset streaming remain unverified until the first publication.
 
 Deployment ownership is the GlassBox account: Vercel user `glassboxailabs-7530`, team
 `glassbox3` (`team_Xdj5d9SOU4rIrCYN4lxD4hGe`). Its connected GitHub identity is
@@ -196,15 +210,17 @@ account**, a public publisher name, email/password, and an email-code form. Veri
 signs them in inside Electron. Resend and **I have a verification code** let them
 resume after closing the app. No browser authentication surface is needed.
 
-Deploy this change yourself in this order:
+The hosted setup is complete. Platform deployment manages the infrastructure;
+publishers create their own accounts and publish their own saved rounds in Electron.
+For a fresh environment or sender rotation, use this order:
 
-1. Apply the pending Challenger migration without resetting the hosted database.
+1. Apply the Challenger migration without resetting the hosted database.
    Regenerated `schema.sql` and types are references; the versioned migration is the input.
 2. In Supabase Authentication → Email, configure a **custom SMTP sender** and a verified
    sender address. Supabase's built-in sender only sends to authorized project-team
    addresses, so it cannot serve all Challenger users. Store SMTP credentials in
-   Supabase settings, never in the app, website bundle, or Git. Choose the sender/provider
-   and its quota as part of your deployment; no email service has been provisioned here.
+   Supabase settings, never in the app, website bundle, or Git. The production sender
+   and DNS setup are recorded below.
 3. Copy `packages/db/supabase/templates/confirmation.html` into the **Confirm signup**
    email template. It includes `{{ .Token }}` for entry inside Electron. Keep **Confirm
    email** enabled and enable signups. Keep anonymous sign-in disabled. Preserve the
@@ -213,6 +229,50 @@ Deploy this change yourself in this order:
    Existing game-host code does not need a change for enrollment.
 5. Create an account with your own Challenger email in Electron, receive its code,
    verify, and publish a saved round. Check the private preview before promotion.
+
+### Production Resend configuration
+
+Resend uses the GlassBox Google account `glassboxailabs@gmail.com` and the Free plan.
+The verified domain is `gauntletgamesmith.com` (domain ID
+`35508f9d-8a38-4747-ab78-62f79a2e2efa`), in Northern Virginia. Sending is enabled;
+receiving and tracking were not enabled. Existing website DNS records were retained.
+
+Vercel manages these additional DNS records:
+
+| Name | Type | Value / purpose |
+| --- | --- | --- |
+| `resend._domainkey` | TXT | Public DKIM key supplied by this Resend domain; copy its current value from Resend |
+| `send` | MX | `feedback-smtp.us-east-1.amazonses.com`, priority 10 |
+| `send` | TXT | `v=spf1 include:amazonses.com ~all` |
+| `_dmarc` | TXT | `v=DMARC1; p=none;` |
+
+Resend reports DKIM, MX, and SPF as verified. The `send` MX is for the sending
+subdomain; it does not configure an inbox or replace root-domain mail routing.
+
+Supabase Authentication → Email → SMTP settings:
+
+| Setting | Value |
+| --- | --- |
+| Custom SMTP | Enabled |
+| Sender address / name | `noreply@gauntletgamesmith.com` / `Gauntlet Gamesmith` |
+| Host / port | `smtp.resend.com` / `465` |
+| Username | `resend` |
+| Password | Resend API key with **Sending access**, scoped to `gauntletgamesmith.com` |
+| Per-user minimum email interval | 60 seconds |
+
+The active key is named **Gauntlet Gamesmith Auth Production**, ID
+`e23a34e2-7a53-4aed-9fce-360371b4adcd`. Its value is stored in Supabase's SMTP settings,
+not this repository or desktop configuration. The temporary setup key was revoked.
+Rotate by creating a replacement with the same scope, saving it in Supabase,
+verifying delivery, and then revoking the old key.
+
+The **Confirm signup** subject is **Verify your Gauntlet Gamesmith email**. The body
+matches `packages/db/supabase/templates/confirmation.html` and includes `{{ .Token }}`.
+Keep confirmation required; users enter the code in Electron. Supabase's custom SMTP
+setup reports a default project limit of 30 emails per hour. Resend Free permits
+100 transactional emails per day and 3,000 per month; both providers' limits apply.
+Monitor delivery in Resend and Auth errors in Supabase before expanding the pilot.
+No paid email plan or add-on was enabled.
 
 The privileged `publisher_for_user` RPC reads the current confirmed Auth email and
 enrolls eligible users atomically. It matches the domain exactly, ignores client claims
@@ -316,4 +376,6 @@ References: [Vercel monorepos](https://vercel.com/docs/monorepos),
 [function payloads and streaming](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions),
 [Supabase private downloads](https://supabase.com/docs/guides/storage/serving/downloads),
 [Supabase SMTP requirements](https://supabase.com/docs/guides/auth/auth-smtp),
+[Resend with Supabase SMTP](https://resend.com/docs/send-with-supabase-smtp),
+[Resend quotas](https://resend.com/docs/knowledge-base/account-quotas-and-limits),
 [confirmation templates](https://supabase.com/docs/guides/auth/auth-email-templates).
