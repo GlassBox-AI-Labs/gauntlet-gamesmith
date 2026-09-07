@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from './models'
 import { markResumePrompt } from './build'
-import { ASSET_WAVE_SIZE, MACOS_BROWSER_SANDBOX_RULE, composeLeadPrompt, buildSteeringPrompt, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from './prompts'
+import { ASSET_WAVE_SIZE, IMPLEMENT_VERIFY_CYCLES, MACOS_BROWSER_SANDBOX_RULE, composeLeadPrompt, buildSteeringPrompt, buildCriticPrompt, buildImplementPromptPreview, buildReferencePrompt, composeImplementPrompt, composeResumePrompt, effectivePromptForAttempt } from './prompts'
 
 const rules = 'Delegate ALL substantial implementation work to implementer agents.'
 const contract = 'Engine stack (MANDATORY): three@0.185.1, bitecs@0.4.0.'
@@ -113,7 +113,12 @@ describe('build prompts', () => {
     expect(prompt).toContain("These revision IDs belong to the app's private Git store, not the project's .git repository")
     expect(prompt).toContain('do not manufacture a commit, change project history, or modify private telemetry')
     expect(prompt).toContain('Completion rules, non-negotiable:')
-    expect(prompt.trim().endsWith('A build-only check, partial level, placeholder, unverified worker, or claim based only on source inspection is not completion.')).toBe(true)
+    expect(prompt).toContain(`This whole phase gets at most ${IMPLEMENT_VERIFY_CYCLES} build-and-play cycles, each covering the full progression`)
+    expect(prompt).toContain('every re-verification spends one no matter why the last attempt fell short')
+    expect(prompt).toContain('automation is a tool for gathering evidence, never the bar to clear')
+    expect(prompt).toContain(`or you have spent all ${IMPLEMENT_VERIFY_CYCLES} build-and-play cycles and still cannot clear it`)
+    expect(prompt).toContain('finish the phase anyway and report it as incomplete')
+    expect(prompt.trim().endsWith('an evidenced, reported failure to clear the progression is.')).toBe(true)
     expect(prompt).toContain('never modify ./reference/build-123, ./critique, or ./.gauntlet-gamesmith')
     expect(prompt).not.toContain('yt-dlp')
   })
