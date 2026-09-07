@@ -46,6 +46,11 @@ function setup(
       return home
     },
     cliVersion: () => 'test-cli 1.2.3',
+    // No fixture may spawn the real Chromium installer, and a warm cache is the
+    // ordinary case: the run loop reaches a phase without yielding.
+    browsersDir: () => path.join(root, 'playwright-browsers'),
+    browserReady: () => true,
+    ensureBrowser: async () => ({ dir: path.join(root, 'playwright-browsers'), status: 'current' as const }),
     accountLabel: (kind) => `${kind}:test-account@example.com`,
     hostname: () => 'test-host',
     protectedRoots,
@@ -664,6 +669,139 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(deferred).toHaveLength(1)
   })
 
+  // The stock CLIs run each of their own Bash commands in a fresh process
+  // group, so anything an agent backgrounds there leaves the attempt's group
+  // and survives a signal aimed at it. See issue #73.
+  it('Stop interrupts a process group the agent left outside the attempt group', () => {
+    const leaderPid = 2_000_000_000
+    const strayPid = leaderPid - 7
+    const identity = readProcessIdentity(process.pid)!
+    const leaderIdentity = `${leaderPid}:${identity}`
+    const strayIdentity = `${strayPid}:${identity}`
+    const signals: Array<[number, 0 | NodeJS.Signals]> = []
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      // The agent's command escaped into its own group and was then orphaned.
+      scanProcessTable: () => [
+        { pid: leaderPid, ppid: 1, pgid: leaderPid, lstart: identity },
+        { pid: strayPid, ppid: leaderPid, pgid: strayPid, lstart: identity },
+      ],
+      processGroupIdentity: (pid) => (pid === strayPid ? [strayIdentity] : [leaderIdentity]),
+      processGroupStillOwned: (_pid, captured) => captured.includes(strayIdentity) || captured.includes(leaderIdentity),
+      signalProcess: (pid, signal) => { signals.push([pid, signal]) },
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    // One supervision tick is enough to see the escaped group while its parent
+    // link is still visible.
+    for (const tick of ticks) tick()
+    runner.stop(started.buildId!)
+
+    expect(signals).toContainEqual([-strayPid, 'SIGINT'])
+    expect(signals).toContainEqual([-leaderPid, 'SIGINT'])
+  })
+
+  // A scan that never succeeds protects nothing; the operator has to be able to
+  // see that, rather than believing Stop reaches everything (VIS-001).
+  it('reports a process table it cannot read at all', () => {
+    const leaderPid = 2_000_000_000
+    const identity = readProcessIdentity(process.pid)!
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      scanProcessTable: () => { throw new Error('ps unavailable.') },
+      processGroupIdentity: () => [`${leaderPid}:${identity}`],
+      processGroupStillOwned: () => false,
+      signalProcess: () => {},
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    const attempt = ledger.attemptsForBuild(started.buildId!)[0]
+    for (const tick of ticks) tick()
+
+    expect(ledger.eventsForAttempt(attempt.id).some((event) =>
+      event.text.includes('Could not read the process table') && event.text.includes('ps unavailable.'),
+    )).toBe(true)
+  })
+
+  it('leaves an escaped group alone when its group id was recycled', () => {
+    const leaderPid = 2_000_000_000
+    const strayPid = leaderPid - 7
+    const identity = readProcessIdentity(process.pid)!
+    const signals: Array<[number, 0 | NodeJS.Signals]> = []
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      scanProcessTable: () => [
+        { pid: leaderPid, ppid: 1, pgid: leaderPid, lstart: identity },
+        { pid: strayPid, ppid: leaderPid, pgid: strayPid, lstart: identity },
+      ],
+      processGroupIdentity: () => [`${leaderPid}:${identity}`],
+      // Nothing we recorded in the escaped group is there any more: its PGID
+      // now belongs to a stranger, so it is not ours to signal.
+      processGroupStillOwned: (_pid, captured) => captured.includes(`${leaderPid}:${identity}`),
+      signalProcess: (pid, signal) => { signals.push([pid, signal]) },
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    for (const tick of ticks) tick()
+    runner.stop(started.buildId!)
+
+    expect(signals.some(([pid]) => pid === -strayPid)).toBe(false)
+  })
+
   it.each(['current', 'retained'] as const)('%s Stop starts process control when portable event writes fail', (mode) => {
     const signals: Array<0 | NodeJS.Signals> = []
     const child = new EventEmitter() as ChildProcess
@@ -1125,6 +1263,113 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(runner.activeAttempt()).toMatchObject({ buildId: build.id, attemptId: attempt.id, pid: process.pid })
     expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('re-attached to live reference'))).toBe(true)
     expect(polls).toHaveLength(1)
+  })
+
+  it('keeps supervising an attempt whose process-group probe cannot see the child', () => {
+    const polls: Array<() => void> = []
+    const identity = readProcessIdentity(process.pid)!
+    let probeBlind = false
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: () => { throw new Error('supervision must not launch a replacement') },
+      signalProcess: () => {},
+      repeat: (work) => {
+        polls.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      processGroupIdentity: () => {
+        if (probeBlind) throw new Error('Process-group identity probe failed: spawnSync /bin/ps ETIMEDOUT')
+        return [`${process.pid}:${identity}`]
+      },
+      processGroupStillOwned: () => true,
+    })
+    const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
+    const build = ledger.createBuild({ prompt: 'survive a blind probe', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'codex', prompt: 'build' })
+    const startedAtMs = Date.now()
+    ledger.patchAttempt(attempt.id, { status: 'running', startedAt: new Date(startedAtMs).toISOString() })
+    const marker = prepareProcessMeta(workspaceDir, attempt.id, startedAtMs, workspaceIdentity(workspaceDir))
+    fs.writeFileSync(marker.outPath, '')
+    fs.writeFileSync(marker.errPath, '')
+    const meta = completeProcessMeta(
+      workspaceDir,
+      attempt.id,
+      marker,
+      process.pid,
+      () => ({ identity, groupId: process.pid, startedAtMs }),
+    )
+    ledger.setAttemptProcessOwnership(attempt.id, {
+      pid: meta.pid,
+      processIdentity: meta.processIdentity,
+      groupIdentities: [`${meta.pid}:${meta.processIdentity}`],
+      startedAtMs: meta.startedAtMs,
+      outDev: meta.outDev,
+      outIno: meta.outIno,
+      errDev: meta.errDev,
+      errIno: meta.errIno,
+    })
+
+    fs.mkdirSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'agents'), { recursive: true })
+
+    runner.recoverAll()
+    expect(polls).toHaveLength(1)
+    probeBlind = true
+    for (let tick = 0; tick < 6; tick += 1) polls[0]()
+
+    // A probe that cannot see is not proof the child died: 43 minutes and $24
+    // of finished work were once discarded on a single one-second `ps` timeout.
+    expect(ledger.getBuild(build.id)?.status).toBe('running')
+    expect(ledger.getAttempt(attempt.id)?.status).toBe('running')
+    const blindEvents = ledger.eventsForAttempt(attempt.id).filter((event) => event.text.includes('the attempt keeps running while retrying'))
+    expect(blindEvents).toHaveLength(1)
+    expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('supervision failed'))).toBe(false)
+
+    probeBlind = false
+    polls[0]()
+    expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('is observable again'))).toBe(true)
+  })
+
+  it('stops waiting on a dead leader whose group stays unobservable, and keeps owning it', () => {
+    const polls: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: process.pid, unref: () => child })
+    const identity = readProcessIdentity(process.pid)!
+    let clock = Date.now()
+    let probeBlind = false
+    const { ledger, runner, workspaceDir } = setup({
+      now: () => clock,
+      wait: async () => {},
+      spawnChild: () => child,
+      signalProcess: () => {},
+      processGroupIdentity: () => {
+        if (probeBlind) throw new Error('Process-group identity probe failed: spawnSync /bin/ps ETIMEDOUT')
+        return [`${process.pid}:${identity}`]
+      },
+      processGroupStillOwned: () => true,
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+      repeat: (work) => {
+        polls.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+    })
+
+    const started = runner.start(input(workspaceDir))
+    const attempt = ledger.attemptsForBuild(started.buildId!)[0]
+    child.emit('exit', 0)
+    probeBlind = true
+    polls.forEach((poll) => poll())
+
+    // Inside the tolerance window a blind probe changes nothing.
+    const gaveUp = (): boolean => ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('interrupting what may remain'))
+    expect(gaveUp()).toBe(false)
+
+    clock += 61_000
+    polls.forEach((poll) => poll())
+
+    expect(gaveUp()).toBe(true)
+    // Ownership is never dropped on evidence the app could not gather.
+    expect(ledger.attemptProcessOwnership(attempt.id)).not.toBeNull()
   })
 
   it('re-attaches a codex implement build with the codex reader, not the claude one', async () => {
@@ -2099,6 +2344,58 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(command).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CODEX_BIN).toBe('/trusted/bin/codex')
     expect(env.GAUNTLET_CLAUDE_BIN).toBe('/trusted/bin/claude')
+  })
+
+  it('hands every phase the app-managed browser cache, download or no download', async () => {
+    let env: Record<string, string> = {}
+    const { ledger, runner, workspaceDir } = setup({
+      browsersDir: () => '/app-data/playwright-browsers',
+      browserReady: () => false,
+      // A machine with no Node cannot pre-download anything. Sharing one cache
+      // is still what stops agents importing Playwright from another run's /tmp,
+      // so the path is supplied regardless of how the download went.
+      ensureBrowser: async () => ({ dir: '/app-data/playwright-browsers', status: 'unavailable', detail: 'npx: command not found' }),
+      spawnChild: (_command, _args, options) => {
+        env = options.env
+        throw new Error('stop after browser inspection')
+      },
+    })
+
+    expect(runner.start(input(workspaceDir)).ok).toBe(true)
+    await waitFor(() => Object.keys(env).length > 0 || ledger.latestBuild()?.status === 'failed')
+
+    expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe('/app-data/playwright-browsers')
+    // The failure is on the attempt that tried, not on some later one a
+    // single-attempt build never reaches (VIS-001).
+    const events = ledger.eventsForBuild(ledger.latestBuild()!.id, 2_000)
+    expect(events.some((event) => event.text.includes('npx: command not found'))).toBe(true)
+  })
+
+  it('waits for a cold browser cache before starting the phase that launches a browser', async () => {
+    let downloadFinished = false
+    let spawnedAfterDownload: boolean | null = null
+    const { ledger, runner, workspaceDir } = setup({
+      browserReady: () => false,
+      ensureBrowser: async () => {
+        // Long enough that a phase started without waiting would find the cache
+        // half-written, which is the reported failure.
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        downloadFinished = true
+        return { dir: '/app-data/playwright-browsers', status: 'installed' as const }
+      },
+      spawnChild: () => {
+        spawnedAfterDownload = downloadFinished
+        throw new Error('stop after browser inspection')
+      },
+    })
+
+    expect(runner.start(input(workspaceDir)).ok).toBe(true)
+    await waitFor(() => spawnedAfterDownload !== null || ledger.latestBuild()?.status === 'failed')
+
+    expect(spawnedAfterDownload).toBe(true)
+    const events = ledger.eventsForBuild(ledger.latestBuild()!.id, 2_000)
+    expect(events.some((event) => event.text.includes('Downloading Chromium'))).toBe(true)
+    expect(events.some((event) => event.text.includes('Downloaded Chromium'))).toBe(true)
   })
 
   it('waits for Chat before dispatching and respects Stop during that wait', async () => {

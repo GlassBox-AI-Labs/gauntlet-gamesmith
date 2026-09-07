@@ -3,6 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import type { HarnessKind } from '../shared/harness'
 import { prepareAccountDir, readAccounts, sharedDir } from './accounts'
+import { browsersDir, chromiumReady, ensureChromium, type BrowserInstall } from './browser'
 import { bundledSkillDir, installSkill, type SkillInstall } from './skills'
 import { safeWorkspaceMetadataDir } from './workspace-metadata'
 
@@ -84,6 +85,26 @@ export function ensureSkill(): SkillInstall {
   return installSkill(sharedHome('claude'), bundledSkillDir(app.isPackaged ? process.resourcesPath : null, __dirname))
 }
 
+/**
+ * The cache every child resolves Playwright's browsers through.
+ *
+ * Known without downloading anything, so a child can be given the path whether
+ * or not `ensureBrowser` has finished — or ever succeeded.
+ */
+export function browserCacheDir(): string {
+  return browsersDir(app.getPath('userData'))
+}
+
+/** Whether the cache is already filled, answered without downloading anything. */
+export function browserReady(): boolean {
+  return chromiumReady(browserCacheDir())
+}
+
+/** The Chromium every agent launches, downloaded once into app-managed state. */
+export function ensureBrowser(): Promise<BrowserInstall> {
+  return ensureChromium(browserCacheDir())
+}
+
 /** Attempt transcripts live with the project so a folder transfer is complete. */
 export function attemptsDir(workspaceDir: string, create = true): string {
   // Persisted before the Build vocabulary rename; recovery and exports keep this path (ADR-020).
@@ -123,6 +144,10 @@ const PLAN_CLI_ENV = new Set([
   'CLAUDE_CODE_SUBAGENT_MODEL',
   'BASH_MAX_TIMEOUT_MS',
   'BASH_DEFAULT_TIMEOUT_MS',
+  // The app-owned Playwright cache. Deliberately a plan field rather than an
+  // inherited one: the point is that every agent resolves the browser the app
+  // downloaded, not one the surrounding shell or a previous run pointed at.
+  'PLAYWRIGHT_BROWSERS_PATH',
 ])
 
 function canonicalIfPresent(value: string): string {

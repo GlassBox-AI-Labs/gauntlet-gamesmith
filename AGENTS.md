@@ -77,3 +77,19 @@ what you ran (STANDARDS TEST-002).
 
 One coherent purpose per PR (SCOPE-001). Describe the behavior change, risks, verification actually
 run, and known limitations. Do not report a check as passed if it did not run.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `GlassBox-AI-Labs/gauntlet-gamesmith`, driven by the `gh` CLI.
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels, each named after its role. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` at the root, with decisions in `docs/DECISIONS.md`.
+See `docs/agents/domain.md`.

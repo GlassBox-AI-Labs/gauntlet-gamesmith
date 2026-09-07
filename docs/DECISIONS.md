@@ -560,50 +560,94 @@ agrees with it. Reviewers should reject a new `phases` table, any reintroduction
 for either the job or an attempt, and any use of "build" as a bare noun for compilation in
 operator-visible text.
 
-## ADR-021 — Immutable attachments in build steering (2026-09-05)
+## ADR-021 — The app owns one Playwright browser cache for every agent (2026-09-06)
 
 **Status:** accepted.
 
-**Decision.** Steering accepts files/images from the existing main-process picker
-and validated drop bridge. The composer shows removable draft chips and image
-previews; sent files remain on their message. Sending a file alone prompts for its
-purpose rather than silently making it a requirement. The consult distinguishes
-visual reference, a requested 3D sculpt, and direct use/replacement through normal
-conversation. New directions cite both source messages and attachment IDs; the
-main process verifies those relationships before accepting them.
+**Context.** The prompts told agents to use Playwright's bundled browsers but the app never supplied
+one, so each agent improvised. In one implement round the agent imported Playwright out of
+`/tmp/gauntletron-pw` — a scratch directory a different game's run had left there the day before —
+whose pinned browser build had never been downloaded on this machine. Playwright fetches browsers at
+*install* time, never at launch, so that copy had been broken since it was created and said so only
+when `chromium.launch()` failed. Four such directories were on the machine; two had no `playwright`
+package at all and one had only `playwright-core`, which never downloads a browser. A fresh
+`npm install` is not a reliable fix either, because a skipped or blocked postinstall reproduces the
+same silent breakage.
 
-Selection snapshots source bytes through the existing bounded attachment module.
-Sending publishes immutable copies under `.gauntlet-gamesmith/steering/<build-id>/`
-with unique file IDs, original names, sizes, and SHA-256 hashes in mirrored message
-events. The frozen Reference Pack is unchanged. File reads and previews are bound
-to the selected build, verified workspace/directory identities, and recorded hashes.
-Export/import preserves these files and their message references. Limits are ten
-files per message, 20 MB per file, and 100 files/100 MB per build. Supported raster
-images are supplied directly to the consult CLI; other files and earlier images
-remain available at their recorded read-only workspace paths.
+**Decision.** The app supplies the browser. `PLAYWRIGHT_BROWSERS_PATH` is set for every child CLI and
+points at one app-managed cache under the app's data directory, and the app downloads a pinned
+Chromium into it with `npx playwright install chromium` before the first phase of the first build.
+`MACOS_BROWSER_SANDBOX_RULE` now states that Chromium is already installed and reached through that
+variable, and forbids `executablePath`, temp-directory installs, and importing Playwright from
+`/tmp`.
 
-At implementation dispatch, the requirements snapshot includes only attachments
-referenced by confirmed, non-withdrawn directions. The paired critic and retries
-reuse the same snapshot. Verify the saved files at dispatch and completion; never
-silently replace a missing or changed copy with today's original. Newly confirmed
-asset requests join implementation's sculpting/integration work, with later
-requests for the same target taking precedence. Direct replacements suppress
-sculpting from the original cast. The first included round performs requested
-asset work; later rounds retain the desired result without unconditionally
-rebuilding it. No additional loop phase or consult table row is introduced.
+The cache *path* is computed without touching the disk and is handed to every child regardless of how
+the download went; only the pre-download is deferred. A machine with no Node on `PATH` cannot run the
+installer, which is a normal outcome under ADR-014 and never fails a build: the agent installs
+Playwright itself, and because the variable is inherited, its postinstall fills the same shared cache
+instead of another temp directory. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` is deliberately **not** set —
+skipping the download is what makes a version mismatch permanent, and letting an agent's own install
+fetch its matching build is what makes a mismatch heal.
 
-## ADR-022 — Per-build steering model selection (2026-09-05)
+**Rejected.** Pinning `playwright` in `apps/desktop/package.json`, as the report proposed. A plain
+`pnpm install` runs its postinstall without `PLAYWRIGHT_BROWSERS_PATH` set, so the browser lands in
+the user's default cache rather than the app's — the app would still have to install into its own
+cache at run time, which is what this ADR does anyway. And it puts a ~150MB browser download in the
+path of every developer install and every CI run, for a browser most of those runs never launch.
+(Packaging is *not* a reason: electron-builder ships production dependencies' `node_modules`
+whatever the `files` list says, which is how `node-pty` reaches the packaged app.)
 
-**Status:** superseded by ADR-033. Historical preferences remain in the event log.
+**Also rejected.** Exporting `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, which the report proposed alongside
+the cache path. Skipping the download is precisely what makes a version mismatch permanent: it is
+the state `/tmp/pw-scratch` was already in. Leaving it unset is what lets an agent's own install heal
+a mismatch by fetching its matching build into the shared cache.
 
-**Decision.** The Chat composer offers the supported Codex models from the
-shared model catalog. Selection is independent of implementation/critique models
-and saved per build in mirrored `steering-model` events, including export/import.
-Builds without a preference default to gpt-5.6-sol. Each consult captures its model
-at admission for CLI dispatch, attempt provenance, and equivalent API cost.
-Changing the selection during a reply applies to the next message. Selection
-does not start an attempt, create a rounds-table row, or clear conversation history.
-V1 remains on the app's Codex connection at low effort.
+**Consequences.** Every agent in every build resolves the same browser binary, and the first build on
+a machine downloads it once instead of once per scratch directory. The download and any failure are
+logged into the build (VIS-001), the failure as an error naming the installer's own output. The
+pinned version lives in one constant in `main/browser.ts`; raising it re-downloads on the next build
+because the cache stamp no longer matches. Anything that clears the app's data directory costs one
+re-download.
+
+## ADR-022 — A failed process probe means "unknown", never "dead" (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The attempt supervisor asked `/bin/ps` for the members of the child's process group,
+2.5 times a second, for the whole life of an attempt. The question was expensive — a full
+process-table scan — and the deadline was one second. Any throw landed in the drive loop's catch,
+which treated every supervision error as fatal and failed the attempt and the build. Playing a game
+from the app while an attempt was running was enough to push one `ps` past its second, and one such
+second discarded 43 minutes and $24 of finished implementation work (issue #54). `ETIMEDOUT` from
+`ps` means the app could not look. It says nothing about whether the child is alive.
+
+**Decision.** Not being able to observe a process group never ends an attempt.
+
+The supervision tick catches probe failures and keeps the last successful answer. The attempt keeps
+running, the failure is logged, and a still-blind probe repeats itself in the log every 30 seconds so
+the operator is not left in silence (VIS-001). When the probe recovers, that is logged too.
+
+The one bounded exception: once the leader has exited *and* the group has been completely
+unobservable for 60 seconds, waiting can no longer end on its own, so the supervisor escalates to the
+captured group and finalizes the attempt. Ownership stays with the app in that case, because absence
+was never proved — Play, Export, and quit stay gated until it is (PROC-003).
+
+The probe itself asks a cheaper question. `ps -g <pgid>` returns only that group's members and
+answers in about 3 ms instead of 33 ms, and it is allowed 5 seconds instead of 1. A BSD `ps` exits
+non-zero with no output for a group with no members; that is read as an empty group, not a failure.
+GNU `ps -g` selects something else, so non-macOS keeps the portable table scan — the app only ships
+for macOS, but its tests run on Linux.
+
+**Rejected.** Counting consecutive failures, as the issue proposed. The count would be a proxy for
+elapsed time at a tick rate that may change; the supervisor measures the time directly.
+
+**Also rejected for now.** Sampling group liveness slower than the 400 ms drive tick. Each tick still
+makes two probes, but at roughly 3 ms each that is under 2% of one core, and every lifecycle test
+fixture encodes the current cadence. The cost that mattered was the per-probe cost, and that is gone.
+
+**Consequences.** A loaded machine slows the supervisor down instead of destroying work. A genuinely
+dead group is still detected within one tick of the leader exiting, because that path needs a
+successful probe rather than a failed one.
 
 ## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
 
@@ -768,7 +812,95 @@ access and needs an approved email, without branding the app for one cohort.
 verified email domain in ADR-027 and explicit developer exceptions still govern
 publishing. Creating and playing games continue to require no platform account.
 
-## ADR-030 — Build-scoped conversational steering (2026-09-05)
+## ADR-030 — Attempt ownership follows the process, not the process group (2026-09-07)
+
+**Decision.** The app records every process group an attempt is seen to create
+and signals those groups when the attempt ends, in addition to the attempt's own
+group. Groups are sampled from the process table roughly every ten seconds while
+the attempt runs, walking the live parent links down from the attempt leader, and
+each group is remembered by the same `pid:lstart` identities the canonical group
+stop already verifies. Sampling is required because the answer expires: the stock
+CLIs run each of their own Bash commands in a fresh process group, so anything an
+agent backgrounds there is reparented to init as soon as that command's shell
+exits, and no link back to the attempt survives. macOS exposes neither the
+process environment (`ps -E` is restricted) nor a usable session id, so there is
+nothing to ask at stop time.
+
+**Consequences.** Stop, timeouts, the hard cap and ordinary completion all reach
+what an agent left running; the leaked dev servers and headless browsers of
+issue #73 no longer accumulate or burn CPU after a build ends. A tracked group
+that loses its last parent is also reported in the build log while it runs, not
+only when it is signalled (VIS-001). A group whose PGID is recycled by an
+unrelated process fails the identity check and is left alone, so the sweep errs
+toward missing a group rather than signalling a stranger's.
+
+Sampling buys this at the cost of a race, and three gaps are accepted rather than
+hidden:
+
+1. **A group created and orphaned between two samples is never recorded.** The
+   sample interval is the width of that window. It is set to two seconds — one
+   scan costs about 20ms, so this spends roughly 1% of a core — but a command
+   that backgrounds a process and exits immediately can still slip through, and
+   that includes the minimal reproduction given in issue #73 (`npx vite preview &`
+   followed at once by Stop). The processes in the actual incident ran for hours
+   with a live parent chain and are comfortably caught.
+2. **Tracking is in memory and dies with the app.** Attempts survive app quit by
+   design, so an attempt re-attached after a relaunch loses every group recorded
+   before the quit and can only re-find groups that still have a parent link.
+   Persisting the groups would mean widening the canonical process-ownership
+   record; that is not done here.
+3. **Groups leaked before this change are not swept.** There is no launch-time
+   sweep of pre-existing orphans.
+
+Every one of these leaves a process running, which is exactly the behaviour that
+already existed; none of them signals a process that is not ours.
+
+## ADR-031 — Immutable attachments in build steering (2026-09-05)
+
+**Status:** accepted.
+
+**Decision.** Steering accepts files/images from the existing main-process picker
+and validated drop bridge. The composer shows removable draft chips and image
+previews; sent files remain on their message. Sending a file alone prompts for its
+purpose rather than silently making it a requirement. The consult distinguishes
+visual reference, a requested 3D sculpt, and direct use/replacement through normal
+conversation. New directions cite both source messages and attachment IDs; the
+main process verifies those relationships before accepting them.
+
+Selection snapshots source bytes through the existing bounded attachment module.
+Sending publishes immutable copies under `.gauntlet-gamesmith/steering/<build-id>/`
+with unique file IDs, original names, sizes, and SHA-256 hashes in mirrored message
+events. The frozen Reference Pack is unchanged. File reads and previews are bound
+to the selected build, verified workspace/directory identities, and recorded hashes.
+Export/import preserves these files and their message references. Limits are ten
+files per message, 20 MB per file, and 100 files/100 MB per build. Supported raster
+images are supplied directly to the consult CLI; other files and earlier images
+remain available at their recorded read-only workspace paths.
+
+At implementation dispatch, the requirements snapshot includes only attachments
+referenced by confirmed, non-withdrawn directions. The paired critic and retries
+reuse the same snapshot. Verify the saved files at dispatch and completion; never
+silently replace a missing or changed copy with today's original. Newly confirmed
+asset requests join implementation's sculpting/integration work, with later
+requests for the same target taking precedence. Direct replacements suppress
+sculpting from the original cast. The first included round performs requested
+asset work; later rounds retain the desired result without unconditionally
+rebuilding it. No additional loop phase or consult table row is introduced.
+
+## ADR-032 — Per-build steering model selection (2026-09-05)
+
+**Status:** superseded by ADR-036. Historical preferences remain in the event log.
+
+**Decision.** The Chat composer offers the supported Codex models from the
+shared model catalog. Selection is independent of implementation/critique models
+and saved per build in mirrored `steering-model` events, including export/import.
+Builds without a preference default to gpt-5.6-sol. Each consult captures its model
+at admission for CLI dispatch, attempt provenance, and equivalent API cost.
+Changing the selection during a reply applies to the next message. Selection
+does not start an attempt, create a rounds-table row, or clear conversation history.
+V1 remains on the app's Codex connection at low effort.
+
+## ADR-033 — Build-scoped conversational steering (2026-09-05)
 
 **Status:** accepted.
 
@@ -783,7 +915,7 @@ Directions persist across rounds. Later directions supersede earlier conflicts;
 undoing an included direction is another steer. Pending directions may be withdrawn.
 At the first implementation dispatch, freeze the cumulative directions for that
 logical round. Its critic and automatic retries receive the same immutable snapshot.
-ADR-031 adds an explicit Resume boundary for pending directions.
+ADR-034 adds an explicit Resume boundary for pending directions.
 Chat arriving after that boundary waits for the next implementation. No phase is
 interrupted or injected with new chat. Chat never restarts a stopped/completed build.
 Historical implementations without a snapshot retain their original requirements.
@@ -811,9 +943,9 @@ reference pack is evidence, not something chat edits. A passed build does not ga
 automatic extra round. Supporting reference refreshes, larger conversations, or
 in-flight phase injection requires a separate design.
 
-## ADR-031 — Explicit Resume includes pending steering (2026-09-06)
+## ADR-034 — Explicit Resume includes pending steering (2026-09-06)
 
-**Status:** accepted; refines ADR-030.
+**Status:** accepted; refines ADR-033.
 
 **Context.** Repeated implementation failures can keep an operator's directions
 queued indefinitely when every retry inherits the first attempt's requirements.
@@ -837,9 +969,9 @@ unchanged except where the operator explicitly steers them.
 whole round to succeed first. Historical attempts remain reproducible, and the
 critic never evaluates against directions absent from its implementation.
 
-## ADR-032 — Continuing implementation lead with integrated steering (2026-09-06)
+## ADR-035 — Continuing implementation lead with integrated steering (2026-09-06)
 
-**Status:** accepted; ADR-033 supersedes the separate-assistant Chat behavior below.
+**Status:** accepted; ADR-036 supersedes the separate-assistant Chat behavior below.
 
 **Decision.** New builds retain one implementation lead session across rounds, with
 fresh independent research and critique sessions. Explicit Resume enables this
@@ -870,9 +1002,9 @@ session; they are untrusted working evidence subordinate to the current phase
 protocol and frozen operator requirements. These events use the existing portable
 schema, with bounded full reads separate from log projections.
 
-Steering remains the separate read-only consult defined by ADR-030. It receives
+Steering remains the separate read-only consult defined by ADR-033. It receives
 the latest valid notebook and recent reports, explicitly speaks as the steering
-assistant, and queues clear directions without redundant confirmation. ADR-031's
+assistant, and queues clear directions without redundant confirmation. ADR-034's
 explicit Resume boundary still includes pending directions; automatic recovery
 and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
@@ -903,9 +1035,9 @@ original event bytes. Readers accept the earlier `fromRunId` and `implementation
 and project them as attempt IDs; new events use the Build vocabulary. Raw stream and process
 ownership paths stay under `.gauntlet-gamesmith/runs/`, as required by ADR-020.
 
-## ADR-033 — Chat is a turn with the build lead (2026-09-06)
+## ADR-036 — Chat is a turn with the build lead (2026-09-06)
 
-**Status:** accepted; supersedes ADR-022 and the separate consult behavior in ADR-030/032.
+**Status:** accepted; supersedes ADR-032 and the separate consult behavior in ADR-033/035.
 
 **Decision.** Chat continues the same local implementation lead session and inherits the
 build's orchestrator model and effort, captured when each message is sent. The existing

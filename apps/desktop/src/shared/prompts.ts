@@ -4,7 +4,7 @@ import { harnessFor } from './models'
 import type { LeadCheckpoint, LeadDispatch } from './lead'
 
 export const MACOS_BROWSER_SANDBOX_RULE =
-  "Browser checks run inside a macOS sandbox: use Playwright's bundled browsers (`chromium.launch({ headless: true, args: ['--single-process', '--disable-features=UseDBus,MacSystemNetworkContext'] })`). The compatibility args are required because a normal multi-process Chromium launch cannot register its Mach rendezvous port inside this sandbox. Never pass `channel: 'chrome'` / `'msedge'` and never launch an installed browser app — the sandbox blocks it."
+  "Browser checks run inside a macOS sandbox: use Playwright's bundled browsers (`chromium.launch({ headless: true, args: ['--single-process', '--disable-features=UseDBus,MacSystemNetworkContext'] })`). The compatibility args are required because a normal multi-process Chromium launch cannot register its Mach rendezvous port inside this sandbox. Never pass `channel: 'chrome'` / `'msedge'` and never launch an installed browser app — the sandbox blocks it. Chromium is already downloaded for you and `PLAYWRIGHT_BROWSERS_PATH` in your environment points at it, so let Playwright resolve the browser itself: never set `executablePath`, and never unset, override, or work around that variable. If you need the `playwright` package, install it under this project; never install one into a temporary directory, and never import Playwright from `/tmp` or any other path left behind by a different run — those copies pin browser builds that were never downloaded here, and they fail only at launch."
 
 /** Keep caller-supplied text inside the prompt's data delimiters. */
 function escapedPromptText(value: string): string {

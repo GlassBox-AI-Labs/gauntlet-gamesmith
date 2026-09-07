@@ -91,7 +91,7 @@ implementation session and persists its dispatch, exact prompt, accounting basel
 checkpoints in mirrored ledger events. New builds enable it; explicit Resume enables existing builds.
 Each implementation still owns a separate process and immutable attempt. The scheduler and critic
 retain all advancement decisions. Missing private sessions and imported history recover from saved
-notes in fresh sessions; notes never prove verification or override current requirements (ADR-032).
+notes in fresh sessions; notes never prove verification or override current requirements (ADR-035).
 
 [`main/steering.ts`](../apps/desktop/src/main/steering.ts) owns a durable FIFO of read-only Chat
 turns in the implementation lead's session, using the build's model and effort for either harness.
@@ -106,7 +106,7 @@ remain visible. Attachments are immutable, verified copies outside the frozen Re
 `window.steering` exposes validated operations. The existing Chat conversation answers questions about
 the lead directly, with inline waiting/reply status and no separate model picker or lead panel.
 Historical independent consults never supply a lead session ID.
-Complete attempt and recovery events remain in the existing activity log (ADR-033, refining ADR-030/031/032).
+Complete attempt and recovery events remain in the existing activity log (ADR-036, refining ADR-033/034/035).
 
 ### Asset compatibility
 

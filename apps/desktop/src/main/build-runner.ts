@@ -39,7 +39,8 @@ import { cliExecutable, validatedExecutableEnv } from './cli-executable'
 import { delegationRules, GAUNTLET_IMPLEMENTER_AGENT_PREFIX, implementerAgentDefinition, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { browserCacheDir, browserReady, ensureBrowser, cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { PLAYWRIGHT_VERSION, browserNotice } from './browser'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
 import { defaultBuildTitle, type Ledger, type AttemptProcessOwnership } from './ledger'
@@ -60,6 +61,14 @@ import { createReferenceProtocol } from './roles/reference'
 import type { ExitInfo, LogGate, StreamParser } from './roles/types'
 import { planCompletion, planResume, planStart } from './round-planner'
 import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
+import {
+  orphanedGroupIds,
+  scanProcessTable,
+  strayGroupIds,
+  trackDescendantGroups,
+  type DescendantGroups,
+  type ProcessTableRow,
+} from './stray-processes'
 import {
   completeProcessMeta,
   interruptCapturedProcessGroup,
@@ -97,6 +106,19 @@ const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
 const MAX_ACCOUNT_ROTATIONS = 3
 const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
+// How long the supervisor tolerates a process group it cannot observe at all
+// before it stops waiting on an already-dead leader. Ownership is retained.
+/**
+ * How often the whole process table is read to find groups that left the
+ * attempt's own. A group is only recordable while something still links it to
+ * the attempt, so this interval is the width of the race: a command that
+ * backgrounds a process and exits immediately can vanish between two samples.
+ * One scan costs ~20ms, so sampling this often spends about 1% of a core.
+ */
+const DESCENDANT_SCAN_MS = 2_000
+const PROBE_BLIND_LIMIT_MS = 60_000
+// How often a still-blind probe repeats itself in the build log (VIS-001).
+const PROBE_BLIND_LOG_MS = 30_000
 const MAX_STREAM_READ_BYTES = 1024 * 1024
 const MAX_PARTIAL_LINE_CHARS = 256 * 1024
 const UNTRUSTED_HISTORY_MESSAGE = 'Untrusted history (imported or created before trust provenance shipped) is read-only; start a new trusted build in this workspace.'
@@ -163,6 +185,7 @@ export interface BuildRunnerDeps {
     groupIdentities: readonly string[],
   ): AttemptProcessMeta
   signalProcess(pid: number, signal: 0 | NodeJS.Signals): void
+  scanProcessTable(): ProcessTableRow[]
   processGroupIdentity(groupId: number): readonly string[]
   processGroupStillOwned(groupId: number, identity: readonly string[]): boolean
   cliVersion(binary: string, env: Record<string, string>, cwd: string): string
@@ -173,6 +196,9 @@ export interface BuildRunnerDeps {
   subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
   cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
   validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
+  browsersDir(): string
+  browserReady(): boolean
+  ensureBrowser(): typeof ensureBrowser extends () => infer R ? R : never
   prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
   /** Drain queued conversation turns after process settlement, before another phase. */
@@ -197,6 +223,7 @@ const DEFAULT_DEPS: BuildRunnerDeps = {
     groupIdentities,
   ),
   signalProcess: (pid, signal) => process.kill(pid, signal),
+  scanProcessTable,
   processGroupIdentity,
   processGroupStillOwned,
   cliVersion: detectCliVersion,
@@ -207,6 +234,9 @@ const DEFAULT_DEPS: BuildRunnerDeps = {
   subscriptionReady: (kind, cwd, home) => subscriptionReadiness(kind, cwd, home),
   cliExecutable,
   validatedExecutableEnv,
+  browsersDir: browserCacheDir,
+  browserReady,
+  ensureBrowser,
 }
 
 function buildImplementPrompt(
@@ -247,6 +277,14 @@ export class BuildRunner {
   private terminatingBuilds = new Set<string>()
   /** A build has at most one bounded signal escalation chain. */
   private interruptingAttempts = new Set<string>()
+  /** Process groups each attempt has been seen to create, so Stop can reach the ones that left its own group. */
+  private descendantGroups = new Map<string, DescendantGroups>()
+  /** Last process-table sample per attempt; the table is far too costly to read every supervision tick. */
+  private lastDescendantScan = new Map<string, number>()
+  /** Rate limit for reporting a process table we cannot read at all. */
+  private descendantScanWarnedAt = new Map<string, number>()
+  /** Escaped groups already announced as left running, so each is reported once. */
+  private reportedOrphanGroups = new Map<string, Set<number>>()
   /** Child streams of the build being driven; also pumped while awaiting stragglers. */
   private childTail: { buildId: string; attemptId: string; boundary: ChildStreamBoundary; tailer: ChildStreamTailer } | null = null
   /** IPC notifications queued until their enclosing ledger transaction commits. */
@@ -254,6 +292,8 @@ export class BuildRunner {
   /** Renderer/report refreshes requested during a transaction build only after commit. */
   private broadcastBuffer: Set<string> | null = null
   private deps: BuildRunnerDeps
+  /** The one Chromium download: attempted once per app run, never repeated. */
+  private browserPrepared = false
 
   constructor(
     private ledger: Ledger,
@@ -729,6 +769,44 @@ export class BuildRunner {
     return [build.workspaceDir, ...this.deps.protectedRoots()]
   }
 
+  /**
+   * Fill the app-managed browser cache before running a phase that may need it.
+   *
+   * Returns null — and yields to nothing — whenever the cache is already warm,
+   * which is every build after the first on a machine. That check is a stamp
+   * read, so the ordinary path into a phase stays synchronous.
+   *
+   * A cold cache is different: the Reference Study and the critic both launch a
+   * browser, and starting them while the download is still writing is how an
+   * agent finds a half-filled cache and fails at `chromium.launch()` — the bug
+   * this exists to end. So the first build waits, with the wait itself in the
+   * log (VIS-001). The wait is bounded by the download, and a machine with no
+   * Node on `PATH` — normal under ADR-014 — reports `unavailable` at once
+   * rather than failing the build: the cache path is handed to the child
+   * either way, because sharing one cache is what stops agents importing
+   * Playwright out of another run's `/tmp`.
+   */
+  private prepareBrowser(build: BuildRecord, attempt: PhaseAttempt): Promise<void> | null {
+    if (this.browserPrepared) return null
+    this.browserPrepared = true
+    if (this.deps.browserReady()) return null
+    this.log(
+      build.id,
+      attempt.id,
+      'system',
+      `Downloading Chromium for Playwright ${PLAYWRIGHT_VERSION} into the app-managed browser cache; the first build on this machine waits for it.`,
+    )
+    return this.deps.ensureBrowser().then(
+      (install) => {
+        const notice = browserNotice(install)
+        if (notice) this.log(build.id, attempt.id, notice.kind, notice.text)
+      },
+      (error: unknown) => {
+        this.log(build.id, attempt.id, 'error', `Could not download Chromium into the app-managed browser cache: ${error instanceof Error ? error.message : String(error)}`)
+      },
+    )
+  }
+
   /** Resolve and pin every CLI this phase may execute, including workers. */
   private executableEnvironment(build: BuildRecord, attempt: PhaseAttempt, planEnv: Record<string, string>): { command: string; env: Record<string, string> } {
     const roots = this.executableRoots(build)
@@ -736,7 +814,7 @@ export class BuildRunner {
       this.requiredHarnesses(build, attempt.role, attempt.harness).map((harness) => [harness, this.deps.cliExecutable(harness, roots)]),
     )
     const env = {
-      ...subscriptionEnv(planEnv, process.env, attempt.harness, roots),
+      ...subscriptionEnv({ ...planEnv, PLAYWRIGHT_BROWSERS_PATH: this.deps.browsersDir() }, process.env, attempt.harness, roots),
       ...this.deps.validatedExecutableEnv(executables, roots),
     }
     return {
@@ -1388,6 +1466,92 @@ export class BuildRunner {
     if (!this.ledger.getBuild(buildId)) throw new Error('Cannot advance process-group ownership for a missing attempt.')
   }
 
+  /** Process-control narration for one attempt; never lets a log failure stop signalling. */
+  private controlReporter(buildId: string, attemptId: string): (message: string) => void {
+    return (message: string): void => {
+      try {
+        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
+      } catch (error) {
+        console.error('Could not persist process-control event:', error)
+      }
+    }
+  }
+
+  /**
+   * Fold one process-table sample into what this attempt is known to have
+   * spawned. Signalling the attempt's own process group misses a descendant
+   * that started a group of its own, and once such a process is orphaned there
+   * is no link left to find it by — so the groups are recorded while the link
+   * is still visible. See `stray-processes.ts`.
+   */
+  private trackAttemptDescendants(buildId: string, attemptId: string, leaderPid: number, now: number): void {
+    if (now - (this.lastDescendantScan.get(attemptId) ?? 0) < DESCENDANT_SCAN_MS) return
+    this.lastDescendantScan.set(attemptId, now)
+    let rows: ProcessTableRow[]
+    try {
+      rows = this.deps.scanProcessTable()
+    } catch (error) {
+      // Failing to look is not proof there is nothing there, and the next sample
+      // retries — but a scan that never succeeds protects nothing, so say so
+      // rather than going quiet (VIS-001).
+      if (now - (this.descendantScanWarnedAt.get(attemptId) ?? 0) >= PROBE_BLIND_LOG_MS) {
+        this.descendantScanWarnedAt.set(attemptId, now)
+        this.controlLog(
+          buildId,
+          attemptId,
+          'error',
+          `Could not read the process table to track what this attempt has started: ${error instanceof Error ? error.message : String(error)} Process groups it starts outside its own may not be stopped with it.`,
+        )
+      }
+      return
+    }
+    this.descendantScanWarnedAt.delete(attemptId)
+    const groups = this.descendantGroups.get(attemptId) ?? (new Map() as DescendantGroups)
+    trackDescendantGroups(rows, leaderPid, groups)
+    this.descendantGroups.set(attemptId, groups)
+    // Surface what the agent has left running as it happens, not only when the
+    // phase ends and it is signalled (VIS-001).
+    const reported = this.reportedOrphanGroups.get(attemptId) ?? new Set<number>()
+    this.reportedOrphanGroups.set(attemptId, reported)
+    for (const pgid of orphanedGroupIds(rows, groups, leaderPid)) {
+      if (reported.has(pgid)) continue
+      reported.add(pgid)
+      this.controlLog(
+        buildId,
+        attemptId,
+        'system',
+        `Agent work left process group ${pgid} running with no parent; it is tracked and will be stopped when this phase ends.`,
+      )
+    }
+  }
+
+  /**
+   * Interrupt the process groups this attempt created and then left outside its
+   * own group. Each is signalled through the identities recorded while it was
+   * provably a descendant, so a group whose PGID has since been recycled by an
+   * unrelated process fails that check and is left alone.
+   */
+  private sweepStrayGroups(buildId: string, attemptId: string, leaderGroupId: number): void {
+    const groups = this.descendantGroups.get(attemptId)
+    this.descendantGroups.delete(attemptId)
+    this.lastDescendantScan.delete(attemptId)
+    this.descendantScanWarnedAt.delete(attemptId)
+    this.reportedOrphanGroups.delete(attemptId)
+    if (!groups) return
+    const report = this.controlReporter(buildId, attemptId)
+    for (const pgid of strayGroupIds(groups, [leaderGroupId])) {
+      const identity = [...(groups.get(pgid) ?? [])]
+      if (identity.length === 0) continue
+      report(`Agent work left process group ${pgid} running outside the attempt group; interrupting it (SIGINT).`)
+      interruptCapturedProcessGroup(pgid, identity, report, undefined, {
+        kill: this.deps.signalProcess,
+        defer: this.deps.defer,
+        groupIdentity: this.deps.processGroupIdentity,
+        groupStillOwned: this.deps.processGroupStillOwned,
+      })
+    }
+  }
+
   private interrupt(meta: AttemptProcessMeta, buildId: string, attemptId: string): void {
     if (this.interruptingAttempts.has(attemptId)) return
     if (!processMatches(meta)) {
@@ -1395,13 +1559,8 @@ export class BuildRunner {
       this.interruptCaptured(meta, captured, buildId, attemptId)
       return
     }
-    const report = (message: string): void => {
-      try {
-        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
-      } catch (error) {
-        console.error('Could not persist process-control event:', error)
-      }
-    }
+    this.sweepStrayGroups(buildId, attemptId, meta.pid)
+    const report = this.controlReporter(buildId, attemptId)
     try {
       this.refreshCanonicalGroup(meta, buildId, attemptId)
     } catch (error) {
@@ -1439,13 +1598,8 @@ export class BuildRunner {
     attemptId: string,
   ): void {
     if (this.interruptingAttempts.has(attemptId)) return
-    const report = (message: string): void => {
-      try {
-        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
-      } catch (error) {
-        console.error('Could not persist process-control event:', error)
-      }
-    }
+    this.sweepStrayGroups(buildId, attemptId, meta.pid)
+    const report = this.controlReporter(buildId, attemptId)
     this.interruptingAttempts.add(attemptId)
     this.terminatingBuilds.add(buildId)
     interruptCapturedProcessGroup(
@@ -1696,6 +1850,8 @@ export class BuildRunner {
         this.stopForSubscription(build, attempt, subscriptionBlock.harness, subscriptionBlock.readiness)
         return
       }
+      const browser = this.prepareBrowser(build, attempt)
+      if (browser) await browser
       // Authentication/status probes are external calls. Re-check immediately
       // before handing the project path to a role in case it changed meanwhile.
       if (!this.verifyWorkspaceBoundary(build)) return
@@ -2084,6 +2240,10 @@ export class BuildRunner {
       this.stopSpawnedRunCanonical(build, attempt, message, meta.startedAtMs)
       if (this.current?.attemptId === attempt.id) this.current = null
       if (this.childTail?.attemptId === attempt.id) this.childTail = null
+    } finally {
+      // However the attempt ended, a dev server or browser it backgrounded into
+      // its own process group is still running. The phase is over; so are they.
+      this.sweepStrayGroups(build.id, attempt.id, meta.pid)
     }
   }
 
@@ -2263,6 +2423,58 @@ export class BuildRunner {
     }
     let driveFailed = false
     let workspaceSafe = true
+    // Assume the group is still there until a probe says otherwise; an
+    // unanswered probe must never be read as "the child is gone". A successful
+    // answer is kept across ticks so a later blind tick has something to stand on.
+    let descendantsRemain = true
+    let blindSince: number | null = null
+    let blindLoggedAt = 0
+    /**
+     * Refresh owned-group membership. Returns 'give-up' only when the leader has
+     * exited and the group has been completely unobservable long enough that
+     * waiting for it can no longer end.
+     */
+    const observeGroup = (leaderDead: boolean, now: number): 'observed' | 'blind' | 'give-up' => {
+      try {
+        const refreshed = this.deps.processGroupIdentity(meta.pid)
+        if (blindSince !== null) {
+          this.controlLog(build.id, attempt.id, 'system', `Process group ${meta.pid} is observable again.`)
+          blindSince = null
+        }
+        if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
+          let advanced = false
+          for (const identity of refreshed) {
+            if (!capturedGroupIdentity.has(identity)) advanced = true
+            capturedGroupIdentity.add(identity)
+          }
+          if (advanced) {
+            const union = [...groupSnapshot()]
+            this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
+            meta.groupIdentities = union
+          }
+        }
+        const captured = groupSnapshot()
+        descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
+        return 'observed'
+      } catch (error) {
+        // Failing to look is not proof the group is gone. Keep the last known
+        // answer and keep supervising instead of discarding finished paid work.
+        const message = error instanceof Error ? error.message : String(error)
+        if (blindSince === null) {
+          blindSince = now
+          blindLoggedAt = now
+          this.controlLog(build.id, attempt.id, 'error', `Process-group probe failed; the attempt keeps running while retrying: ${message}`)
+          return 'blind'
+        }
+        const blindFor = now - blindSince
+        if (leaderDead && blindFor > PROBE_BLIND_LIMIT_MS) return 'give-up'
+        if (now - blindLoggedAt >= PROBE_BLIND_LOG_MS) {
+          blindLoggedAt = now
+          this.controlLog(build.id, attempt.id, 'error', `Process group ${meta.pid} has been unobservable for ${Math.round(blindFor / 1_000)}s; still retrying: ${message}`)
+        }
+        return 'blind'
+      }
+    }
     try {
       await new Promise<void>((resolve, reject) => {
         const interval = this.deps.repeat(() => {
@@ -2286,22 +2498,22 @@ export class BuildRunner {
                   : `Attempt exceeded the ${Math.round(hardCapMs / 3_600_000)}h ceiling — interrupting.`,
               )
             }
+            this.trackAttemptDescendants(build.id, attempt.id, meta.pid, now)
             const leaderDead = own ? own.exited : !processMatches(meta)
-            const refreshed = this.deps.processGroupIdentity(meta.pid)
-            if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
-              let advanced = false
-              for (const identity of refreshed) {
-                if (!capturedGroupIdentity.has(identity)) advanced = true
-                capturedGroupIdentity.add(identity)
-              }
-              if (advanced) {
-                const union = [...groupSnapshot()]
-                this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
-                meta.groupIdentities = union
-              }
+            if (observeGroup(leaderDead, now) === 'give-up') {
+              this.controlLog(
+                build.id,
+                attempt.id,
+                'error',
+                `Process group ${meta.pid} has been unobservable since its leader exited; interrupting what may remain and finishing the attempt with ownership retained.`,
+              )
+              // Descendants may still be writing to the workspace, so escalate
+              // before finalizing (PROC-003). Ownership stays with the app.
+              this.interruptCaptured(meta, groupSnapshot(), build.id, attempt.id)
+              this.deps.cancelRepeat(interval)
+              resolve()
+              return
             }
-            const captured = groupSnapshot()
-            const descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
             if (leaderDead && !descendantsRemain) {
               this.deps.cancelRepeat(interval)
               resolve()
@@ -2358,14 +2570,14 @@ export class BuildRunner {
       }
       if (this.current?.attemptId === attempt.id) this.current = null
       const captured = groupSnapshot()
-      let descendantsRemain = captured.length > 0
+      let stillOwnedAtExit = captured.length > 0
       try {
-        descendantsRemain &&= this.deps.processGroupStillOwned(meta.pid, captured)
+        stillOwnedAtExit &&= this.deps.processGroupStillOwned(meta.pid, captured)
       } catch (error) {
-        descendantsRemain = true
+        stillOwnedAtExit = true
         this.controlLog(build.id, attempt.id, 'error', `Final process-group absence could not be verified; canonical ownership is retained: ${error instanceof Error ? error.message : String(error)}`)
       }
-      if (!descendantsRemain && this.ledger.attemptProcessOwnership(attempt.id)) this.ledger.clearAttemptProcessOwnership(attempt.id)
+      if (!stillOwnedAtExit && this.ledger.attemptProcessOwnership(attempt.id)) this.ledger.clearAttemptProcessOwnership(attempt.id)
       // Retain the workspace process snapshot as portable replay evidence.
       // Canonical ownership is cleared only in SQLite after verified absence.
     }
