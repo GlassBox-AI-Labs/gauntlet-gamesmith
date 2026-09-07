@@ -52,7 +52,7 @@ describe('play safety', () => {
   it('uses a bounded package file and a fixed npm argv', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'attacker controlled command' } }))
-    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['build', 'dev'] })
+    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['run', 'dev'] })
 
     fs.writeFileSync(path.join(dir, 'package.json'), ' '.repeat(1024 * 1024 + 1))
     expect(detectLaunch(dir)).toEqual({ error: expect.stringContaining('Nothing launchable') })

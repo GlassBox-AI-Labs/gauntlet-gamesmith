@@ -385,7 +385,7 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
       ? (pkg.scripts as Record<string, unknown>)
       : null
     for (const script of ['dev', 'start', 'serve', 'preview']) {
-      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['build', script] }
+      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['run', script] }
     }
   } catch {
     /* no valid package.json — fall through */
