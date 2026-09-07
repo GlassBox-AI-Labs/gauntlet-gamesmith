@@ -3,6 +3,7 @@ import { RedisRoomStore } from './redis'
 import { MultiplayerServer } from './server'
 import { createClient } from 'redis'
 import { randomUUID } from 'node:crypto'
+import { clientMessage, type Snapshot, type State } from './index'
 const url=process.env.MULTIPLAYER_TEST_REDIS
 const scope='c'.repeat(32)
 describe.skipIf(!url)('shared Redis room protocol', () => {
@@ -23,14 +24,26 @@ describe.skipIf(!url)('shared Redis room protocol', () => {
       await expect(b.read(serverB.verify(separate.ticket))).rejects.toThrow('expired')
       const key=`${namespace}:{${scope}}:room:${room.id}`
       await raw.set(key,JSON.stringify({...room,startAt:Date.now()-1000,endAt:Date.now()+30000}),{PXAT:room.expiresAt})
-      const received: unknown[]=[]; const off=await b.subscribe(ref,s=>received.push(s))
+      const received: Snapshot[]=[]; const off=await b.subscribe(ref,s=>received.push(s))
       await a.publish(ref,{type:'state',playerId:ref.playerId,seq:1,at:Date.now(),state:{x:1}})
       await new Promise(r=>setTimeout(r,50));expect(received).toHaveLength(1)
       await a.publish(ref,{type:'state',playerId:ref.playerId,seq:1,at:Date.now(),state:{x:999}})
       await new Promise(r=>setTimeout(r,25));expect(received).toHaveLength(1)
+      const states: State[] = [
+        { x: 2, y: 12, z: -4, vx: 0, vy: 2, vz: 0, qx: 0, qy: 0, qz: 0, qw: 1, animation: 'gliding' },
+        { tile: 4, switchOn: true, revision: 2, puzzle: 'bridge' },
+      ]
+      for (const [index, state] of states.entries()) {
+        const message = { type: 'state' as const, seq: index + 2, at: Date.now(), state }
+        expect(clientMessage.parse(message)).toEqual(message)
+        await a.publish(ref, { ...message, playerId: ref.playerId })
+        await new Promise(r=>setTimeout(r,50))
+        expect(received.at(-1)?.state).toEqual(state)
+      }
+      expect(received).toHaveLength(3)
       await raw.set(key,JSON.stringify({...room,startAt:Date.now()-180001,endAt:Date.now()-1}),{PXAT:room.expiresAt})
-      await a.publish(ref,{type:'state',playerId:ref.playerId,seq:2,at:Date.now(),state:{x:2}})
-      await new Promise(r=>setTimeout(r,25));expect(received).toHaveLength(1)
+      await a.publish(ref,{type:'state',playerId:ref.playerId,seq:4,at:Date.now(),state:{x:2}})
+      await new Promise(r=>setTimeout(r,25));expect(received).toHaveLength(3)
       await off()
     } finally { for await(const keys of raw.scanIterator({MATCH:`${namespace}:*`,COUNT:100})) if(keys.length) await raw.del(keys);raw.destroy();await a.close();await b.close() }
   })

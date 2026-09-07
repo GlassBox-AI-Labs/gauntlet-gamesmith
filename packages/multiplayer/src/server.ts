@@ -29,7 +29,7 @@ export class MultiplayerServer {
     const actual = Buffer.from(signature ?? ''), expected = Buffer.from(this.sign(body ?? ''))
     if (extra || actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error('Invalid room ticket.')
     const claims = ticketSchema.parse(JSON.parse(Buffer.from(body, 'base64url').toString('utf8')))
-    if (claims.expiresAt <= Date.now()) throw new Error('This session ended. Join another match.')
+    if (claims.expiresAt <= Date.now()) throw new Error('This session ended. Join another session.')
     return claims
   }
   async join(input: { scope: string; gameId: string; releaseId: string; name: string; manifest: MultiplayerManifest; roomId?: string }): Promise<Session> {
@@ -86,14 +86,14 @@ export function attachRelay(socket: RelaySocket, service: MultiplayerServer, opt
       void (async () => {
         const verified = service.verify(message.ticket)
         const room = await service.store.read(verified)
-        if (!room.startAt || !room.endAt || room.endAt <= Date.now() || !room.players.some(p => p.id === verified.playerId)) throw new Error('Match is not active.')
+        if (!room.startAt || !room.endAt || room.endAt <= Date.now() || !room.players.some(p => p.id === verified.playerId)) throw new Error('Session is not active.')
         const off = await service.store.subscribe(verified, event => { if (event.playerId !== verified.playerId) send(event) })
         if (closed) { await off(); return }
         unsubscribe = off; claims = verified
-        timers.push(setTimeout(() => { send({ type: 'ended', serverTime: Date.now() }); socket.close(1000, 'Match ended.') }, Math.max(0, room.endAt - Date.now())))
+        timers.push(setTimeout(() => { send({ type: 'ended', serverTime: Date.now() }); socket.close(1000, 'Session ended.') }, Math.max(0, room.endAt - Date.now())))
         send({ type: 'welcome', room, playerId: verified.playerId, serverTime: Date.now(), instance: options.instance })
         options.log?.(`multiplayer joined room ${room.id}`)
-      })().catch(() => { send({ type: 'error', message: 'This match is unavailable. Return to the lobby.' }); socket.close(1008, 'Room unavailable.') })
+      })().catch(() => { send({ type: 'error', message: 'This session is unavailable. Return to the lobby.' }); socket.close(1008, 'Room unavailable.') })
       return
     }
     if (!claims) { socket.close(1008, 'Room ticket required.'); return }

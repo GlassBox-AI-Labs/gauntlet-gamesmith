@@ -420,9 +420,10 @@ multiplayer release to preview correctly; changing environment alone does not
 update an existing deployment.
 
 Deploy the tested Git commit using the existing GlassBox-owned workflow above,
-then verify two guests join a real published/private-preview racing release,
-exchange state, reconnect without extending the match, and close at its original
-three-minute deadline. HTTP 426 from the socket health route only proves that
+then verify two guests join a real published/private-preview multiplayer release,
+exchange game-defined state, reconnect without extending the session, and close
+at its original three-minute deadline. Playtest the actual shared mechanics for
+the chosen genre as well as the common protocol. HTTP 426 from the socket health route only proves that
 the route exists; it does not verify a working WebSocket upgrade. Record the
 actual deployment IDs and runtime test results below after rollout.
 
@@ -466,3 +467,20 @@ Its immutable saved-round revision is
 `9e3d670d-6bb6-42d3-9abb-d74957995cf0`. Preview capabilities expire after 30
 minutes and are intentionally absent from this document. Open a new preview
 through Electron's release history when needed, then publish from the app.
+
+
+### Genre-neutral SDK verification — 2026-09-07
+
+The generalized SDK was tested against the existing hosted relay using synthetic
+3D movement plus discrete activity/ready state. Two guests connected to separate
+function instances, exchanged 3,424 snapshots, reconnected after a forced TCP
+disconnect with the same identity, and ended at the original 180-second deadline.
+`TransformBuffer` produced 3,537 presentation samples. RTT from this test machine
+was 80 ms median / 96 ms p95; these observations are not a geographic guarantee.
+
+Local verification passed 1,018 unit tests, the separate Redis integration test,
+monorepo typecheck and all builds. It includes 3D/quaternion presentation,
+non-spatial puzzle state and legacy pose compatibility. This was a protocol and
+presentation check, not newly generated browser games in every genre. Historical
+racing gameplay validation above remains one concrete example. This SDK update
+did not deploy infrastructure or publish a game.

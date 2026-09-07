@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { MultiplayerServer, roomScope, type RoomStore } from './server'
+import { clientMessage, type State } from './index'
 const secret = 'a'.repeat(64)
 afterEach(() => vi.useRealTimers())
 describe('guest capabilities', () => {
@@ -17,4 +18,13 @@ describe('guest capabilities', () => {
     const scopes = [roomScope(secret,'g1','r1',false),roomScope(secret,'g2','r1',false),roomScope(secret,'g1','r2',false),roomScope(secret,'g1','r1',true)]
     expect(new Set(scopes).size).toBe(4)
   })
+})
+
+it.each<State>([
+  { x: 2, y: 12, z: -4, animation: 'gliding', region: 'forest' },
+  { tile: 4, switchOn: true, revision: 2, puzzle: 'bridge' },
+  { emote: 'wave', ready: true },
+])('accepts game-defined state without a vehicle or spatial schema: %j', state => {
+  const message = { type: 'state', seq: 1, at: Date.now(), state }
+  expect(clientMessage.parse(message)).toEqual(message)
 })

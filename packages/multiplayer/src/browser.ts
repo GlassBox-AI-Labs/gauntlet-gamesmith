@@ -1,2 +1,2 @@
 export { MultiplayerClient } from './client'
-export { PoseBuffer } from './smoothing'
+export { SnapshotBuffer, TransformBuffer, PoseBuffer } from './smoothing'

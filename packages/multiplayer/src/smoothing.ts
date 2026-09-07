@@ -1,46 +1,66 @@
-import type { PoseBuffer as PublicPoseBuffer } from './browser-api'
-/** A timestamped pose buffer shared by every game. Render time always moves forward. */
-export interface Pose { x: number; z: number; heading: number; s: number; vx: number; vz: number; speed: number }
-interface Sample { at: number; seq: number; pose: Pose }
+import { SnapshotBuffer } from './snapshot-buffer'
+import type { PoseBuffer as PublicPoseBuffer, TransformBuffer as PublicTransformBuffer, SnapshotBufferOptions } from './browser-api'
+export { SnapshotBuffer } from './snapshot-buffer'
+export type { SnapshotInterpolation, SnapshotBufferOptions } from './snapshot-buffer'
+
+/** Position, velocity and quaternion rotation for avatars, objects and vehicles. */
+export type Transform = {
+  x: number; y: number; z: number
+  vx: number; vy: number; vz: number
+  qx: number; qy: number; qz: number; qw: number
+}
+export type TransformBufferOptions = SnapshotBufferOptions & { teleportDistance?: number }
+const coordinates = ['x', 'y', 'z', 'vx', 'vy', 'vz'] as const
+const rotation = ['qx', 'qy', 'qz', 'qw'] as const
+
+function teleportThreshold(value = 50): number {
+  if (!Number.isFinite(value) || value <= 0) throw new Error('Teleport distance must be positive.')
+  return value
+}
+
+/** Optional spatial adapter. Non-spatial games can use SnapshotBuffer directly. */
+export class TransformBuffer extends SnapshotBuffer<Transform> implements PublicTransformBuffer {
+  constructor(options: TransformBufferOptions = {}) {
+    const teleportDistance = teleportThreshold(options.teleportDistance)
+    super({
+      interpolate(a, b, t) {
+        const result = { ...a }
+        for (const key of coordinates) result[key] += (b[key] - a[key]) * t
+        // q and -q describe the same orientation. Normalize the shortest-path blend.
+        const sign = rotation.reduce((dot, key) => dot + a[key] * b[key], 0) < 0 ? -1 : 1
+        for (const key of rotation) result[key] += (sign * b[key] - a[key]) * t
+        const length = Math.hypot(result.qx, result.qy, result.qz, result.qw)
+        for (const key of rotation) result[key] /= length
+        return result
+      },
+      extrapolate: (state, seconds) => ({ ...state, x: state.x + state.vx * seconds, y: state.y + state.vy * seconds, z: state.z + state.vz * seconds }),
+      discontinuity: (a, b) => Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > teleportDistance,
+    }, options)
+  }
+
+  override push(at: number, seq: number, state: Transform, arrival: number): void {
+    if ([...coordinates, ...rotation].some(key => !Number.isFinite(state[key]))) return
+    const length = Math.hypot(state.qx, state.qy, state.qz, state.qw)
+    if (!Number.isFinite(length) || length < 1e-9) return
+    super.push(at, seq, { ...state, qx: state.qx / length, qy: state.qy / length, qz: state.qz / length, qw: state.qw / length }, arrival)
+  }
+}
+
+/** Legacy track-motion adapter, retained for games already using this shape. */
+export type Pose = { x: number; z: number; heading: number; s: number; vx: number; vz: number; speed: number }
 const wrap = (r: number) => Math.atan2(Math.sin(r), Math.cos(r))
-export class PoseBuffer implements PublicPoseBuffer {
-  private samples: Sample[] = []
-  private lastSeq = -1
-  private lastRender = -Infinity
-  private delay = 100
-  private jitter = 0
-  private lastArrival = 0
-  private lastAt = 0
-  constructor(private readonly options = { minDelayMs: 80, maxDelayMs: 180, maxExtrapolateMs: 80, teleportDistance: 50 }) {}
-  push(at: number, seq: number, pose: Pose, arrival: number): void {
-    if (!Number.isFinite(at) || !Number.isFinite(arrival) || seq <= this.lastSeq || Object.values(pose).some(v => !Number.isFinite(v))) return
-    if (this.samples.length && at <= this.samples.at(-1)!.at) return
-    if (this.lastArrival) {
-      this.jitter += (Math.abs((arrival - this.lastArrival) - (at - this.lastAt)) - this.jitter) * 0.1
-      const wanted = Math.min(this.options.maxDelayMs, Math.max(this.options.minDelayMs, 80 + this.jitter * 2))
-      this.delay += (wanted - this.delay) * 0.1
-    }
-    this.lastArrival = arrival; this.lastAt = at; this.lastSeq = seq
-    const previous = this.samples.at(-1)
-    if (previous && Math.hypot(pose.x - previous.pose.x, pose.z - previous.pose.z) > this.options.teleportDistance) this.samples = []
-    this.samples.push({ at, seq, pose: { ...pose } })
-    if (this.samples.length > 32) this.samples.shift()
+export class PoseBuffer extends SnapshotBuffer<Pose> implements PublicPoseBuffer {
+  constructor(options: TransformBufferOptions = {}) {
+    const teleportDistance = teleportThreshold(options.teleportDistance)
+    super({
+      interpolate(a, b, t) {
+        const result = { ...a }
+        for (const key of ['x', 'z', 's', 'vx', 'vz', 'speed'] as const) result[key] += (b[key] - a[key]) * t
+        result.heading += wrap(b.heading - a.heading) * t
+        return result
+      },
+      extrapolate: (state, seconds) => ({ ...state, x: state.x + state.vx * seconds, z: state.z + state.vz * seconds, s: state.s + state.speed * seconds }),
+      discontinuity: (a, b) => Math.hypot(b.x - a.x, b.z - a.z) > teleportDistance,
+    }, options)
   }
-  sample(serverNow: number): Pose | null {
-    if (!this.samples.length) return null
-    const at = Math.max(this.lastRender, serverNow - this.delay)
-    this.lastRender = at
-    while (this.samples.length > 2 && this.samples[1].at <= at) this.samples.shift()
-    const a = this.samples[0], b = this.samples[1]
-    if (at <= a.at) return { ...a.pose }
-    if (b && at <= b.at) {
-      const t = (at - a.at) / (b.at - a.at), result = { ...a.pose }
-      for (const key of ['x', 'z', 's', 'vx', 'vz', 'speed'] as const) result[key] += (b.pose[key] - a.pose[key]) * t
-      result.heading += wrap(b.pose.heading - a.pose.heading) * t
-      return result
-    }
-    const last = this.samples.at(-1)!, dt = Math.min(this.options.maxExtrapolateMs, Math.max(0, at - last.at)) / 1000
-    return { ...last.pose, x: last.pose.x + last.pose.vx * dt, z: last.pose.z + last.pose.vz * dt, s: last.pose.s + last.pose.speed * dt }
-  }
-  diagnostics() { return { bufferMs: this.delay, jitterMs: this.jitter, samples: this.samples.length } }
 }

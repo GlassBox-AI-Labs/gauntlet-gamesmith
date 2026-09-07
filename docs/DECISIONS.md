@@ -819,7 +819,8 @@ guests against the exact ready release and public/preview access. The game host
 injects its launch capability only when the validated build declares
 `gamesmith.multiplayer.json`. Electron bundles the browser SDK into each scaffold
 and puts its usage contract in the visible implementation prompt. Games use a
-small join/room/connect/publish/leave interface and shared pose interpolation.
+small join/room/connect/publish/leave interface with game-defined state and optional
+presentation helpers.
 
 Vercel's WebSocket beta handles connections in US `iad1`, with a shared Redis
 store for atomic room membership, deadlines, duplicate suppression and pub/sub.
@@ -832,8 +833,9 @@ release database. No gamer signup, physical database per game, gameplay writes
 to Postgres, Colyseus process, or always-running game server is introduced here.
 
 **Reason.** A short relay session fits the platform's current Vercel deployment
-and lets racing adopt the same guest protocol and smoothing in local previews
-and hosted play. Cross-instance Redis coordination is required even for a single
+and lets different game genres use the same guest protocol and snapshot timing
+in local previews and hosted play. Open-world exploration can run as a short
+shared session within the same limits. Cross-instance Redis coordination is required even for a single
 Vercel project. Colyseus's authoritative room process would require a different
 runtime/adapter; it is a future option behind the same game-facing seam.
 
@@ -860,3 +862,23 @@ and automatically retries transient transfer failures three times. Completion
 still validates its digest. This does not increase the separate 24 MiB shipping
 artifact limit or disable safety checks. Drafts remain local and are discarded
 on normal app exit; created builds keep their frozen provenance and files.
+
+
+## ADR-032 — Genre-neutral multiplayer state and presentation (2026-09-07)
+
+**Decision.** The shared multiplayer module serves different game genres. Keep
+room/session lifecycle and flat game-defined state independent of presentation.
+`SnapshotBuffer` owns adaptive timing, ordering and bounded history while games
+supply interpolation and optional extrapolation/discontinuity rules.
+`TransformBuffer` provides spatial presentation in all three axes with quaternion
+rotation; non-spatial games need no position fields. Retain `PoseBuffer` as an
+optional compatibility adapter for existing track-motion integrations.
+
+**Consequences.** Agent instructions, generated SDK declarations, examples and
+verification describe sessions and game-defined mechanics. Open-world exploration,
+platformers, puzzles, party games and other genres share the same six-guest,
+180-second limits. World size does not remove those limits or provide persistent
+worlds. State relay is lossy latest-state delivery, not a reliable event or
+transaction channel; games own idempotency and conflict semantics. No new server
+authority, persistent inventory, world streaming or monetization is implied.
+Historical racing validation stays labeled as one concrete integration example.

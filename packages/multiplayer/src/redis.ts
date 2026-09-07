@@ -22,22 +22,22 @@ if room and room.startAt==cjson.null and room.readyAt<=now then
 end
 if op=='join' then
  if room and (room.startAt~=cjson.null or #room.players>=room.maxPlayers) then
-  if explicit then return redis.error_reply('This room has started or is full. Join a new match.') end
+  if explicit then return redis.error_reply('This room has started or is full. Join a new session.') end
   id=ARGV[2];key=prefix..id;room=nil
  end
  if not room then
-  if explicit then return redis.error_reply('This invite expired. Join a new match.') end
+  if explicit then return redis.error_reply('This invite expired. Join a new session.') end
   room=cjson.decode(ARGV[5]);room.id=id;room.createdAt=now;room.readyAt=now+tonumber(ARGV[7]);room.expiresAt=now+tonumber(ARGV[10])
  end
  local player=cjson.decode(ARGV[6]);player.slot=#room.players
  table.insert(room.players,player)
  redis.call('SET',KEYS[1],id,'PXAT',room.readyAt)
-elseif not room then return redis.error_reply('This match expired. Join a new match.')
+elseif not room then return redis.error_reply('This session expired. Join a new session.')
 elseif op=='start' then
  local member=false
  for _,p in ipairs(room.players) do if p.id==ARGV[6] then member=true end end
  if not member then return redis.error_reply('Player is not in room.') end
- if room.players[1].id~=ARGV[6] then return redis.error_reply('The first player starts this match.') end
+ if room.players[1].id~=ARGV[6] then return redis.error_reply('The first player starts this session.') end
  if room.startAt==cjson.null then room.startAt=now+tonumber(ARGV[8]);room.endAt=room.startAt+tonumber(ARGV[9]) end
 elseif op=='leave' and room.startAt==cjson.null then
  local remaining={}

@@ -52,7 +52,7 @@ export class MultiplayerClient implements PublicClient {
     return this.session.room
   }
   async room(start = false): Promise<Room> {
-    if (!this.session) throw new Error('Join a match first.')
+    if (!this.session) throw new Error('Join a session first.')
     if (this.polling && !start) return this.polling
     if (!start && Date.now() - this.lastPoll < 600) return this.session.room
     const session = this.session
@@ -100,7 +100,7 @@ export class MultiplayerClient implements PublicClient {
       this.socket = null
       if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null }
       if (event.code === 1000 || (session.room.endAt && this.serverNow() >= session.room.endAt)) { this.diagnostics.status = 'ended'; this.changed(); return }
-      if (event.code === 1008 || ++this.reconnects > 5) { this.diagnostics.status = 'error'; this.diagnostics.error = 'Unable to rejoin this match. Return to the lobby.'; this.changed(); return }
+      if (event.code === 1008 || ++this.reconnects > 5) { this.diagnostics.status = 'error'; this.diagnostics.error = 'Unable to rejoin this session. Return to the lobby.'; this.changed(); return }
       this.diagnostics.status = 'reconnecting'; this.changed(); this.later(() => this.connect(), Math.min(3000, 250 * 2 ** this.reconnects))
     }
   }
@@ -114,6 +114,6 @@ export class MultiplayerClient implements PublicClient {
     this.closed = true; this.generation++
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear(); if (this.pingTimer) clearInterval(this.pingTimer)
-    this.pingTimer = null; this.socket?.close(1000, 'Left match'); this.socket = null; this.session = null
+    this.pingTimer = null; this.socket?.close(1000, 'Left session'); this.socket = null; this.session = null
   }
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import WebSocket from 'ws'
 import { MultiplayerClient } from '../src/client'
-import { PoseBuffer } from '../src/smoothing'
+import { TransformBuffer, type Transform } from '../src/smoothing'
 
 // Supply a private JSON file containing {url: <actual saved-round preview URL>}.
 // Never print the URL or capability. This drives the real API/relay, not a UI mock.
@@ -30,7 +30,7 @@ let sendTimer: ReturnType<typeof setInterval> | undefined
 let heartbeat: ReturnType<typeof setInterval> | undefined
 let received = 0, connected = 0, beforeReconnect = 0
 const rtt: number[] = [], rendered: number[] = []
-const poses = new PoseBuffer()
+const poses = new TransformBuffer()
 try {
   const a = await one.join('Protocol One'), b = await two.join('Protocol Two')
   assert.equal(a.id, b.id, 'guests must share a room')
@@ -48,14 +48,16 @@ try {
   })
   two.onState(s => {
     received++
-    poses.push(s.at, s.seq, { x: Number(s.state.x), z: 0, heading: 0, s: Number(s.state.s), vx: 20, vz: 0, speed: 20 }, two.serverNow())
+    assert.equal(s.state.activity, 'exploring')
+    assert.equal(s.state.ready, true)
+    poses.push(s.at, s.seq, s.state as Transform, two.serverNow())
   })
   one.connect(); two.connect()
   await until(() => one.diagnostics.status === 'connected' && two.diagnostics.status === 'connected')
   console.log(JSON.stringify({ step: 'connected', guests: room.players.length, instances: [one.diagnostics.instance, two.diagnostics.instance], sessionSeconds: 180 }))
   sendTimer = setInterval(() => {
     const distance = Math.max(0, one.serverNow() - room.startAt!) / 1000 * 20
-    one.publish({ x: distance, z: 0, heading: 0, s: distance, vx: 20, vz: 0, speed: 20 })
+    one.publish({ x: distance, y: distance / 10, z: -distance / 20, vx: 20, vy: 2, vz: -1, qx: 0, qy: 0, qz: 0, qw: 1, activity: 'exploring', ready: true })
     const pose = poses.sample(two.serverNow()); if (pose) rendered.push(pose.x)
   }, 50)
   heartbeat = setInterval(() => console.log(JSON.stringify({ step: 'running', snapshots: received, secondsLeft: Math.max(0, Math.ceil((room.endAt! - two.serverNow()) / 1000)) })), 45000)
@@ -69,6 +71,7 @@ try {
   console.log(JSON.stringify({ step: 'reconnected', snapshots: received, originalDeadlinePreserved: true }))
   await until(() => one.diagnostics.status === 'ended' && two.diagnostics.status === 'ended', 190000)
   assert.ok(received > 500, `expected sustained relay traffic, received ${received}`)
+  assert.ok(rendered.length > 500, '3D transforms must be usable by the presentation helper')
   const ordered = rtt.filter(n => n > 0).sort((a,b) => a-b)
   const result = { passed: true, sessionSeconds: 180, received, reconnected: sockets.length >= 3, rttMedianMs: ordered[Math.floor(ordered.length/2)], rttP95Ms: ordered[Math.floor(ordered.length*0.95)], renderedSamples: rendered.length, smoothing: poses.diagnostics(), connectedEvents: connected }
   console.log(JSON.stringify(result))

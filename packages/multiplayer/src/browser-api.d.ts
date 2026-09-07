@@ -26,10 +26,25 @@ export declare class MultiplayerClient {
   publish(state: State): void
   leave(): void
 }
-export interface Pose { x: number; z: number; heading: number; s: number; vx: number; vz: number; speed: number }
-export declare class PoseBuffer {
-  constructor(options?: { minDelayMs: number; maxDelayMs: number; maxExtrapolateMs: number; teleportDistance: number })
-  push(at: number, seq: number, pose: Pose, arrival: number): void
-  sample(serverNow: number): Pose | null
+export interface SnapshotBufferOptions { minDelayMs?: number; maxDelayMs?: number; maxExtrapolateMs?: number }
+export interface SnapshotInterpolation<T extends State> {
+  interpolate(previous: Readonly<T>, next: Readonly<T>, alpha: number): T
+  extrapolate?(state: Readonly<T>, seconds: number): T
+  discontinuity?(previous: Readonly<T>, next: Readonly<T>): boolean
+}
+export declare class SnapshotBuffer<T extends State = State> {
+  constructor(interpolation: SnapshotInterpolation<T>, options?: SnapshotBufferOptions)
+  push(at: number, seq: number, state: T, arrival: number): void
+  sample(serverNow: number): T | null
   diagnostics(): { bufferMs: number; jitterMs: number; samples: number }
+}
+export type Transform = { x: number; y: number; z: number; vx: number; vy: number; vz: number; qx: number; qy: number; qz: number; qw: number }
+export type TransformBufferOptions = SnapshotBufferOptions & { teleportDistance?: number }
+export declare class TransformBuffer extends SnapshotBuffer<Transform> {
+  constructor(options?: TransformBufferOptions)
+}
+/** Compatibility adapter for existing track-motion integrations. */
+export type Pose = { x: number; z: number; heading: number; s: number; vx: number; vz: number; speed: number }
+export declare class PoseBuffer extends SnapshotBuffer<Pose> {
+  constructor(options?: TransformBufferOptions)
 }
