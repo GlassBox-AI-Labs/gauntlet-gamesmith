@@ -45,28 +45,3 @@ export function pruneExpandedBuilds(current: Set<string>, snapshots: readonly Bu
   const next = new Set([...current].filter((buildId) => allowed.has(buildId)))
   return next.size === current.size ? current : next
 }
-
-/** Keep per-build round disclosure state bounded to the resident projected rounds. */
-export function pruneVisibleRoundCounts(
-  current: Readonly<Record<string, number>>,
-  snapshots: readonly BuildSnapshot[],
-  defaultLimit: number,
-): Record<string, number> {
-  const roundCounts = new Map(snapshots.map((snapshot) => [
-    snapshot.build.id,
-    new Set(snapshot.attempts.filter((attempt) => attempt.round > 0).map((attempt) => attempt.round)).size,
-  ]))
-  let changed = false
-  const next: Record<string, number> = {}
-  for (const [buildId, value] of Object.entries(current)) {
-    const count = roundCounts.get(buildId) ?? 0
-    if (count <= defaultLimit) {
-      changed = true
-      continue
-    }
-    const bounded = Math.max(defaultLimit, Math.min(count, Math.floor(value)))
-    next[buildId] = bounded
-    if (bounded !== value) changed = true
-  }
-  return changed || Object.keys(next).length !== Object.keys(current).length ? next : current as Record<string, number>
-}
