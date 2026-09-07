@@ -398,7 +398,7 @@ export function BuildDetail({
     <>
       {selectedRound != null && (
         <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[#8f8885] hover:bg-white/[0.04] hover:text-[#ded9d6]">
-          <ArrowLeft className="size-3.5" /> Attempt detail
+          <ArrowLeft className="size-3.5" /> Build detail
         </button>
       )}
       <div className={`${selectedRound == null ? 'mb-2' : 'mb-6'} flex max-w-3xl items-center gap-2`}>
@@ -491,7 +491,7 @@ export function BuildDetail({
       {publishing != null && <PublishDialog buildId={build.id} round={publishing} title={build.title} onClose={() => setPublishing(null)} />}
       {play.error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>}
       {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
-      {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported attempt folder.</p>}
+      {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported build folder.</p>}
       {(canLoadOlderAttempts || canLoadNewerAttempts) && (
         <div className="mb-5 flex flex-wrap gap-2">
           {canLoadNewerAttempts && <button type="button" onClick={onLoadNewestAttempts} disabled={loadingOlderAttempts} className="inline-flex items-center gap-2 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 hover:bg-amber-900/30 disabled:cursor-not-allowed disabled:opacity-50">Newest attempts</button>}

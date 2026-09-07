@@ -187,7 +187,7 @@ function PrototypeSidebar(): React.JSX.Element {
     <aside className="flex h-screen w-[244px] shrink-0 flex-col border-r border-[#292526] bg-[#141112] max-md:hidden">
       <div className="px-4 pb-4 pt-6">
         <button type="button" className="flex w-full items-center gap-2 rounded-lg bg-white/[0.055] px-3 py-2.5 text-left text-sm font-medium text-[#eeeae7]">
-          <Plus className="size-4" /> Attempt
+          <Plus className="size-4" /> Build
         </button>
       </div>
       <div className="border-t border-[#2c2829] px-4 py-5">
