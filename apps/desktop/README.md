@@ -235,8 +235,26 @@ sign-in, and publishing use `https://gauntletgamesmith.com` by default in develo
 and packaged apps; private previews use `https://glassbox-games.vercel.app`. Supabase sign-in
 and the encrypted publisher session stay in Electron. No browser opens for login. Build the saved revision, play its private
 preview, and explicitly publish. The same drawer's **Releases** tab owns history,
-rollback, and unpublish; sign-out is there too. There is no web management UI or
-artifact file picker. The website only browses and plays games.
+rollback, and unpublish; sign-out is there too. Saved round actions show whether
+that exact revision is published, whether another round is live, or whether
+publication status is unavailable. Private previews are not published games.
+
+Open **My games** in the sidebar to manage every game owned by your signed-in
+publisher account, including unpublished games and games created on another
+computer. You can open a live game, preview retained releases, explicitly publish
+or roll back, and unpublish without the original local build. Unpublish asks for
+confirmation and preserves the releases.
+
+**Edit listing**, available from My games and a build's Releases tab, updates the
+description, controls, and cover without rebuilding or changing the playable
+release or URL. Choose a static PNG, JPEG, WebP, or GIF up to 3 MiB and 4096 × 4096
+pixels; the app previews the selection and saves a normalized PNG. Cancel leaves
+the public listing unchanged. Saved listing edits survive later release promotions
+and rollbacks. If another operation changed the game, refresh and reopen the editor
+before saving again.
+
+There is no web management UI or game-artifact file picker. The website only
+browses and plays games.
 
 Local development and Play remain account-free. See [local catalog setup](../../docs/CATALOG.md)
 for startup, developer provisioning, networking limits, and verification.

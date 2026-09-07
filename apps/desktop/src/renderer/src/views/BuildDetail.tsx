@@ -1,3 +1,4 @@
+import { RoundPublication } from './RoundPublication'
 import { PublishDialog } from './PublishDialog'
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronRight, LoaderCircle, Pencil, Play, Plus, Square, Upload, X } from 'lucide-react'
@@ -451,6 +452,7 @@ export function BuildDetail({
         {selectedRound == null && (
           <div className="ml-auto flex items-center gap-2">
             {playingSelectedBuild && play.url && <button type="button" onClick={() => onPlayStart(null)} className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20" title="Open in browser">{play.url}</button>}
+              {publishableRound != null && <RoundPublication key={build.id} buildId={build.id} round={publishableRound} revision={snapshot.attempts.find(a => a.role === 'implement' && a.status === 'succeeded' && a.round === publishableRound)?.revision ?? null} />}
               <Button data-testid="build-publish" variant="outline" disabled={publishableRound == null} onClick={() => setPublishing(publishableRound)}><Upload /> Publish{publishableRound ? ` round ${publishableRound}` : ""}</Button>
             {playingSelectedBuild ? (
             <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" onClick={onPlayStop}><Square /> Stop game</Button>
@@ -482,6 +484,7 @@ export function BuildDetail({
                 <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
               </Button>
             )}
+            <RoundPublication key={build.id} buildId={build.id} round={selectedRound} revision={selectedRevision} />
             <Button variant="outline" disabled={!selectedRoundPlayable} data-testid="round-publish" onClick={() => setPublishing(selectedRound)}><Upload /> Publish</Button>
           </div>
         )}

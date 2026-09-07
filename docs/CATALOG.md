@@ -193,3 +193,17 @@ The integration check requires the running local service. It provisions temporar
 publishers and cleans up their data. It exercises real Auth, ownership, saved-round
 uploads, validation/retry, preview, promotion, rollback, unpublish, native email/password sign-in, and private-table denial. It refuses a non-local Supabase
 endpoint. Screenshots are PR attachments, not repository assets.
+
+
+### Editable publisher listings
+
+Migration `20260907120000_publisher_management.sql` adds nullable game-level
+listing overrides and the private `game-covers` bucket. Apply it before deploying
+the catalog API and desktop update. Existing releases and public listings retain
+their behavior until an owner saves an edit; rollback changes the playable release
+without discarding the owner's listing edits. The cover upload and listing APIs
+require the desktop bearer session and recheck server ownership and generation.
+Uploaded covers are normalized to bounded static PNG files, stored independently
+of immutable game artifacts, and served only for the matching published game.
+Unreferenced pending/final covers from cancelled or failed saves remain private
+and can be removed during storage maintenance.

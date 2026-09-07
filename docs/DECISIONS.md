@@ -992,3 +992,38 @@ per-request access checks, and no-store responses.
 and local serving uses the same policy. Static directory prefixes support common
 dynamic model/texture names. This does not promise arbitrary runtime URL inference,
 missing-file repair, backend emulation, or compatibility with every game engine.
+
+## ADR-038 — Account-wide desktop publishing management and editable listings (2026-09-07)
+
+**Decision.** Electron's **My games** view lists the connected publisher's entire
+catalog, including unpublished games and releases created on other machines. The
+existing build publishing drawer and My games share release management and listing
+editing. Remote ownership is authoritative; management of an uploaded release does
+not require a local build, publishing job, or source checkout. New artifact creation
+still requires a trusted, immutable saved round. A round's Published indicator matches
+its build, round, and exact revision against the current ready release; prepared
+previews do not imply publication. Unavailable and signed-out state are explicit.
+
+Description and controls overrides belong to the game, and survive promotion,
+rollback, and unpublish. Null overrides preserve the existing release-derived
+listing; saving an empty string intentionally clears that field. Listing updates
+use the same generation counter as release promotion, reject stale edits, and never
+change the playable release, artifact digest, source provenance, or stable game URL.
+
+ADR-028's automatic cover remains the initial default. An optional native image
+picker now replaces a game's listing cover without rebuilding it. Both trusted seams
+decode bounded static raster input (3 MiB, 4096 × 4096 maximum), strip metadata, and
+normalize it to PNG. The desktop retains a temporary selection capability rather than
+accepting renderer filesystem paths. The service issues owner/game/generation-bound
+upload receipts and validates uploaded bytes before committing listing changes.
+Final covers use content-addressed keys in a separate private bucket; public cover
+reads require the matching published game. No executable game artifact is modified.
+
+**Consequences.** Apply the publisher-management database migration before deploying
+the new catalog API, then distribute the desktop update. Failed uploads and conflicts
+preserve the prior public listing. Unreferenced uploads can remain in private storage
+for later maintenance. Publisher session changes invalidate in-flight reads and
+preview capabilities; refreshes cannot restore a signed-out session. Native image
+decoding adds Sharp to desktop packaging. Permanent deletion, ownership transfer,
+bulk actions, and title/slug editing remain outside this change. The website remains
+public browse/play only (ADR-024).

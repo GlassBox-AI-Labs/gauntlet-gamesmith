@@ -81,6 +81,7 @@ export interface BuildSidebarProps {
   onSelectBuild: (snapshot: BuildSnapshot) => void
   onSelectRound: (snapshot: BuildSnapshot, round: number) => void
   onToggleBuild: (buildId: string) => void
+  onOpenGames?: () => void
   onOpenAgents: () => void
   onToggleEditing: () => void
   onToggleChecked: (buildId: string) => void
@@ -112,6 +113,7 @@ export function BuildSidebar({
   onSelectRound,
   onToggleBuild,
   onOpenAgents,
+  onOpenGames,
   onToggleEditing,
   onToggleChecked,
   onToggleAllChecked,
@@ -194,6 +196,7 @@ export function BuildSidebar({
         </div>
       </div>
       <div className="border-t border-[#2f2a2b] p-3">
+        {onOpenGames && <button type="button" data-testid="my-games" onClick={onOpenGames} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary">My games</button>}
         <button type="button" onClick={onOpenAgents} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-[#88817e] hover:bg-white/[0.04] hover:text-[#ded9d6]"><Sparkles className="size-3.5" /> Agents</button>
       </div>
     </aside>

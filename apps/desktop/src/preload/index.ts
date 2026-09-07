@@ -121,6 +121,16 @@ contextBridge.exposeInMainWorld('attachments', attachments)
 contextBridge.exposeInMainWorld('onboarding', onboarding)
 
 const publishing: PublishingApi = {
+  library: () => ipcRenderer.invoke(IPC.publishing.library),
+  onChanged: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, kind: 'account' | 'games') => callback(kind)
+    ipcRenderer.on(IPC.publishing.changed, listener)
+    return () => { ipcRenderer.removeListener(IPC.publishing.changed, listener) }
+  },
+  cover: gameId => ipcRenderer.invoke(IPC.publishing.cover, gameId),
+  chooseCover: () => ipcRenderer.invoke(IPC.publishing.chooseCover),
+  updateListing: input => ipcRenderer.invoke(IPC.publishing.updateListing, input),
+  openGame: gameId => ipcRenderer.invoke(IPC.publishing.openGame, gameId),
   history: loopId => ipcRenderer.invoke(IPC.publishing.history, loopId),
   previewRelease: input => ipcRenderer.invoke(IPC.publishing.previewRelease, input),
   unpublish: input => ipcRenderer.invoke(IPC.publishing.unpublish, input),

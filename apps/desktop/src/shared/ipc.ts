@@ -1,6 +1,25 @@
 /** Canonical IPC channel names shared by main and preload. */
 export const IPC = {
-  publishing: { signUp: 'publishing:sign-up', verifyEmail: 'publishing:verify-email', resendVerification: 'publishing:resend-verification', history: 'publishing:history', previewRelease: 'publishing:preview-release', unpublish: 'publishing:unpublish', cancelSignIn: 'publishing:cancel-sign-in', status: 'publishing:status', signIn: 'publishing:sign-in', signOut: 'publishing:sign-out', prepare: 'publishing:prepare', publish: 'publishing:publish' },
+  publishing: {
+    library: 'publishing:library',
+    changed: 'publishing:changed',
+    cover: 'publishing:cover',
+    chooseCover: 'publishing:choose-cover',
+    updateListing: 'publishing:update-listing',
+    openGame: 'publishing:open-game',
+    signUp: 'publishing:sign-up',
+    verifyEmail: 'publishing:verify-email',
+    resendVerification: 'publishing:resend-verification',
+    history: 'publishing:history',
+    previewRelease: 'publishing:preview-release',
+    unpublish: 'publishing:unpublish',
+    cancelSignIn: 'publishing:cancel-sign-in',
+    status: 'publishing:status',
+    signIn: 'publishing:sign-in',
+    signOut: 'publishing:sign-out',
+    prepare: 'publishing:prepare',
+    publish: 'publishing:publish',
+  },
   harness: {
     detect: 'harness:detect',
     probe: 'harness:probe',

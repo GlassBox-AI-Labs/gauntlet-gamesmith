@@ -116,7 +116,9 @@ CREATE OR REPLACE FUNCTION "public"."catalog_games"() RETURNS "jsonb"
     AS $$
   select coalesce(jsonb_agg(entry order by created_at desc),'[]'::jsonb) from (
     select g.created_at, jsonb_build_object('id',g.id,'slug',g.slug,'current_release_id',g.current_release_id,
-      'listing',r.listing,'publisher',jsonb_build_object('handle',p.handle,'display_name',p.display_name)) entry
+      'cover_key',g.cover_key,
+      'listing',r.listing || jsonb_strip_nulls(jsonb_build_object('description',g.description_override,'controls',g.controls_override)),
+      'publisher',jsonb_build_object('handle',p.handle,'display_name',p.display_name)) entry
     from public.games g join public.releases r on r.id=g.current_release_id and r.game_id=g.id
     join public.publishers p on p.id=g.publisher_id where r.status='ready' and p.enabled order by g.created_at desc limit 100
   ) rows;
@@ -133,6 +135,9 @@ CREATE TABLE IF NOT EXISTS "public"."games" (
     "current_release_id" "uuid",
     "generation" integer DEFAULT 0 NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "description_override" "text",
+    "controls_override" "text",
+    "cover_key" "text",
     CONSTRAINT "games_slug_check" CHECK ((("slug" ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::"text") AND ("length"("slug") <= 64)))
 );
 
@@ -200,6 +205,28 @@ $$;
 
 
 ALTER FUNCTION "public"."publisher_studio"("actor" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."update_game_listing"("actor" "uuid", "target_game" "uuid", "expected_generation" integer, "description" "text", "controls" "text", "replacement_cover" "text" DEFAULT NULL::"text") RETURNS "public"."games"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public', 'pg_temp'
+    AS $_$
+declare g public.games;
+begin
+  select * into g from public.games where id=target_game for update;
+  if not found or g.publisher_id <> actor or not exists(select 1 from public.publishers where id=actor and enabled)
+    then raise exception 'Publisher does not own this game'; end if;
+  if g.generation <> expected_generation then raise exception 'Game changed; refresh before saving'; end if;
+  if description is null or length(description)>2000 or controls is null or length(controls)>500
+    then raise exception 'Invalid listing'; end if;
+  if replacement_cover is not null and replacement_cover !~ '^[a-f0-9]{64}$' then raise exception 'Invalid cover'; end if;
+  update public.games set description_override=description, controls_override=controls,
+    cover_key=coalesce(replacement_cover,cover_key), generation=generation+1 where id=g.id returning * into g;
+  return g;
+end $_$;
+
+
+ALTER FUNCTION "public"."update_game_listing"("actor" "uuid", "target_game" "uuid", "expected_generation" integer, "description" "text", "controls" "text", "replacement_cover" "text") OWNER TO "postgres";
 
 
 CREATE TABLE IF NOT EXISTS "public"."publication_events" (
@@ -527,9 +554,8 @@ GRANT ALL ON FUNCTION "public"."publisher_studio"("actor" "uuid") TO "service_ro
 
 
 
-
-
-
+REVOKE ALL ON FUNCTION "public"."update_game_listing"("actor" "uuid", "target_game" "uuid", "expected_generation" integer, "description" "text", "controls" "text", "replacement_cover" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."update_game_listing"("actor" "uuid", "target_game" "uuid", "expected_generation" integer, "description" "text", "controls" "text", "replacement_cover" "text") TO "service_role";
 
 
 
@@ -576,9 +602,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUN
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
-
-
-
 
 
 
