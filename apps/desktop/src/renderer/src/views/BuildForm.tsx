@@ -80,7 +80,7 @@ function ProjectChooser({
               onClick={onAddProject}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-[#aaa4a1] hover:bg-white/[0.055] hover:text-white"
             >
-              <FolderPlus className="size-4" /> Choose attempts folder
+              <FolderPlus className="size-4" /> Choose project folder
             </button>
           </div>
         </div>
@@ -260,10 +260,10 @@ export function BuildForm({
         <div className="border-t border-[#34302f] px-4 py-3">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
             <label title={custom ? 'Reset models to change pace' : 'Build pace'} className={`flex items-center gap-2 text-[11px] text-[#b2a7a1] ${custom ? 'opacity-40' : ''}`}><Gauge className="size-3.5" /><input aria-label="Speed to quality" type="range" min="0" max={BUILD_PACES.length - 1} step="1" value={pace} aria-valuetext={BUILD_PACES[pace]} disabled={custom || busy || checking} onChange={(event) => applyPace(Number(event.target.value) as BuildPace)} className="h-1 w-20 accent-[#b9ada7]" /><span className="w-[60px]">{BUILD_PACES[pace]}</span></label>
-            <button type="button" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)} className="flex items-center gap-1 text-[11px] text-[#a29791] hover:text-white">Attempt options{custom ? ' · Custom' : ''}<ChevronDown className={`size-3 ${optionsOpen ? 'rotate-180' : ''}`} /></button>
+            <button type="button" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)} className="flex items-center gap-1 text-[11px] text-[#a29791] hover:text-white">Build options{custom ? ' · Custom' : ''}<ChevronDown className={`size-3 ${optionsOpen ? 'rotate-180' : ''}`} /></button>
             <div className="ml-auto flex items-center gap-3">
               <button type="button" disabled={busy || contextBusy} onClick={() => void add(() => window.attachments.pick(), true)} aria-label="Attach files or folders" title="Attach files or folders" className="grid size-9 place-items-center rounded text-[#a49790] hover:text-white disabled:opacity-40"><Paperclip aria-hidden="true" className="size-4" /></button>
-              <Button disabled={busy || contextBusy || checking} onClick={attemptCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create attempt</Button>
+              <Button disabled={busy || contextBusy || checking} onClick={attemptCreate} className="h-9 bg-[#eee8e4] px-4 text-xs text-[#201917] hover:bg-white">{busy && <LoaderCircle className="size-3 animate-spin" />}Create build</Button>
             </div>
           </div>
           {showConnectionError && <p role="alert" id="build-connection-error" className="mt-3 text-[11px] text-[#f0aaaa]">Connect the agents used by this configuration, or choose models from a connected agent.</p>}

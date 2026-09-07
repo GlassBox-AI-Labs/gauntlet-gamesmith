@@ -71,7 +71,7 @@ function RoundBreakdown({ row }: { row: ReportBuildRow }): React.JSX.Element {
   if (row.rounds.length === 0) {
     return (
       <div className="px-4 py-3 text-[11px] text-[#68615f]">
-        This attempt has no finished rounds.{row.stopReason ? ` ${row.stopReason}` : ''}
+        This build has no finished rounds.{row.stopReason ? ` ${row.stopReason}` : ''}
       </div>
     )
   }
@@ -303,7 +303,7 @@ export function ReportPanel({
 
       <div className="mb-5 flex flex-wrap gap-2">
         <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" disabled={busy} onClick={() => setAdding(true)}>
-          <Plus /> Add attempts
+          <Plus /> Add builds
         </Button>
         <Button
           variant="outline"
@@ -343,13 +343,13 @@ export function ReportPanel({
 
       {mixed && (
         <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-300">
-          These attempts did not all use the same prompt — the hash column differs. Compare the rows one at a time; the totals row is not a like-for-like race.
+          These builds did not all use the same prompt — the hash column differs. Compare the rows one at a time; the totals row is not a like-for-like race.
         </p>
       )}
 
       {report.rows.length === 0 ? (
         <p className="rounded-lg border border-[#332e2e] bg-[#151212] px-4 py-6 text-center text-[12px] text-[#88817e]">
-          This report has no attempts yet. Use <span className="text-[#c2bbb7]">Add builds</span> to put some in.
+          This report has no builds yet. Use <span className="text-[#c2bbb7]">Add builds</span> to put some in.
         </p>
       ) : (
         <div className="mb-5 overflow-hidden rounded-lg border border-[#332e2e]">
