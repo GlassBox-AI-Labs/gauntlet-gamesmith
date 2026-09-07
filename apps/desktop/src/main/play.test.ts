@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import type { ChildProcess } from 'node:child_process'
+import { spawnSync, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { detectLaunch, hasActivePlay, playAccessError, playEnvironment, playState, processGroupIdentitiesOverlap, startPlay, stopAllPlayAndWait, stopPlay } from './play'
 import { captureWorkspaceIdentity } from './workspace-boundary'
@@ -52,10 +52,57 @@ describe('play safety', () => {
   it('uses a bounded package file and a fixed npm argv', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'attacker controlled command' } }))
-    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['build', 'dev'] })
+    expect(detectLaunch(dir)).toEqual({ command: 'npm', args: ['run', 'dev'] })
 
     fs.writeFileSync(path.join(dir, 'package.json'), ' '.repeat(1024 * 1024 + 1))
     expect(detectLaunch(dir)).toEqual({ error: expect.stringContaining('Nothing launchable') })
+  })
+
+  it.each(['dev', 'start', 'serve', 'preview'])('executes the %s package script with real npm', (script) => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { [script]: 'node smoke.cjs' } }))
+    fs.writeFileSync(path.join(dir, 'smoke.cjs'), 'process.stdout.write("game-script-started")')
+    const launch = detectLaunch(dir)
+    if ('error' in launch) throw new Error(launch.error)
+
+    const result = spawnSync(launch.command, launch.args, {
+      cwd: dir,
+      env: playEnvironment(dir),
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGINT',
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('game-script-started')
+  })
+
+  it.each([false, true])('reports bounded, redacted launcher output after exit (URL already found: %s)', (hasUrl) => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }))
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: 4242, stdout: new PassThrough(), stderr: new PassThrough() })
+    const notify = vi.fn()
+    let alive = true
+    startPlay('build-1', dir, null, null, notify, {
+      spawn: (() => child) as typeof import('node:child_process').spawn,
+      openExternal: vi.fn(async () => undefined),
+      groupIdentity: () => alive ? ['4242:launcher'] : [],
+    })
+    if (hasUrl) child.stdout!.emit('data', Buffer.from('http://localhost:5173/\n'))
+    child.stdout!.emit('data', Buffer.from(`old output\n${'x'.repeat(9_000)}\n`))
+    child.stderr!.emit('data', Buffer.from('\u001b[31mError: Port 5173 is already in use\u001b[0m\nAPI_KEY=split-'))
+    child.stderr!.emit('data', Buffer.from('credential-value\n'))
+    alive = false
+    child.emit('exit', 1)
+
+    const state = notify.mock.calls.at(-1)![0]
+    expect(state).toMatchObject({ running: false, error: expect.stringContaining('Command: npm run dev.') })
+    expect(state.error).toContain('Port 5173 is already in use')
+    expect(state.error).toContain('[REDACTED]')
+    expect(state.error).not.toMatch(/old output|split-|credential-value|\u001b/)
+    expect(state.error.length).toBeLessThan(1_300)
   })
 
   it('never downloads Vite for a bare index.html and ignores a symlinked package file', () => {

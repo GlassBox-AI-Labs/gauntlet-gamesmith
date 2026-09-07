@@ -59,6 +59,14 @@ import type { ExitInfo, LogGate, StreamParser } from './roles/types'
 import { planCompletion, planResume, planStart } from './round-planner'
 import { captureRoundRevision, workspaceMatchesRevision } from './round-revision'
 import {
+  orphanedGroupIds,
+  scanProcessTable,
+  strayGroupIds,
+  trackDescendantGroups,
+  type DescendantGroups,
+  type ProcessTableRow,
+} from './stray-processes'
+import {
   completeProcessMeta,
   interruptCapturedProcessGroup,
   interruptProcessGroup,
@@ -96,6 +104,14 @@ const MAX_ACCOUNT_ROTATIONS = 3
 const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
 // How long the supervisor tolerates a process group it cannot observe at all
 // before it stops waiting on an already-dead leader. Ownership is retained.
+/**
+ * How often the whole process table is read to find groups that left the
+ * attempt's own. A group is only recordable while something still links it to
+ * the attempt, so this interval is the width of the race: a command that
+ * backgrounds a process and exits immediately can vanish between two samples.
+ * One scan costs ~20ms, so sampling this often spends about 1% of a core.
+ */
+const DESCENDANT_SCAN_MS = 2_000
 const PROBE_BLIND_LIMIT_MS = 60_000
 // How often a still-blind probe repeats itself in the build log (VIS-001).
 const PROBE_BLIND_LOG_MS = 30_000
@@ -165,6 +181,7 @@ export interface BuildRunnerDeps {
     groupIdentities: readonly string[],
   ): AttemptProcessMeta
   signalProcess(pid: number, signal: 0 | NodeJS.Signals): void
+  scanProcessTable(): ProcessTableRow[]
   processGroupIdentity(groupId: number): readonly string[]
   processGroupStillOwned(groupId: number, identity: readonly string[]): boolean
   cliVersion(binary: string, env: Record<string, string>, cwd: string): string
@@ -200,6 +217,7 @@ const DEFAULT_DEPS: BuildRunnerDeps = {
     groupIdentities,
   ),
   signalProcess: (pid, signal) => process.kill(pid, signal),
+  scanProcessTable,
   processGroupIdentity,
   processGroupStillOwned,
   cliVersion: detectCliVersion,
@@ -252,6 +270,14 @@ export class BuildRunner {
   private terminatingBuilds = new Set<string>()
   /** A build has at most one bounded signal escalation chain. */
   private interruptingAttempts = new Set<string>()
+  /** Process groups each attempt has been seen to create, so Stop can reach the ones that left its own group. */
+  private descendantGroups = new Map<string, DescendantGroups>()
+  /** Last process-table sample per attempt; the table is far too costly to read every supervision tick. */
+  private lastDescendantScan = new Map<string, number>()
+  /** Rate limit for reporting a process table we cannot read at all. */
+  private descendantScanWarnedAt = new Map<string, number>()
+  /** Escaped groups already announced as left running, so each is reported once. */
+  private reportedOrphanGroups = new Map<string, Set<number>>()
   /** Child streams of the build being driven; also pumped while awaiting stragglers. */
   private childTail: { buildId: string; attemptId: string; boundary: ChildStreamBoundary; tailer: ChildStreamTailer } | null = null
   /** IPC notifications queued until their enclosing ledger transaction commits. */
@@ -1417,6 +1443,92 @@ export class BuildRunner {
     if (!this.ledger.getBuild(buildId)) throw new Error('Cannot advance process-group ownership for a missing attempt.')
   }
 
+  /** Process-control narration for one attempt; never lets a log failure stop signalling. */
+  private controlReporter(buildId: string, attemptId: string): (message: string) => void {
+    return (message: string): void => {
+      try {
+        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
+      } catch (error) {
+        console.error('Could not persist process-control event:', error)
+      }
+    }
+  }
+
+  /**
+   * Fold one process-table sample into what this attempt is known to have
+   * spawned. Signalling the attempt's own process group misses a descendant
+   * that started a group of its own, and once such a process is orphaned there
+   * is no link left to find it by — so the groups are recorded while the link
+   * is still visible. See `stray-processes.ts`.
+   */
+  private trackAttemptDescendants(buildId: string, attemptId: string, leaderPid: number, now: number): void {
+    if (now - (this.lastDescendantScan.get(attemptId) ?? 0) < DESCENDANT_SCAN_MS) return
+    this.lastDescendantScan.set(attemptId, now)
+    let rows: ProcessTableRow[]
+    try {
+      rows = this.deps.scanProcessTable()
+    } catch (error) {
+      // Failing to look is not proof there is nothing there, and the next sample
+      // retries — but a scan that never succeeds protects nothing, so say so
+      // rather than going quiet (VIS-001).
+      if (now - (this.descendantScanWarnedAt.get(attemptId) ?? 0) >= PROBE_BLIND_LOG_MS) {
+        this.descendantScanWarnedAt.set(attemptId, now)
+        this.controlLog(
+          buildId,
+          attemptId,
+          'error',
+          `Could not read the process table to track what this attempt has started: ${error instanceof Error ? error.message : String(error)} Process groups it starts outside its own may not be stopped with it.`,
+        )
+      }
+      return
+    }
+    this.descendantScanWarnedAt.delete(attemptId)
+    const groups = this.descendantGroups.get(attemptId) ?? (new Map() as DescendantGroups)
+    trackDescendantGroups(rows, leaderPid, groups)
+    this.descendantGroups.set(attemptId, groups)
+    // Surface what the agent has left running as it happens, not only when the
+    // phase ends and it is signalled (VIS-001).
+    const reported = this.reportedOrphanGroups.get(attemptId) ?? new Set<number>()
+    this.reportedOrphanGroups.set(attemptId, reported)
+    for (const pgid of orphanedGroupIds(rows, groups, leaderPid)) {
+      if (reported.has(pgid)) continue
+      reported.add(pgid)
+      this.controlLog(
+        buildId,
+        attemptId,
+        'system',
+        `Agent work left process group ${pgid} running with no parent; it is tracked and will be stopped when this phase ends.`,
+      )
+    }
+  }
+
+  /**
+   * Interrupt the process groups this attempt created and then left outside its
+   * own group. Each is signalled through the identities recorded while it was
+   * provably a descendant, so a group whose PGID has since been recycled by an
+   * unrelated process fails that check and is left alone.
+   */
+  private sweepStrayGroups(buildId: string, attemptId: string, leaderGroupId: number): void {
+    const groups = this.descendantGroups.get(attemptId)
+    this.descendantGroups.delete(attemptId)
+    this.lastDescendantScan.delete(attemptId)
+    this.descendantScanWarnedAt.delete(attemptId)
+    this.reportedOrphanGroups.delete(attemptId)
+    if (!groups) return
+    const report = this.controlReporter(buildId, attemptId)
+    for (const pgid of strayGroupIds(groups, [leaderGroupId])) {
+      const identity = [...(groups.get(pgid) ?? [])]
+      if (identity.length === 0) continue
+      report(`Agent work left process group ${pgid} running outside the attempt group; interrupting it (SIGINT).`)
+      interruptCapturedProcessGroup(pgid, identity, report, undefined, {
+        kill: this.deps.signalProcess,
+        defer: this.deps.defer,
+        groupIdentity: this.deps.processGroupIdentity,
+        groupStillOwned: this.deps.processGroupStillOwned,
+      })
+    }
+  }
+
   private interrupt(meta: AttemptProcessMeta, buildId: string, attemptId: string): void {
     if (this.interruptingAttempts.has(attemptId)) return
     if (!processMatches(meta)) {
@@ -1424,13 +1536,8 @@ export class BuildRunner {
       this.interruptCaptured(meta, captured, buildId, attemptId)
       return
     }
-    const report = (message: string): void => {
-      try {
-        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
-      } catch (error) {
-        console.error('Could not persist process-control event:', error)
-      }
-    }
+    this.sweepStrayGroups(buildId, attemptId, meta.pid)
+    const report = this.controlReporter(buildId, attemptId)
     try {
       this.refreshCanonicalGroup(meta, buildId, attemptId)
     } catch (error) {
@@ -1468,13 +1575,8 @@ export class BuildRunner {
     attemptId: string,
   ): void {
     if (this.interruptingAttempts.has(attemptId)) return
-    const report = (message: string): void => {
-      try {
-        this.controlLog(buildId, attemptId, message.includes('could not') || message.includes('skipped') ? 'error' : 'system', message)
-      } catch (error) {
-        console.error('Could not persist process-control event:', error)
-      }
-    }
+    this.sweepStrayGroups(buildId, attemptId, meta.pid)
+    const report = this.controlReporter(buildId, attemptId)
     this.interruptingAttempts.add(attemptId)
     this.terminatingBuilds.add(buildId)
     interruptCapturedProcessGroup(
@@ -2105,6 +2207,10 @@ export class BuildRunner {
       this.stopSpawnedRunCanonical(build, attempt, message, meta.startedAtMs)
       if (this.current?.attemptId === attempt.id) this.current = null
       if (this.childTail?.attemptId === attempt.id) this.childTail = null
+    } finally {
+      // However the attempt ended, a dev server or browser it backgrounded into
+      // its own process group is still running. The phase is over; so are they.
+      this.sweepStrayGroups(build.id, attempt.id, meta.pid)
     }
   }
 
@@ -2359,6 +2465,7 @@ export class BuildRunner {
                   : `Attempt exceeded the ${Math.round(hardCapMs / 3_600_000)}h ceiling — interrupting.`,
               )
             }
+            this.trackAttemptDescendants(build.id, attempt.id, meta.pid, now)
             const leaderDead = own ? own.exited : !processMatches(meta)
             if (observeGroup(leaderDead, now) === 'give-up') {
               this.controlLog(
