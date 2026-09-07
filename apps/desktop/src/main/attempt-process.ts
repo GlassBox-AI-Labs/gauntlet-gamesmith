@@ -12,6 +12,9 @@ const OFFSET_KEY = /^[a-z0-9-]+\.(?:claude|codex)\.jsonl$/
 const WORKFLOW_OFFSET_KEY = /^wf_[A-Za-z0-9_-]{1,128}\/(?:journal|agent-[A-Za-z0-9_-]{1,128})\.jsonl$/
 const PROCESS_LSTART = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12]\d|3[01]) \d{2}:\d{2}:\d{2} \d{4}$/
 const MAX_GROUP_IDENTITIES = 256
+// A single-group `ps` answers in milliseconds; the ceiling only exists so a
+// wedged probe cannot block the main process forever.
+const GROUP_PROBE_TIMEOUT_MS = 5_000
 
 export interface AttemptProcessMeta {
   version: 1
@@ -428,21 +431,29 @@ export function processGroupIdentity(groupId: number): string[] {
   if (!safePid(groupId)) return []
   let result: ReturnType<typeof spawnSync>
   try {
-    result = spawnSync('/bin/ps', ['-axo', 'pid=,pgid=,lstart='], {
+    // Ask only about this group. A full `ps -axo` table scan is orders of
+    // magnitude more work and, on a loaded machine, times out and reads as a
+    // failure to observe a perfectly healthy attempt.
+    result = spawnSync('/bin/ps', ['-g', String(groupId), '-o', 'pid=,pgid=,lstart='], {
       cwd: '/',
       env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' },
       encoding: 'utf8',
-      timeout: 1_000,
+      timeout: GROUP_PROBE_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     })
   } catch (error) {
     throw new Error(`Process-group identity probe failed: ${error instanceof Error ? error.message : String(error)}`)
   }
-  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') {
+  const stdout = typeof result.stdout === 'string' ? result.stdout : ''
+  const stderr = typeof result.stderr === 'string' ? result.stderr : ''
+  // `ps -g` exits non-zero with no output at all when the group has no members.
+  // That is an answer, not a failure; anything else means we could not look.
+  const emptyGroup = result.status === 1 && !result.error && !stdout.trim() && !stderr.trim()
+  if ((result.status !== 0 && !emptyGroup) || result.error || typeof result.stdout !== 'string') {
     throw new Error(`Process-group identity probe failed${result.error ? `: ${result.error.message}` : ` with status ${String(result.status)}`}.`)
   }
   const identities: string[] = []
-  for (const line of result.stdout.split('\n')) {
+  for (const line of stdout.split('\n')) {
     if (!line.trim()) continue
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/)
     if (!match) throw new Error('Process-group identity probe returned malformed output.')

@@ -94,6 +94,9 @@ const MAX_CRITIQUE_ATTEMPTS = 2
 const MAX_REFERENCE_ATTEMPTS = 2
 const MAX_ACCOUNT_ROTATIONS = 3
 const MAX_LIMIT_WAIT_MS = 6 * 60 * 60 * 1_000
+// How long the supervisor tolerates a process group it cannot observe at all
+// before it stops waiting on an already-dead leader. Ownership is retained.
+const PROBE_BLIND_LIMIT_MS = 60_000
 const MAX_STREAM_READ_BYTES = 1024 * 1024
 const MAX_PARTIAL_LINE_CHARS = 256 * 1024
 const UNTRUSTED_HISTORY_MESSAGE = 'Untrusted history (imported or created before trust provenance shipped) is read-only; start a new trusted build in this workspace.'
@@ -2276,6 +2279,10 @@ export class BuildRunner {
     }
     let driveFailed = false
     let workspaceSafe = true
+    // Assume the group is still there until a probe says otherwise; an
+    // unanswered probe must never be read as "the child is gone".
+    let descendantsRemain = true
+    let blindSince: number | null = null
     try {
       await new Promise<void>((resolve, reject) => {
         const interval = this.deps.repeat(() => {
@@ -2300,21 +2307,49 @@ export class BuildRunner {
               )
             }
             const leaderDead = own ? own.exited : !processMatches(meta)
-            const refreshed = this.deps.processGroupIdentity(meta.pid)
-            if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
-              let advanced = false
-              for (const identity of refreshed) {
-                if (!capturedGroupIdentity.has(identity)) advanced = true
-                capturedGroupIdentity.add(identity)
+            try {
+              const refreshed = this.deps.processGroupIdentity(meta.pid)
+              if (blindSince !== null) {
+                this.controlLog(build.id, attempt.id, 'system', `Process group ${meta.pid} is observable again.`)
+                blindSince = null
               }
-              if (advanced) {
-                const union = [...groupSnapshot()]
-                this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
-                meta.groupIdentities = union
+              if (refreshed.some((identity) => capturedGroupIdentity.has(identity))) {
+                let advanced = false
+                for (const identity of refreshed) {
+                  if (!capturedGroupIdentity.has(identity)) advanced = true
+                  capturedGroupIdentity.add(identity)
+                }
+                if (advanced) {
+                  const union = [...groupSnapshot()]
+                  this.ledger.updateAttemptProcessGroupIdentities(attempt.id, union)
+                  meta.groupIdentities = union
+                }
+              }
+              const captured = groupSnapshot()
+              descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
+            } catch (error) {
+              // Failing to look is not proof the group is gone. Keep the last
+              // known answer and keep supervising instead of killing paid work.
+              if (blindSince === null) {
+                blindSince = now
+                this.controlLog(
+                  build.id,
+                  attempt.id,
+                  'error',
+                  `Process-group probe failed; the attempt keeps running while retrying: ${error instanceof Error ? error.message : String(error)}`,
+                )
+              } else if (leaderDead && now - blindSince > PROBE_BLIND_LIMIT_MS) {
+                this.controlLog(
+                  build.id,
+                  attempt.id,
+                  'error',
+                  `Process group ${meta.pid} has been unobservable for ${Math.round((now - blindSince) / 1_000)}s since its leader exited; finishing the attempt and retaining ownership.`,
+                )
+                this.deps.cancelRepeat(interval)
+                resolve()
+                return
               }
             }
-            const captured = groupSnapshot()
-            const descendantsRemain = captured.length > 0 && this.deps.processGroupStillOwned(meta.pid, captured)
             if (leaderDead && !descendantsRemain) {
               this.deps.cancelRepeat(interval)
               resolve()

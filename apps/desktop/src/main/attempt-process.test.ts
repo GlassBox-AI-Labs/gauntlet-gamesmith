@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
@@ -10,6 +11,7 @@ import {
   interruptProcessGroup,
   prepareProcessMeta,
   processMatches,
+  processGroupIdentity,
   processMetaPath,
   readProcessIdentity,
   readProcessMeta,
@@ -327,5 +329,22 @@ describe('build process metadata', () => {
     expect(signals).toEqual([0, 'SIGINT', 0, 'SIGKILL', 0])
     expect(outcome).toBe('unresolved')
     expect(reports.some((line) => line.includes('manual intervention'))).toBe(true)
+  })
+})
+
+describe('processGroupIdentity', () => {
+  it('reports the live members of a real process group', () => {
+    const pgid = Number(spawnSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim())
+    const identities = processGroupIdentity(pgid)
+    expect(identities.some((member) => member.startsWith(`${process.pid}:`))).toBe(true)
+  })
+
+  it('reports an empty group instead of throwing when nothing remains in it', () => {
+    // A group whose every member has exited is an answer, not a probe failure:
+    // treating it as a failure is what killed a healthy 43-minute attempt.
+    const child = spawnSync('/bin/sh', ['-c', 'echo $$'], { encoding: 'utf8' })
+    const departed = Number(child.stdout.trim())
+    expect(safePid(departed)).toBe(true)
+    expect(processGroupIdentity(departed)).toEqual([])
   })
 })

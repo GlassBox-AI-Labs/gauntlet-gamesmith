@@ -1037,6 +1037,70 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(polls).toHaveLength(1)
   })
 
+  it('keeps supervising an attempt whose process-group probe cannot see the child', () => {
+    const polls: Array<() => void> = []
+    const identity = readProcessIdentity(process.pid)!
+    let probeBlind = false
+    const { ledger, runner, workspaceDir } = setup({
+      spawnChild: () => { throw new Error('supervision must not launch a replacement') },
+      signalProcess: () => {},
+      repeat: (work) => {
+        polls.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      processGroupIdentity: () => {
+        if (probeBlind) throw new Error('Process-group identity probe failed: spawnSync /bin/ps ETIMEDOUT')
+        return [`${process.pid}:${identity}`]
+      },
+      processGroupStillOwned: () => true,
+    })
+    const models = resolveModels(input(workspaceDir), input(workspaceDir), input(workspaceDir))
+    const build = ledger.createBuild({ prompt: 'survive a blind probe', workspaceDir, maxRounds: 2, budgetUsd: null, models })
+    const attempt = ledger.createAttempt({ buildId: build.id, round: 1, role: 'implement', harness: 'codex', prompt: 'build' })
+    const startedAtMs = Date.now()
+    ledger.patchAttempt(attempt.id, { status: 'running', startedAt: new Date(startedAtMs).toISOString() })
+    const marker = prepareProcessMeta(workspaceDir, attempt.id, startedAtMs, workspaceIdentity(workspaceDir))
+    fs.writeFileSync(marker.outPath, '')
+    fs.writeFileSync(marker.errPath, '')
+    const meta = completeProcessMeta(
+      workspaceDir,
+      attempt.id,
+      marker,
+      process.pid,
+      () => ({ identity, groupId: process.pid, startedAtMs }),
+    )
+    ledger.setAttemptProcessOwnership(attempt.id, {
+      pid: meta.pid,
+      processIdentity: meta.processIdentity,
+      groupIdentities: [`${meta.pid}:${meta.processIdentity}`],
+      startedAtMs: meta.startedAtMs,
+      outDev: meta.outDev,
+      outIno: meta.outIno,
+      errDev: meta.errDev,
+      errIno: meta.errIno,
+    })
+
+    fs.mkdirSync(path.join(workspaceDir, '.gauntlet-gamesmith', 'agents'), { recursive: true })
+
+    runner.recoverAll()
+    expect(polls).toHaveLength(1)
+    probeBlind = true
+    for (let tick = 0; tick < 6; tick += 1) polls[0]()
+
+    // A probe that cannot see is not proof the child died: 43 minutes and $24
+    // of finished work were once discarded on a single one-second `ps` timeout.
+    expect(ledger.getBuild(build.id)?.status).toBe('running')
+    expect(ledger.getAttempt(attempt.id)?.status).toBe('running')
+    const blindEvents = ledger.eventsForAttempt(attempt.id).filter((event) => event.text.includes('the attempt keeps running while retrying'))
+    expect(blindEvents).toHaveLength(1)
+    expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('supervision failed'))).toBe(false)
+
+    probeBlind = false
+    polls[0]()
+    expect(ledger.eventsForAttempt(attempt.id).some((event) => event.text.includes('is observable again'))).toBe(true)
+  })
+
   it('re-attaches a codex implement build with the codex reader, not the claude one', async () => {
     const polls: (() => void)[] = []
     let spawned = false
