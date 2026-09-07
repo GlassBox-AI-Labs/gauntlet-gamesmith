@@ -127,7 +127,13 @@ export function PublishDialog({
               {notice}
             </p>
           )}
-          {!status?.connected ? (
+          {status === null ? (
+            !error && (
+              <p role="status" className="text-sm text-muted-foreground">
+                Checking publisher account…
+              </p>
+            )
+          ) : !status.connected ? (
             <PublisherAccountForm
               onBusyChange={setBusy}
               onConnected={async (connected) => {
