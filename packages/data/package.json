@@ -16,11 +16,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@babel/parser": "7.29.8",
     "@gauntlet/db": "workspace:*",
     "@gauntlet/publishing": "workspace:*",
+    "@glassbox/multiplayer": "workspace:*",
     "@supabase/supabase-js": "2.99.3",
-    "zod": "4.3.6",
-    "@glassbox/multiplayer": "workspace:*"
+    "parse5": "8.0.0",
+    "postcss": "8.5.26",
+    "postcss-value-parser": "4.2.0",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

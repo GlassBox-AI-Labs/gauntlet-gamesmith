@@ -68,6 +68,23 @@ describe('game serving on local and hosted origins', () => {
       (await request(`preview/${releaseId}/valid/index.html`)).status,
     ).toBe(404)
   })
+  it('serves root-relative asset references inside each authorized preview and public release', async () => {
+    const { request, source } = fixture()
+    source.artifact.mockResolvedValue({ files: [
+      { path: 'index.html', data: Buffer.from('<script src="/assets/main.js"></script>').toString('base64') },
+      { path: 'assets/main.js', data: Buffer.from('fetch("/assets/car.glb")').toString('base64') },
+      { path: 'assets/car.glb', data: Buffer.from('model-bytes').toString('base64') },
+    ] })
+    for (const root of [`preview/${releaseId}/valid/`, `play/${gameId}/${releaseId}/`]) {
+      expect(await (await request(root + 'index.html')).text()).toContain(`src="/${root}assets/main.js"`)
+      expect(await (await request(root + 'assets/main.js')).text()).toBe(`fetch("/${root}assets/car.glb")`)
+      expect(await (await request(root + 'assets/car.glb')).text()).toBe('model-bytes')
+    }
+    expect((await request('assets/car.glb')).status).toBe(404)
+    expect(source.artifact).toHaveBeenCalledTimes(1)
+    source.validPreview.mockReturnValue(false)
+    expect((await request(`preview/${releaseId}/valid/assets/car.glb`)).status).toBe(404)
+  })
   it('denies unready releases and paths outside the validated artifact', async () => {
     const { request, source } = fixture()
     expect(

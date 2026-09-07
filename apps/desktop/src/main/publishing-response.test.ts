@@ -1,5 +1,49 @@
-import { describe, expect, it } from 'vitest'
-import { readCatalogResponse } from './publishing-response'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readCatalogResponse, requestCatalog } from './publishing-response'
+
+describe('publishing network requests', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('sends signup to the selected catalog and parses the API response', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ ok: true }))
+    vi.stubGlobal('fetch', fetch)
+    const init = { method: 'POST', body: JSON.stringify({ password: 'private-password' }) }
+    await expect(requestCatalog('https://gauntletgamesmith.com', 'signup', init))
+      .resolves.toEqual({ ok: true })
+    expect(fetch).toHaveBeenCalledWith('https://gauntletgamesmith.com/api/signup', init)
+  })
+
+  it.each([
+    ['https://gauntletgamesmith.com', 'Check your internet connection'],
+    ['http://127.0.0.1:4310', 'Start the local catalog'],
+  ])('explains unreachable %s without exposing credentials or raw errors', async (origin, guidance) => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed: private-password')))
+    const request = requestCatalog(origin, 'signup', { method: 'POST', body: 'private-password' })
+    await expect(request).rejects.toThrow(`Cannot reach the publishing service at ${origin}`)
+    await expect(request).rejects.toThrow(guidance)
+    await expect(request).rejects.not.toThrow('private-password')
+  })
+
+  it('distinguishes timeout and cancellation from network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+    for (const [reason, message] of [
+      [new DOMException('timeout', 'TimeoutError'), 'took too long'],
+      [new Error('private details'), 'Publishing request cancelled'],
+    ] as const) {
+      await expect(requestCatalog('https://gauntletgamesmith.com', 'signup', {
+        signal: AbortSignal.abort(reason),
+      })).rejects.toThrow(message)
+    }
+  })
+
+  it('preserves server validation errors', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      Response.json({ error: 'Invalid verification code.' }, { status: 401 }),
+    ))
+    await expect(requestCatalog('https://gauntletgamesmith.com', 'verify-email', {}))
+      .rejects.toThrow('Invalid verification code.')
+  })
+})
 
 describe('publishing API responses', () => {
   it.each(['signup', 'verify-email', 'resend-verification'])(

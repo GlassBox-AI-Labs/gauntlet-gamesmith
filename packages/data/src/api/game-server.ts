@@ -2,6 +2,7 @@ import { MANIFEST_FILE, multiplayerManifest } from '@glassbox/multiplayer'
 import { assetPath, uuid, MIME, type GameArtifact } from '@gauntlet/publishing'
 import type { Catalog } from './catalog'
 import type { Capture } from '../errors'
+import { gameAssetResponse } from './game-asset-urls'
 
 type Source = Pick<Catalog, 'game' | 'release' | 'artifact' | 'validPreview'>
 const headers = {
@@ -86,7 +87,7 @@ export class GameServer {
       const artifact = await this.artifact(release)
       const file = artifact.files.find((entry) => entry.path === path)
       if (!file) throw new Error('Asset missing')
-      let bytes = Buffer.from(file.data, 'base64')
+      let bytes = gameAssetResponse(artifact, path, `/${parts.slice(0, 3).join('/')}/`)
       const responseHeaders = { ...headers }
       const capability = artifact.files.find(entry => entry.path === MANIFEST_FILE)
       if (capability && path.endsWith('.html')) {

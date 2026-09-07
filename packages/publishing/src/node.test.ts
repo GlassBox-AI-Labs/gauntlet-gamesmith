@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtemp, writeFile, symlink, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, symlink, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { digest, packDirectory, validateArtifact } from './node'
@@ -32,5 +32,45 @@ describe('artifact publication seam', () => {
   it('validates URL slugs and raster-only cover selection', () => {
     expect(() => listing({ title: 'Test', slug: 'bad/path', description: 'A game' })).toThrow()
     expect(() => listing({ title: 'Test', slug: 'test', description: 'A game', coverPath: 'cover.svg' })).toThrow('Cover')
+  })
+  it('preserves Markdown license notices byte-for-byte in hosted-compatible text assets', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-license-test-'))
+    const notice = Buffer.from('# Asset licenses\r\nKenney — CC0\r\n')
+    const events: string[] = []
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await writeFile(path.join(dir, 'ASSET-LICENSES.md'), notice)
+      await mkdir(path.join(dir, 'assets'))
+      await writeFile(path.join(dir, 'assets', 'License.MD'), notice)
+      const artifact = await packDirectory(dir, 'saved-round', text => events.push(text))
+      expect(artifact.files.map(f => f.path)).toEqual(['ASSET-LICENSES.txt', 'assets/License.txt', 'index.html'])
+      for (const f of artifact.files.filter(f => f.path.endsWith('.txt'))) {
+        expect(Buffer.from(f.data, 'base64')).toEqual(notice)
+        expect(f.sha256).toBe(digest(notice))
+      }
+      expect(await readFile(path.join(dir, 'ASSET-LICENSES.md'))).toEqual(notice)
+      expect(events).toContain('Preserving license notice ASSET-LICENSES.md as ASSET-LICENSES.txt in the upload; contents are unchanged.')
+      expect(validateArtifact(artifact).artifact).toEqual(artifact)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('rejects license destination collisions instead of losing either notice', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-license-collision-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await writeFile(path.join(dir, 'LICENSE.md'), 'first notice')
+      await writeFile(path.join(dir, 'license.txt'), 'second notice')
+      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Duplicate asset path')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  it('still rejects arbitrary Markdown and linked license files', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-license-unsafe-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await writeFile(path.join(dir, 'private-notes.md'), 'not for publication')
+      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Unsupported asset path')
+      await rm(path.join(dir, 'private-notes.md'))
+      await symlink(path.join(dir, 'index.html'), path.join(dir, 'LICENSE.md'))
+      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Linked build entry')
+    } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })
