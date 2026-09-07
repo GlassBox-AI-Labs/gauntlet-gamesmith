@@ -574,6 +574,99 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(deferred).toHaveLength(1)
   })
 
+  // The stock CLIs run each of their own Bash commands in a fresh process
+  // group, so anything an agent backgrounds there leaves the attempt's group
+  // and survives a signal aimed at it. See issue #73.
+  it('Stop interrupts a process group the agent left outside the attempt group', () => {
+    const leaderPid = 2_000_000_000
+    const strayPid = leaderPid - 7
+    const identity = readProcessIdentity(process.pid)!
+    const leaderIdentity = `${leaderPid}:${identity}`
+    const strayIdentity = `${strayPid}:${identity}`
+    const signals: Array<[number, 0 | NodeJS.Signals]> = []
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      // The agent's command escaped into its own group and was then orphaned.
+      scanProcessTable: () => [
+        { pid: leaderPid, ppid: 1, pgid: leaderPid, lstart: identity },
+        { pid: strayPid, ppid: leaderPid, pgid: strayPid, lstart: identity },
+      ],
+      processGroupIdentity: (pid) => (pid === strayPid ? [strayIdentity] : [leaderIdentity]),
+      processGroupStillOwned: (_pid, captured) => captured.includes(strayIdentity) || captured.includes(leaderIdentity),
+      signalProcess: (pid, signal) => { signals.push([pid, signal]) },
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    // One supervision tick is enough to see the escaped group while its parent
+    // link is still visible.
+    for (const tick of ticks) tick()
+    runner.stop(started.buildId!)
+
+    expect(signals).toContainEqual([-strayPid, 'SIGINT'])
+    expect(signals).toContainEqual([-leaderPid, 'SIGINT'])
+  })
+
+  it('leaves an escaped group alone when its group id was recycled', () => {
+    const leaderPid = 2_000_000_000
+    const strayPid = leaderPid - 7
+    const identity = readProcessIdentity(process.pid)!
+    const signals: Array<[number, 0 | NodeJS.Signals]> = []
+    const ticks: Array<() => void> = []
+    const child = new EventEmitter() as ChildProcess
+    Object.assign(child, { pid: leaderPid, unref: () => child })
+    const { runner, workspaceDir } = setup({
+      spawnChild: () => child,
+      completeProcessMeta: (workspace, attemptId, marker, pid, streams, groupIdentities) => completeProcessMeta(
+        workspace,
+        attemptId,
+        marker,
+        pid,
+        () => ({ identity, groupId: pid, startedAtMs: marker.startedAtMs }),
+        streams,
+        groupIdentities,
+      ),
+      scanProcessTable: () => [
+        { pid: leaderPid, ppid: 1, pgid: leaderPid, lstart: identity },
+        { pid: strayPid, ppid: leaderPid, pgid: strayPid, lstart: identity },
+      ],
+      processGroupIdentity: () => [`${leaderPid}:${identity}`],
+      // Nothing we recorded in the escaped group is there any more: its PGID
+      // now belongs to a stranger, so it is not ours to signal.
+      processGroupStillOwned: (_pid, captured) => captured.includes(`${leaderPid}:${identity}`),
+      signalProcess: (pid, signal) => { signals.push([pid, signal]) },
+      repeat: (work) => {
+        ticks.push(work)
+        return { unref: () => undefined } as unknown as NodeJS.Timeout
+      },
+      cancelRepeat: () => {},
+      defer: () => ({ unref: () => undefined } as unknown as NodeJS.Timeout),
+    })
+
+    const started = runner.start(input(workspaceDir))
+    for (const tick of ticks) tick()
+    runner.stop(started.buildId!)
+
+    expect(signals.some(([pid]) => pid === -strayPid)).toBe(false)
+  })
+
   it.each(['current', 'retained'] as const)('%s Stop starts process control when portable event writes fail', (mode) => {
     const signals: Array<0 | NodeJS.Signals> = []
     const child = new EventEmitter() as ChildProcess

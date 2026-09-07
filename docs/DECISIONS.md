@@ -811,3 +811,27 @@ access and needs an approved email, without branding the app for one cohort.
 **Consequences.** This changes presentation, not enrollment policy: the exact
 verified email domain in ADR-027 and explicit developer exceptions still govern
 publishing. Creating and playing games continue to require no platform account.
+
+## ADR-030 — Attempt ownership follows the process, not the process group (2026-09-07)
+
+**Decision.** The app records every process group an attempt is seen to create
+and signals those groups when the attempt ends, in addition to the attempt's own
+group. Groups are sampled from the process table roughly every ten seconds while
+the attempt runs, walking the live parent links down from the attempt leader, and
+each group is remembered by the same `pid:lstart` identities the canonical group
+stop already verifies. Sampling is required because the answer expires: the stock
+CLIs run each of their own Bash commands in a fresh process group, so anything an
+agent backgrounds there is reparented to init as soon as that command's shell
+exits, and no link back to the attempt survives. macOS exposes neither the
+process environment (`ps -E` is restricted) nor a usable session id, so there is
+nothing to ask at stop time.
+
+**Consequences.** Stop, timeouts, the hard cap and ordinary completion all reach
+what an agent left running; the leaked dev servers and headless browsers of
+issue #73 no longer accumulate or burn CPU after a build ends. A group whose PGID
+is recycled by an unrelated process fails the identity check and is left alone,
+so the sweep can miss a group rather than signal a stranger's. Two gaps are
+accepted: a group created while the app was closed is never recorded, because
+attempts survive app quit by design and only sampling can see them; and a group
+created and orphaned entirely between two samples is missed. Both leave the
+process running, which is the behaviour that already existed.
