@@ -156,8 +156,8 @@ export interface CriticFields {
   criticEffort: string
 }
 
-/** Where the build form starts: a critic outside the implementer's model family. */
-export const DEFAULT_CRITIC: CriticFields = { criticModel: MODEL_IDS.codexSol, criticEffort: 'medium' }
+/** Where the build form starts: the critic mirrors the implementer's lead (ADR-034). */
+export const DEFAULT_CRITIC: CriticFields = { criticModel: MODEL_IDS.claudeOpus, criticEffort: 'high' }
 
 /** The Reference Study's deep-research fan-out is picked the same way. */
 export interface ResearchFields {

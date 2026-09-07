@@ -11,11 +11,11 @@ describe('five build presets', () => {
       const preset = buildPreset(level, level, { claude: true, codex: true }, true)
       return [preset.orchestratorModel, preset.subagentModel, preset.criticModel, preset.orchestratorEffort, preset.researchModel, preset.assetModel]
     })).toEqual([
-      ['claude-sonnet-5', null, 'gpt-5.6-luna', 'medium', null, 'claude-sonnet-5'],
-      ['claude-opus-5', 'claude-sonnet-5', 'gpt-5.6-terra', 'medium', 'gpt-5.6-luna', 'claude-sonnet-5'],
-      ['claude-opus-5', 'claude-sonnet-5', 'gpt-5.6-sol', 'high', 'gpt-5.6-luna', 'claude-sonnet-5'],
-      ['claude-fable-5-1', 'claude-opus-5', 'gpt-6-astra', 'high', 'gpt-5.6-sol', 'claude-opus-5'],
-      ['claude-fable-5-1', 'claude-fable-5-1', 'gpt-6-astra', 'max', 'gpt-5.6-sol', 'claude-fable-5-1'],
+      ['claude-sonnet-5', null, 'claude-sonnet-5', 'medium', null, 'claude-sonnet-5'],
+      ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-5', 'high', 'gpt-5.6-luna', 'claude-sonnet-5'],
+      ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-5', 'high', 'gpt-5.6-luna', 'claude-sonnet-5'],
+      ['claude-fable-5-1', 'claude-fable-5', 'claude-fable-5-1', 'xhigh', 'gpt-5.6-sol', 'claude-fable-5'],
+      ['claude-fable-5-1', 'claude-fable-5', 'claude-fable-5-1', 'max', 'gpt-5.6-sol', 'claude-fable-5'],
     ])
   })
 

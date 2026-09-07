@@ -940,19 +940,28 @@ identical dropdowns read as noise rather than a decision.
 **Decision.** The composer presents the configuration in two layers over the same four field
 groups (`impl`, `critic`, `research`, `assets`), which remain the single source of truth that
 drives the build. The collapsed default is one investment scrubber (the build pace) that ties
-model tier and effort together and derives a cross-family critic by default, shown as a small
-badge next to the scrubber. An Advanced expander decouples the two axes into a Model tier lean
-and an Effort lean, gives each role a clickable model-tier meter and a five-cell effort meter,
-and adds a Cross-family toggle, off by default, that reveals per-role family pills so a single
-role (typically the critic) can move to the other family without disturbing the rest. Blue reads
+model tier and effort together, with a small badge next to the scrubber naming the critic's
+family. An Advanced expander decouples the two axes into a Model tier lean and an Effort lean,
+gives each role a clickable model-tier meter and a five-cell effort meter, and adds a
+Cross-family toggle, off by default, that reveals per-role family pills so a single role
+(typically the critic) can move to the other family without disturbing the rest. Blue reads
 as model tier, amber as effort. The critic is always present regardless of reference mode.
+
+**Preset shape.** The staircase is not flat across roles. The orchestrator sets the level and
+the critic mirrors it, same model and same effort, so fresh eyes judge on equal footing; a
+cross-family critic is a deliberate move through the toggle, not the default. The subagent sits
+one model tier and one effort step below the orchestrator at every pace, research fans out on a
+cheaper tier, and sculptors track the workers. Balanced is Opus at high effort for the
+orchestrator and critic, Sonnet a step down for the subagent.
 
 **Compatibility.** No schema, IPC, or prompt change. Model tier ordering lives in
 `MODEL_LADDER` in `shared/models.ts`, ascending per family; `buildPreset` and `presetSlices`
 take separate model and effort paces so the collapsed scrubber passes one value for both while
-the two leans move them apart. Off-capable roles (subagents, research, sculptors) keep `null` as
-their off state; the orchestrator and critic have no off control. New builds continue to store
-only `AGENT_EFFORTS` values (ADR-019); the orchestrator effort is normalized for display through
+the two leans move them apart. The subagent's model and effort derive from the orchestrator's by
+stepping one rung down each ladder, so the one-below rule holds at every pace without a
+hand-kept table. Off-capable roles (subagents, research, sculptors) keep `null` as their off
+state; the orchestrator and critic have no off control. New builds continue to store only
+`AGENT_EFFORTS` values (ADR-019); the orchestrator effort is normalized for display through
 `newBuildOrchestratorEffort`.
 
 **Consequences.** The meter is the shape of the level, not a number to read, which is what the

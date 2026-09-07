@@ -152,49 +152,46 @@ function RoleRow({ label, model, effort, offLabel, crossFamily, onModel, onEffor
   const family = harnessFor(model)
   const ladder = MODEL_LADDER[family]
   return (
-    <div className="grid grid-cols-[104px_1fr] items-start gap-3 max-sm:grid-cols-1">
-      <span className="pt-1 text-xs text-[#7d7772]">{label}</span>
-      <div className="grid gap-2">
-        <div className="flex flex-wrap items-center gap-3">
-          {offLabel && (
+    <div className="grid grid-cols-[100px_84px_64px_112px_82px_1fr] items-center gap-x-3 gap-y-2 max-sm:grid-cols-1">
+      <span className="text-xs text-[#7d7772]">{label}</span>
+      {offLabel ? (
+        <button
+          type="button"
+          aria-pressed={off}
+          title={offLabel}
+          onClick={() => onModel(off ? modelAtTier(family, modelTier(model)) : null)}
+          className={`justify-self-start rounded-full border px-2 py-0.5 text-[10px] ${off ? 'border-[#5b534f] bg-[#2a2523] text-[#d7cfca]' : 'border-transparent text-[#8b807a] hover:text-[#c9c1bc]'}`}
+        >
+          {off ? offLabel : 'On'}
+        </button>
+      ) : (
+        <span aria-hidden="true" />
+      )}
+      {!off ? (
+        <>
+          <Meter tone="model" label={`${label} model tier`} levels={ladder.length} value={modelTier(model)} onChange={(t) => onModel(modelAtTier(family, t))} />
+          <span className="text-[11px] text-[#b3a9a3]">{modelLabel(model)}</span>
+          <Meter tone="effort" label={`${label} effort`} levels={EFFORT_ONLY.length} value={effortIndex(effort)} onChange={(i) => onEffort(EFFORT_ONLY[i])} />
+          <span className="text-[11px] text-[#8f857f]">{effort}</span>
+        </>
+      ) : (
+        <span className="col-span-4 text-[11px] text-[#6f6763]">off</span>
+      )}
+      {crossFamily && !off && (
+        <div role="group" aria-label={`${label} model family`} className="col-start-3 col-span-4 flex items-center gap-1 max-sm:col-start-1">
+          {(['claude', 'codex'] as const).map((f) => (
             <button
               type="button"
-              aria-pressed={off}
-              onClick={() => onModel(off ? modelAtTier(family, modelTier(model)) : null)}
-              className={`rounded-full border px-2 py-0.5 text-[10px] ${off ? 'border-[#5b534f] bg-[#2a2523] text-[#d7cfca]' : 'border-transparent text-[#8b807a] hover:text-[#c9c1bc]'}`}
+              key={f}
+              aria-pressed={family === f}
+              onClick={() => { if (family !== f) onModel(crossFamilyModel(model)) }}
+              className={`rounded-full px-2 py-0.5 text-[10px] ${family === f ? 'bg-[#332925] text-[#f0e9e5]' : 'text-[#8b807a] hover:text-[#c9c1bc]'}`}
             >
-              {off ? offLabel : 'On'}
+              {f === 'claude' ? 'Claude' : 'Codex'}
             </button>
-          )}
-          {!off && (
-            <>
-              <Meter tone="model" label={`${label} model tier`} levels={ladder.length} value={modelTier(model)} onChange={(t) => onModel(modelAtTier(family, t))} />
-              <span className="min-w-[96px] text-[11px] text-[#b3a9a3]">{modelLabel(model)}</span>
-            </>
-          )}
+          ))}
         </div>
-        {!off && (
-          <div className="flex flex-wrap items-center gap-3">
-            <Meter tone="effort" label={`${label} effort`} levels={EFFORT_ONLY.length} value={effortIndex(effort)} onChange={(i) => onEffort(EFFORT_ONLY[i])} />
-            <span className="min-w-[96px] text-[11px] text-[#8f857f]">{effort}</span>
-          </div>
-        )}
-        {crossFamily && !off && (
-          <div role="group" aria-label={`${label} model family`} className="flex items-center gap-1">
-            {(['claude', 'codex'] as const).map((f) => (
-              <button
-                type="button"
-                key={f}
-                aria-pressed={family === f}
-                onClick={() => { if (family !== f) onModel(crossFamilyModel(model)) }}
-                className={`rounded-full px-2 py-0.5 text-[10px] ${family === f ? 'bg-[#332925] text-[#f0e9e5]' : 'text-[#8b807a] hover:text-[#c9c1bc]'}`}
-              >
-                {f === 'claude' ? 'Claude' : 'Codex'}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }
@@ -408,19 +405,19 @@ export function BuildForm({
                 {modelsOpen && <div className="mt-3 grid gap-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                      <div className="flex items-center gap-2"><span className="w-[58px] text-[11px] text-[#8f8681]">Model tier</span><Meter tone="model" label="Model tier lean" levels={BUILD_PACES.length} value={modelLean} onChange={(v) => applyLeans(v as BuildPace, effortLean)} disabled={busy} /></div>
-                      <div className="flex items-center gap-2"><span className="w-[58px] text-[11px] text-[#8f8681]">Effort</span><Meter tone="effort" label="Effort lean" levels={BUILD_PACES.length} value={effortLean} onChange={(v) => applyLeans(modelLean, v as BuildPace)} disabled={busy} /></div>
+                      <label className="flex items-center gap-2 text-[11px] text-[#8f8681]"><span className="w-[58px]">Model tier</span><input aria-label="Model tier lean" type="range" min="0" max={BUILD_PACES.length - 1} step="1" value={modelLean} aria-valuetext={BUILD_PACES[modelLean]} disabled={busy} onChange={(event) => applyLeans(Number(event.target.value) as BuildPace, effortLean)} className="h-1 w-24 accent-[#6f8fd6]" /></label>
+                      <label className="flex items-center gap-2 text-[11px] text-[#8f8681]"><span className="w-[42px]">Effort</span><input aria-label="Effort lean" type="range" min="0" max={BUILD_PACES.length - 1} step="1" value={effortLean} aria-valuetext={BUILD_PACES[effortLean]} disabled={busy} onChange={(event) => applyLeans(modelLean, Number(event.target.value) as BuildPace)} className="h-1 w-24 accent-[#d6a24e]" /></label>
                     </div>
                     <label className="flex items-center gap-2 text-[11px] text-[#b2a7a1]" title="Let a single role run on the other model family"><input type="checkbox" checked={crossFamily} onChange={(event) => setCrossFamily(event.target.checked)} />Cross-family per role</label>
                   </div>
                   {custom && <button type="button" onClick={() => applyPace(pace)} className="justify-self-start text-xs text-[#d7b6a4]">Reset to {BUILD_PACES[pace]}</button>}
                   <div className="grid gap-3 rounded-lg border border-[#393433] bg-[#161212] p-3.5">
                     <RoleRow label="Orchestrator" crossFamily={crossFamily} model={impl.orchestratorModel} effort={newBuildOrchestratorEffort(impl.orchestratorEffort)} onModel={(m) => changeImpl({ ...impl, orchestratorModel: m ?? impl.orchestratorModel })} onEffort={(e) => changeImpl({ ...impl, orchestratorEffort: e })} />
-                    <RoleRow label="Subagents" crossFamily={crossFamily} offLabel="Solo, orchestrator codes" model={impl.subagentModel} effort={impl.subagentEffort} onModel={(m) => changeImpl({ ...impl, subagentModel: m })} onEffort={(e) => changeImpl({ ...impl, subagentEffort: e })} />
+                    <RoleRow label="Subagents" crossFamily={crossFamily} offLabel="Solo" model={impl.subagentModel} effort={impl.subagentEffort} onModel={(m) => changeImpl({ ...impl, subagentModel: m })} onEffort={(e) => changeImpl({ ...impl, subagentEffort: e })} />
                     {referenceMode === 'web' && <RoleRow label="Research" crossFamily={crossFamily} offLabel="No fan-out" model={research.researchModel} effort={research.researchEffort} onModel={(m) => changeResearch({ ...research, researchModel: m })} onEffort={(e) => changeResearch({ ...research, researchEffort: e })} />}
                     <RoleRow label="Critic" crossFamily={crossFamily} model={critic.criticModel} effort={critic.criticEffort} onModel={(m) => changeCritic({ ...critic, criticModel: m ?? critic.criticModel })} onEffort={(e) => changeCritic({ ...critic, criticEffort: e })} />
                     <p className="text-[11px] leading-relaxed text-[#8f857f]">{describeCritic(critic.criticModel, impl.orchestratorModel)}</p>
-                    {referenceMode !== 'skip' && <RoleRow label="Asset sculptors" crossFamily={crossFamily} offLabel="By hand, no sculptors" model={assets.assetModel} effort={assets.assetEffort} onModel={(m) => changeAssets({ ...assets, assetModel: m })} onEffort={(e) => changeAssets({ ...assets, assetEffort: e })} />}
+                    {referenceMode !== 'skip' && <RoleRow label="Asset sculptors" crossFamily={crossFamily} offLabel="By hand" model={assets.assetModel} effort={assets.assetEffort} onModel={(m) => changeAssets({ ...assets, assetModel: m })} onEffort={(e) => changeAssets({ ...assets, assetEffort: e })} />}
                   </div>
                 </div>}
               </div>
