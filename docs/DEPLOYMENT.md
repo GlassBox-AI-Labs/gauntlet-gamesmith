@@ -40,6 +40,26 @@ links are preserved.
 The game deployment remains unchanged. The initial catalog deployment above is a prior
 version, not the current signup-capable version.
 
+### Shared game asset URL fix — 2026-09-07
+
+The game host was updated to deployment `dpl_9Gf5qNEgAfaBMfgNhpocLdwLvUEY`
+(`glassbox-games-lk7si12qb-glassbox3.vercel.app`) and promoted to
+`glassbox-games.vercel.app`. It scopes bundled root-relative asset URLs inside
+each authorized preview/public release (ADR-037). The source was a clean archive
+of `65c92f5` plus the Budapest workspace's shared game-server/parser changes and
+dependency lockfile; local desktop profiles, game files, and context were excluded.
+This was a CLI source deployment, not a claim that the workspace changes were
+already committed or merged. The catalog and database were not redeployed.
+
+Full repository typecheck, tests, and build passed, followed by focused data tests,
+typecheck, and a game-host build after the final JSON-preservation adjustment.
+The full tests were rerun successfully. Browser checks loaded an actual game
+through both local preview and public route layouts. Protected-deployment checks
+confirmed the existing hosted game's JavaScript references its scoped asset URL
+and its binary model is available before promotion. After promotion, the original
+hosted preview loaded successfully in Chrome and reached its garage. Previous production deployment
+`dpl_DysMihGnikgqtCcPmDYCHvMxLYmH` remains the rollback target.
+
 Hosted read-only smoke passed again with **0 games**. The signup route now returns
 405 to GET and structured JSON for invalid-domain POST requests. A temporary Auth
 signup using an alias of the GlassBox inbox required confirmation and delivered the
@@ -195,17 +215,19 @@ login page. Keep preview deployment protection where it does not interfere with
 an explicitly configured staging environment. The game project must expose only
 game serving and its service identity route, never the catalog's publisher API.
 
-Launch the developer Electron app with the catalog URL:
+Both developer and packaged Electron apps default to the hosted catalog and game
+origin. Launch the developer app normally:
 
 ```sh
-GAUNTLET_CATALOG_URL=https://gauntletgamesmith.com \
-GAUNTLET_GAME_ORIGIN=https://glassbox-games.vercel.app pnpm dev
+pnpm dev
 ```
 
 Desktop publisher sessions and pending jobs are isolated by catalog origin, so
 local and hosted accounts do not overwrite one another. No Supabase server key
 belongs on the desktop. Publish a saved round normally after verifying its private
 preview. Do not upload export archives or manually select files from the web.
+`GAUNTLET_CATALOG_URL` and `GAUNTLET_GAME_ORIGIN` remain explicit overrides for
+local or staging tests. A loopback catalog defaults its game host to port 4311.
 
 ## Challenger signup and email delivery
 

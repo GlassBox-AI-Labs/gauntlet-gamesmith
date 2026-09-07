@@ -2,6 +2,9 @@
 
 The website is for browsing and playing games. Publishing and release management
 belong to Electron. There is no browser dashboard, artifact picker, or import API.
+Electron defaults to the hosted catalog at `https://gauntletgamesmith.com` for
+signup, sign-in, and publishing, with previews at `https://glassbox-games.vercel.app`.
+A local catalog is only needed when explicitly testing the publishing stack locally.
 A publisher account is required only for publication; ordinary local development
 and guest play remain account-free. Multiplayer and persistent player state are deferred.
 
@@ -28,8 +31,9 @@ startup. V1 publisher Electron runs on this same machine; remote LAN desktop
 publishing is not supported by the loopback Storage endpoint. Local HTTP is for
 trusted development networks, not an internet deployment.
 
-For development, start `pnpm catalog:db`, then `pnpm catalog:dev`. `pnpm dev` starts
-the desktop independently. Apply new migrations with `pnpm db:up`; do not reset
+For local catalog development, start `pnpm catalog:db`, then `pnpm catalog:dev`.
+Launch the desktop with `GAUNTLET_CATALOG_URL=http://127.0.0.1:4310 pnpm dev`;
+plain `pnpm dev` uses hosted publishing. Apply new migrations with `pnpm db:up`; do not reset
 the database for an ordinary update.
 
 ## Publisher accounts
@@ -96,8 +100,16 @@ Private previews last 30 minutes and survive server restart with the same
 
 ## Boundaries and supported builds
 
-- Static browser games with `index.html`, relative assets, and installed build
+- Static browser games with `index.html`, bundled assets, and installed build
   dependencies. No custom backend, networking, or persistent player saves.
+- The shared local/hosted game server scopes root-relative bundled asset URLs to
+  the authorized preview or published release. It parses HTML resource attributes,
+  inline/external JavaScript (including static template prefixes), CSS URLs/imports,
+  JSON/GLTF manifests, and SVG references. Relative and external URLs remain
+  unchanged; executable response integrity hashes are updated when needed.
+  Stored artifacts stay byte-identical, and access is checked on every request.
+  This supports common generated asset paths without game-specific edits; it cannot
+  infer arbitrary URLs assembled from runtime data or supply missing files/backends.
 - The compilation script must produce one browser output below the source root.
   Output detection scans at most 20,000 entries, excludes private/reference trees,
   and requires files changed by this compilation. Stale, absent, or ambiguous
@@ -106,6 +118,11 @@ Private previews last 30 minutes and survive server restart with the same
 - No links, hidden/private directories, reference/critique folders, source maps,
   source TypeScript, or unsupported types. The server verifies hashes, source
   revision, listing, and cover before marking a release ready.
+- Markdown notices named `ASSET-LICENSES.md`, `LICENSE.md`, `LICENCE.md`, or
+  `NOTICE.md` (case-insensitive) ship as `.txt` with identical contents. The build
+  log records the published path; source files stay unchanged. Links to these
+  notices in a game should use the published `.txt` path. Name collisions fail
+  instead of overwriting a notice. Other Markdown files remain unsupported.
 - A PNG, JPEG, WebP, or GIF named `cover`, `thumbnail`, `preview`, or `screenshot`
   at the output root or in `assets/` is selected automatically when present.
 - Games use an opaque sandbox origin: no account credentials, persistent browser

@@ -28,8 +28,17 @@ export function validateArtifact(value: unknown): { artifact: GameArtifact; dige
   return { artifact, digest: digest(JSON.stringify(artifact)), bytes }
 }
 
+/** Preserve Markdown license notices as plain text; the hosted wire format already supports .txt. */
+function shippingPath(relative: string): string {
+  const name = path.posix.basename(relative)
+  const shipping = /^(?:asset-licenses|license|licence|notice)\.md$/i.test(name)
+    ? relative.slice(0, -3) + '.txt'
+    : relative
+  return assetPath(shipping)
+}
+
 /** Only package a chosen shipping directory. Links, source, and unknown file types fail closed. */
-export async function packDirectory(directory: string, sourceRevision: string): Promise<GameArtifact> {
+export async function packDirectory(directory: string, sourceRevision: string, log: (text: string) => void = () => {}): Promise<GameArtifact> {
   const root = await fs.realpath(directory), files: GameArtifact['files'] = []
   if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error('Build directory cannot be a symlink.')
   let total = 0, entries = 0
@@ -45,7 +54,7 @@ export async function packDirectory(directory: string, sourceRevision: string): 
       if (entry.name.startsWith('.') || /^(node_modules|reference|critique)$/i.test(entry.name)) throw new Error(`Private directory in build: ${relative}`)
       if (stat.isDirectory()) { await visit(target); continue }
       if (!stat.isFile()) throw new Error(`Special file in build: ${relative}`)
-      assetPath(relative)
+      const publishedPath = shippingPath(relative)
       if (files.length >= MAX_FILES || (total += stat.size) > MAX_ARTIFACT_BYTES) throw new Error('Build exceeds publication limits.')
       const fd = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
@@ -60,7 +69,8 @@ export async function packDirectory(directory: string, sourceRevision: string): 
         }
         const after = await fd.stat()
         if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) throw new Error('Build changed while packaging.')
-        files.push({ path: relative, data: data.toString('base64'), sha256: digest(data) })
+        files.push({ path: publishedPath, data: data.toString('base64'), sha256: digest(data) })
+        if (publishedPath !== relative) log(`Preserving license notice ${relative} as ${publishedPath} in the upload; contents are unchanged.`)
       } finally { await fd.close() }
     }
   }

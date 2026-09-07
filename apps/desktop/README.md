@@ -226,10 +226,13 @@ CLI detection recognizes global installations under `~/.nvm/versions/node/vX.Y.Z
 and their global package targets even when NVM itself is a Git checkout. Registered agent-writable
 project roots, links into those roots, and private app directories remain excluded (ADR-015).
 
-## Publish to the local catalog
+## Publish a game
 
 Open a run and click **Publish round N**, or select a specific completed saved
-round and click **Publish**. Enter your developer email/password in the publishing drawer; Supabase sign-in
+round and click **Publish**. Create an account with an approved email and verify its
+email code, or sign in to your existing account in the publishing drawer. Signup,
+sign-in, and publishing use `https://gauntletgamesmith.com` by default in development
+and packaged apps; private previews use `https://glassbox-games.vercel.app`. Supabase sign-in
 and the encrypted publisher session stay in Electron. No browser opens for login. Build the saved revision, play its private
 preview, and explicitly publish. The same drawer's **Releases** tab owns history,
 rollback, and unpublish; sign-out is there too. There is no web management UI or

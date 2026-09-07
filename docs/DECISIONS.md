@@ -946,3 +946,49 @@ the ledger. Nothing else called `start` with a mode.
 **Consequences.** Starting a brand-new game means creating or picking the empty folder first, in the
 project picker, instead of letting the app name one from the prompt. Prompt-derived folder names
 (`Build Tower aggro` → `tower-aggro/`) are gone with the creator.
+
+## ADR-035 — Hosted publishing by default (2026-09-07)
+
+**Decision.** Development and packaged Electron apps default to
+`https://gauntletgamesmith.com` for all publisher account and release operations,
+and `https://glassbox-games.vercel.app` for private game previews. A publisher
+does not need to run a local catalog or supply environment variables to sign up.
+Explicit catalog/game-origin overrides retain local and staging development.
+
+**Consequences.** Plain `pnpm dev` uses the hosted publishing service. Local
+catalog tests must select their loopback catalog explicitly. Session and pending
+job storage remain isolated by catalog origin. Connection failures identify the
+unreachable service and recovery action without exposing account inputs.
+
+## ADR-036 — Preserve Markdown license notices during publication (2026-09-07)
+
+**Decision.** The desktop artifact packer publishes Markdown notices named
+`ASSET-LICENSES.md`, `LICENSE.md`, `LICENCE.md`, or `NOTICE.md` as `.txt`, preserving
+their bytes and recording the path conversion in the build log. Matching is
+case-insensitive and applies in nested shipping directories. It does not change
+the source checkout, discard notices, or accept arbitrary Markdown/source files.
+
+**Consequences.** Existing hosted validators and game hosts accept these notices
+without a wire-format change or server deployment. Destination collisions remain
+errors. Games that link to a notice must use its published `.txt` path; the packer
+does not rewrite executable game assets.
+
+## ADR-037 — Scope bundled asset URLs at the shared game host (2026-09-07)
+
+**Context.** Vite's relative build base does not change hard-coded runtime URLs
+such as `/assets/car.glb`. Those URLs escape the release path and fail on the shared
+game origin even though the uploaded model exists.
+
+**Decision.** After each preview/publication authorization check, the shared game
+server parses textual game assets and scopes root-relative references to bundled
+files/directories beneath that request's launch path. This covers HTML, inline and
+external JavaScript, CSS, JSON/GLTF, and SVG. Keep relative URLs, external URLs,
+comments, regex literals, and binary bytes unchanged. Recompute script/style SRI
+when transformation changes their bytes. Never change the stored artifact or cache
+transformed bytes across preview capabilities; retain the opaque-origin sandbox,
+per-request access checks, and no-store responses.
+
+**Consequences.** Existing uploaded games receive the fix after a game-host deploy,
+and local serving uses the same policy. Static directory prefixes support common
+dynamic model/texture names. This does not promise arbitrary runtime URL inference,
+missing-file repair, backend emulation, or compatibility with every game engine.

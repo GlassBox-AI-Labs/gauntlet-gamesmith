@@ -4,6 +4,33 @@ const ENROLLMENT_ROUTES = new Set([
   'resend-verification',
 ])
 
+/** Network failures have no API response; keep account data out of diagnostics. */
+export async function requestCatalog(
+  catalogUrl: string,
+  route: string,
+  init: RequestInit,
+): Promise<Record<string, unknown>> {
+  let response: Response
+  try {
+    response = await fetch(`${catalogUrl}/api/${route}`, init)
+  } catch {
+    if (init.signal?.aborted) {
+      if (init.signal.reason?.name === 'TimeoutError')
+        throw new Error('The publishing service took too long to respond. Please try again.')
+      throw new Error('Publishing request cancelled.')
+    }
+    const endpoint = new URL(catalogUrl)
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname)
+    throw new Error(
+      `Cannot reach the publishing service at ${endpoint.origin}. ` +
+      (local
+        ? 'Start the local catalog, or restart the app with the hosted publishing service.'
+        : 'Check your internet connection and try again.'),
+    )
+  }
+  return readCatalogResponse(response, route)
+}
+
 /** Deployment errors may be HTML; never expose their body as an account error. */
 export async function readCatalogResponse(
   response: Response,

@@ -14,7 +14,8 @@ import {
 } from './publication-build'
 import { playAccessError } from './play'
 import { publicationCover, publicationListing } from './publication-listing'
-import { readCatalogResponse } from './publishing-response'
+import { requestCatalog } from './publishing-response'
+import { publishingConfig } from './publishing-config'
 import { IPC } from '../shared/ipc'
 import { success, failure } from '../shared/result'
 import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
@@ -41,9 +42,12 @@ interface LocalJob {
 }
 /** Separate publishing session and orchestration; no CLI credential access or renderer secrets. */
 export class Publishing {
-  readonly catalogUrl = new URL(
-    process.env.GAUNTLET_CATALOG_URL ?? 'http://127.0.0.1:4310',
-  ).origin
+  private readonly config = publishingConfig({
+    GAUNTLET_CATALOG_URL: process.env.GAUNTLET_CATALOG_URL,
+    GAUNTLET_GAME_ORIGIN: process.env.GAUNTLET_GAME_ORIGIN,
+    GAUNTLET_GAME_PORT: process.env.GAUNTLET_GAME_PORT,
+  })
+  readonly catalogUrl = this.config.catalogUrl
   private active = false
   private signInAbort: AbortController | null = null
   private logTarget: { buildId: string; attemptId: string | null } | null = null
@@ -111,7 +115,7 @@ export class Publishing {
     auth?: Session | null,
   ): Promise<any> {
     const timeout = AbortSignal.timeout(this.signInAbort ? 30000 : 120000)
-    const response = await fetch(`${this.catalogUrl}/api/${route}`, {
+    return requestCatalog(this.catalogUrl, route, {
       method: input === undefined ? 'GET' : 'POST',
       headers: {
         ...(input === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -122,7 +126,6 @@ export class Publishing {
         ? AbortSignal.any([timeout, this.signInAbort.signal])
         : timeout,
     })
-    return readCatalogResponse(response, route)
   }
   private async authenticated(): Promise<Session> {
     const current = this.session()
@@ -350,7 +353,7 @@ export class Publishing {
         },
         (text) => this.log(buildId, text),
       )
-      const artifact = await packDirectory(buildDir, revision)
+      const artifact = await packDirectory(buildDir, revision, text => this.log(buildId, text))
       metadata.coverPath = publicationCover(artifact)
       this.log(
         buildId,
@@ -431,12 +434,7 @@ export class Publishing {
         `Release ${result.releaseId} is ready for private preview. It is not yet published.`,
       )
       const previewOrigin = new URL(preview.url).origin
-      const allowed = new URL(
-        process.env.GAUNTLET_GAME_ORIGIN ?? this.catalogUrl,
-      )
-      if (!process.env.GAUNTLET_GAME_ORIGIN)
-        allowed.port = process.env.GAUNTLET_GAME_PORT ?? '4311'
-      if (previewOrigin !== allowed.origin)
+      if (previewOrigin !== this.config.gameOrigin)
         throw new Error('Unexpected preview origin.')
       await shell.openExternal(preview.url)
       return { ...result, previewUrl: '' }
@@ -516,12 +514,7 @@ export class Publishing {
         { releaseId },
         await this.authenticated(),
       )
-      const allowed = new URL(
-        process.env.GAUNTLET_GAME_ORIGIN ?? this.catalogUrl,
-      )
-      if (!process.env.GAUNTLET_GAME_ORIGIN)
-        allowed.port = process.env.GAUNTLET_GAME_PORT ?? '4311'
-      if (new URL(preview.url).origin !== allowed.origin)
+      if (new URL(preview.url).origin !== this.config.gameOrigin)
         throw new Error('Unexpected preview origin.')
       const result = {
         gameId: history.gameId,
