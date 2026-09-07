@@ -16,8 +16,8 @@ This deployment does not change packaging UX or add multiplayer.
 
 The public catalog is live at **https://gauntletgamesmith.com**. The Vercel-managed
 domain belongs to the GlassBox team and points to `glassbox-arcade`; game execution
-uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all five
-migrations through `20260906225000_challenger_publishers.sql`. Signup and the email
+uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all six
+migrations through `20260907001200_inclusive_publisher_identity.sql`. Signup and the email
 provider are enabled, email confirmation is required, and anonymous signup is disabled.
 Custom SMTP sends confirmation codes through Resend. Both Vercel projects use production-only
 server environments, outside-root workspace access, Node 22, and Virginia functions.
@@ -31,10 +31,12 @@ Initial production deployments on 2026-09-06 were built directly from GitHub com
 | Catalog | `dpl_BSypmAdud46mNEJVD8nrZ71iZTQu` | Ready, custom domain and HTTPS active |
 
 The catalog was updated on 2026-09-06 to commit
-`dc3a25258f643e5b7ac48b4308a451bfc4e6243c`, deployment
-`dpl_BCk2wWL1qqx6QkqqVcgXgfN88LMK`
-(`glassbox-arcade-fdc856smu-glassbox3.vercel.app`). It is Ready in `iad1` and serves the
-custom domain. This deploy includes Challenger signup and the matching desktop protocol.
+`35c3c164df4bdb115caae36833fa9e79e641e8b8`, deployment
+`dpl_6V7rBCtuRhpsnhkpUTM4rSSJSYWM`
+(`glassbox-arcade-51tifj74f-glassbox3.vercel.app`). It is Ready in `iad1` and serves the
+custom domain. This deploy includes signup, inclusive account copy, and the matching
+desktop protocol. New generated public profiles use neutral names; existing profile
+links are preserved.
 The game deployment remains unchanged. The initial catalog deployment above is a prior
 version, not the current signup-capable version.
 
@@ -43,8 +45,11 @@ Hosted read-only smoke passed again with **0 games**. The signup route now retur
 signup using an alias of the GlassBox inbox required confirmation and delivered the
 correct verification-code email to Gmail. The test Auth user was removed; it created
 no publisher profile. Provisioned publisher login previously passed through the
-production API and Electron. Full Challenger signup/code exchange passed locally;
-the first real Challenger signup remains for the publisher to complete in Electron.
+production API and Electron. The inclusive desktop build passed a complete local
+signup → email-code verification → saved-round preview → publication → guest play →
+unpublication check, with temporary test data removed. All 971 unit tests, typecheck,
+build, and 17 database policy/identity assertions passed. The first real Challenger
+signup and cloud publication remain for the publisher to complete in Electron.
 No cloud game has been uploaded or published by deployment verification. Hosted
 gameplay and large-asset streaming remain unverified until the first publication.
 
@@ -215,6 +220,7 @@ publishers create their own accounts and publish their own saved rounds in Elect
 For a fresh environment or sender rotation, use this order:
 
 1. Apply the Challenger migration without resetting the hosted database.
+   Apply subsequent versioned migrations, including neutral generated publisher identities.
    Regenerated `schema.sql` and types are references; the versioned migration is the input.
 2. In Supabase Authentication → Email, configure a **custom SMTP sender** and a verified
    sender address. Supabase's built-in sender only sends to authorized project-team
