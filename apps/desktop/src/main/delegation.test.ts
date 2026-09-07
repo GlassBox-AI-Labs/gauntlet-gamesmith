@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { resolveModels } from '../shared/models'
-import { ASSET_WAVE_SIZE } from '../shared/prompts'
+import { ASSET_WAVE_SIZE, MOTION_FRAMES_RULE } from '../shared/prompts'
 import { parseChildProcessExit } from './child-process-exit'
 import {
   claudeChildCommand,
@@ -102,6 +102,7 @@ describe('implementerAgentMd', () => {
     expect(md).toContain('read reference/build-123/README.md')
     expect(md).toContain('reference/build-123/research.md')
     expect(md).toContain('progression classification, story beats, and difficulty curve')
+    expect(md).toContain(MOTION_FRAMES_RULE)
   })
 
   it('fronts a codex worker with a cheap dispatcher that must not background the child', () => {
