@@ -202,19 +202,19 @@ describe('LoopRunner lifecycle boundary', () => {
     expect(Date.parse(rawStreamEvent.ts)).toBeGreaterThanOrEqual(Date.parse(attempt.startedAt!))
   })
 
-  it('creates a dedicated prompt-named project folder for a new UI build', () => {
+  it('builds in the chosen folder itself and creates nothing beneath it', () => {
     const { ledger, runner, workspaceDir } = setup({
       spawnChild: () => { throw new Error('stop after workspace inspection') },
     })
-    const attemptsRoot = path.join(path.dirname(workspaceDir), 'builds')
+    const chosen = path.join(path.dirname(workspaceDir), 'builds')
 
-    const result = runner.start({ ...input(attemptsRoot), prompt: 'Build Tower aggro' }, 'new-child')
+    const result = runner.start({ ...input(chosen), prompt: 'Build Tower aggro' })
     const build = ledger.getBuild(result.buildId!)!
 
     expect(result.ok).toBe(true)
     expect(build.title).toBe('Tower aggro')
-    expect(build.workspaceDir).toBe(path.join(fs.realpathSync(attemptsRoot), 'tower-aggro'))
-    expect(fs.statSync(build.workspaceDir).isDirectory()).toBe(true)
+    expect(build.workspaceDir).toBe(fs.realpathSync(chosen))
+    expect(fs.existsSync(path.join(build.workspaceDir, 'tower-aggro'))).toBe(false)
   })
 
   it('rejects a workspace overlapping protected app data before creating history', () => {

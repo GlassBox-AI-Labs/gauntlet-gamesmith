@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { BuildSidebar } from './BuildSidebar'
+import { DEFAULT_IMPLEMENTER, DEFAULT_CRITIC, DEFAULT_RESEARCH, DEFAULT_ASSET } from '../../../shared/models'
+import { BuildSidebar, type BuildSidebarProps } from './BuildSidebar'
 
-describe('RunSidebar', () => {
+describe('BuildSidebar', () => {
   it('allows vertical scrolling without exposing horizontal overflow', () => {
     const markup = renderToStaticMarkup(
       <BuildSidebar
@@ -12,7 +13,6 @@ describe('RunSidebar', () => {
         selectedReportId={null}
         selectedRound={null}
         expandedBuilds={new Set()}
-        visibleRounds={{}}
         editing={false}
         checkedBuilds={new Set()}
         onNewBuild={() => undefined}
@@ -20,7 +20,6 @@ describe('RunSidebar', () => {
         onSelectBuild={() => undefined}
         onSelectRound={() => undefined}
         onToggleBuild={() => undefined}
-        onLoadMore={() => undefined}
         onOpenAgents={() => undefined}
         onToggleEditing={() => undefined}
         onToggleChecked={() => undefined}
@@ -42,6 +41,32 @@ describe('RunSidebar', () => {
     expect(markup).toContain('min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto')
   })
 
+  it('loads rounds when an unselected summary-only build is expanded', () => {
+    const props: BuildSidebarProps = {
+      snapshots: [{
+        build: {
+          id: 'unselected', title: 'Unselected build', workspaceDir: '/tmp/example', status: 'stopped',
+          prompt: 'Goal', maxRounds: 10, budgetUsd: null, round: 4, totalCostUsd: 0, stopReason: null,
+          playTrusted: true, createdAt: '2026-09-07T00:00:00.000Z', updatedAt: '2026-09-07T00:00:00.000Z',
+          models: { ...DEFAULT_IMPLEMENTER, ...DEFAULT_CRITIC, ...DEFAULT_RESEARCH, ...DEFAULT_ASSET },
+        },
+        attempts: [], totalAttempts: 8,
+      }],
+      reports: [], selectedBuildId: 'another-build', selectedReportId: null, selectedRound: null,
+      expandedBuilds: new Set(['unselected']), editing: false, checkedBuilds: new Set(),
+      busy: false, historyWarning: null, hasMoreHistories: false, hasNewerHistories: false,
+      onNewBuild() {}, onImportBuild() {}, onSelectBuild() {}, onSelectRound() {}, onToggleBuild() {},
+      onOpenAgents() {}, onToggleEditing() {}, onToggleChecked() {}, onToggleAllChecked() {},
+      onDeleteChecked() {}, onCreateReport() {}, onSelectReport() {}, onImportReport() {},
+      onLoadOlderHistories() {}, onLoadNewestHistories() {},
+    }
+
+    const markup = renderToStaticMarkup(<BuildSidebar {...props} />)
+    expect(markup).toContain('sidebar-rounds-unselected')
+    expect(markup).toContain('Loading rounds…')
+    expect(markup).not.toContain('No rounds yet.')
+  })
+
   it('reserves room for build and round status labels', () => {
     const snapshot = {
       build: {
@@ -60,7 +85,6 @@ describe('RunSidebar', () => {
         selectedReportId={null}
         selectedRound={1}
         expandedBuilds={new Set(['build-1'])}
-        visibleRounds={{}}
         editing={false}
         checkedBuilds={new Set()}
         onNewBuild={() => undefined}
@@ -68,7 +92,6 @@ describe('RunSidebar', () => {
         onSelectBuild={() => undefined}
         onSelectRound={() => undefined}
         onToggleBuild={() => undefined}
-        onLoadMore={() => undefined}
         onOpenAgents={() => undefined}
         onToggleEditing={() => undefined}
         onToggleChecked={() => undefined}

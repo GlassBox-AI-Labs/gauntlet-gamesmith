@@ -1,12 +1,61 @@
 import { BarChart3, Check, ChevronDown, ChevronRight, Download, Minus, Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import type { BuildSnapshot } from '../../../shared/build'
 import type { ReportRecord } from '../../../shared/reports'
+import { summarizeRounds } from '../lib/sidebar-rounds'
 
 export const ATTEMPT_ROUNDS_PAGE_SIZE = 3
 
-function roundNumbers(snapshot: BuildSnapshot): number[] {
-  return [...new Set(snapshot.attempts.filter((attempt) => attempt.round > 0).map((attempt) => attempt.round))]
-    .sort((a, b) => b - a)
+/** Mounted only while expanded; retain small summaries instead of full attempt payloads. */
+function BuildRounds({ snapshot, selectedRound, onSelectRound }: {
+  snapshot: BuildSnapshot
+  selectedRound: number | null
+  onSelectRound: (snapshot: BuildSnapshot, round: number) => void
+}): React.JSX.Element {
+  const [rounds, setRounds] = useState(() => summarizeRounds(snapshot))
+  const [limit, setLimit] = useState(ATTEMPT_ROUNDS_PAGE_SIZE)
+  const [loading, setLoading] = useState(snapshot.attempts.length === 0)
+  const [error, setError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  const buildId = snapshot.build.id
+  const updatedAt = snapshot.build.updatedAt
+  const totalAttempts = snapshot.totalAttempts
+  const attempts = snapshot.attempts
+  // Selection compacts other snapshots. That must not clear an expanded row's rounds.
+  useEffect(() => {
+    let disposed = false
+    setError(null)
+    if (attempts.length > 0) {
+      setRounds(summarizeRounds(snapshot))
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    void window.builds.get(buildId).then((detail) => {
+      if (disposed) return
+      if (!detail) throw new Error('Build history is no longer available.')
+      setRounds(summarizeRounds(detail))
+    }).catch((cause: unknown) => {
+      if (!disposed) setError(cause instanceof Error ? cause.message : 'Could not load rounds.')
+    }).finally(() => {
+      if (!disposed) setLoading(false)
+    })
+    return () => { disposed = true }
+  }, [buildId, updatedAt, totalAttempts, attempts, retry])
+
+  return (
+    <div id={`sidebar-rounds-${buildId}`} className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
+      {rounds.slice(0, limit).map(({ round, score, active }) => (
+        <button type="button" key={round} onClick={() => onSelectRound(snapshot, round)} className={`flex w-full min-w-0 max-w-full items-center overflow-hidden rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'}`}>
+          <span className="min-w-0 flex-1 truncate">Round {round}</span><span className={`ml-2 shrink-0 whitespace-nowrap ${active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}`}>{active ? 'active' : score != null ? score.toFixed(2) : ''}</span>
+        </button>
+      ))}
+      {loading && rounds.length === 0 && <p role="status" className="px-2 py-1.5 text-[12px] text-[#88817e]">Loading rounds…</p>}
+      {error && <div className="px-2 py-1.5 text-[12px] text-amber-300"><p>{error}</p><button type="button" onClick={() => setRetry((current) => current + 1)} className="underline">Retry</button></div>}
+      {!loading && !error && rounds.length === 0 && <p className="px-2 py-1.5 text-[12px] text-[#88817e]">No rounds yet.</p>}
+      {rounds.length > limit && <button type="button" onClick={() => setLimit((current) => current + ATTEMPT_ROUNDS_PAGE_SIZE)} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] text-[#77706d] hover:bg-white/[0.035] hover:text-[#c9c3c0]">Load more</button>}
+    </div>
+  )
 }
 
 function BuildCheckbox({ checked, mixed = false, label, onToggle }: { checked: boolean; mixed?: boolean; label: string; onToggle: () => void }): React.JSX.Element {
@@ -25,7 +74,6 @@ export interface BuildSidebarProps {
   selectedReportId: string | null
   selectedRound: number | null
   expandedBuilds: Set<string>
-  visibleRounds: Record<string, number>
   editing: boolean
   checkedBuilds: Set<string>
   onNewBuild: () => void
@@ -33,7 +81,6 @@ export interface BuildSidebarProps {
   onSelectBuild: (snapshot: BuildSnapshot) => void
   onSelectRound: (snapshot: BuildSnapshot, round: number) => void
   onToggleBuild: (buildId: string) => void
-  onLoadMore: (buildId: string) => void
   onOpenAgents: () => void
   onToggleEditing: () => void
   onToggleChecked: (buildId: string) => void
@@ -57,7 +104,6 @@ export function BuildSidebar({
   selectedReportId,
   selectedRound,
   expandedBuilds,
-  visibleRounds,
   editing,
   checkedBuilds,
   onNewBuild,
@@ -65,7 +111,6 @@ export function BuildSidebar({
   onSelectBuild,
   onSelectRound,
   onToggleBuild,
-  onLoadMore,
   onOpenAgents,
   onToggleEditing,
   onToggleChecked,
@@ -112,8 +157,6 @@ export function BuildSidebar({
         <div className="grid min-w-0 max-w-full grid-cols-[minmax(0,1fr)] gap-1">
           {snapshots.map((item) => {
             const buildId = item.build.id
-            const rounds = roundNumbers(item)
-            const limit = visibleRounds[buildId] ?? ATTEMPT_ROUNDS_PAGE_SIZE
             const open = expandedBuilds.has(buildId)
             const selected = selectedBuildId === buildId
             const label = item.build.title
@@ -127,21 +170,7 @@ export function BuildSidebar({
                   <button type="button" onClick={() => onSelectBuild(item)} title={`${label}\n${item.build.workspaceDir}`} className="min-w-0 flex-1 truncate py-2 pr-2 text-left text-[13px]">{label}</button>
                   {item.build.status === 'running' && <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] text-amber-300"><span className="size-1.5 animate-pulse rounded-full bg-amber-400" aria-hidden="true" /> running</span>}
                 </div>
-                {open && (
-                  <div id={`sidebar-rounds-${buildId}`} className="ml-8 border-l border-[#332f2f] pb-1 pl-2 pt-1">
-                    {rounds.slice(0, limit).map((round) => {
-                      const records = item.attempts.filter((attempt) => attempt.round === round)
-                      const score = records.find((attempt) => attempt.verdict)?.verdict?.score
-                      const active = records.some((attempt) => attempt.status === 'running' || attempt.status === 'queued')
-                      return (
-                        <button type="button" key={round} onClick={() => onSelectRound(item, round)} className={`flex w-full min-w-0 max-w-full items-center overflow-hidden rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-white/[0.035] hover:text-[#c9c3c0] ${selectedBuildId === buildId && selectedRound === round ? 'bg-white/[0.055] text-[#ded9d6]' : 'text-[#88817e]'}`}>
-                          <span className="min-w-0 flex-1 truncate">Round {round}</span><span className={`ml-2 shrink-0 whitespace-nowrap ${active ? 'text-amber-300' : 'font-mono text-[10px] text-[#68615f]'}`}>{active ? 'active' : score != null ? score.toFixed(2) : ''}</span>
-                        </button>
-                      )
-                    })}
-                    {rounds.length > limit && <button type="button" onClick={() => onLoadMore(buildId)} className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-[12px] text-[#77706d] hover:bg-white/[0.035] hover:text-[#c9c3c0]">Load more</button>}
-                  </div>
-                )}
+                {open && <BuildRounds snapshot={item} selectedRound={selected ? selectedRound : null} onSelectRound={onSelectRound} />}
               </div>
             )
           })}

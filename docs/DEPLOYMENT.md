@@ -45,7 +45,7 @@ version, not the current signup-capable version.
 The game host was updated to deployment `dpl_9Gf5qNEgAfaBMfgNhpocLdwLvUEY`
 (`glassbox-games-lk7si12qb-glassbox3.vercel.app`) and promoted to
 `glassbox-games.vercel.app`. It scopes bundled root-relative asset URLs inside
-each authorized preview/public release (ADR-036). The source was a clean archive
+each authorized preview/public release (ADR-037). The source was a clean archive
 of `65c92f5` plus the Budapest workspace's shared game-server/parser changes and
 dependency lockfile; local desktop profiles, game files, and context were excluded.
 This was a CLI source deployment, not a claim that the workspace changes were

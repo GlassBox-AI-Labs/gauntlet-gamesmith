@@ -8,9 +8,9 @@ import { LoaderCircle } from 'lucide-react'
 import { BuildDetail } from '@/views/BuildDetail'
 import { BuildComposerDialog } from '@/components/BuildComposerDialog'
 import { BuildForm, type BuildFormSettings } from '@/views/BuildForm'
-import { BuildSidebar, ATTEMPT_ROUNDS_PAGE_SIZE } from '@/views/BuildSidebar'
+import { BuildSidebar } from '@/views/BuildSidebar'
 import { DeleteBuildsDialog, NameReportDialog, ReportPanel } from '@/views/ReportView'
-import { applySnapshotUpdate, olderAttemptPageOffset, pruneExpandedBuilds, pruneVisibleRoundCounts, selectSnapshotInList } from '@/lib/build-pages'
+import { applySnapshotUpdate, olderAttemptPageOffset, pruneExpandedBuilds, selectSnapshotInList } from '@/lib/build-pages'
 import type { CritiqueRound, BuildLogLine, BuildRecord, BuildSnapshot, PlayState, RawStreamChunk, ReadRawStreamInput, ReferenceStudy } from '../../../shared/build'
 import {
   DEFAULT_CRITIC,
@@ -67,7 +67,6 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
   const [attemptPageBusy, setAttemptPageBusy] = useState(false)
   const [busy, setBusy] = useState(false)
   const [expandedBuilds, setExpandedBuilds] = useState<Set<string>>(new Set())
-  const [visibleRounds, setVisibleRounds] = useState<Record<string, number>>({})
   const [selectedRound, setSelectedRound] = useState<number | null>(null)
   const [play, setPlay] = useState<PlayState>({ running: false, url: null, error: null, round: null })
   const [referenceStudies, setReferenceStudies] = useState<Map<string, ReferenceStudy>>(new Map())
@@ -80,7 +79,6 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
 
   useEffect(() => {
     setExpandedBuilds((current) => pruneExpandedBuilds(current, snapshots))
-    setVisibleRounds((current) => pruneVisibleRoundCounts(current, snapshots, ATTEMPT_ROUNDS_PAGE_SIZE))
   }, [snapshots])
 
   useEffect(() => {
@@ -537,7 +535,6 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
         selectedReportId={selectedReport?.id ?? null}
         selectedRound={selectedRound}
         expandedBuilds={expandedBuilds}
-        visibleRounds={visibleRounds}
         editing={editingBuilds}
         checkedBuilds={checkedBuilds}
         onNewBuild={beginNewBuild}
@@ -545,7 +542,6 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
         onSelectBuild={(next) => void selectBuild(next)}
         onSelectRound={(next, round) => void selectBuild(next, round)}
         onToggleBuild={(buildId) => setExpandedBuilds((current) => { const next = new Set(current); if (next.has(buildId)) next.delete(buildId); else next.add(buildId); return next })}
-        onLoadMore={(buildId) => setVisibleRounds((current) => ({ ...current, [buildId]: (current[buildId] ?? ATTEMPT_ROUNDS_PAGE_SIZE) + ATTEMPT_ROUNDS_PAGE_SIZE }))}
         onOpenAgents={onOpenAgents}
         onToggleEditing={() => {
           setEditingBuilds((current) => !current)
