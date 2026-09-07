@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process'
 const name = 'gamesmith-multiplayer-redis'
 const docker = args => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const [context] = JSON.parse(docker(['context', 'inspect']))
+if (!context?.Endpoints?.docker?.Host?.startsWith('unix://')) throw new Error('Local multiplayer setup requires a local Docker Unix socket.')
 let existing
 try { existing = JSON.parse(docker(['inspect', name]))[0] } catch (error) {
   if (!String(error.stderr).includes('No such')) throw new Error('Docker is unavailable. Start Docker Desktop and retry.')
