@@ -16,7 +16,7 @@ const catalog = new Catalog(
   process.env.CATALOG_SECRET!,
   captureServerError,
 )
-const server = new GameServer(catalog, captureServerError)
+const server = new GameServer(catalog, captureServerError, process.env.MULTIPLAYER_API_ORIGIN && process.env.MULTIPLAYER_SOCKET_URL ? { apiOrigin: process.env.MULTIPLAYER_API_ORIGIN, socketUrl: process.env.MULTIPLAYER_SOCKET_URL } : undefined)
 const games = http.createServer(async (req, res) => {
   try {
     const response = await server.serve(

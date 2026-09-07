@@ -8,7 +8,8 @@
     "./api/game-server": "./src/api/game-server.ts",
     "./api/publisher-auth": "./src/api/publisher-auth.ts",
     "./contracts": "./src/contracts.ts",
-    "./errors": "./src/errors.ts"
+    "./errors": "./src/errors.ts",
+    "./api/multiplayer": "./src/api/multiplayer.ts"
   },
   "scripts": {
     "test": "vitest run",
@@ -18,7 +19,8 @@
     "@gauntlet/db": "workspace:*",
     "@gauntlet/publishing": "workspace:*",
     "@supabase/supabase-js": "2.99.3",
-    "zod": "4.3.6"
+    "zod": "4.3.6",
+    "@gauntlet/multiplayer": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

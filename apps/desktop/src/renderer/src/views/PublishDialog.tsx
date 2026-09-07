@@ -196,7 +196,6 @@ export function PublishDialog({
                       })
                       if (!result.ok) throw new Error(result.error)
                       setPreview(result.value)
-                      await refresh()
                     })
                   }}
                 >

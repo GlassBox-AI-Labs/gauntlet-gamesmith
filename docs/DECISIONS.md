@@ -723,3 +723,52 @@ access and needs an approved email, without branding the app for one cohort.
 **Consequences.** This changes presentation, not enrollment policy: the exact
 verified email domain in ADR-027 and explicit developer exceptions still govern
 publishing. Creating and playing games continue to require no platform account.
+
+## ADR-030 — Three-minute guest multiplayer through a shared relay (2026-09-06)
+
+**Decision.** Ship an optional `@gauntlet/multiplayer` module. The catalog authorizes
+guests against the exact ready release and public/preview access. The game host
+injects its launch capability only when the validated build declares
+`gamesmith.multiplayer.json`. Electron bundles the browser SDK into each scaffold
+and puts its usage contract in the visible implementation prompt. Games use a
+small join/room/connect/publish/leave interface and shared pose interpolation.
+
+Vercel's WebSocket beta handles connections in US `iad1`, with a shared Redis
+store for atomic room membership, deadlines, duplicate suppression and pub/sub.
+Use no process-local room ownership: each socket can reach a different instance.
+A lobby lasts 30 seconds, countdown 4 seconds, and active match 180 seconds.
+The first guest can start sooner. At most six guests share a game/release/access
+scope. Signed guest tickets reconnect within that fixed deadline; reconnecting
+never extends a match. Supabase remains the platform's publisher identity and
+release database. No gamer signup, physical database per game, gameplay writes
+to Postgres, Colyseus process, or always-running game server is introduced here.
+
+**Reason.** A short relay session fits the platform's current Vercel deployment
+and lets racing adopt the same guest protocol and smoothing in local previews
+and hosted play. Cross-instance Redis coordination is required even for a single
+Vercel project. Colyseus's authoritative room process would require a different
+runtime/adapter; it is a future option behind the same game-facing seam.
+
+**Limits.** This is client-authoritative, low-stakes movement. It does not provide
+anti-cheat, authoritative combat/shared rigid-body physics, migration across
+regions, resume after reload, persistent scores or rewards. A disconnected lobby
+seat lasts until the lobby deadline if its leave request cannot reach the server.
+Smoothing uses an adaptive 80–180 ms buffer and at most 80 ms extrapolation;
+it cannot repair arbitrary packet loss or invalid game simulation. Test controls
+delay incoming state; they do not emulate every property of a poor network.
+Redis Free and Vercel Hobby quotas are development limits, not a promise of free
+unlimited concurrency. No automatic billing upgrade is enabled.
+
+## ADR-031 — Disk snapshots for larger reference attachments (2026-09-06)
+
+**Decision.** Supersede ADR-018's in-memory draft storage with private, chunked disk
+snapshots. Copy at most 1 MiB at a time, yield during ingestion, preserve source
+identity checks, and show progress through validated main/preload/renderer IPC.
+Allow 4,000 files, 1 GiB per file and 1.5 GiB total; retain secret/generated-file
+exclusions. Prepared snapshots hold leases until copied or released on a failed
+build start. An oversized inline image preview does not detach the source asset.
+Publishing streams its existing bounded artifact envelope directly to storage
+and automatically retries transient transfer failures three times. Completion
+still validates its digest. This does not increase the separate 24 MiB shipping
+artifact limit or disable safety checks. Drafts remain local and are discarded
+on normal app exit; created builds keep their frozen provenance and files.

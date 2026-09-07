@@ -202,9 +202,11 @@ export function BuildForm({
     if (!settings.initialized) onSettingsChange((current) => ({ ...current, initialized: true }))
     applyPace(next)
   }, [checking, connected.claude, connected.codex, busy, custom, pace, settings.initialized, assets.assetModel !== null])
+  const [copyProgress, setCopyProgress] = useState<{ files: number; bytes: number } | null>(null)
+  useEffect(() => window.attachments.onProgress(value => { setCopyProgress(value); setCopyingDroppedContext(true) }), [])
   const add = async (operation: () => Promise<AttachmentResult<BuildAttachment[]>>, fromPicker = false): Promise<void> => {
     if (adding.current || busy) return
-    adding.current = true; setCopyingDroppedContext(!fromPicker); setContextBusy(true); onAttachmentBusyChange(true); setContextError(null); setContextNotice(null)
+    adding.current = true; setCopyProgress(null); setCopyingDroppedContext(!fromPicker); setContextBusy(true); onAttachmentBusyChange(true); setContextError(null); setContextNotice(null)
     try {
       const result = await operation()
       if (!result.ok) { setContextError(result.error); return }
@@ -253,7 +255,7 @@ export function BuildForm({
         <textarea aria-label="Game description" value={prompt} onChange={(event) => onPromptChange(event.target.value)} disabled={busy} rows={7} spellCheck={false} placeholder="Describe the game you want to build…" className="min-h-[220px] w-full resize-y bg-transparent px-5 py-5 text-[14px] leading-relaxed text-[#e4dfdc] outline-none placeholder:text-[#827975] focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[#89776f]" />
         <div className="px-4 pb-3">
           <BuildAttachmentChips items={attachments} disabled={busy || contextBusy} onRemove={(id) => void remove(id)} onError={setContextError} />
-          {copyingDroppedContext && <p role="status" className="mt-2 text-[11px] text-[#a49790]">Copying context…</p>}
+          {copyingDroppedContext && <p role="status" className="mt-2 text-[11px] text-[#a49790]">Copying context…{copyProgress ? ` ${copyProgress.files} files · ${(copyProgress.bytes / 1024 / 1024).toFixed(1)} MB` : ''}</p>}
           {contextNotice && <p role="status" className="mt-2 text-[11px] text-[#b7a497]">{contextNotice}</p>}
           {contextError && <p role="alert" className="mt-2 text-xs text-[#f0aaaa]">{contextError}</p>}
         </div>

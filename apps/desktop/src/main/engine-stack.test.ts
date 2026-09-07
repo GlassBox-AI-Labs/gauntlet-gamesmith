@@ -66,6 +66,8 @@ describe('scaffoldEngine', () => {
     const result = scaffoldEngine(dir)
     expect(result.created).toContain('package.json')
     expect(result.created).toContain('tools/engine-gate.mjs')
+    expect(fs.readFileSync(path.join(dir, 'platform/gamesmith.js'), 'utf8')).toContain('MultiplayerClient')
+    expect(fs.readFileSync(path.join(dir, 'platform/MULTIPLAYER.md'), 'utf8')).toContain('180-second')
     expect(fs.existsSync(path.join(dir, 'src/sim/systems'))).toBe(true)
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
     expect(pkg.dependencies).toMatchObject(ENGINE_DEPS)

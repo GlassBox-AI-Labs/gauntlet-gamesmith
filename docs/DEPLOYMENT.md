@@ -3,7 +3,7 @@
 The MVP uses one Supabase project and two Vercel projects from this monorepo.
 The catalog is public; publisher login and release management stay in Electron.
 The separate game origin serves uploaded games, including private previews.
-This deployment does not change packaging UX or add multiplayer.
+The multiplayer V1 extension and its rollout are documented at the end of this file.
 
 ## Infrastructure
 
@@ -385,3 +385,43 @@ References: [Vercel monorepos](https://vercel.com/docs/monorepos),
 [Resend with Supabase SMTP](https://resend.com/docs/send-with-supabase-smtp),
 [Resend quotas](https://resend.com/docs/knowledge-base/account-quotas-and-limits),
 [confirmation templates](https://supabase.com/docs/guides/auth/auth-email-templates).
+
+## Multiplayer V1 rollout
+
+The catalog also owns `/api/multiplayer` and `/api/multiplayer/socket`. The latter
+uses the [Vercel WebSocket beta](https://vercel.com/docs/functions/websockets)
+with Node.js `maxDuration = 300`. Active rooms end after 180 seconds; reconnects
+reuse the original deadline. No always-running game server is deployed.
+
+An Upstash Redis Free database, **gamesmith-multiplayer**, was provisioned in
+`iad1` after the operator accepted its terms. Its Vercel store is
+`store_0lFJo8YQgtoo0C3I`, connected to the catalog's production environment.
+Automatic upgrades and Prod Pack are disabled. The
+[free plan](https://upstash.com/pricing/redis) currently includes 500K monthly
+commands, 256 MB data and 10 GB bandwidth. Realtime movement consumes commands
+continually; use this for limited testing and measure usage before admitting
+more traffic. Do not enable an automatic paid upgrade.
+
+Additional production environment:
+
+| Variable | Catalog | Games |
+| --- | --- | --- |
+| `REDIS_URL` or `KV_URL` | Integration-provided TLS Redis credential | — |
+| `MULTIPLAYER_NAMESPACE` | `gamesmith-production` | — |
+| `MULTIPLAYER_API_ORIGIN` | `https://gauntletgamesmith.com` | Same |
+| `MULTIPLAYER_SOCKET_URL` | `wss://gauntletgamesmith.com/api/multiplayer/socket` | Same |
+
+`MULTIPLAYER_REDIS_URL` can explicitly override the integration URL. The game
+project receives public service locations only, never Redis credentials.
+`CATALOG_SECRET` signs guest room tickets and separates game/release/public and
+preview scopes. Preserve it across the two project deployments. Use a distinct
+secret and Redis namespace for staging. Both projects must be deployed for a
+multiplayer release to preview correctly; changing environment alone does not
+update an existing deployment.
+
+Deploy the tested Git commit using the existing GlassBox-owned workflow above,
+then verify two guests join a real published/private-preview racing release,
+exchange state, reconnect without extending the match, and close at its original
+three-minute deadline. HTTP 426 from the socket health route only proves that
+the route exists; it does not verify a working WebSocket upgrade. Record the
+actual deployment IDs and runtime test results below after rollout.

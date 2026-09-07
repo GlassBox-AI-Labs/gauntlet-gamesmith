@@ -1,3 +1,6 @@
+import multiplayerSdk from 'gamesmith:browser-sdk'
+import multiplayerTypes from 'gamesmith:browser-types'
+import { multiplayerInstructions } from '../shared/prompts'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ENGINE_DEPS, ENGINE_DEV_DEPS, engineContract, SRC_DIRS } from '../shared/engine-stack'
@@ -258,6 +261,9 @@ export function scaffoldEngine(workspaceDir: string, expectedWorkspace?: OwnedWo
   writeIfAbsent('tsconfig.json', TSCONFIG)
 
   rewrite('CONTRACT.md', contractMd())
+  rewrite('platform/gamesmith.js', multiplayerSdk)
+  rewrite('platform/gamesmith.d.ts', multiplayerTypes)
+  rewrite('platform/MULTIPLAYER.md', multiplayerInstructions())
   rewrite('tools/engine-gate.mjs', GATE_SCRIPT)
 
   return { created, refreshed }

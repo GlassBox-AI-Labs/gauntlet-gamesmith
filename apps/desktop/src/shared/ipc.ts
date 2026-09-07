@@ -41,7 +41,7 @@ export const IPC = {
     readStream: 'build:read-stream',
     update: 'build:update',
   },
-  attachment: { add: 'attachment:add', pick: 'attachment:pick', preview: 'attachment:preview', remove: 'attachment:remove', openFolder: 'attachment:open-folder' },
+  attachment: { progress: 'attachment:progress', add: 'attachment:add', pick: 'attachment:pick', preview: 'attachment:preview', remove: 'attachment:remove', openFolder: 'attachment:open-folder' },
   context: { droppedFolder: 'context:dropped-folder', pickFolder: 'context:pick-folder', openFolder: 'context:open-folder' },
   media: { base: 'media:base' },
   onboarding: {

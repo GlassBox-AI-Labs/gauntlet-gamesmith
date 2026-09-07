@@ -5,6 +5,7 @@ const config: NextConfig = {
     '@gauntlet/data',
     '@gauntlet/db',
     '@gauntlet/publishing',
+    '@gauntlet/multiplayer',
   ],
 }
 export default config

@@ -155,7 +155,7 @@ describe('LoopRunner lifecycle boundary', () => {
     const store = createBuildAttachments(() => [])
     const { ledger, runner, workspaceDir } = setup({ prepareContext: (ids) => store.prepare(ids), spawnChild: () => { throw new Error('fixture launch stopped') } })
     const source = path.join(path.dirname(workspaceDir), 'brief.txt'); fs.writeFileSync(source, 'Design brief')
-    const [item] = store.add([source])
+    const [item] = await store.add([source])
     const result = runner.start({ ...input(workspaceDir), referenceMode: 'files', researchModel: 'gpt-5.6-luna', attachmentIds: [item.id] })
     expect(result.ok).toBe(true)
     await waitFor(() => ledger.getBuild(result.buildId!)?.status !== 'running')

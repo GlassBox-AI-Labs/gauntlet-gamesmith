@@ -38,6 +38,8 @@
     "db:schema": "pnpm --filter @gauntlet/db db:schema",
     "db:types": "pnpm --filter @gauntlet/db db:types",
     "catalog:verify:accounts": "pnpm --filter @gauntlet/web exec tsx scripts/verify-accounts.ts",
-    "db:test": "supabase test db --workdir packages/db"
+    "db:test": "supabase test db --workdir packages/db",
+    "multiplayer:redis": "node scripts/multiplayer-redis.mjs",
+    "multiplayer:test": "pnpm --filter @gauntlet/multiplayer test"
   }
 }

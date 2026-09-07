@@ -1,3 +1,4 @@
+import { MANIFEST_FILE, multiplayerManifest } from '@gauntlet/multiplayer'
 import { assetPath, uuid, MIME, type GameArtifact } from '@gauntlet/publishing'
 import type { Catalog } from './catalog'
 import type { Capture } from '../errors'
@@ -9,7 +10,7 @@ const headers = {
   'Referrer-Policy': 'no-referrer',
   'Access-Control-Allow-Origin': '*',
   'Content-Security-Policy':
-    "sandbox allow-scripts allow-pointer-lock; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'self'",
+    "sandbox allow-scripts allow-pointer-lock; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'self'",
 }
 
 /** Shared local/hosted serving policy. Cached bytes never bypass access checks. */
@@ -19,6 +20,7 @@ export class GameServer {
   constructor(
     private catalog: Source,
     private capture: Capture,
+    private multiplayer?: { apiOrigin: string; socketUrl: string },
   ) {}
 
   private async artifact(release: Awaited<ReturnType<Source['release']>>) {
@@ -84,14 +86,30 @@ export class GameServer {
       const artifact = await this.artifact(release)
       const file = artifact.files.find((entry) => entry.path === path)
       if (!file) throw new Error('Asset missing')
+      let bytes = Buffer.from(file.data, 'base64')
+      const responseHeaders = { ...headers }
+      const capability = artifact.files.find(entry => entry.path === MANIFEST_FILE)
+      if (capability && path.endsWith('.html')) {
+        if (!this.multiplayer) throw new Error('Multiplayer is not configured on the game host.')
+        if (capability.data.length > 4096) throw new Error('Invalid multiplayer declaration.')
+        multiplayerManifest.parse(JSON.parse(Buffer.from(capability.data, 'base64').toString('utf8')))
+        const api = new URL(this.multiplayer.apiOrigin), socket = new URL(this.multiplayer.socketUrl)
+        if (!['https:', 'http:'].includes(api.protocol) || !['wss:', 'ws:'].includes(socket.protocol)) throw new Error('Invalid multiplayer endpoint.')
+        const launch = { version: 1, apiUrl: `${api.origin}/api/multiplayer`, gameId: release.game_id, releaseId: release.id, ...(parts[0] === 'preview' ? { previewToken: parts[2] } : {}) }
+        const json = JSON.stringify(launch).replace(/</g, '\\u003c')
+        const script = `<script>Object.defineProperty(window,'gamesmith',{value:${json},writable:false});</script>`
+        const html = bytes.toString('utf8')
+        bytes = Buffer.from(/<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, head => head + script) : script + html)
+        responseHeaders['Content-Security-Policy'] = headers['Content-Security-Policy'].replace("connect-src 'self'", `connect-src 'self' ${api.origin} ${socket.origin}`)
+      }
       // Stream responses so large assets do not use Vercel's buffered payload path.
       const body =
         request.method === 'HEAD'
           ? null
-          : new Blob([Buffer.from(file.data, 'base64')]).stream()
+          : new Blob([bytes]).stream()
       return new Response(body, {
         headers: {
-          ...headers,
+          ...responseHeaders,
           'Content-Type': MIME[path.split('.').at(-1)!.toLowerCase()],
         },
       })
