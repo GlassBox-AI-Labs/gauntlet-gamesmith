@@ -25,6 +25,31 @@ describe('build prompts', () => {
     }
   })
 
+  it.each(['APEX Racing — shared multiplayer V1', 'Explore an open world with friends', 'Solve a co-op tile puzzle', 'Build a multiplayer platformer'])('preserves genre-neutral multiplayer and resume contracts for %s', (goal) => {
+    // Replay the recorded racing goal and exercise other genres through the same
+    // prompt composition. This does not claim another model-generated game.
+    // The caller supplies browser policy through its delegation rules.
+    const executionRules = `${rules}\n${MACOS_BROWSER_SANDBOX_RULE}`
+    const prompt = composeImplementPrompt(goal, 2, null, executionRules, 'reference/racing', contract, [], 'skip')
+    for (const composed of [prompt, composeResumePrompt(prompt)]) {
+      expect(composed).toContain('Keep single-player games independent of networking')
+      expect(composed).toContain('./platform/gamesmith.js')
+      expect(composed).toContain('MultiplayerClient.fromWindow()')
+      expect(composed).toContain('"sessionSeconds":180')
+      expect(composed).toContain('No signup for guests')
+      expect(composed).toContain('server-enforced finish')
+      expect(composed).toContain('Never apply each movement packet directly to a rendered entity')
+      expect(composed).toContain('Optional TransformBuffer')
+      expect(composed).toContain('Optional SnapshotBuffer')
+      expect(composed).toContain('Do not require spatial fields for non-spatial games')
+      expect(composed).toContain('does not provide a persistent shared world')
+      expect(composed).toContain('not a reliable one-shot command or transaction channel')
+      expect(composed).toContain('Verify two real browser players')
+      expect(composed).toContain('This relay does not validate physics, combat, or scores')
+      expect(composed).toContain(MACOS_BROWSER_SANDBOX_RULE)
+    }
+  })
+
   it('gathers a scoped, attributable pack without implementing', () => {
     const prompt = buildReferencePrompt('Build a game like Control', 'reference/build-123', 'FAN-OUT-RULES')
 

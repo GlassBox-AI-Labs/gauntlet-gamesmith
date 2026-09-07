@@ -4,7 +4,7 @@ import type { Catalog } from './catalog'
 
 const gameId = '11111111-1111-4111-8111-111111111111'
 const releaseId = '22222222-2222-4222-8222-222222222222'
-function fixture(data = '<html>Game</html>') {
+function fixture(data = '<html>Game</html>', multiplayer = false, configured = true) {
   const source = {
     game: vi.fn(async () => ({ id: gameId, current_release_id: releaseId })),
     release: vi.fn(async () => ({
@@ -15,11 +15,12 @@ function fixture(data = '<html>Game</html>') {
     artifact: vi.fn(async () => ({
       files: [
         { path: 'index.html', data: Buffer.from(data).toString('base64') },
+        ...(multiplayer ? [{ path: 'gamesmith.multiplayer.json', data: Buffer.from(JSON.stringify({ version: 1, mode: 'relay', maxPlayers: 6, sessionSeconds: 180 })).toString('base64') }] : []),
       ],
     })),
     validPreview: vi.fn((_id: string, token: string) => token === 'valid'),
   }
-  const server = new GameServer(source as unknown as Catalog, vi.fn())
+  const server = new GameServer(source as unknown as Catalog, vi.fn(), configured ? { apiOrigin: 'https://catalog.example', socketUrl: 'wss://catalog.example/api/multiplayer/socket' } : undefined)
   return {
     source,
     request: (
@@ -38,7 +39,7 @@ describe('game serving on local and hosted origins', () => {
       'sandbox allow-scripts allow-pointer-lock;',
     )
     expect(response.headers.get('content-security-policy')).toContain(
-      "connect-src 'none'",
+      "connect-src 'self'",
     )
     expect(response.headers.get('content-security-policy')).not.toContain(
       'allow-same-origin',
@@ -92,4 +93,20 @@ describe('game serving on local and hosted origins', () => {
     expect(missing.status).toBe(404)
     expect(await missing.text()).toBe('')
   })
+})
+
+it('bootstraps only declared multiplayer releases and isolates preview capabilities', async () => {
+  const { request } = fixture('<html><head></head><body>race</body></html>', true)
+  const published = await request()
+  expect(published.status).toBe(200)
+  const html = await published.text()
+  expect(html).toContain('https://catalog.example/api/multiplayer')
+  expect(html).toContain(`"releaseId":"${releaseId}"`)
+  expect(html).not.toContain('previewToken')
+  expect(published.headers.get('content-security-policy')).toContain("connect-src 'self' https://catalog.example wss://catalog.example")
+  expect(published.headers.get('content-security-policy')).not.toContain('allow-same-origin')
+  const preview = await request(`preview/${releaseId}/valid/index.html`)
+  expect(await preview.text()).toContain('"previewToken":"valid"')
+  expect((await fixture('<html/>', true, false).request()).status).toBe(404)
+  expect(await (await fixture().request()).text()).not.toContain('gamesmith')
 })

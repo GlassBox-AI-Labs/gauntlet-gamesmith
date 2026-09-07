@@ -3,7 +3,7 @@
 The MVP uses one Supabase project and two Vercel projects from this monorepo.
 The catalog is public; publisher login and release management stay in Electron.
 The separate game origin serves uploaded games, including private previews.
-This deployment does not change packaging UX or add multiplayer.
+The multiplayer V1 extension and its rollout are documented at the end of this file.
 
 ## Infrastructure
 
@@ -385,3 +385,102 @@ References: [Vercel monorepos](https://vercel.com/docs/monorepos),
 [Resend with Supabase SMTP](https://resend.com/docs/send-with-supabase-smtp),
 [Resend quotas](https://resend.com/docs/knowledge-base/account-quotas-and-limits),
 [confirmation templates](https://supabase.com/docs/guides/auth/auth-email-templates).
+
+## Multiplayer V1 rollout
+
+The catalog also owns `/api/multiplayer` and `/api/multiplayer/socket`. The latter
+uses the [Vercel WebSocket beta](https://vercel.com/docs/functions/websockets)
+with Node.js `maxDuration = 300`. Active rooms end after 180 seconds; reconnects
+reuse the original deadline. No always-running game server is deployed.
+
+An Upstash Redis Free database, **gamesmith-multiplayer**, was provisioned in
+`iad1` after the operator accepted its terms. Its Vercel store is
+`store_0lFJo8YQgtoo0C3I`, connected to the catalog's production environment.
+Automatic upgrades and Prod Pack are disabled. The
+[free plan](https://upstash.com/pricing/redis) currently includes 500K monthly
+commands, 256 MB data and 10 GB bandwidth. Realtime movement consumes commands
+continually; use this for limited testing and measure usage before admitting
+more traffic. Do not enable an automatic paid upgrade.
+
+Additional production environment:
+
+| Variable | Catalog | Games |
+| --- | --- | --- |
+| `REDIS_URL` or `KV_URL` | Integration-provided TLS Redis credential | — |
+| `MULTIPLAYER_NAMESPACE` | `gamesmith-production` | — |
+| `MULTIPLAYER_API_ORIGIN` | `https://gauntletgamesmith.com` | Same |
+| `MULTIPLAYER_SOCKET_URL` | `wss://gauntletgamesmith.com/api/multiplayer/socket` | Same |
+
+`MULTIPLAYER_REDIS_URL` can explicitly override the integration URL. The game
+project receives public service locations only, never Redis credentials.
+`CATALOG_SECRET` signs guest room tickets and separates game/release/public and
+preview scopes. Preserve it across the two project deployments. Use a distinct
+secret and Redis namespace for staging. Both projects must be deployed for a
+multiplayer release to preview correctly; changing environment alone does not
+update an existing deployment.
+
+Deploy the tested Git commit using the existing GlassBox-owned workflow above,
+then verify two guests join a real published/private-preview multiplayer release,
+exchange game-defined state, reconnect without extending the session, and close
+at its original three-minute deadline. Playtest the actual shared mechanics for
+the chosen genre as well as the common protocol. HTTP 426 from the socket health route only proves that
+the route exists; it does not verify a working WebSocket upgrade. Record the
+actual deployment IDs and runtime test results below after rollout.
+
+### Verified rollout — 2026-09-06 (US Central)
+
+| Surface | Git commit | Production deployment |
+| --- | --- | --- |
+| Catalog / guest API / WebSocket | `3c91695` | `dpl_9FokSvBZZoNz7E89s5r4hv82FHss` |
+| Game host | `6032cff` | `dpl_DysMihGnikgqtCcPmDYCHvMxLYmH` |
+
+Both deployments are Ready in `iad1`, retain the existing custom domains and
+remain on Vercel Hobby. This rollout adds no Supabase schema migration; Redis
+holds only temporary match data. Hosted Redis initially omitted JSON null clock
+fields from a lobby response; `3c91695` normalizes those fields at the adapter
+boundary and was tested against the actual TLS Redis service before redeploying.
+
+Verification completed:
+
+- Monorepo typecheck, 982 unit tests and all workspace builds passed. The Redis
+  integration test also passed against local Redis and the hosted service using
+  its own temporary namespace. Web build and multiplayer checks were rerun for
+  the hosted Redis fix.
+- The live 180-second protocol smoke connected two guests to different function
+  instances, received 3,509 movement snapshots, forced a TCP disconnect and
+  verified reconnection preserved identity and the original deadline. Both
+  clients ended on that deadline. Measured RTT was 62 ms median / 74 ms p95 from
+  the test machine; these measurements are not a geographic latency guarantee.
+- Two real Chrome guests joined the same hosted racing room and received movement
+  updates, including with the incoming-state delay preset enabled. No browser
+  console errors appeared. A separate local browser session reached results at
+  the three-minute deadline.
+- Electron signed in to the hosted publisher account, packaged saved round 2 and
+  streamed 38 shipping files (about 3 MB) into a private preview. The app remains
+  at **Publish this version** for the operator. The racing release is not public.
+- The read-only production catalog smoke passed for the existing Pac-Claude game,
+  including guest access, origin isolation and unavailable web management routes.
+
+The racing source integration is commit `7668738` in its separate game repository.
+Its immutable saved-round revision is
+`50eb5c60ed35928b2627d88fa02ab01ee77da0b8`; the private release is
+`9e3d670d-6bb6-42d3-9abb-d74957995cf0`. Preview capabilities expire after 30
+minutes and are intentionally absent from this document. Open a new preview
+through Electron's release history when needed, then publish from the app.
+
+
+### Genre-neutral SDK verification — 2026-09-07
+
+The generalized SDK was tested against the existing hosted relay using synthetic
+3D movement plus discrete activity/ready state. Two guests connected to separate
+function instances, exchanged 3,424 snapshots, reconnected after a forced TCP
+disconnect with the same identity, and ended at the original 180-second deadline.
+`TransformBuffer` produced 3,537 presentation samples. RTT from this test machine
+was 80 ms median / 96 ms p95; these observations are not a geographic guarantee.
+
+Local verification passed 1,018 unit tests, the separate Redis integration test,
+monorepo typecheck and all builds. It includes 3D/quaternion presentation,
+non-spatial puzzle state and legacy pose compatibility. This was a protocol and
+presentation check, not newly generated browser games in every genre. Historical
+racing gameplay validation above remains one concrete example. This SDK update
+did not deploy infrastructure or publish a game.

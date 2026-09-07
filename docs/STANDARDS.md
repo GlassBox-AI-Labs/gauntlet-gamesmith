@@ -459,7 +459,7 @@ incomplete.
 **Default severity:** Major.
 
 - Every phase starts a fresh supervised process. Enabled implementation leads may continue their
-  prior CLI session and receive a saved notebook (ADR-035). The complete phase contract, frozen
+  prior CLI session and receive a saved notebook (ADR-038). The complete phase contract, frozen
   operator directions, files on disk, and validated prior findings remain authoritative. Session
   resume and model-written memory are optimizations, never correctness dependencies. Research and
   critique sessions remain independent.
@@ -480,7 +480,7 @@ incomplete.
 - A phase's file inputs are named by exact path in its prompt. The reference pack is immutable for
   the build's lifetime; steering text and attachments are frozen per implementation attempt and shared
   by its critic. Automatic recovery reuses that snapshot; explicit Resume may include pending
-  directions in a new attempt without rewriting history (ADR-033/031/034).
+  directions in a new attempt without rewriting history (ADR-036/034/037).
   If an input is missing or invalid, the phase reports a process finding and fails closed rather
   than filling the gap from memory.
 

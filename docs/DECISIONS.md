@@ -855,7 +855,78 @@ hidden:
 Every one of these leaves a process running, which is exactly the behaviour that
 already existed; none of them signals a process that is not ours.
 
-## ADR-031 — Immutable attachments in build steering (2026-09-05)
+## ADR-031 — Three-minute guest multiplayer through a shared relay (2026-09-06)
+
+**Decision.** Ship an optional `@glassbox/multiplayer` module. The catalog authorizes
+guests against the exact ready release and public/preview access. The game host
+injects its launch capability only when the validated build declares
+`gamesmith.multiplayer.json`. Electron bundles the browser SDK into each scaffold
+and puts its usage contract in the visible implementation prompt. Games use a
+small join/room/connect/publish/leave interface with game-defined state and optional
+presentation helpers.
+
+Vercel's WebSocket beta handles connections in US `iad1`, with a shared Redis
+store for atomic room membership, deadlines, duplicate suppression and pub/sub.
+Use no process-local room ownership: each socket can reach a different instance.
+A lobby lasts 30 seconds, countdown 4 seconds, and active match 180 seconds.
+The first guest can start sooner. At most six guests share a game/release/access
+scope. Signed guest tickets reconnect within that fixed deadline; reconnecting
+never extends a match. Supabase remains the platform's publisher identity and
+release database. No gamer signup, physical database per game, gameplay writes
+to Postgres, Colyseus process, or always-running game server is introduced here.
+
+**Reason.** A short relay session fits the platform's current Vercel deployment
+and lets different game genres use the same guest protocol and snapshot timing
+in local previews and hosted play. Open-world exploration can run as a short
+shared session within the same limits. Cross-instance Redis coordination is required even for a single
+Vercel project. Colyseus's authoritative room process would require a different
+runtime/adapter; it is a future option behind the same game-facing seam.
+
+**Limits.** This is client-authoritative, low-stakes movement. It does not provide
+anti-cheat, authoritative combat/shared rigid-body physics, migration across
+regions, resume after reload, persistent scores or rewards. A disconnected lobby
+seat lasts until the lobby deadline if its leave request cannot reach the server.
+Smoothing uses an adaptive 80–180 ms buffer and at most 80 ms extrapolation;
+it cannot repair arbitrary packet loss or invalid game simulation. Test controls
+delay incoming state; they do not emulate every property of a poor network.
+Redis Free and Vercel Hobby quotas are development limits, not a promise of free
+unlimited concurrency. No automatic billing upgrade is enabled.
+
+## ADR-032 — Disk snapshots for larger reference attachments (2026-09-06)
+
+**Decision.** Supersede ADR-018's in-memory draft storage with private, chunked disk
+snapshots. Copy at most 1 MiB at a time, yield during ingestion, preserve source
+identity checks, and show progress through validated main/preload/renderer IPC.
+Allow 4,000 files, 1 GiB per file and 1.5 GiB total; retain secret/generated-file
+exclusions. Prepared snapshots hold leases until copied or released on a failed
+build start. An oversized inline image preview does not detach the source asset.
+Publishing streams its existing bounded artifact envelope directly to storage
+and automatically retries transient transfer failures three times. Completion
+still validates its digest. This does not increase the separate 24 MiB shipping
+artifact limit or disable safety checks. Drafts remain local and are discarded
+on normal app exit; created builds keep their frozen provenance and files.
+
+
+## ADR-033 — Genre-neutral multiplayer state and presentation (2026-09-07)
+
+**Decision.** The shared multiplayer module serves different game genres. Keep
+room/session lifecycle and flat game-defined state independent of presentation.
+`SnapshotBuffer` owns adaptive timing, ordering and bounded history while games
+supply interpolation and optional extrapolation/discontinuity rules.
+`TransformBuffer` provides spatial presentation in all three axes with quaternion
+rotation; non-spatial games need no position fields. Retain `PoseBuffer` as an
+optional compatibility adapter for existing track-motion integrations.
+
+**Consequences.** Agent instructions, generated SDK declarations, examples and
+verification describe sessions and game-defined mechanics. Open-world exploration,
+platformers, puzzles, party games and other genres share the same six-guest,
+180-second limits. World size does not remove those limits or provide persistent
+worlds. State relay is lossy latest-state delivery, not a reliable event or
+transaction channel; games own idempotency and conflict semantics. No new server
+authority, persistent inventory, world streaming or monetization is implied.
+Historical racing validation stays labeled as one concrete integration example.
+
+## ADR-034 — Immutable attachments in build steering (2026-09-05)
 
 **Status:** accepted.
 
@@ -887,9 +958,9 @@ sculpting from the original cast. The first included round performs requested
 asset work; later rounds retain the desired result without unconditionally
 rebuilding it. No additional loop phase or consult table row is introduced.
 
-## ADR-032 — Per-build steering model selection (2026-09-05)
+## ADR-035 — Per-build steering model selection (2026-09-05)
 
-**Status:** superseded by ADR-036. Historical preferences remain in the event log.
+**Status:** superseded by ADR-039. Historical preferences remain in the event log.
 
 **Decision.** The Chat composer offers the supported Codex models from the
 shared model catalog. Selection is independent of implementation/critique models
@@ -900,7 +971,7 @@ Changing the selection during a reply applies to the next message. Selection
 does not start an attempt, create a rounds-table row, or clear conversation history.
 V1 remains on the app's Codex connection at low effort.
 
-## ADR-033 — Build-scoped conversational steering (2026-09-05)
+## ADR-036 — Build-scoped conversational steering (2026-09-05)
 
 **Status:** accepted.
 
@@ -915,7 +986,7 @@ Directions persist across rounds. Later directions supersede earlier conflicts;
 undoing an included direction is another steer. Pending directions may be withdrawn.
 At the first implementation dispatch, freeze the cumulative directions for that
 logical round. Its critic and automatic retries receive the same immutable snapshot.
-ADR-034 adds an explicit Resume boundary for pending directions.
+ADR-037 adds an explicit Resume boundary for pending directions.
 Chat arriving after that boundary waits for the next implementation. No phase is
 interrupted or injected with new chat. Chat never restarts a stopped/completed build.
 Historical implementations without a snapshot retain their original requirements.
@@ -943,9 +1014,9 @@ reference pack is evidence, not something chat edits. A passed build does not ga
 automatic extra round. Supporting reference refreshes, larger conversations, or
 in-flight phase injection requires a separate design.
 
-## ADR-034 — Explicit Resume includes pending steering (2026-09-06)
+## ADR-037 — Explicit Resume includes pending steering (2026-09-06)
 
-**Status:** accepted; refines ADR-033.
+**Status:** accepted; refines ADR-036.
 
 **Context.** Repeated implementation failures can keep an operator's directions
 queued indefinitely when every retry inherits the first attempt's requirements.
@@ -969,9 +1040,9 @@ unchanged except where the operator explicitly steers them.
 whole round to succeed first. Historical attempts remain reproducible, and the
 critic never evaluates against directions absent from its implementation.
 
-## ADR-035 — Continuing implementation lead with integrated steering (2026-09-06)
+## ADR-038 — Continuing implementation lead with integrated steering (2026-09-06)
 
-**Status:** accepted; ADR-036 supersedes the separate-assistant Chat behavior below.
+**Status:** accepted; ADR-039 supersedes the separate-assistant Chat behavior below.
 
 **Decision.** New builds retain one implementation lead session across rounds, with
 fresh independent research and critique sessions. Explicit Resume enables this
@@ -1002,9 +1073,9 @@ session; they are untrusted working evidence subordinate to the current phase
 protocol and frozen operator requirements. These events use the existing portable
 schema, with bounded full reads separate from log projections.
 
-Steering remains the separate read-only consult defined by ADR-033. It receives
+Steering remains the separate read-only consult defined by ADR-036. It receives
 the latest valid notebook and recent reports, explicitly speaks as the steering
-assistant, and queues clear directions without redundant confirmation. ADR-034's
+assistant, and queues clear directions without redundant confirmation. ADR-037's
 explicit Resume boundary still includes pending directions; automatic recovery
 and critique inherit their implementation's exact snapshot. Newer requirements
 explicitly supersede conflicting memories and prior conversation. Chat never
@@ -1035,9 +1106,9 @@ original event bytes. Readers accept the earlier `fromRunId` and `implementation
 and project them as attempt IDs; new events use the Build vocabulary. Raw stream and process
 ownership paths stay under `.gauntlet-gamesmith/runs/`, as required by ADR-020.
 
-## ADR-036 — Chat is a turn with the build lead (2026-09-06)
+## ADR-039 — Chat is a turn with the build lead (2026-09-06)
 
-**Status:** accepted; supersedes ADR-032 and the separate consult behavior in ADR-033/035.
+**Status:** accepted; supersedes ADR-035 and the separate consult behavior in ADR-036/038.
 
 **Decision.** Chat continues the same local implementation lead session and inherits the
 build's orchestrator model and effort, captured when each message is sent. The existing
@@ -1078,9 +1149,9 @@ or unlimited context. A question can wait for a long phase to finish. Imported b
 missing sessions, or unavailable Codex accounting baselines use saved memory in fresh
 sessions. The application still owns phase scheduling, limits, and independent critique.
 
-## ADR-037 — Use the existing Orchestrator name in Chat (2026-09-07)
+## ADR-040 — Use the existing Orchestrator name in Chat (2026-09-07)
 
-**Status:** accepted; updates the operator-facing vocabulary in ADR-035/036.
+**Status:** accepted; updates the operator-facing vocabulary in ADR-038/039.
 
 **Decision.** Keep the sidebar title **Chat** and identify its existing context line
 as **Chat with orchestrator**. Attribute replies to **Orchestrator** and use that

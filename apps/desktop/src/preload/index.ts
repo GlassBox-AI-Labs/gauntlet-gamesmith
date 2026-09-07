@@ -107,6 +107,11 @@ contextBridge.exposeInMainWorld('builds', builds)
 contextBridge.exposeInMainWorld('reports', reports)
 
 const attachments: AttachmentApi = {
+  onProgress: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, value: import('../shared/attachments').AttachmentProgress) => handler(value)
+    ipcRenderer.on(IPC.attachment.progress, listener)
+    return () => { ipcRenderer.removeListener(IPC.attachment.progress, listener) }
+  },
   addFiles: (files) => ipcRenderer.invoke(IPC.attachment.add, files.map((file) => webUtils.getPathForFile(file))),
   pick: () => ipcRenderer.invoke(IPC.attachment.pick),
   preview: (id) => ipcRenderer.invoke(IPC.attachment.preview, id),

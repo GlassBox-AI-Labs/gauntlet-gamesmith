@@ -25,7 +25,7 @@ export function GET(request: Request) {
     const client = createClient<Database>(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
-    server = new GameServer(new Catalog(client, secret, capture), capture)
+    server = new GameServer(new Catalog(client, secret, capture), capture, process.env.MULTIPLAYER_API_ORIGIN && process.env.MULTIPLAYER_SOCKET_URL ? { apiOrigin: process.env.MULTIPLAYER_API_ORIGIN, socketUrl: process.env.MULTIPLAYER_SOCKET_URL } : undefined)
   }
   return server.serve(request)
 }

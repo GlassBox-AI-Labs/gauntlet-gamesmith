@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { readExactFileDescriptor } from './bounded-fd'
 import { assertBuildWorkspaceIdentity, type WorkspaceRootIdentity } from './workspace-boundary'
 
@@ -169,4 +170,66 @@ export function readOwnedFile(
   } finally {
     fs.closeSync(opened.descriptor)
   }
+}
+
+/** Copy a pinned file in bounded chunks; source content never accumulates in memory. */
+function* copyOwnedFileChunks(
+  source: OwnedDirectoryBoundary,
+  name: string,
+  destination: OwnedDirectoryBoundary,
+  destinationName: string,
+  maxBytes: number,
+): Generator<number, { bytes: number; sha256: string }> {
+  assertLeafName(destinationName)
+  const opened = openOwnedFile(source, name)
+  let target: number | undefined
+  try {
+    if (opened.stat.size > maxBytes) throw new Error('Attachment exceeds the available snapshot space.')
+    assertOwnedDirectoryBoundary(destination)
+    target = fs.openSync(path.join(destination.path, destinationName), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0), 0o600)
+    assertOwnedDirectoryBoundary(destination)
+    const hash = createHash('sha256'), chunk = Buffer.allocUnsafe(1024 * 1024)
+    let bytes = 0
+    while (bytes < opened.stat.size) {
+      const count = fs.readSync(opened.descriptor, chunk, 0, Math.min(chunk.length, opened.stat.size - bytes), bytes)
+      if (!count) throw new Error('Attachment changed while copying.')
+      hash.update(chunk.subarray(0, count))
+      let written = 0
+      while (written < count) {
+        const progress = fs.writeSync(target, chunk, written, count - written)
+        if (!progress) throw new Error('Could not write the attachment snapshot.')
+        written += progress
+      }
+      bytes += count
+      yield bytes
+    }
+    const after = fs.fstatSync(opened.descriptor), linked = fs.lstatSync(opened.path)
+    if (after.size !== opened.stat.size || after.mtimeMs !== opened.stat.mtimeMs || after.ctimeMs !== opened.stat.ctimeMs || after.nlink !== 1 || linked.isSymbolicLink() || linked.dev !== after.dev || linked.ino !== after.ino) throw new Error('Attachment changed while copying.')
+    assertOwnedDirectoryBoundary(source)
+    assertOwnedDirectoryBoundary(destination)
+    return { bytes, sha256: hash.digest('hex') }
+  } finally {
+    fs.closeSync(opened.descriptor)
+    if (target !== undefined) fs.closeSync(target)
+  }
+}
+
+export function copyOwnedFile(...args: Parameters<typeof copyOwnedFileChunks>): { bytes: number; sha256: string } {
+  const chunks = copyOwnedFileChunks(...args)
+  let next = chunks.next()
+  while (!next.done) next = chunks.next()
+  return next.value
+}
+
+export async function copyOwnedFileAsync(args: Parameters<typeof copyOwnedFileChunks>, onProgress: (bytes: number) => void) {
+  const chunks = copyOwnedFileChunks(...args)
+  try {
+    let next = chunks.next()
+    while (!next.done) {
+      onProgress(next.value)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      next = chunks.next()
+    }
+    return next.value
+  } finally { chunks.return({ bytes: 0, sha256: '' }) }
 }

@@ -256,11 +256,11 @@ status and open the real Agents sign-in UI without discarding the form.
 Drop files or folders onto the description, or use Attach files / Add folder. Images open a
 lightbox; folder chips open the original folder in Finder. Main snapshots supported reference,
 media, and source files, excluding hidden, credential, generated, and linked entries. The form
-reports exclusions. Limits: 100 files, 20 MB per file, 100 MB combined, and 2,000 scanned entries.
+reports exclusions. Limits: 4,000 files, 1 GiB per file, 1.5 GiB combined, and 10,000 scanned entries per selected folder. Copying uses bounded disk chunks, yields to the app between chunks, and reports progress. Failed selections leave earlier attachments intact.
 
 At Create, copies and a provenance manifest are saved to `reference/<build-id>/supplied/` in the
 new project. They are used as untrusted reference evidence, remain available to implementation
-and critique, and travel with Export. Draft attachments are in memory until Create; reload
+and critique, and travel with Export. Draft attachments are private disk snapshots until Create; reload
 before Create discards the draft. Original files are never modified.
 
 - **Web + files:** the existing web Reference Study plus supplied evidence.

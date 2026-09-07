@@ -9,12 +9,18 @@ export function registerAttachmentIpc(store: ReturnType<typeof createBuildAttach
     try { return { ok: true, value: await action() } }
     catch (error) { return { ok: false, error: redactedErrorMessage(error, 'Could not access the attachment.') } }
   }
-  ipcMain.handle(IPC.attachment.add, (_event, value: unknown) => result(() => store.add(value)))
+  let lastProgress = 0
+  const progress = (value: import('../shared/attachments').AttachmentProgress) => {
+    if (Date.now() - lastProgress < 100) return
+    lastProgress = Date.now()
+    window()?.webContents.send(IPC.attachment.progress, value)
+  }
+  ipcMain.handle(IPC.attachment.add, (_event, value: unknown) => result(() => store.add(value, progress)))
   ipcMain.handle(IPC.attachment.pick, () => result(async () => {
     const owner = window()
     if (!owner) throw new Error('The app window is not ready.')
     const picked = await dialog.showOpenDialog(owner, { title: 'Attach files or folders', buttonLabel: 'Attach', properties: ['openFile', 'openDirectory', 'multiSelections'] })
-    return picked.canceled ? [] : store.add(picked.filePaths)
+    return picked.canceled ? [] : store.add(picked.filePaths, progress)
   }))
   ipcMain.handle(IPC.attachment.preview, (_event, value: unknown) => result(() => store.preview(value)))
   ipcMain.handle(IPC.attachment.remove, (_event, value: unknown) => result(() => { store.remove(value); return null }))
