@@ -18,7 +18,7 @@ export class PublisherAuth {
     )
     if (!row)
       throw new CatalogError(
-        'This account is not an approved publisher. Verify your Challenger email to publish.',
+        'Publishing access is not available for this account. Sign in with an approved account and make sure your email is verified.',
         'unauthorized',
       )
     return publisherSchema.parse(row)

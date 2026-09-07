@@ -711,3 +711,15 @@ otherwise the catalog uses its placeholder. No cover path field is exposed.
 the reviewed release. The compilation script must produce one static browser output
 below the source root; unsupported games need another implementation round. Output
 detection and cover selection appear in the existing build log.
+
+## ADR-029 — Inclusive publisher account copy (2026-09-06)
+
+**Decision.** Account forms and errors use neutral language about creating an
+account, verifying email, and sharing games. New generated public handles use
+`creator-` and the fallback public name is `Game creator`. Existing profile names
+and URLs remain stable. Rejected signup explains that publishing is in early
+access and needs an approved email, without branding the app for one cohort.
+
+**Consequences.** This changes presentation, not enrollment policy: the exact
+verified email domain in ADR-027 and explicit developer exceptions still govern
+publishing. Creating and playing games continue to require no platform account.

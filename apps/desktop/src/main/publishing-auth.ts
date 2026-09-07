@@ -3,7 +3,6 @@ import {
   boundedText,
   isPublisherEmail,
   object,
-  PUBLISHER_EMAIL_DOMAIN,
 } from '@gauntlet/publishing'
 /** Validate IPC without normalizing the password or including credentials in errors. */
 export function publisherCredentials(value: unknown): PublisherCredentials {
@@ -27,7 +26,9 @@ export function enrollmentEmail(value: unknown): { email: string } {
     email.trim().length > 254 ||
     !isPublisherEmail(email)
   )
-    throw new Error(`Use your @${PUBLISHER_EMAIL_DOMAIN} email address.`)
+    throw new Error(
+      'Publishing is currently in early access. Sign up with an approved email address.',
+    )
   return { email: email.trim().toLowerCase() }
 }
 export function publisherSignup(value: unknown) {

@@ -45,7 +45,7 @@ describe('publisher credential IPC validation', () => {
       'a@@challenger.gauntletai.com',
     ])
       expect(() => enrollmentEmail({ email })).toThrow(
-        'Use your @challenger.gauntletai.com',
+        'Sign up with an approved email address.',
       )
   })
   it('validates signup and verification without changing the password or reflecting codes', () => {

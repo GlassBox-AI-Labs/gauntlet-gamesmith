@@ -175,8 +175,8 @@ begin
   if not found then
     if not eligible then return null; end if;
     insert into public.publishers(id, handle, display_name, email_domain_access)
-      values(actor, 'challenger-' || replace(actor::text, '-', ''),
-        coalesce(nullif(left(btrim(u.raw_user_meta_data->>'publisher_name'), 80), ''), 'Challenger'), true)
+      values(actor, 'creator-' || replace(actor::text, '-', ''),
+        coalesce(nullif(left(btrim(u.raw_user_meta_data->>'publisher_name'), 80), ''), 'Game creator'), true)
       on conflict(id) do nothing;
     select * into p from public.publishers where id = actor;
   end if;

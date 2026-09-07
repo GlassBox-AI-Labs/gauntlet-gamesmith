@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { PUBLISHER_EMAIL_DOMAIN } from '@gauntlet/publishing'
 import { Button } from '@gauntlet/ui/button'
 import { Input } from '@gauntlet/ui/input'
 import type { PublisherStatus } from '../../../shared/publishing'
@@ -75,8 +74,8 @@ export function PublisherAccountForm({
     >
       <p className="text-sm text-muted-foreground">
         {mode === 'verify'
-          ? 'Enter the code sent to your Challenger email to finish creating your publisher account.'
-          : `Anyone with a verified @${PUBLISHER_EMAIL_DOMAIN} email can create a publisher account. Creating and playing games locally needs no account.`}
+          ? 'Enter the code sent to your email to finish creating your account.'
+          : 'Sign in or create an account to share your games. You can create and play games without an account.'}
       </p>
       {error && (
         <p
@@ -218,9 +217,7 @@ export function PublisherAccountForm({
           disabled={busy}
           onClick={() => changeMode(mode === 'signin' ? 'signup' : 'signin')}
         >
-          {mode === 'signin'
-            ? 'Create a Challenger account'
-            : 'Back to sign in'}
+          {mode === 'signin' ? 'Create account' : 'Back to sign in'}
         </Button>
         {mode !== 'verify' && (
           <Button

@@ -205,8 +205,8 @@ preview. Do not upload export archives or manually select files from the web.
 ## Challenger signup and email delivery
 
 Anyone who verifies an email at the exact domain `challenger.gauntletai.com` can
-create a publisher account in Electron. The drawer offers **Create a Challenger
-account**, a public publisher name, email/password, and an email-code form. Verification
+create a publisher account in Electron. The drawer offers **Create account**,
+a public publisher name, email/password, and an email-code form. Verification
 signs them in inside Electron. Resend and **I have a verification code** let them
 resume after closing the app. No browser authentication surface is needed.
 

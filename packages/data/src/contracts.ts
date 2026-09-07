@@ -1,9 +1,5 @@
 import { z } from 'zod'
-import {
-  isPublisherEmail,
-  listing,
-  PUBLISHER_EMAIL_DOMAIN,
-} from '@gauntlet/publishing'
+import { isPublisherEmail, listing } from '@gauntlet/publishing'
 export const credentialsSchema = z
   .object({
     email: z.email().max(254).trim(),
@@ -16,7 +12,7 @@ const enrollmentEmail = z
   .trim()
   .refine(
     isPublisherEmail,
-    `Use your @${PUBLISHER_EMAIL_DOMAIN} email address.`,
+    'Publishing is currently in early access. Sign up with an approved email address.',
   )
 export const signupSchema = z
   .object({
