@@ -560,6 +560,94 @@ agrees with it. Reviewers should reject a new `phases` table, any reintroduction
 for either the job or an attempt, and any use of "build" as a bare noun for compilation in
 operator-visible text.
 
+## ADR-021 — The app owns one Playwright browser cache for every agent (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The prompts told agents to use Playwright's bundled browsers but the app never supplied
+one, so each agent improvised. In one implement round the agent imported Playwright out of
+`/tmp/gauntletron-pw` — a scratch directory a different game's run had left there the day before —
+whose pinned browser build had never been downloaded on this machine. Playwright fetches browsers at
+*install* time, never at launch, so that copy had been broken since it was created and said so only
+when `chromium.launch()` failed. Four such directories were on the machine; two had no `playwright`
+package at all and one had only `playwright-core`, which never downloads a browser. A fresh
+`npm install` is not a reliable fix either, because a skipped or blocked postinstall reproduces the
+same silent breakage.
+
+**Decision.** The app supplies the browser. `PLAYWRIGHT_BROWSERS_PATH` is set for every child CLI and
+points at one app-managed cache under the app's data directory, and the app downloads a pinned
+Chromium into it with `npx playwright install chromium` before the first phase of the first build.
+`MACOS_BROWSER_SANDBOX_RULE` now states that Chromium is already installed and reached through that
+variable, and forbids `executablePath`, temp-directory installs, and importing Playwright from
+`/tmp`.
+
+The cache *path* is computed without touching the disk and is handed to every child regardless of how
+the download went; only the pre-download is deferred. A machine with no Node on `PATH` cannot run the
+installer, which is a normal outcome under ADR-014 and never fails a build: the agent installs
+Playwright itself, and because the variable is inherited, its postinstall fills the same shared cache
+instead of another temp directory. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` is deliberately **not** set —
+skipping the download is what makes a version mismatch permanent, and letting an agent's own install
+fetch its matching build is what makes a mismatch heal.
+
+**Rejected.** Pinning `playwright` in `apps/desktop/package.json`, as the report proposed. A plain
+`pnpm install` runs its postinstall without `PLAYWRIGHT_BROWSERS_PATH` set, so the browser lands in
+the user's default cache rather than the app's — the app would still have to install into its own
+cache at run time, which is what this ADR does anyway. And it puts a ~150MB browser download in the
+path of every developer install and every CI run, for a browser most of those runs never launch.
+(Packaging is *not* a reason: electron-builder ships production dependencies' `node_modules`
+whatever the `files` list says, which is how `node-pty` reaches the packaged app.)
+
+**Also rejected.** Exporting `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, which the report proposed alongside
+the cache path. Skipping the download is precisely what makes a version mismatch permanent: it is
+the state `/tmp/pw-scratch` was already in. Leaving it unset is what lets an agent's own install heal
+a mismatch by fetching its matching build into the shared cache.
+
+**Consequences.** Every agent in every build resolves the same browser binary, and the first build on
+a machine downloads it once instead of once per scratch directory. The download and any failure are
+logged into the build (VIS-001), the failure as an error naming the installer's own output. The
+pinned version lives in one constant in `main/browser.ts`; raising it re-downloads on the next build
+because the cache stamp no longer matches. Anything that clears the app's data directory costs one
+re-download.
+
+## ADR-022 — A failed process probe means "unknown", never "dead" (2026-09-06)
+
+**Status:** accepted.
+
+**Context.** The attempt supervisor asked `/bin/ps` for the members of the child's process group,
+2.5 times a second, for the whole life of an attempt. The question was expensive — a full
+process-table scan — and the deadline was one second. Any throw landed in the drive loop's catch,
+which treated every supervision error as fatal and failed the attempt and the build. Playing a game
+from the app while an attempt was running was enough to push one `ps` past its second, and one such
+second discarded 43 minutes and $24 of finished implementation work (issue #54). `ETIMEDOUT` from
+`ps` means the app could not look. It says nothing about whether the child is alive.
+
+**Decision.** Not being able to observe a process group never ends an attempt.
+
+The supervision tick catches probe failures and keeps the last successful answer. The attempt keeps
+running, the failure is logged, and a still-blind probe repeats itself in the log every 30 seconds so
+the operator is not left in silence (VIS-001). When the probe recovers, that is logged too.
+
+The one bounded exception: once the leader has exited *and* the group has been completely
+unobservable for 60 seconds, waiting can no longer end on its own, so the supervisor escalates to the
+captured group and finalizes the attempt. Ownership stays with the app in that case, because absence
+was never proved — Play, Export, and quit stay gated until it is (PROC-003).
+
+The probe itself asks a cheaper question. `ps -g <pgid>` returns only that group's members and
+answers in about 3 ms instead of 33 ms, and it is allowed 5 seconds instead of 1. A BSD `ps` exits
+non-zero with no output for a group with no members; that is read as an empty group, not a failure.
+GNU `ps -g` selects something else, so non-macOS keeps the portable table scan — the app only ships
+for macOS, but its tests run on Linux.
+
+**Rejected.** Counting consecutive failures, as the issue proposed. The count would be a proxy for
+elapsed time at a tick rate that may change; the supervisor measures the time directly.
+
+**Also rejected for now.** Sampling group liveness slower than the 400 ms drive tick. Each tick still
+makes two probes, but at roughly 3 ms each that is under 2% of one core, and every lifecycle test
+fixture encodes the current cadence. The cost that mattered was the per-probe cost, and that is gone.
+
+**Consequences.** A loaded machine slows the supervisor down instead of destroying work. A genuinely
+dead group is still detected within one tick of the leader exiting, because that path needs a
+successful probe rather than a failed one.
 
 ## ADR-023 — Local catalog and opt-in publisher accounts (2026-09-05)
 
