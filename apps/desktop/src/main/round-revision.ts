@@ -435,7 +435,26 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
     throw new Error('Refusing to clean an unowned round checkout.')
   }
   liveCheckoutIdentities.delete(checkoutDir)
-  // The checkout is already quarantined beneath a unique app path. Retaining
-  // it is intentional: recursive pathname deletion cannot be conditioned on
-  // the inode above and could delete an operator replacement after this check.
+  // Recursive deletion by pathname cannot be conditioned on the inode checked
+  // above, so deleting `checkoutDir` directly could remove a replacement planted
+  // in the window between the two. Renaming first closes that window: the entry
+  // moves atomically to a name nothing else knows, and the identity is proven
+  // again afterwards. Only a tree that is still the one this session created is
+  // removed; anything else is put back untouched.
+  //
+  // Without this the app never reclaimed a checkout at all. Every Play and every
+  // publish left a full copy of the round behind — 5.8 GB for one real build —
+  // and the next one failed its storage limit.
+  // The rename target keeps the `round-N-<revision>-<uuid>` shape. A crash
+  // between the rename and the removal then leaves an ordinary retained
+  // checkout, which the capacity check counts; any other name would make that
+  // check reject the whole directory from then on.
+  const quarantine = path.join(playRoot, `${name.split('-').slice(0, 3).join('-')}-${randomUUID()}`)
+  fs.renameSync(checkoutDir, quarantine)
+  const moved = fs.lstatSync(quarantine)
+  if (moved.dev !== expected.dev || moved.ino !== expected.ino) {
+    fs.renameSync(quarantine, checkoutDir)
+    throw new Error('Refusing to clean a round checkout that changed identity while being reclaimed.')
+  }
+  fs.rmSync(quarantine, { recursive: true, force: true })
 }

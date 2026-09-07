@@ -43,6 +43,7 @@ export async function packDirectory(directory: string, sourceRevision: string, l
   const root = await fs.realpath(directory), files: GameArtifact['files'] = []
   if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error('Build directory cannot be a symlink.')
   let total = 0, entries = 0
+  const skipped: string[] = []
   async function visit(dir: string): Promise<void> {
     const handle = await fs.opendir(dir)
     for await (const entry of handle) {
@@ -55,6 +56,14 @@ export async function packDirectory(directory: string, sourceRevision: string, l
       if (entry.name.startsWith('.') || /^(node_modules|reference|critique)$/i.test(entry.name)) throw new Error(`Private directory in build: ${relative}`)
       if (stat.isDirectory()) { await visit(target); continue }
       if (!stat.isFile()) throw new Error(`Special file in build: ${relative}`)
+      // Source maps are build debris. They are not needed to play the game,
+      // they republish the game's own source, and they are routinely larger
+      // than the bundle they describe — 16 MB against 8.6 MB for one real
+      // build. Vite emits them whenever build.sourcemap is set, so failing the
+      // whole artifact on one made an ordinary build setting enough to leave a
+      // finished game unpublishable. Dropped rather than allowed, because
+      // shipping one would publish the source it maps back to.
+      if (/\.map$/i.test(entry.name)) { skipped.push(relative); continue }
       const publishedPath = shippingPath(relative)
       if (files.length >= MAX_FILES || (total += stat.size) > MAX_ARTIFACT_BYTES) throw new Error('Build exceeds publication limits.')
       const fd = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -76,5 +85,6 @@ export async function packDirectory(directory: string, sourceRevision: string, l
     }
   }
   await visit(root)
+  if (skipped.length > 0) log(`Leaving ${skipped.length} source map${skipped.length === 1 ? '' : 's'} out of the upload: ${skipped.join(', ')}.`)
   return validateArtifact({ version: 1, sourceRevision, files }).artifact
 }

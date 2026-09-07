@@ -73,4 +73,30 @@ describe('artifact publication seam', () => {
       await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Linked build entry')
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
+
+  it('leaves source maps out of the upload instead of failing the whole artifact', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-sourcemap-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await mkdir(path.join(dir, 'assets'))
+      await writeFile(path.join(dir, 'assets', 'index-abc.js'), 'console.log(1)')
+      // Vite writes this whenever build.sourcemap is on. One of them used to
+      // reject the entire publication as an unsupported asset path.
+      await writeFile(path.join(dir, 'assets', 'index-abc.js.map'), '{"version":3}')
+      const lines: string[] = []
+      const artifact = await packDirectory(dir, 'saved-round', (text) => lines.push(text))
+      expect(artifact.files.map((file) => file.path).sort()).toEqual(['assets/index-abc.js', 'index.html'])
+      // The operator is told what was dropped rather than silently losing files.
+      expect(lines.join('\n')).toContain('assets/index-abc.js.map')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('still rejects an unsupported file type that is not a source map', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-unsupported-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await writeFile(path.join(dir, 'game.exe'), 'binary')
+      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Unsupported asset path')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
 })

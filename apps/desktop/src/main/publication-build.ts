@@ -9,6 +9,31 @@ import { trackPublicationOutput } from './publication-output'
 import { completeProcessMeta, interruptCapturedProcessGroup, prepareProcessMeta, processGroupIdentity, readProcessMeta, type AttemptProcessMeta } from './attempt-process'
 
 export interface BuildJob { directory: string; attemptId: string; status: 'starting' | 'running' | 'finished'; gateDir: string }
+
+/**
+ * Decide what a persisted build record still means once its checkout may be
+ * gone. Returns null when the record is spent and publishing should start
+ * afresh; throws when the previous build's ownership can no longer be proven.
+ *
+ * Removing a retained checkout is exactly what the saved-round storage limits
+ * tell the operator to do, so a missing directory is an ordinary state. Treating
+ * it as damage threw ENOENT out of the job reader and left publishing unable to
+ * read its own record at all.
+ */
+export function restorePublicationBuild(
+  record: { directory: string; status: string; attemptId: string; gateDir: string },
+  checkoutPresent: (directory: string) => boolean,
+  jobFile: string,
+): BuildJob | null {
+  if (checkoutPresent(record.directory)) return { ...record, status: record.status as BuildJob['status'] }
+  // A finished build owns no process, so the record is simply spent.
+  if (record.status === 'finished') return null
+  // One that was still running kept its process metadata inside that directory,
+  // so absence can no longer be proven either way. Fail closed (PROC-003).
+  throw new Error(
+    `A previous publishing build was still ${record.status} when its checkout was removed, so the app cannot prove it stopped. Confirm no publish build is running for this game, then delete ${jobFile} to publish again.`,
+  )
+}
 /** A persisted, gated build; uses the existing exact-identity SIGINT supervisor. */
 export async function buildPublication(directory: string, record: (job: BuildJob) => void, log: (text: string) => void): Promise<string> {
   const manifest = fs.openSync(path.join(directory, 'package.json'), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)

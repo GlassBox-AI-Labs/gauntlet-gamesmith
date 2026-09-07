@@ -85,7 +85,56 @@ describe('round revisions', () => {
     expect(fs.existsSync(path.join(dir, BUILD_METADATA_DIR, 'revisions.git'))).toBe(false)
 
     cleanupRoundCheckout(checkout)
-    expect(fs.existsSync(checkout)).toBe(true)
+    expect(fs.existsSync(checkout)).toBe(false)
+  })
+
+  it('reclaims each checkout so repeated Play and publish do not fill the workspace', () => {
+    const dir = workspace()
+    fs.mkdirSync(path.join(dir, 'shots'))
+    // Stand in for the agent screenshots that made one real checkout 5.8 GB.
+    for (let i = 0; i < 40; i += 1) fs.writeFileSync(path.join(dir, 'shots', `shot-${i}.png`), 'x'.repeat(4096))
+    fs.writeFileSync(path.join(dir, 'game.js'), 'the game')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    const playRoot = path.join(dir, BUILD_METADATA_DIR, 'play')
+
+    for (let session = 0; session < 3; session += 1) {
+      const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
+      expect(fs.readFileSync(path.join(checkout, 'game.js'), 'utf8')).toBe('the game')
+      expect(fs.readdirSync(playRoot)).toHaveLength(1)
+      cleanupRoundCheckout(checkout)
+      // Nothing is left behind, so the storage limits never accumulate toward
+      // a failure on the next session.
+      expect(fs.readdirSync(playRoot)).toEqual([])
+    }
+  })
+
+  it('leaves a replaced checkout alone instead of deleting whatever now sits at its path', () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'game.js'), 'the game')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
+
+    // An operator (or hostile) replacement standing where the checkout was.
+    fs.rmSync(checkout, { recursive: true, force: true })
+    fs.mkdirSync(checkout, { mode: 0o700 })
+    fs.writeFileSync(path.join(checkout, 'not-ours.txt'), 'do not delete me')
+
+    expect(() => cleanupRoundCheckout(checkout)).toThrow(/unowned round checkout/)
+    expect(fs.readFileSync(path.join(checkout, 'not-ours.txt'), 'utf8')).toBe('do not delete me')
+  })
+
+  it('refuses to reclaim a checkout this app session did not create', () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'game.js'), 'the game')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
+    cleanupRoundCheckout(checkout)
+
+    // A checkout stranded by an earlier session has no recorded identity, so it
+    // still cannot be reclaimed automatically; the operator removes it.
+    const stranded = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
+    cleanupRoundCheckout(stranded)
+    expect(() => cleanupRoundCheckout(stranded)).toThrow(/not owned by this app session/)
   })
 
   it('chains later rounds from an explicit parent and can replay either revision', () => {

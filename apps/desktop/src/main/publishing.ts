@@ -21,6 +21,7 @@ import { checkoutRoundRevision, cleanupRoundCheckout } from './round-revision'
 import {
   buildPublication,
   recoverPublicationBuild,
+  restorePublicationBuild,
   type BuildJob,
 } from './publication-build'
 import { playAccessError } from './play'
@@ -308,22 +309,37 @@ export class Publishing {
       const build = object(stored.build),
         projectBuild = this.ledger.getBuild(buildId)
       const directory = boundedText(build.directory, 'build checkout', 4096)
+      const status = String(build.status)
       if (
         !projectBuild ||
         path.resolve(directory) !== directory ||
-        fs.realpathSync(directory) !== directory ||
         !directory.startsWith(
           `${projectBuild.workspaceDir}${path.sep}.gauntlet-gamesmith${path.sep}play${path.sep}`,
         ) ||
-        !['starting', 'running', 'finished'].includes(String(build.status))
+        !['starting', 'running', 'finished'].includes(status)
       )
         throw new Error('Publishing build record is invalid.')
-      job.build = {
-        directory,
-        attemptId: uuid(build.attemptId ?? build.runId),
-        status: build.status as BuildJob['status'],
-        gateDir: boundedText(build.gateDir, 'build gate', 4096),
-      }
+      const restored = restorePublicationBuild(
+        {
+          directory,
+          status,
+          attemptId: uuid(build.attemptId ?? build.runId),
+          gateDir: boundedText(build.gateDir, 'build gate', 4096),
+        },
+        (candidate) => {
+          let resolved: string
+          try {
+            resolved = fs.realpathSync(candidate)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            return false
+          }
+          if (resolved !== candidate) throw new Error('Publishing build record is invalid.')
+          return true
+        },
+        this.jobFile(buildId),
+      )
+      if (restored) job.build = restored
     }
     if (stored.preview) {
       const preview = object(stored.preview),
