@@ -36,7 +36,8 @@ import { cliExecutable, validatedExecutableEnv } from './cli-executable'
 import { delegationRules, GAUNTLET_IMPLEMENTER_AGENT_PREFIX, implementerAgentDefinition, researchRules, sculptorAgentMd, sculptorRules } from './delegation'
 import { engineContract, engineGateRules, scaffoldEngine } from './engine-stack'
 import { critiquePlan, implementPlan, referencePlan } from './harness-plans'
-import { cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { browserCacheDir, browserReady, ensureBrowser, cliHome, ensureSkill, subscriptionEnv } from './harness-env'
+import { PLAYWRIGHT_VERSION, browserNotice } from './browser'
 import { parseClaudeStatus, parseCodexStatus } from './harness-status'
 import { subscriptionReadiness, type SubscriptionReadiness } from './harness-subscription'
 import { defaultBuildTitle, type Ledger, type AttemptProcessOwnership } from './ledger'
@@ -169,6 +170,9 @@ export interface BuildRunnerDeps {
   subscriptionReady(kind: HarnessKind, cwd: string, harnessHome: string): SubscriptionReadiness
   cliExecutable(kind: HarnessKind, unsafeRoots: readonly string[]): string
   validatedExecutableEnv(executables: ReadonlyMap<HarnessKind, string>, unsafeRoots: readonly string[]): Record<string, string>
+  browsersDir(): string
+  browserReady(): boolean
+  ensureBrowser(): typeof ensureBrowser extends () => infer R ? R : never
   prepareContext?(ids: string[]): PreparedContext | null
   rotateAccount?(kind: HarnessKind, error: string): Promise<AccountRotation>
 }
@@ -201,6 +205,9 @@ const DEFAULT_DEPS: BuildRunnerDeps = {
   subscriptionReady: (kind, cwd, home) => subscriptionReadiness(kind, cwd, home),
   cliExecutable,
   validatedExecutableEnv,
+  browsersDir: browserCacheDir,
+  browserReady,
+  ensureBrowser,
 }
 
 function buildImplementPrompt(
@@ -247,6 +254,8 @@ export class BuildRunner {
   /** Renderer/report refreshes requested during a transaction build only after commit. */
   private broadcastBuffer: Set<string> | null = null
   private deps: BuildRunnerDeps
+  /** The one Chromium download: attempted once per app run, never repeated. */
+  private browserPrepared = false
 
   constructor(
     private ledger: Ledger,
@@ -706,6 +715,44 @@ export class BuildRunner {
     return [build.workspaceDir, ...this.deps.protectedRoots()]
   }
 
+  /**
+   * Fill the app-managed browser cache before running a phase that may need it.
+   *
+   * Returns null — and yields to nothing — whenever the cache is already warm,
+   * which is every build after the first on a machine. That check is a stamp
+   * read, so the ordinary path into a phase stays synchronous.
+   *
+   * A cold cache is different: the Reference Study and the critic both launch a
+   * browser, and starting them while the download is still writing is how an
+   * agent finds a half-filled cache and fails at `chromium.launch()` — the bug
+   * this exists to end. So the first build waits, with the wait itself in the
+   * log (VIS-001). The wait is bounded by the download, and a machine with no
+   * Node on `PATH` — normal under ADR-014 — reports `unavailable` at once
+   * rather than failing the build: the cache path is handed to the child
+   * either way, because sharing one cache is what stops agents importing
+   * Playwright out of another run's `/tmp`.
+   */
+  private prepareBrowser(build: BuildRecord, attempt: PhaseAttempt): Promise<void> | null {
+    if (this.browserPrepared) return null
+    this.browserPrepared = true
+    if (this.deps.browserReady()) return null
+    this.log(
+      build.id,
+      attempt.id,
+      'system',
+      `Downloading Chromium for Playwright ${PLAYWRIGHT_VERSION} into the app-managed browser cache; the first build on this machine waits for it.`,
+    )
+    return this.deps.ensureBrowser().then(
+      (install) => {
+        const notice = browserNotice(install)
+        if (notice) this.log(build.id, attempt.id, notice.kind, notice.text)
+      },
+      (error: unknown) => {
+        this.log(build.id, attempt.id, 'error', `Could not download Chromium into the app-managed browser cache: ${error instanceof Error ? error.message : String(error)}`)
+      },
+    )
+  }
+
   /** Resolve and pin every CLI this phase may execute, including workers. */
   private executableEnvironment(build: BuildRecord, attempt: PhaseAttempt, planEnv: Record<string, string>): { command: string; env: Record<string, string> } {
     const roots = this.executableRoots(build)
@@ -713,7 +760,7 @@ export class BuildRunner {
       this.requiredHarnesses(build, attempt.role, attempt.harness).map((harness) => [harness, this.deps.cliExecutable(harness, roots)]),
     )
     const env = {
-      ...subscriptionEnv(planEnv, process.env, attempt.harness, roots),
+      ...subscriptionEnv({ ...planEnv, PLAYWRIGHT_BROWSERS_PATH: this.deps.browsersDir() }, process.env, attempt.harness, roots),
       ...this.deps.validatedExecutableEnv(executables, roots),
     }
     return {
@@ -1660,6 +1707,8 @@ export class BuildRunner {
         this.stopForSubscription(build, attempt, subscriptionBlock.harness, subscriptionBlock.readiness)
         return
       }
+      const browser = this.prepareBrowser(build, attempt)
+      if (browser) await browser
       // Authentication/status probes are external calls. Re-check immediately
       // before handing the project path to a role in case it changed meanwhile.
       if (!this.verifyWorkspaceBoundary(build)) return
