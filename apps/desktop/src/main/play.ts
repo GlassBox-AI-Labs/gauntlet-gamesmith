@@ -2,9 +2,10 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { stripVTControlCharacters } from 'node:util'
 import { shell } from 'electron'
 import type { BuildRecord, PlayState, PlayStateEvent } from '../shared/build'
-import { redactedErrorMessage } from '../shared/redact-log'
+import { redactLogText, redactedErrorMessage } from '../shared/redact-log'
 import { sanitizedExecutablePath } from './harness-env'
 import { cleanupRoundCheckout } from './round-revision'
 import { safePid } from './attempt-process'
@@ -408,7 +409,7 @@ export function detectLaunch(workspaceDir: string): { command: string; args: str
       ? (pkg.scripts as Record<string, unknown>)
       : null
     for (const script of ['dev', 'start', 'serve', 'preview']) {
-      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['build', script] }
+      if (typeof scripts?.[script] === 'string' && scripts[script].length > 0) return { command: 'npm', args: ['run', script] }
     }
   } catch {
     /* no valid package.json — fall through */
@@ -608,10 +609,22 @@ export function startPlay(
   }
 
   let buffer = ''
+  let outputTruncated = false
+  const exitError = (code: number | null): string | null => {
+    if (!code) return null
+    // Drop a cut first line before redacting so a truncated credential label
+    // cannot leave its value in the renderer. Redact before shortening again.
+    const output = outputTruncated ? buffer.slice(buffer.indexOf('\n') < 0 ? buffer.length : buffer.indexOf('\n') + 1) : buffer
+    const detail = redactLogText(stripVTControlCharacters(output)).trim().split('\n').slice(-12).join('\n').slice(-1_200)
+    const message = `Game process exited (code ${code}). Command: ${launch.command} ${launch.args.join(' ')}.`
+    return detail ? `${message}\n${detail}` : message
+  }
   const scan = (chunk: Buffer): void => {
     if (ownershipVerified) mergeVerifiedGroupIdentity(session)
+    const output = buffer + chunk.toString()
+    outputTruncated ||= output.length > 8_000
+    buffer = output.slice(-8_000)
     if (session.state.url) return
-    buffer = (buffer + chunk.toString()).slice(-8_000)
     const match = buffer.replace(/\u001b\[[0-9;]*m/g, '').match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+\/?/)
     if (match) {
       const browserUrl = new URL(match[0])
@@ -625,13 +638,14 @@ export function startPlay(
   child.stderr?.on('data', scan)
   child.on('exit', (code) => {
     if (sessions.get(buildId)?.child !== child) return
-    const finish = (): void => finishPlaySession(buildId, session, code ? `Game process exited (code ${code}).` : null)
+    const failure = exitError(code)
+    const finish = (): void => finishPlaySession(buildId, session, failure)
     // A Stop/timeout shutdown already owns the verified group and its
     // escalation timers; the leader's exit must not cancel or duplicate it.
     if (session.terminating) return
     const finalGroup = ownershipVerified ? mergeVerifiedGroupIdentity(session) : 'absent'
     if (ownershipVerified && (finalGroup === 'unrelated' || finalGroup === 'unknown')) {
-      retainUnrelatedGroup(buildId, session, code ? `Game process exited (code ${code}).` : null)
+      retainUnrelatedGroup(buildId, session, failure)
       return
     }
     if (finalGroup === 'owned') {
@@ -639,7 +653,7 @@ export function startPlay(
         buildId,
         session,
         'The game launcher exited while a verified background server was still running. Gauntlet Gamesmith is stopping that process group.',
-        code ? `Game process exited (code ${code}).` : null,
+        failure,
       )
       return
     }
