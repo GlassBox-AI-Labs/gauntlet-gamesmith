@@ -263,6 +263,7 @@ export interface StartBuildInput {
   /** Opaque IDs for bounded, main-process attachment snapshots. */
   attachmentIds?: string[]
   prompt: string
+  /** The build runs in this directory itself; nothing new is created beside or beneath it. */
   workspaceDir: string
   maxRounds: number
   budgetUsd: number | null

@@ -925,3 +925,24 @@ worlds. State relay is lossy latest-state delivery, not a reliable event or
 transaction channel; games own idempotency and conflict semantics. No new server
 authority, persistent inventory, world streaming or monetization is implied.
 Historical racing validation stays labeled as one concrete integration example.
+
+## ADR-034 — A build runs in the folder the operator picked (2026-09-07)
+
+**Decision.** The folder chosen in the project picker *is* the build's workspace. `BuildRunner.start`
+takes one shape, uses the path it was handed, and creates no directory beside or beneath it. The
+`'new-child'` branch and `new-build-workspace.ts` (the child-folder creator) are removed, and the
+IPC handler no longer asks for that behaviour.
+
+**Why.** Every build started from the UI passed `'new-child'`, so the app always made a fresh empty
+project inside the chosen folder. That is wrong for what the app is for: a build almost always
+continues a game that already exists, and its source, its history and its saved rounds are in the
+folder the operator picked. The old behaviour was also expensive to discover — a full Reference
+Study round was paid for before it became clear the work had gone into an empty directory next
+door.
+
+**Compatibility.** Existing builds are untouched; each one's workspace path is already recorded in
+the ledger. Nothing else called `start` with a mode.
+
+**Consequences.** Starting a brand-new game means creating or picking the empty folder first, in the
+project picker, instead of letting the app name one from the prompt. Prompt-derived folder names
+(`Build Tower aggro` → `tower-aggro/`) are gone with the creator.
