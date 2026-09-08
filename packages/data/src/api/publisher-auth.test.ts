@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@gauntlet/db/types'
 import { PublisherAuth } from './publisher-auth'
-import { resendSchema } from '../contracts'
+import { resendSchema, verificationSchema } from '../contracts'
 
 const email = 'person@challenger.gauntletai.com'
 const publisher = {
@@ -33,6 +33,19 @@ function fixture() {
 }
 
 describe('publisher email sign-in codes', () => {
+  it('requires exactly eight digits at the API boundary', () => {
+    expect(verificationSchema.parse({ email, code: '00123456' }).code).toBe(
+      '00123456',
+    )
+    for (const code of [
+      '123456',
+      '1234567',
+      '123456789',
+      '1234567890',
+      'abcdefgh',
+    ])
+      expect(verificationSchema.safeParse({ email, code }).success).toBe(false)
+  })
   it('requests codes for existing accounts without creating users or exposing sessions', async () => {
     const f = fixture()
     expect(
@@ -61,13 +74,13 @@ describe('publisher email sign-in codes', () => {
   })
   it('verifies email codes and checks publisher access before releasing a session', async () => {
     const f = fixture()
-    expect(await f.service.verify({ email, code: '123456' })).toEqual({
+    expect(await f.service.verify({ email, code: '12345678' })).toEqual({
       ...f.session,
       publisher,
     })
     expect(f.verifyOtp).toHaveBeenCalledExactlyOnceWith({
       email,
-      token: '123456',
+      token: '12345678',
       type: 'email',
     })
     expect(f.rpc).toHaveBeenCalledExactlyOnceWith('publisher_for_user', {
@@ -78,7 +91,7 @@ describe('publisher email sign-in codes', () => {
   it('revokes a verified session when publisher enrollment is denied', async () => {
     const f = fixture()
     f.rpc.mockResolvedValue({ data: null, error: null })
-    await expect(f.service.verify({ email, code: '123456' })).rejects.toThrow(
+    await expect(f.service.verify({ email, code: '12345678' })).rejects.toThrow(
       'Publishing access is not available',
     )
     expect(f.signOut).toHaveBeenCalledExactlyOnceWith({ scope: 'local' })
@@ -89,7 +102,7 @@ describe('publisher email sign-in codes', () => {
       data: { session: null },
       error: { status: 403 },
     })
-    await expect(f.service.verify({ email, code: '123456' })).rejects.toThrow(
+    await expect(f.service.verify({ email, code: '12345678' })).rejects.toThrow(
       'invalid or expired',
     )
     expect(f.rpc).not.toHaveBeenCalled()

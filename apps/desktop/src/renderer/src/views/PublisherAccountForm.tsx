@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { ArrowLeft, Mail } from 'lucide-react'
 import { Button } from '@gauntlet/ui/button'
 import { Input } from '@gauntlet/ui/input'
+import { PUBLISHER_OTP_LENGTH, isPublisherOtp } from '@gauntlet/publishing'
 import {
   InputOTP,
   InputOTPGroup,
@@ -11,6 +12,10 @@ import {
 import type { PublisherStatus } from '../../../shared/publishing'
 
 type Step = 'email' | 'signin' | 'signup' | 'verify'
+const OTP_SLOTS = Array.from(
+  { length: PUBLISHER_OTP_LENGTH },
+  (_, index) => index,
+)
 
 export function PublisherAccountForm({
   onConnected,
@@ -79,7 +84,7 @@ export function PublisherAccountForm({
     setStep('verify')
   }
   async function verify(value: string) {
-    if (!/^\d{6}$/.test(value)) return
+    if (!isPublisherOtp(value)) return
     await work(async () => {
       const result = await window.publishing.verifyEmail({ email, code: value })
       if (!result.ok) throw new Error(result.error)
@@ -178,7 +183,7 @@ export function PublisherAccountForm({
             'Create an account to share your games.'
           ) : (
             <>
-              We sent a 6-digit code to{' '}
+              We sent an {PUBLISHER_OTP_LENGTH}-digit code to{' '}
               <strong className="text-foreground">{email}</strong>
             </>
           )}
@@ -245,7 +250,7 @@ export function PublisherAccountForm({
             data-testid="publishing-verification-code"
             aria-describedby={`${id}-description${error ? ` ${id}-error` : ''}`}
             aria-invalid={!!error}
-            maxLength={6}
+            maxLength={PUBLISHER_OTP_LENGTH}
             pattern="^[0-9]*$"
             autoComplete="one-time-code"
             inputMode="numeric"
@@ -256,7 +261,7 @@ export function PublisherAccountForm({
             onComplete={(value) => void verify(value)}
           >
             <InputOTPGroup>
-              {[0, 1, 2].map((index) => (
+              {OTP_SLOTS.slice(0, PUBLISHER_OTP_LENGTH / 2).map((index) => (
                 <InputOTPSlot
                   key={index}
                   index={index}
@@ -266,7 +271,7 @@ export function PublisherAccountForm({
             </InputOTPGroup>
             <InputOTPSeparator />
             <InputOTPGroup>
-              {[3, 4, 5].map((index) => (
+              {OTP_SLOTS.slice(PUBLISHER_OTP_LENGTH / 2).map((index) => (
                 <InputOTPSlot
                   key={index}
                   index={index}
@@ -299,7 +304,7 @@ export function PublisherAccountForm({
                 : 'publishing-verify-email'
         }
         type="submit"
-        disabled={busy || (step === 'verify' && code.length !== 6)}
+        disabled={busy || (step === 'verify' && !isPublisherOtp(code))}
       >
         {busy
           ? step === 'verify'

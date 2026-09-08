@@ -1049,3 +1049,18 @@ email template to send `{{ .Token }}` with six-digit OTPs before shipping the
 desktop flow. The committed local Supabase configuration includes this template.
 Signup confirmation, approved-domain eligibility, and the public website's
 browse/play-only scope remain unchanged.
+
+## ADR-040 — Match publisher OTP input to eight-digit email codes (2026-09-08)
+
+**Decision.** Publisher email verification uses exactly eight digits, matching the
+reported hosted Supabase emails. This supersedes ADR-039's six-digit assumption.
+`PUBLISHER_OTP_LENGTH` in `@gauntlet/publishing` drives the renderer's slot count,
+copy, input limit, completion guard, and server validation. Main validates the
+same contract. The local Supabase `auth.email.otp_length` is eight and a regression
+test checks it against the shared value. SMS configuration is independent.
+
+**Consequences.** The code can be pasted without truncation or premature submission
+after six digits. Both signup and sign-in verification follow this contract.
+Local services must reload their updated email configuration. Hosted deployment
+checks must keep the sender's email OTP length at eight; this change does not alter
+the hosted sender or consume a user's live verification code.

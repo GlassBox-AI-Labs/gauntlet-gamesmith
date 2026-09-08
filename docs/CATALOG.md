@@ -46,7 +46,7 @@ captured at `http://127.0.0.1:56324`; hosted signup requires the SMTP/template s
 not eligible. Accounts disabled by an administrator stay disabled. Existing eligible
 accounts can also choose **Email me a code** after entering their email. Code sign-in
 does not create new accounts; signup still collects a public publisher name. Both
-code paths use six-digit OTP entry and a 60-second resend countdown.
+code paths use eight-digit OTP entry and a 60-second resend countdown.
 
 An administrator can still verify monorepo access and provision a developer exception:
 

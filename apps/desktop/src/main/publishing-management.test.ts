@@ -260,7 +260,7 @@ it('validates sign-in code requests and creates no session until verification su
     route === 'verify-email'
       ? Promise.resolve({ ...credentials, publisher })
       : undefined
-  const result = await service.verifyEmail({ email, code: '123456' })
+  const result = await service.verifyEmail({ email, code: '12345678' })
   expect(result).toEqual({
     connected: true,
     catalogUrl: 'http://127.0.0.1:3000',

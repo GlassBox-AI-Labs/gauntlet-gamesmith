@@ -510,11 +510,11 @@ did not deploy infrastructure or publish a game.
 ### Desktop email-code sign-in
 
 Before distributing the desktop email-first auth flow, deploy the catalog's
-`/api/sign-in-code` endpoint. In Supabase Auth, set **Email OTP Length** to **6**
+`/api/sign-in-code` endpoint. In Supabase Auth, set **Email OTP Length** to **8**
 and copy `packages/db/supabase/templates/magic-link.html` into the **Magic Link**
 email template. The template must include `{{ .Token }}` so users receive a code
 to enter in Electron. Keep the existing Confirm signup template and SMTP settings.
-The local Supabase config includes both templates and the six-digit setting.
+The local Supabase config includes both templates and the eight-digit setting.
 
 The desktop offers password sign-in or **Email me a code**, then verifies using
 the existing `/api/verify-email` endpoint. Code sign-in uses `shouldCreateUser: false`,

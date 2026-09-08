@@ -1,5 +1,5 @@
 /** Wire contract only: safe to import from browsers, Electron shared code, and Node. */
-export { PUBLISHER_EMAIL_DOMAIN, isPublisherEmail } from './accounts'
+export { PUBLISHER_EMAIL_DOMAIN, PUBLISHER_OTP_LENGTH, isPublisherEmail, isPublisherOtp } from './accounts'
 export const MAX_ARTIFACT_BYTES = 24 * 1024 * 1024
 export const MAX_WIRE_BYTES = 35 * 1024 * 1024
 export const MAX_FILES = 1500

@@ -2,6 +2,7 @@ import type { PublisherCredentials } from '../shared/publishing'
 import {
   boundedText,
   isPublisherEmail,
+  isPublisherOtp,
   object,
 } from '@gauntlet/publishing'
 /** Validate IPC without normalizing the password or including credentials in errors. */
@@ -44,7 +45,7 @@ export function publisherSignup(value: unknown) {
 }
 export function publisherVerification(value: unknown) {
   const input = object(value)
-  if (typeof input.code !== 'string' || !/^\d{6,10}$/.test(input.code))
+  if (!isPublisherOtp(input.code))
     throw new Error('Enter the verification code from your email.')
   return { ...enrollmentEmail(input), code: input.code }
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isPublisherEmail, listing } from '@gauntlet/publishing'
+import { isPublisherEmail, PUBLISHER_OTP_LENGTH, listing } from '@gauntlet/publishing'
 export const credentialsSchema = z
   .object({
     email: z.email().max(254).trim(),
@@ -24,7 +24,7 @@ export const signupSchema = z
 export const verificationSchema = z
   .object({
     email: enrollmentEmail,
-    code: z.string().regex(/^\d{6,10}$/),
+    code: z.string().length(PUBLISHER_OTP_LENGTH).regex(/^\d+$/),
   })
   .strict()
 export const resendSchema = z.object({ email: enrollmentEmail }).strict()
