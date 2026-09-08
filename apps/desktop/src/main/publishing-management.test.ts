@@ -244,3 +244,27 @@ describe('account-wide publishing management', () => {
     await expect(pending).rejects.toThrow('account changed')
   })
 })
+
+it('validates sign-in code requests and creates no session until verification succeeds', async () => {
+  service.signOut()
+  const email = 'person@challenger.gauntletai.com'
+  await expect(
+    service.sendSignInCode({ email: 'person@example.com' }),
+  ).rejects.toThrow('approved email')
+  expect(requests).toEqual([])
+  await service.sendSignInCode({ email, extra: 'ignored' })
+  expect(requests).toEqual([{ route: 'sign-in-code', input: { email } }])
+  expect((await service.status()).connected).toBe(false)
+  intercept = (route) =>
+    route === 'verify-email'
+      ? Promise.resolve({ ...credentials, publisher })
+      : undefined
+  const result = await service.verifyEmail({ email, code: '123456' })
+  expect(result).toEqual({
+    connected: true,
+    catalogUrl: 'http://127.0.0.1:3000',
+    publisherName: publisher.display_name,
+  })
+  expect(result).not.toHaveProperty('access_token')
+  expect((await service.library()).games).toHaveLength(2)
+})

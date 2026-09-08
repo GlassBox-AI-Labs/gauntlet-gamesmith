@@ -39,11 +39,14 @@ the database for an ordinary update.
 ## Publisher accounts
 
 Anyone with a verified `@challenger.gauntletai.com` email can create a publisher
-account inside Electron. Choose **Create a Challenger account**, enter a public name
+account inside Electron. Choose **Sign up**, enter a public name
 and email/password, then enter the code from the confirmation email. Local email is
 captured at `http://127.0.0.1:56324`; hosted signup requires the SMTP/template setup in
 [DEPLOYMENT.md](DEPLOYMENT.md). Parent domains, subdomains, and suffix lookalikes are
-not eligible. Accounts disabled by an administrator stay disabled.
+not eligible. Accounts disabled by an administrator stay disabled. Existing eligible
+accounts can also choose **Email me a code** after entering their email. Code sign-in
+does not create new accounts; signup still collects a public publisher name. Both
+code paths use six-digit OTP entry and a 60-second resend countdown.
 
 An administrator can still verify monorepo access and provision a developer exception:
 

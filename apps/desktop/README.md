@@ -230,7 +230,10 @@ project roots, links into those roots, and private app directories remain exclud
 
 Open a run and click **Publish round N**, or select a specific completed saved
 round and click **Publish**. Create an account with an approved email and verify its
-email code, or sign in to your existing account in the publishing drawer. Signup,
+email code, or sign in to your existing account in the publishing drawer. The compact
+account form starts with email, then offers password sign-in or **Email me a code**.
+Signup and code sign-in lead to six OTP slots with paste support, automatic verification,
+and a 60-second resend countdown. Back navigation lets you change the email. Signup,
 sign-in, and publishing use `https://gauntletgamesmith.com` by default in development
 and packaged apps; private previews use `https://glassbox-games.vercel.app`. Supabase sign-in
 and the encrypted publisher session stay in Electron. No browser opens for login. Build the saved revision, play its private

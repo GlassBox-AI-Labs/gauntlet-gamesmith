@@ -230,6 +230,10 @@ otp_expiry = 3600
 subject = "Verify your Gauntlet Gamesmith email"
 content_path = "./supabase/templates/confirmation.html"
 
+[auth.email.template.magic_link]
+subject = "Your Gauntlet Gamesmith sign-in code"
+content_path = "./supabase/templates/magic-link.html"
+
 # Uncomment to customize email template
 # [auth.email.template.invite]
 # subject = "You have been invited"

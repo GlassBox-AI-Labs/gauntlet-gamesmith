@@ -8,6 +8,7 @@ export const IPC = {
     updateListing: 'publishing:update-listing',
     openGame: 'publishing:open-game',
     signUp: 'publishing:sign-up',
+    sendSignInCode: 'publishing:send-sign-in-code',
     verifyEmail: 'publishing:verify-email',
     resendVerification: 'publishing:resend-verification',
     history: 'publishing:history',

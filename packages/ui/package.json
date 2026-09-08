@@ -6,6 +6,7 @@
     "./button": "./src/button.tsx",
     "./badge": "./src/badge.tsx",
     "./input": "./src/input.tsx",
+    "./input-otp": "./src/input-otp.tsx",
     "./utils": "./src/utils.ts",
     "./brand": "./src/brand.tsx",
     "./theme.css": "./src/theme.css",
@@ -14,9 +15,10 @@
   "dependencies": {
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "tailwind-merge": "3.6.0",
+    "input-otp": "1.4.2",
+    "lucide-react": "1.37.0",
     "radix-ui": "1.4.3",
-    "lucide-react": "1.37.0"
+    "tailwind-merge": "3.6.0"
   },
   "peerDependencies": {
     "react": "^19.2.0",

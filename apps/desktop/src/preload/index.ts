@@ -138,6 +138,7 @@ const publishing: PublishingApi = {
   status: () => ipcRenderer.invoke(IPC.publishing.status),
   signIn: (input) => ipcRenderer.invoke(IPC.publishing.signIn, input),
   signUp: (input) => ipcRenderer.invoke(IPC.publishing.signUp, input),
+  sendSignInCode: (input) => ipcRenderer.invoke(IPC.publishing.sendSignInCode, input),
   verifyEmail: (input) => ipcRenderer.invoke(IPC.publishing.verifyEmail, input),
   resendVerification: (input) => ipcRenderer.invoke(IPC.publishing.resendVerification, input),
   signOut: () => ipcRenderer.invoke(IPC.publishing.signOut),

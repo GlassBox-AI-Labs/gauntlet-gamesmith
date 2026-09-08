@@ -257,6 +257,12 @@ export class Publishing {
       this.completeSignIn(await this.request('verify-email', input)),
     )
   }
+  async sendSignInCode(value: unknown): Promise<void> {
+    const input = enrollmentEmail(value)
+    return this.accountOperation(async () => {
+      await this.request('sign-in-code', input)
+    })
+  }
   async resendVerification(value: unknown): Promise<void> {
     const input = enrollmentEmail(value)
     return this.accountOperation(async () => {
@@ -826,6 +832,7 @@ export function registerPublishingIpc(service: Publishing): void {
   handle(IPC.publishing.status, () => service.status())
   handle(IPC.publishing.signIn, (input) => service.signIn(input))
   handle(IPC.publishing.signUp, (input) => service.signUp(input))
+  handle(IPC.publishing.sendSignInCode, (input) => service.sendSignInCode(input))
   handle(IPC.publishing.verifyEmail, (input) => service.verifyEmail(input))
   handle(IPC.publishing.resendVerification, (input) =>
     service.resendVerification(input),

@@ -64,6 +64,7 @@ export interface PublishingApi {
   status(): Promise<OperationResult<PublisherStatus>>
   signIn(input: PublisherCredentials): Promise<OperationResult<PublisherStatus>>
   signUp(input: PublisherSignup): Promise<OperationResult<void>>
+  sendSignInCode(input: { email: string }): Promise<OperationResult<void>>
   verifyEmail(
     input: PublisherVerification,
   ): Promise<OperationResult<PublisherStatus>>

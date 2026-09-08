@@ -46,6 +46,10 @@ describe('publishing network requests', () => {
 })
 
 describe('publishing API responses', () => {
+  it('offers password sign-in when the server does not support sign-in codes', async () => {
+    await expect(readCatalogResponse(new Response('Not found', { status: 404 }), 'sign-in-code'))
+      .rejects.toThrow('Sign in with your password instead.')
+  })
   it.each(['signup', 'verify-email', 'resend-verification'])(
     'explains an older server without exposing its HTML for %s',
     async (route) => {

@@ -1,7 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { ArrowLeft, Mail } from 'lucide-react'
 import { Button } from '@gauntlet/ui/button'
 import { Input } from '@gauntlet/ui/input'
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSeparator,
+  InputOTPSlot,
+} from '@gauntlet/ui/input-otp'
 import type { PublisherStatus } from '../../../shared/publishing'
+
+type Step = 'email' | 'signin' | 'signup' | 'verify'
 
 export function PublisherAccountForm({
   onConnected,
@@ -10,100 +19,189 @@ export function PublisherAccountForm({
   onConnected: (status: PublisherStatus) => Promise<void>
   onBusyChange: (busy: boolean) => void
 }): React.JSX.Element {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'verify'>('signin')
+  const [step, setStep] = useState<Step>('email')
+  const [purpose, setPurpose] = useState<'signin' | 'signup'>('signup')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
+  const inFlight = useRef(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  function changeMode(next: typeof mode) {
+  const [resendAt, setResendAt] = useState(0)
+  const [now, setNow] = useState(Date.now)
+  const resendCooldown = Math.max(0, Math.ceil((resendAt - now) / 1000))
+  const id = useId()
+
+  useEffect(() => {
+    setNow(Date.now())
+    if (resendAt <= Date.now()) return
+    const timer = window.setInterval(() => {
+      setNow(Date.now())
+      if (Date.now() >= resendAt) window.clearInterval(timer)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [resendAt])
+
+  function changeStep(next: Step) {
     setPassword('')
     setCode('')
     setError('')
     setNotice('')
-    setMode(next)
+    setStep(next)
   }
   async function work(operation: () => Promise<void>) {
+    // Completing the OTP and pressing Enter can happen in the same frame.
+    if (inFlight.current) return
+    inFlight.current = true
     setBusy(true)
     onBusyChange(true)
     setError('')
     setNotice('')
     try {
       await operation()
-    } catch (error) {
+    } catch (cause) {
       setError(
-        error instanceof Error ? error.message : 'Account request failed.',
+        cause instanceof Error ? cause.message : 'Account request failed.',
       )
     } finally {
       setPassword('')
-      setCode('')
+      inFlight.current = false
       setBusy(false)
       onBusyChange(false)
     }
   }
-  async function submit() {
-    if (mode === 'signup') {
-      const result = await window.publishing.signUp({
-        email,
-        password,
-        displayName,
-      })
+  function startVerification(nextPurpose: typeof purpose) {
+    setPurpose(nextPurpose)
+    setCode('')
+    setResendAt(Date.now() + 60_000)
+    setStep('verify')
+  }
+  async function verify(value: string) {
+    if (!/^\d{6}$/.test(value)) return
+    await work(async () => {
+      const result = await window.publishing.verifyEmail({ email, code: value })
       if (!result.ok) throw new Error(result.error)
-      setMode('verify')
-      setNotice(
-        'Check your email for a verification code. If you already have an account, sign in instead.',
-      )
+      setCode('')
+      await onConnected(result.value)
+    })
+  }
+  async function submit() {
+    if (step === 'email') {
+      setEmail(email.trim())
+      changeStep('signin')
       return
     }
-    const result =
-      mode === 'verify'
-        ? await window.publishing.verifyEmail({ email, code })
-        : await window.publishing.signIn({ email, password })
-    if (!result.ok) throw new Error(result.error)
-    await onConnected(result.value)
+    if (step === 'verify') {
+      await verify(code)
+      return
+    }
+    await work(async () => {
+      if (step === 'signup') {
+        const result = await window.publishing.signUp({
+          email: email.trim(),
+          password,
+          displayName,
+        })
+        if (!result.ok) throw new Error(result.error)
+        setEmail(email.trim())
+        startVerification('signup')
+        return
+      }
+      const result = await window.publishing.signIn({ email, password })
+      if (!result.ok) throw new Error(result.error)
+      await onConnected(result.value)
+    })
   }
+  async function sendCode() {
+    await work(async () => {
+      const result = await window.publishing.sendSignInCode({ email })
+      if (!result.ok) throw new Error(result.error)
+      startVerification('signin')
+    })
+  }
+  async function resend() {
+    await work(async () => {
+      const result =
+        purpose === 'signup'
+          ? await window.publishing.resendVerification({ email })
+          : await window.publishing.sendSignInCode({ email })
+      if (!result.ok) throw new Error(result.error)
+      setCode('')
+      setResendAt(Date.now() + 60_000)
+      setNotice('New code sent. Check your inbox, including spam.')
+    })
+  }
+
   return (
     <form
       className="w-full max-w-sm space-y-4"
       onSubmit={(event) => {
         event.preventDefault()
-        void work(submit)
+        void submit()
       }}
     >
-      <p className="text-sm text-muted-foreground">
-        {mode === 'verify'
-          ? 'Enter the code sent to your email to finish creating your account.'
-          : 'Sign in or create an account to share your games. You can create and play games without an account.'}
-      </p>
-      {error && (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          {(step === 'signin' || step === 'verify') && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Back"
+              disabled={busy}
+              onClick={() => changeStep(step === 'verify' ? purpose : 'email')}
+            >
+              <ArrowLeft />
+            </Button>
+          )}
+          <h2 className="text-lg font-semibold">
+            {step === 'email'
+              ? 'Sign in to continue'
+              : step === 'signin'
+                ? 'Welcome back'
+                : step === 'signup'
+                  ? 'Create your account'
+                  : 'Enter your code'}
+          </h2>
+        </div>
         <p
-          role="alert"
-          className="rounded-lg border border-destructive p-3 text-sm text-destructive"
+          id={`${id}-description`}
+          className="break-words text-sm text-muted-foreground"
         >
-          {error}
+          {step === 'email' ? (
+            'Enter your email to get started.'
+          ) : step === 'signin' ? (
+            email
+          ) : step === 'signup' ? (
+            'Create an account to share your games.'
+          ) : (
+            <>
+              We sent a 6-digit code to{' '}
+              <strong className="text-foreground">{email}</strong>
+            </>
+          )}
         </p>
+      </div>
+      {(step === 'email' || step === 'signup') && (
+        <label className="grid gap-2 text-sm">
+          Email
+          <Input
+            key={step}
+            data-testid="publishing-email"
+            type="email"
+            autoComplete="username"
+            placeholder="you@example.com"
+            required
+            maxLength={254}
+            disabled={busy}
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
       )}
-      {notice && (
-        <p role="status" className="rounded-lg border bg-secondary p-3 text-sm">
-          {notice}
-        </p>
-      )}
-      <label className="grid gap-2 text-sm">
-        Email
-        <Input
-          data-testid="publishing-email"
-          type="email"
-          autoComplete="username"
-          required
-          maxLength={254}
-          disabled={busy}
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-        />
-      </label>
-      {mode === 'signup' && (
+      {step === 'signup' && (
         <label className="grid gap-2 text-sm">
           Public publisher name
           <Input
@@ -117,32 +215,19 @@ export function PublisherAccountForm({
           />
         </label>
       )}
-      {mode === 'verify' ? (
+      {(step === 'signin' || step === 'signup') && (
         <label className="grid gap-2 text-sm">
-          Verification code
+          Password{step === 'signup' ? ' (at least 10 characters)' : ''}
           <Input
-            data-testid="publishing-verification-code"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            required
-            pattern="[0-9]{6,10}"
-            maxLength={10}
-            disabled={busy}
-            value={code}
-            onChange={(event) => setCode(event.target.value.trim())}
-          />
-        </label>
-      ) : (
-        <label className="grid gap-2 text-sm">
-          Password{mode === 'signup' ? ' (at least 10 characters)' : ''}
-          <Input
+            key={step}
             data-testid="publishing-password"
             type="password"
             autoComplete={
-              mode === 'signup' ? 'new-password' : 'current-password'
+              step === 'signup' ? 'new-password' : 'current-password'
             }
+            autoFocus={step === 'signin'}
             required
-            minLength={mode === 'signup' ? 10 : 1}
+            minLength={step === 'signup' ? 10 : 1}
             maxLength={200}
             disabled={busy}
             value={password}
@@ -150,87 +235,152 @@ export function PublisherAccountForm({
           />
         </label>
       )}
-      <div className="flex flex-wrap gap-3">
-        <Button
-          data-testid={
-            mode === 'signin'
+      {step === 'verify' && (
+        <div className="grid justify-items-center gap-2 py-2">
+          <label htmlFor={`${id}-code`} className="sr-only">
+            Verification code
+          </label>
+          <InputOTP
+            id={`${id}-code`}
+            data-testid="publishing-verification-code"
+            aria-describedby={`${id}-description${error ? ` ${id}-error` : ''}`}
+            aria-invalid={!!error}
+            maxLength={6}
+            pattern="^[0-9]*$"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            disabled={busy}
+            value={code}
+            onChange={setCode}
+            onComplete={(value) => void verify(value)}
+          >
+            <InputOTPGroup>
+              {[0, 1, 2].map((index) => (
+                <InputOTPSlot
+                  key={index}
+                  index={index}
+                  aria-invalid={!!error}
+                />
+              ))}
+            </InputOTPGroup>
+            <InputOTPSeparator />
+            <InputOTPGroup>
+              {[3, 4, 5].map((index) => (
+                <InputOTPSlot
+                  key={index}
+                  index={index}
+                  aria-invalid={!!error}
+                />
+              ))}
+            </InputOTPGroup>
+          </InputOTP>
+        </div>
+      )}
+      {error && (
+        <p id={`${id}-error`} role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {notice}
+        </p>
+      )}
+      <Button
+        className="w-full"
+        data-testid={
+          step === 'email'
+            ? 'publishing-continue'
+            : step === 'signin'
               ? 'publishing-sign-in'
-              : mode === 'signup'
+              : step === 'signup'
                 ? 'publishing-sign-up'
                 : 'publishing-verify-email'
-          }
-          type="submit"
-          disabled={busy}
-        >
-          {busy
-            ? 'Please wait…'
-            : mode === 'signin'
-              ? 'Sign in to publish'
-              : mode === 'signup'
+        }
+        type="submit"
+        disabled={busy || (step === 'verify' && code.length !== 6)}
+      >
+        {busy
+          ? step === 'verify'
+            ? 'Verifying…'
+            : 'Please wait…'
+          : step === 'email'
+            ? 'Continue'
+            : step === 'signin'
+              ? 'Sign in'
+              : step === 'signup'
                 ? 'Create account'
-                : 'Verify email'}
-        </Button>
-        {busy && (
+                : 'Verify'}
+      </Button>
+      {step === 'signin' && (
+        <>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <div className="flex-1 border-t" />
+            or
+            <div className="flex-1 border-t" />
+          </div>
           <Button
-            data-testid="publishing-cancel-sign-in"
-            type="button"
-            variant="outline"
-            onClick={() => {
-              void window.publishing
-                .cancelSignIn()
-                .then((result) => {
-                  if (!result.ok) setError(result.error)
-                })
-                .catch(() => setError('Unable to cancel account request.'))
-            }}
-          >
-            Cancel
-          </Button>
-        )}
-        {mode === 'verify' && (
-          <Button
-            data-testid="publishing-resend-code"
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() =>
-              void work(async () => {
-                const result = await window.publishing.resendVerification({
-                  email,
-                })
-                if (!result.ok) throw new Error(result.error)
-                setNotice(
-                  'A new code has been requested. Check your email, including spam.',
-                )
-              })
-            }
-          >
-            Resend code
-          </Button>
-        )}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          data-testid="publishing-account-mode"
-          type="button"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => changeMode(mode === 'signin' ? 'signup' : 'signin')}
-        >
-          {mode === 'signin' ? 'Create account' : 'Back to sign in'}
-        </Button>
-        {mode !== 'verify' && (
-          <Button
-            data-testid="publishing-have-code"
+            className="w-full"
+            data-testid="publishing-send-code"
             type="button"
             variant="ghost"
             disabled={busy}
-            onClick={() => changeMode('verify')}
+            onClick={() => void sendCode()}
           >
-            I have a verification code
+            <Mail />
+            Email me a code
           </Button>
-        )}
-      </div>
+        </>
+      )}
+      {step === 'verify' && (
+        <Button
+          className="w-full"
+          data-testid="publishing-resend-code"
+          type="button"
+          variant="ghost"
+          disabled={busy || resendCooldown > 0}
+          onClick={() => void resend()}
+        >
+          {resendCooldown > 0
+            ? `Resend code (${resendCooldown}s)`
+            : 'Resend code'}
+        </Button>
+      )}
+      {(step === 'email' || step === 'signup') && (
+        <p className="text-center text-sm text-muted-foreground">
+          {step === 'email'
+            ? 'Don’t have an account? '
+            : 'Already have an account? '}
+          <button
+            className="font-medium text-foreground underline underline-offset-4 disabled:opacity-50"
+            data-testid="publishing-account-mode"
+            type="button"
+            disabled={busy}
+            onClick={() => changeStep(step === 'email' ? 'signup' : 'email')}
+          >
+            {step === 'email' ? 'Sign up' : 'Sign in'}
+          </button>
+        </p>
+      )}
+      {busy && (
+        <Button
+          className="w-full"
+          data-testid="publishing-cancel-sign-in"
+          type="button"
+          variant="outline"
+          onClick={() => {
+            void window.publishing
+              .cancelSignIn()
+              .then((result) => {
+                if (!result.ok) setError(result.error)
+              })
+              .catch(() => setError('Unable to cancel account request.'))
+          }}
+        >
+          Cancel
+        </Button>
+      )}
     </form>
   )
 }

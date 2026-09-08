@@ -1027,3 +1027,25 @@ preview capabilities; refreshes cannot restore a signed-out session. Native imag
 decoding adds Sharp to desktop packaging. Permanent deletion, ownership transfer,
 bulk actions, and title/slug editing remain outside this change. The website remains
 public browse/play only (ADR-024).
+
+## ADR-039 — Email-first desktop publisher authentication (2026-09-08)
+
+**Decision.** The compact publisher form starts with email, then offers password
+sign-in or an emailed code. Signup collects email, public publisher name, and
+password before verification. Both code paths use the shared shadcn Input OTP
+component with six slots, paste support, automatic verification, explicit retry,
+and a 60-second resend countdown. Users enter verification only after requesting
+a code; the separate “I have a verification code” entry is removed. No social
+login is introduced.
+
+Code sign-in only targets existing eligible accounts (`shouldCreateUser: false`).
+Main validates email requests, the catalog validates them again, and verified
+sessions still require the existing publisher enrollment/disabled-account check.
+Password login remains available for administrator-provisioned exceptions.
+Passwords and codes stay ephemeral; only main persists encrypted session tokens.
+
+**Consequences.** Deploy `/api/sign-in-code` and configure the hosted Magic Link
+email template to send `{{ .Token }}` with six-digit OTPs before shipping the
+desktop flow. The committed local Supabase configuration includes this template.
+Signup confirmation, approved-domain eligibility, and the public website's
+browse/play-only scope remain unchanged.
