@@ -2,7 +2,7 @@
 
 /* The Vitrine splash. Every rule is scoped to #splash; breakpoints are container queries on the .page article. */
 #splash { --depth: 28px; --gap: clamp(28px, 4cqi, 56px); }
-#splash section, #splash .wrap { max-width: 1240px; margin-inline: auto; padding-inline: var(--pad); }
+#splash section:not(.hero), #splash .wrap { max-width: 1240px; margin-inline: auto; padding-inline: var(--pad); }
 #splash section { padding-block: clamp(56px, 8cqi, 120px); }
 
 /* Nav */
@@ -53,32 +53,33 @@
 #splash .case .glass, #splash .case::before, #splash .case::after, #splash .case .back { transition: opacity 0.6s var(--ease); }
 #splash .case[data-reveal]:not(.in)::before, #splash .case[data-reveal]:not(.in)::after, #splash .case[data-reveal]:not(.in) .back { opacity: 0; }
 
-/* Hero */
-#splash .hero {
-  position: relative; min-height: 82svh; display: grid; grid-template-columns: 1.05fr 1fr; align-items: center; gap: var(--gap);
-  padding-top: clamp(40px, 6cqi, 80px); overflow: visible;
-}
-#splash .field { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: 0.9; }
-#splash .hero > :not(.field) { position: relative; z-index: 1; }
-#splash .hero h1 { max-width: 17ch; font-size: clamp(2.5rem, 5.6cqi, 4.9rem); }
-#splash .hero .lead { margin-top: 24px; max-width: 42ch; font-size: clamp(1.05rem, 1.5cqi, 1.25rem); color: var(--fg-2); }
+/* Hero: dim footage behind, the app surface in front */
+#splash .hero { position: relative; min-height: 82svh; display: grid; align-content: center; padding-top: clamp(36px, 5cqi, 64px); overflow: hidden; }
+#splash .hero .footage { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; filter: brightness(0.45) saturate(0.85); }
+#splash .hero .scrim { position: absolute; inset: 0; z-index: 1; background: linear-gradient(180deg, rgba(7, 8, 12, 0.9) 0%, rgba(7, 8, 12, 0.78) 50%, rgba(7, 8, 12, 0.64) 100%); }
+#splash .field { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0.8; }
+#splash .hero .wrap { position: relative; z-index: 3; width: 100%; display: grid; gap: clamp(28px, 4cqi, 48px); }
+#splash .hero-top { display: grid; grid-template-columns: 7fr 5fr; gap: var(--gap); align-items: end; }
+#splash .hero h1 { max-width: 14ch; font-size: clamp(2.4rem, 5cqi, 4.4rem); }
+#splash .hero .lead { max-width: 40ch; font-size: clamp(1.05rem, 1.4cqi, 1.2rem); color: var(--fg-2); }
 #splash .cta { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 34px; }
+#splash .hero .cta { margin-top: 22px; }
+#splash .hero .cta .meta { color: var(--fg-2); }
 #splash .hero .btn-primary { font-size: clamp(1.15rem, 1.6cqi, 1.4rem); padding: 1em 1.7em; }
 #splash .cta .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); flex-basis: 100%; }
-#splash .hero-case .glass { aspect-ratio: 2066 / 1628; }
+#splash .hero-case { margin-bottom: clamp(36px, 5cqi, 64px); }
+#splash .hero-case .glass { aspect-ratio: 1034 / 814; }
 @media (prefers-reduced-motion: no-preference) {
   #splash .hero-case { animation: splash-float 9s ease-in-out infinite; }
   @keyframes splash-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
 }
 
 /* What it does */
-#splash .what-head { display: grid; grid-template-columns: 7fr 5fr; gap: var(--gap); align-items: center; }
 #splash .what .line { margin-top: 20px; color: var(--fg-2); max-width: 44ch; font-size: clamp(1.05rem, 1.4cqi, 1.2rem); }
-#splash .case.small .glass { aspect-ratio: 2066 / 1628; }
 #splash .points { display: grid; margin-top: clamp(40px, 5cqi, 72px); }
-#splash .point { display: grid; grid-template-columns: 5fr 7fr; gap: var(--gap); align-items: center; padding: clamp(32px, 4cqi, 56px) 0; border-top: 1px solid var(--line); }
+#splash .point { display: grid; grid-template-columns: 4fr 8fr; gap: var(--gap); align-items: center; padding: clamp(32px, 4cqi, 56px) 0; border-top: 1px solid var(--line); }
 #splash .point.flip .pt { order: 2; }
-#splash .point .case .glass { aspect-ratio: 2066 / 1628; }
+#splash .point .case .glass { aspect-ratio: var(--ar); }
 #splash .points h3 { font-size: clamp(1.35rem, 2.2cqi, 1.9rem); }
 #splash .points p { margin-top: 12px; color: var(--fg-2); max-width: 36ch; }
 #splash .what .cta { margin-top: clamp(28px, 4cqi, 48px); }
@@ -170,7 +171,7 @@
 /* Tablet */
 @container page (max-width: 1100px) {
   #splash .brand small { display: none; }
-  #splash .hero { grid-template-columns: 1fr 1fr; }
+  #splash .hero-top { grid-template-columns: 1fr 1fr; }
   #splash .links { gap: 18px; }
 }
 @container page (max-width: 980px) {
@@ -191,9 +192,10 @@
   #splash .arcade .copy { min-width: 0; padding: 28px 22px; }
   #splash .arcade .btn .meta { display: none; }
   #splash .cta .btn { max-width: 100%; }
-  #splash .hero { grid-template-columns: 1fr; min-height: 0; padding-top: 36px; gap: 36px; }
+  #splash .hero { min-height: 0; padding-top: 36px; }
+  #splash .hero-top { grid-template-columns: 1fr; gap: 20px; }
   #splash .hero h1 { max-width: none; }
-  #splash .what-head, #splash .point, #splash .evidence, #splash .get { grid-template-columns: 1fr; }
+  #splash .point, #splash .evidence, #splash .get { grid-template-columns: 1fr; }
   #splash .point.flip .pt { order: 0; }
   #splash .typed li { grid-template-columns: 1fr; gap: 16px; }
   #splash .case.tiny { width: 100%; }

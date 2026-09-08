@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Sprite } from '@/components/features/splash/sprite'
+import { SplashClient } from '@/components/features/splash/splash-client'
 import { fontClass } from '../splash-fonts'
 import './how.css'
 export const metadata: Metadata = { title: 'How it works' }
@@ -8,6 +9,7 @@ export default function HowPage() {
   return (
     <article className={`page ${fontClass}`} id="how">
       <Sprite />
+      <SplashClient rootId="how" />
       <header className="nav">
         <Link className="brand" href="/"><img src="/splash/app-icon.webp" alt="" /> Gauntlet Gamesmith</Link>
         <Link className="back" href="/"><svg className="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg><span>Back to the splash</span></Link>
@@ -30,7 +32,7 @@ export default function HowPage() {
               <p className="line">A folder, a sentence, a spending ceiling.</p>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-composer.webp" alt="The Create build form with one sentence typed in and the Create build button" /><figcaption>Create build</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-hero.mp4" poster="/splash/clip-hero-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The Create build form: a sentence is typed, the effort slider is set, and Create build is pressed"></video><figcaption>Create build</figcaption></figure>
               <figure className="shot"><img src="/splash/app-options.webp" alt="Run options: Reference Study mode, maximum rounds, and a budget as equivalent API cost" /><figcaption>Run options: study mode, rounds, budget</figcaption></figure>
             </div>
           </section>
@@ -46,7 +48,7 @@ export default function HowPage() {
               </ul>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-study.webp" alt="A build with the reference study running: counts of stills, motion frames, journey shots, and the first-play journey grid" /><figcaption>Reference assets, study running</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-study.mp4" poster="/splash/clip-study-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The reference study running, with cost and tokens ticking up"></video><figcaption>Reference assets, study running</figcaption></figure>
             </div>
           </section>
 
@@ -61,7 +63,7 @@ export default function HowPage() {
               </ul>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-log.webp" alt="The study log: agent chips for each researcher and a row of tool call ids" /><figcaption>Every agent and tool call, on screen</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-log.mp4" poster="/splash/clip-log-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The run log: totals, the four prompts, and the attempts table with a cost per round"></video><figcaption>Every agent and tool call, on screen</figcaption></figure>
             </div>
           </section>
 
@@ -78,8 +80,7 @@ export default function HowPage() {
               <div className="finding"><span className="sev">major</span><span>Camera clips inside branch polygons and blacks out half the frame.</span></div>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-pairs.webp" alt="The critic's gameplay recording above blind side-by-side pairs, this build beside the reference" /><figcaption>Blind side-by-side, this build against the reference</figcaption></figure>
-              <figure className="shot"><img src="/splash/app-verdict.webp" alt="The findings list, each tagged critical, major, or minor" /><figcaption>Findings, tagged by severity</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-critique.mp4" poster="/splash/clip-critique-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The rounds table as the critic scores each round: 0.46, then 0.52, then 0.58"></video><figcaption>The critic scores every round</figcaption></figure>
             </div>
           </section>
 
@@ -90,7 +91,7 @@ export default function HowPage() {
               <p className="line">Play at any point. Publish a finished round to the arcade.</p>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-rounds.webp" alt="The rounds table with scores per round and the Publish, Play, Export, and Resume build buttons" /><figcaption>Rounds, with Play and Publish</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A build stopped at round 4 of 10, with Publish, Play, Export, and Resume build"></video><figcaption>Rounds, with Play and Publish</figcaption></figure>
             </div>
           </section>
         </div>

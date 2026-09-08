@@ -2,9 +2,9 @@
 import { useEffect } from 'react'
 // Behaviour for the splash: reveal on scroll, the blind-pair slider, muted autoplay, and the
 // particle field behind the hero. Renders nothing.
-export function SplashClient() {
+export function SplashClient({ rootId = 'splash' }: { rootId?: string }) {
   useEffect(() => {
-    const root = document.getElementById('splash')
+    const root = document.getElementById(rootId)
     if (!root) return
     const ac = new AbortController(),
       { signal } = ac,
@@ -170,6 +170,6 @@ export function SplashClient() {
       visible.disconnect()
       ro.disconnect()
     }
-  }, [])
+  }, [rootId])
   return null
 }

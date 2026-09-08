@@ -30,7 +30,7 @@
 #how .phase .log .err .k { color: var(--fg); }
 #how .shots { display: grid; gap: 16px; }
 #how .shot { border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; background: var(--bg-2); box-shadow: var(--shadow); }
-#how .shot img { width: 100%; height: auto; display: block; }
+#how .shot img, #how .shot video { width: 100%; height: auto; display: block; }
 #how .shot figcaption { padding: 10px 14px; font-family: var(--mono); font-size: 0.72rem; color: var(--fg-3); border-top: 1px solid var(--line); }
 #how .record { margin-top: 20px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
 #how .record .score { font-family: var(--display); font-weight: 800; font-size: 2.6rem; letter-spacing: -0.04em; line-height: 1; color: var(--cyan); }

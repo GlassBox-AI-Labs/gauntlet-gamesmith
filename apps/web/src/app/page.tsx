@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import Link from 'next/link'
 import { Sprite } from '@/components/features/splash/sprite'
 import { SplashClient } from '@/components/features/splash/splash-client'
@@ -17,49 +18,47 @@ export default function SplashPage() {
       </header>
 
       <section className="hero">
+        <video className="footage" src="/splash/hero-clip.mp4" poster="/splash/hero-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-hidden="true"></video>
+        <div className="scrim"></div>
         <canvas className="field" aria-hidden="true"></canvas>
-        <div>
-          <h1>Type a sentence. Play a game.</h1>
-          <p className="lead">Two agents build it, break it, and build it again. You walk away.</p>
-          <div className="cta">
-            <a className="btn btn-primary" href="https://github.com/GlassBox-AI-Labs/gauntlet-gamesmith/releases/latest"><svg className="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
-            <Link className="btn btn-secondary" href="/games">Open the arcade<svg className="icon" aria-hidden="true"><use href="#i-arrow-up-right"/></svg></Link>
-            <span className="meta">v0.1.1 · Apple chip and Intel</span>
+        <div className="wrap">
+          <div className="hero-top">
+            <h1>From prompt to playable, with the full loop exposed.</h1>
+            <div>
+              <p className="lead">Generate browser games through a visible build-and-critique loop, showing every trace, cost, and eval behind the final result.</p>
+              <div className="cta">
+                <a className="btn btn-primary" href="https://github.com/GlassBox-AI-Labs/gauntlet-gamesmith/releases/latest"><svg className="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
+                <Link className="btn btn-secondary" href="/games">Open the arcade<svg className="icon" aria-hidden="true"><use href="#i-arrow-up-right"/></svg></Link>
+                <span className="meta">v0.1.1 · Apple chip and Intel</span>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="case hero-case">
-          <div className="back"></div>
-          <div className="glass"><video src="/splash/app-clip.mp4" poster="/splash/app-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The app: a sentence is typed and Create build is pressed"></video></div>
+          <div className="case hero-case">
+            <div className="back"></div>
+            <div className="glass"><video src="/splash/clip-hero.mp4" poster="/splash/clip-hero-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The Create build form: a sentence is typed, the effort slider is set, and Create build is pressed"></video></div>
+          </div>
         </div>
       </section>
 
       <section className="what" id="what">
-        <div className="what-head">
-          <div>
-            <h2 data-reveal>No babysitting.</h2>
-            <p className="line" data-reveal style={{ transitionDelay: '80ms' }}>Set a spending ceiling and walk away. It stops when the critic passes your game, the rounds run out, or the money does.</p>
-          </div>
-          <div className="case small" data-reveal style={{ transitionDelay: '120ms' }}>
-            <div className="back"></div>
-            <div className="glass"><img src="/splash/app-options.webp" alt="Run options: Reference Study mode, maximum rounds, and a budget ceiling as equivalent API cost" /></div>
-          </div>
-        </div>
+        <h2 data-reveal>No babysitting.</h2>
+        <p className="line" data-reveal style={{ transitionDelay: '80ms' }}>Set a spending ceiling and walk away. It stops when the critic passes your game, the rounds run out, or the money does.</p>
         <div className="points">
           <div className="point" data-reveal>
             <div className="pt"><h3>It studies the real thing first.</h3><p>Name the game yours should feel like. It gathers stills, clips, and sources before writing a line.</p></div>
-            <div className="case"><div className="back"></div><div className="glass"><img src="/splash/app-study.webp" alt="The reference study running: counts of stills, motion frames, and journey shots above a grid of captured frames" /></div></div>
+            <div className="case" style={{ '--ar': '1200 / 481' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-study.mp4" poster="/splash/clip-study-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The reference study running, with cost and tokens ticking up"></video></div></div>
           </div>
           <div className="point flip" data-reveal>
             <div className="pt"><h3>It criticises itself.</h3><p>A second agent, with no memory of building, plays your game and scores it. The notes go back in.</p></div>
-            <div className="case"><div className="back"></div><div className="glass"><img src="/splash/app-pairs.webp" alt="The critic's gameplay recording above blind side-by-side pairs, this build beside the reference" /></div></div>
+            <div className="case" style={{ '--ar': '1200 / 543' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-critique.mp4" poster="/splash/clip-critique-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The rounds table as the critic scores each round: 0.46, then 0.52, then 0.58"></video></div></div>
           </div>
           <div className="point" data-reveal>
             <div className="pt"><h3>Nothing is hidden.</h3><p>Every prompt, command, helper, and cost estimate is on screen while it works.</p></div>
-            <div className="case"><div className="back"></div><div className="glass"><img src="/splash/app-log.webp" alt="The study log with a chip for every agent and a row of tool call ids" /></div></div>
+            <div className="case" style={{ '--ar': '1200 / 776' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-log.mp4" poster="/splash/clip-log-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The run log: totals, the four prompts, and the attempts table with a cost per round"></video></div></div>
           </div>
           <div className="point flip" data-reveal>
             <div className="pt"><h3>Every round is saved.</h3><p>Play any earlier version. Publish the one you like.</p></div>
-            <div className="case"><div className="back"></div><div className="glass"><img src="/splash/app-rounds.webp" alt="The rounds table with a score per round and the Publish, Play, Export, and Resume build buttons" /></div></div>
+            <div className="case" style={{ '--ar': '1200 / 202' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A build stopped at round 4 of 10, with Publish, Play, Export, and Resume build"></video></div></div>
           </div>
         </div>
         <div className="cta" data-reveal>
@@ -96,8 +95,8 @@ export default function SplashPage() {
         <h2 data-reveal>Three sentences. Three games.</h2>
         <ul className="typed">
           <li data-reveal><span className="text">A Souls-like where you play a dog carrying its bones.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/ashen-title.webp" alt="Ashen Woods title screen" /></span></span></li>
-          <li data-reveal style={{ transitionDelay: '80ms' }}><span className="text">Geometry Wars on the surface of a sphere.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/tron-sphere.webp" alt="Gauntletron sphere arena" /></span></span></li>
-          <li data-reveal style={{ transitionDelay: '160ms' }}><span className="text">A Pac-Man platformer with a flat maze hiding inside.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/pac-maze.webp" alt="Claude-Man 3D maze" /></span></span></li>
+          <li data-reveal style={{ transitionDelay: '80ms' }}><span className="text">A twin-stick shooter on the surface of a sphere.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/tron-sphere.webp" alt="Gauntletron sphere arena" /></span></span></li>
+          <li data-reveal style={{ transitionDelay: '160ms' }}><span className="text">A bright platformer with a flat maze hiding inside.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/pac-maze.webp" alt="Claude-Man 3D maze" /></span></span></li>
         </ul>
         <p className="big" data-reveal>Yours is whatever you type next.</p>
       </section>
