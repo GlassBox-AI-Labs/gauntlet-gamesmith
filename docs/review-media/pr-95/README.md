@@ -1,7 +1,9 @@
 # Publishing UI review captures
 
-Captured from the built desktop React renderer at app-code commit
-`40b23a3936a22fcba5c99de4dbd548b5302fddfb`, at 1440 × 1050. All
+The five account-flow screenshots were refreshed from the built desktop React
+renderer at app-code commit `d30969e3b37051506cdc08f37ace418c1d4269de`. The eight
+unchanged game-management and publishing captures are from app-code commit
+`40b23a3936a22fcba5c99de4dbd548b5302fddfb`. All captures are 1440 × 1050. All
 accounts, email codes, games, build history, and cover art are sample fixtures;
 IPC/service responses are mocked. These images show actual app components,
 not live account operations or evidence of hosted email delivery.
@@ -9,7 +11,7 @@ not live account operations or evidence of hosted email delivery.
 - [Email-first entry in the compact account form](auth-email.png)
 - [Password sign-in or Email me a code](auth-password.png)
 - [Signup with email, public publisher name, and password](auth-signup.png)
-- [Six-slot OTP verification with resend countdown](publisher-otp.png)
+- [Eight-slot OTP verification with resend countdown](publisher-otp.png)
 - [Invalid-code feedback with retry](auth-invalid-code.png)
 - [Account-wide library showing published and unpublished games](my-games.png)
 - [Published game management and retained releases](game-manager.png)
