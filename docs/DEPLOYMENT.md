@@ -565,7 +565,7 @@ these local files does not change the hosted Supabase project.
 
 `glassbox-games-preview` (`prj_R82RaAe9gfzMGSfJVAWWdN8c4rRY`) is a separate,
 public Vercel Hobby project rooted at `apps/game-host`, using Node 22 and `iad1`.
-Its stable URL is `https://glassbox-games-preview.vercel.app`. It has no database,
+Its stable URL is `https://glassbox-games-preview-glassbox3.vercel.app`. It has no database,
 signing, account, or Redis credentials. Its sole app setting is
 `GAME_READ_ONLY_ORIGIN=https://glassbox-games.vercel.app`, applied in both Vercel
 Preview and Production scopes: the project's default deployment is the public
