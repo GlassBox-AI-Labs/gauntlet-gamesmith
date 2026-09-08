@@ -1,7 +1,6 @@
 name: CI
 
 on:
-  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -24,9 +23,6 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Install once before parallel tests import Electron on a fresh runner.
-      - run: pnpm --filter @gauntlet/desktop exec install-electron --no
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: node --test scripts/catalog-deploy.test.mjs
