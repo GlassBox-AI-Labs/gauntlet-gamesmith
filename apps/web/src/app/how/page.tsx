@@ -32,7 +32,7 @@ export default function HowPage() {
               <p className="line">A folder, a sentence, a spending ceiling.</p>
             </div>
             <div className="shots">
-              <figure className="shot"><video src="/splash/clip-hero.mp4" poster="/splash/clip-hero-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The Create build form: a sentence is typed, the effort slider is set, and Create build is pressed"></video><figcaption>Create build</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-hero.mp4" poster="/splash/clip-hero-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The Create build form: a sentence is typed, effort is set, and Create build is pressed"></video><figcaption>Create build</figcaption></figure>
               <figure className="shot"><img src="/splash/app-options.webp" alt="Run options: Reference Study mode, maximum rounds, and a budget as equivalent API cost" /><figcaption>Run options: study mode, rounds, budget</figcaption></figure>
             </div>
           </section>
@@ -48,7 +48,7 @@ export default function HowPage() {
               </ul>
             </div>
             <div className="shots">
-              <figure className="shot"><video src="/splash/clip-study.mp4" poster="/splash/clip-study-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The reference study running, with cost and tokens ticking up"></video><figcaption>Reference assets, study running</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-study.mp4" poster="/splash/clip-study-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The reference study running: what the pack has gathered so far and the research notes it wrote"></video><figcaption>Reference study running</figcaption></figure>
             </div>
           </section>
 
@@ -63,7 +63,7 @@ export default function HowPage() {
               </ul>
             </div>
             <div className="shots">
-              <figure className="shot"><video src="/splash/clip-log.mp4" poster="/splash/clip-log-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The run log: totals, the four prompts, and the attempts table with a cost per round"></video><figcaption>Every agent and tool call, on screen</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-log.mp4" poster="/splash/clip-log-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="Totals, the four prompts, and the attempts table with a cost per round"></video><figcaption>Every prompt and every cost, on screen</figcaption></figure>
             </div>
           </section>
 
@@ -80,7 +80,7 @@ export default function HowPage() {
               <div className="finding"><span className="sev">major</span><span>Camera clips inside branch polygons and blacks out half the frame.</span></div>
             </div>
             <div className="shots">
-              <figure className="shot"><video src="/splash/clip-critique.mp4" poster="/splash/clip-critique-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The rounds table as the critic scores each round: 0.46, then 0.52, then 0.58"></video><figcaption>The critic scores every round</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-critique.mp4" poster="/splash/clip-critique-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="Blind side-by-side pairs: this build beside the reference, with the critic's note under each"></video><figcaption>Blind side-by-side, this build against the reference</figcaption></figure>
             </div>
           </section>
 
@@ -91,7 +91,7 @@ export default function HowPage() {
               <p className="line">Play at any point. Publish a finished round to the arcade.</p>
             </div>
             <div className="shots">
-              <figure className="shot"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A build stopped at round 4 of 10, with Publish, Play, Export, and Resume build"></video><figcaption>Rounds, with Play and Publish</figcaption></figure>
+              <figure className="shot"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A stopped build at round 4 of 10 with Publish, Play, Export, and Resume build"></video><figcaption>Publish, Play, Export, Resume</figcaption></figure>
             </div>
           </section>
         </div>
