@@ -1092,3 +1092,28 @@ directory by shipping-artifact digest, so menu animations do not change retry
 identity. Generated cover paths cannot overwrite existing artifact files. Existing
 releases remain immutable; this takes effect when preparing a new release. No
 schema or hosted API change is required for automatic covers.
+
+## ADR-042 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
+
+**Decision.** Use the official Vercel GitHub integration for the public repository.
+The catalog production environment tracks `main`; other branches receive Preview
+URLs and PR deployment comments. The Vercel Deployments interface supports manual
+branch/commit deployment and redeployment. No GitHub Actions deployment token is needed.
+The separate game-host rollout remains explicit until deliberately connected.
+
+**Preview access.** Branch previews read the live public catalog using only the
+Supabase URL and publishable key. Public and privileged client configuration are
+separate. `CATALOG_READ_ONLY_ORIGIN` disables privileged catalog clients, including
+publisher authentication and mutations, even if service credentials are accidentally
+supplied. Validated, currently published listing covers redirect to that public
+origin; private cover storage never requires service keys in Preview. Public game
+execution uses the existing separate game host. This is browsing/play review, not
+an isolated staging environment or a publisher/multiplayer API test environment.
+
+**Consequences.** Production service/signing/Redis credentials stay production-only.
+The publishable key is safe only with the existing public projections and RLS; the
+read-only flag does not make arbitrary branch code trustworthy. Full staging needs
+separate database and signing/Redis configuration. Database migrations must precede
+merges whose catalog APIs require them. Branch protection gates production merges;
+Vercel deployment builds run independently of GitHub Actions. Existing branches need
+the public-client separation before their previews can browse without service keys.

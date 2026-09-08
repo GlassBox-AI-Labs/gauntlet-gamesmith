@@ -1,9 +1,23 @@
 import 'server-only'
 import { headers } from 'next/headers'
-export function config() {
+export function publicConfig() {
   const url = process.env.SUPABASE_URL,
-    anon = process.env.SUPABASE_ANON_KEY,
-    key = process.env.SUPABASE_SERVICE_ROLE_KEY,
+    anon = process.env.SUPABASE_ANON_KEY
+  if (!url || !anon) throw new Error('Configure public Supabase access before starting the catalog.')
+  return { url, anon }
+}
+export function readOnlyCatalogOrigin() {
+  const value = process.env.CATALOG_READ_ONLY_ORIGIN
+  if (!value) return undefined
+  const url = new URL(value)
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
+    throw new Error('Read-only catalog origin must be an HTTPS origin.')
+  return url.origin
+}
+export function config() {
+  if (readOnlyCatalogOrigin()) throw new Error('Publishing is unavailable in this read-only preview.')
+  const { url, anon } = publicConfig()
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY,
     secret = process.env.CATALOG_SECRET
   if (!url || !anon || !key || !secret)
     throw new Error(

@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "vitest run",
     "dev": "node scripts/local.mjs dev",
     "build": "next build",
     "start": "node scripts/local.mjs start",

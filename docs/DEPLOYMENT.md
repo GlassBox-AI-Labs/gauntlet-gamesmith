@@ -16,11 +16,12 @@ The multiplayer V1 extension and its rollout are documented at the end of this f
 
 The public catalog is live at **https://gauntletgamesmith.com**. The Vercel-managed
 domain belongs to the GlassBox team and points to `glassbox-arcade`; game execution
-uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all six
-migrations through `20260907001200_inclusive_publisher_identity.sql`. Signup and the email
+uses **https://glassbox-games.vercel.app**, a separate origin. Supabase has all seven
+migrations through `20260907120000_publisher_management.sql`. Signup and the email
 provider are enabled, email confirmation is required, and anonymous signup is disabled.
 Custom SMTP sends confirmation codes through Resend. Both Vercel projects use production-only
-server environments, outside-root workspace access, Node 22, and Virginia functions.
+privileged environments, outside-root workspace access, Node 22, and Virginia functions.
+The catalog also has public-only branch preview configuration (see below).
 
 Initial production deployments on 2026-09-06 were built directly from GitHub commit
 `cf294436600e033e62bb8d256e8d1f7c47bf564c` on `codex/game-catalog-publishing`:
@@ -109,11 +110,17 @@ secret across the two projects and redeployments; rotating it expires existing
 private preview URLs.
 
 Production and preview must be configured deliberately. A Vercel preview pointed
-at the production Supabase project can change production data. For the initial MVP,
-use explicit production deployments from the reviewed feature checkout; do not
-populate arbitrary branch preview environments with production service credentials.
-When enabling Git automation after merge, use `main` for production. Shared staging
-needs its own Supabase project and signing secret before it is enabled.
+at the production Supabase project can change production data. Do not populate
+arbitrary branch preview environments with production service credentials. Catalog
+branch previews use only `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+`GAME_ORIGIN=https://glassbox-games.vercel.app`, and
+`CATALOG_READ_ONLY_ORIGIN=https://gauntletgamesmith.com`. The last setting blocks
+privileged catalog clients and redirects validated public listing covers to production.
+Public pages read the live catalog through the anon client and RLS; publishing,
+authentication, and the preview catalog multiplayer API are unavailable. Published
+games still run on the existing game host. Preview code must include ADR-042's
+public-client separation; older branches need that change before browsing works.
+Full staging needs its own Supabase project, signing secret, and Redis namespace.
 
 ## Database setup and changes
 
@@ -198,13 +205,38 @@ and function region before testing the stable domain. The initial CLI global-con
 directory is `~/.gauntlet-catalog/hosted/vercel-cli`; keep it private. API responses may
 contain environment metadata and must not be copied wholesale into PRs.
 
-Automatic deploy-on-push is **not enabled**. `vercel git connect` additionally needs
-the Vercel GitHub application installed for the organization; the connected account
-can request but cannot approve that organization installation. Explicit Git-source
-deployments work without that project link and were used for this rollout. Enable
-automatic deployment only after an organization owner installs the application for
-this repository and the feature is merged; use `main` for production then. Do not
-rewrite commits or impersonate the hosting account to satisfy an author check.
+### Native GitHub integration — enabled 2026-09-08
+
+The catalog project is connected to `GlassBox-AI-Labs/gauntlet-gamesmith` through
+Vercel's official GitHub app, installed for this repository only (installation
+`160171312`). The connected `glassboxailabs` identity is an active organization member.
+Production tracks `main`, with automatic assignment of the production domains.
+Other branches create Preview deployments; PR comments and commit statuses are enabled.
+No GitHub Actions deployment token or workflow is required.
+
+- Merge a reviewed PR into `main` to deploy production automatically. Vercel builds
+  from the repository independently of GitHub CI; required checks/reviews on `main`
+  must pass before merge. Database migrations remain explicit rollout prerequisites.
+- Push a feature branch/PR to get a Vercel preview URL. Keep Preview protection enabled.
+  These previews use the public-only environment above, never production service keys.
+- For a manual deployment, open [Deployments](https://vercel.com/glassbox3/glassbox-arcade/deployments),
+  choose the top-right actions menu → **Create Deployment**, then enter a branch,
+  commit, or GitHub URL. Selecting `main` offers **Deploy to Production**; other
+  branches offer a Preview deployment. Existing deployment menus offer **Redeploy**.
+- The separate `glassbox-games` project remains on the explicit deployment process
+  above. Coordinate game-host changes when catalog/game protocol changes require it.
+
+The first deployment through this connection used tested main commit `f290fad`,
+production deployment `dpl_HwSCEqm5wbJ1ugsw7Nj4bCuygha7`
+(`glassbox-arcade-1i4yvwa55-glassbox3.vercel.app`). The committed publisher-management
+migration was applied atomically and recorded in Supabase's migration ledger first.
+The hosted email OTP length was verified as eight. The deployment is Ready and serves
+`gauntletgamesmith.com`; read-only hosted smoke passed for all five published games.
+Homepage and game HTML contain OG/Twitter tags, and `/social-card.png` returns PNG/200.
+This check did not send an auth email or publish a game. Previous production deployment
+`dpl_9FokSvBZZoNz7E89s5r4hv82FHss` remains available for rollback.
+
+Do not rewrite commits or impersonate the hosting account to satisfy an author check.
 
 The custom domain was attached with `vercel domains add gauntletgamesmith.com
 glassbox-arcade` under the same scope/config. Vercel manages its DNS and certificate.
