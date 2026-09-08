@@ -3,9 +3,10 @@ import { ArrowLeft, LoaderCircle } from 'lucide-react'
 import { AgentsView } from '@/views/AgentsView'
 import { BuildFormPrototype } from '@/views/BuildFormPrototype'
 import { OnboardingView } from '@/views/OnboardingView'
+import { MyGamesView } from '@/views/MyGamesView'
 import { BuildView } from '@/views/BuildView'
 
-type View = 'build' | 'agents'
+type View = 'build' | 'agents' | 'games'
 
 export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>('build')
@@ -41,7 +42,7 @@ export default function App(): React.JSX.Element {
   if (!onboarded) return <OnboardingView onDone={() => setOnboarded(true)} />
 
 
-  if (view === 'build') return <BuildView onOpenAgents={() => setView('agents')} />
+  if (view === 'build') return <BuildView onOpenAgents={() => setView('agents')} onOpenGames={() => setView('games')} />
 
   return (
     <div className="min-h-screen">
@@ -56,7 +57,7 @@ export default function App(): React.JSX.Element {
           </button>
         </div>
       </nav>
-      <AgentsView onReplayTour={() => setOnboarded(false)} />
+      {view === 'games' ? <MyGamesView /> : <AgentsView onReplayTour={() => setOnboarded(false)} />}
     </div>
   )
 }

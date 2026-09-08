@@ -35,6 +35,7 @@ export default async function GamePage({
           {game.publisher.display_name}
         </Link>
       </p>
+      {game.cover_key && <img src={`/covers/${game.id}/${game.cover_key}`} alt="" className="mb-6 max-h-64 rounded-xl object-contain" />}
       <GamePlayer
         url={`${await gameOrigin()}/play/${game.id}/${game.current_release_id}/index.html`}
         title={game.listing.title}

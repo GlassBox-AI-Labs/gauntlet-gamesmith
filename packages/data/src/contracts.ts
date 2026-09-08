@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isPublisherEmail, listing } from '@gauntlet/publishing'
+import { isPublisherEmail, PUBLISHER_OTP_LENGTH, listing } from '@gauntlet/publishing'
 export const credentialsSchema = z
   .object({
     email: z.email().max(254).trim(),
@@ -24,7 +24,7 @@ export const signupSchema = z
 export const verificationSchema = z
   .object({
     email: enrollmentEmail,
-    code: z.string().regex(/^\d{6,10}$/),
+    code: z.string().length(PUBLISHER_OTP_LENGTH).regex(/^\d+$/),
   })
   .strict()
 export const resendSchema = z.object({ email: enrollmentEmail }).strict()
@@ -62,9 +62,19 @@ export const publisherSchema = z.object({
 export const gameSchema = z.object({
   id: z.uuid(),
   publisher_id: z.uuid(),
-  slug: z.string(),
+  slug: z
+    .string()
+    .max(64)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   current_release_id: z.uuid().nullable(),
-  generation: z.number().int(),
+  generation: z.number().int().nonnegative(),
+  description_override: z.string().max(2000).nullable().default(null),
+  controls_override: z.string().max(500).nullable().default(null),
+  cover_key: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .default(null),
 })
 export const releaseSchema = z.object({
   id: z.uuid(),
@@ -80,8 +90,16 @@ export const releaseSchema = z.object({
 export const publicGamesSchema = z.array(
   z.object({
     id: z.uuid(),
-    slug: z.string(),
+    slug: z
+      .string()
+      .max(64)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     current_release_id: z.uuid(),
+    cover_key: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable()
+      .default(null),
     listing: listingSchema,
     publisher: publisherSchema.omit({ id: true }),
   }),
@@ -101,3 +119,16 @@ export type MutationResult<T> =
       code: 'invalid_request' | 'unauthorized' | 'conflict'
       message: string
     }
+
+export const gameIdSchema = z.object({ gameId: z.uuid() }).strict()
+export const coverUploadSchema = gameIdSchema
+  .extend({ generation: z.number().int().nonnegative() })
+  .strict()
+export const listingUpdateSchema = coverUploadSchema
+  .extend({
+    description: z.string().trim().max(2000),
+    controls: z.string().trim().max(500),
+    coverId: z.uuid().optional(),
+    coverToken: z.string().max(100).optional(),
+  })
+  .strict()

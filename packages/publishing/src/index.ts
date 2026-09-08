@@ -1,5 +1,5 @@
 /** Wire contract only: safe to import from browsers, Electron shared code, and Node. */
-export { PUBLISHER_EMAIL_DOMAIN, isPublisherEmail } from './accounts'
+export { PUBLISHER_EMAIL_DOMAIN, PUBLISHER_OTP_LENGTH, isPublisherEmail, isPublisherOtp } from './accounts'
 export const MAX_ARTIFACT_BYTES = 24 * 1024 * 1024
 export const MAX_WIRE_BYTES = 35 * 1024 * 1024
 export const MAX_FILES = 1500
@@ -37,5 +37,5 @@ export function listing(value: unknown): Listing {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new Error('Use lowercase letters, numbers, and single hyphens for the URL.')
   const coverPath = v.coverPath == null || v.coverPath === '' ? null : assetPath(v.coverPath)
   if (coverPath && !/\.(png|jpe?g|webp|gif)$/i.test(coverPath)) throw new Error('Cover must be PNG, JPEG, WebP, or GIF.')
-  return { title: boundedText(v.title, 'title', 80), slug, description: boundedText(v.description, 'description', 2000), controls: boundedText(v.controls ?? '', 'controls', 500, 0), coverPath }
+  return { title: boundedText(v.title, 'title', 80), slug, description: boundedText(v.description, 'description', 2000, 0), controls: boundedText(v.controls ?? '', 'controls', 500, 0), coverPath }
 }
