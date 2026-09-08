@@ -60,7 +60,7 @@ export default function SplashPage() {
           </div>
           <div className="point flip" data-reveal>
             <div className="pt"><h3>Every round is saved.</h3><p>Play any earlier version. Publish the one you like.</p></div>
-            <div className="case" style={{ '--ar': '1200 / 202' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A build stopped at round 4 of 10, with Publish, Play, Export, and Resume build"></video></div></div>
+            <div className="case" style={{ '--ar': '1200 / 698' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-rounds.mp4" poster="/splash/clip-rounds-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="A build stopped at round 4 of 10, with Publish, Play, Export, and Resume build"></video></div></div>
           </div>
         </div>
         <div className="cta" data-reveal>
@@ -91,16 +91,6 @@ export default function SplashPage() {
             <a className="btn btn-primary" href="https://github.com/GlassBox-AI-Labs/gauntlet-gamesmith/releases/latest"><svg className="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
           </div>
         </div>
-      </section>
-
-      <section className="sentences" id="sentences">
-        <h2 data-reveal>Three sentences. Three games.</h2>
-        <ul className="typed">
-          <li data-reveal><span className="text">A Souls-like where you play a dog carrying its bones.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/ashen-title.webp" alt="Ashen Woods title screen" /></span></span></li>
-          <li data-reveal style={{ transitionDelay: '80ms' }}><span className="text">A twin-stick shooter on the surface of a sphere.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/tron-sphere.webp" alt="Gauntletron sphere arena" /></span></span></li>
-          <li data-reveal style={{ transitionDelay: '160ms' }}><span className="text">A bright platformer with a flat maze hiding inside.</span><span className="case tiny"><span className="back"></span><span className="glass"><img src="/splash/pac-maze.webp" alt="Claude-Man 3D maze" /></span></span></li>
-        </ul>
-        <p className="big" data-reveal>Yours is whatever you type next.</p>
       </section>
 
       <section className="arcade" id="arcade">
