@@ -60,12 +60,12 @@ export default async function GamePage({ params }: Props) {
         </Link>
       </p>
       {game.cover_key && (
-        <div className="relative mb-6 h-64">
+        <div className="relative mb-6 h-64 w-full max-w-lg">
           <Image
             src={`/covers/${game.id}/${game.cover_key}`}
             alt=""
             fill
-            sizes="(min-width: 1280px) 1200px, (min-width: 640px) calc(100vw - 80px), calc(100vw - 40px)"
+            sizes="(min-width: 640px) 512px, calc(100vw - 40px)"
             className="rounded-xl object-contain object-left"
           />
         </div>
