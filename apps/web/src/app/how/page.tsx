@@ -91,7 +91,7 @@ export default function HowPage() {
               <p className="line">Play at any point. Publish a finished round to the arcade.</p>
             </div>
             <div className="shots">
-              <figure className="shot"><img src="/splash/app-rounds-still.webp" alt="A stopped build at round 4 of 10: the Publish, Play, Export, and Resume build bar over the rounds table, a score and cost per round" /><figcaption>Publish, Play, Export, Resume</figcaption></figure>
+              <figure className="shot"><img src="/splash/app-rounds-still.webp" alt="A build in the sidebar with its five rounds listed, each round a saved version with its score" /><figcaption>Publish, Play, Export, Resume</figcaption></figure>
             </div>
           </section>
         </div>

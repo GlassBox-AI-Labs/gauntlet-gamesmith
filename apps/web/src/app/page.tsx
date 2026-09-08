@@ -60,7 +60,7 @@ export default function SplashPage() {
           </div>
           <div className="point flip" data-reveal>
             <div className="pt"><h3>Every round is saved.</h3><p>Play any earlier version. Publish the one you like.</p></div>
-            <div className="case" style={{ '--ar': '1200 / 698' } as CSSProperties}><div className="back"></div><div className="glass"><img src="/splash/app-rounds-still.webp" alt="A stopped build at round 4 of 10: the Publish, Play, Export, and Resume build bar over the rounds table, a score and cost per round" /></div></div>
+            <div className="case" style={{ '--ar': '1200 / 760' } as CSSProperties}><div className="back"></div><div className="glass"><img src="/splash/app-rounds-still.webp" alt="A build in the sidebar with its five rounds listed, each round a saved version with its score" /></div></div>
           </div>
         </div>
         <div className="cta" data-reveal>
