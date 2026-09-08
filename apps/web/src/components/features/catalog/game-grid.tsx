@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 import { Badge } from '@gauntlet/ui/badge'
 import type { PublicGame } from '@gauntlet/data/contracts'
 import { gameOrigin } from '@/lib/config'
@@ -23,11 +24,13 @@ export async function GameGrid({ games }: { games: PublicGame[] }) {
             prefetch={false}
             className="group block"
           >
-            <div className="flex aspect-[1.35] items-center justify-center overflow-hidden rounded-xl border bg-card">
+            <div className="relative flex aspect-[1.35] items-center justify-center overflow-hidden rounded-xl border bg-card">
               {game.cover_key || game.listing.coverPath ? (
-                <img
-                  src={game.cover_key ? `/covers/${game.id}/${game.cover_key}` : `${origin}/play/${game.id}/${game.current_release_id}/${game.listing.coverPath}`}
+                <Image
+                  src={game.cover_key ? `/covers/${game.id}/${game.cover_key}` : `${origin}/play/${game.id}/${game.current_release_id}/${game.listing.coverPath!.split('/').map(encodeURIComponent).join('/')}`}
                   alt=""
+                  fill
+                  sizes="(min-width: 1280px) 379px, (min-width: 1024px) calc((100vw - 144px) / 3), (min-width: 640px) calc((100vw - 112px) / 2), calc(100vw - 40px)"
                   loading="lazy"
                   crossOrigin="anonymous"
                   referrerPolicy="no-referrer"

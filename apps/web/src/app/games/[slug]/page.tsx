@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
+import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import { publicGames } from '@/lib/public-games'
 import { socialMetadata } from '@/lib/social-metadata'
@@ -58,7 +59,17 @@ export default async function GamePage({ params }: Props) {
           {game.publisher.display_name}
         </Link>
       </p>
-      {game.cover_key && <img src={`/covers/${game.id}/${game.cover_key}`} alt="" className="mb-6 max-h-64 rounded-xl object-contain" />}
+      {game.cover_key && (
+        <div className="relative mb-6 h-64">
+          <Image
+            src={`/covers/${game.id}/${game.cover_key}`}
+            alt=""
+            fill
+            sizes="(min-width: 1280px) 1200px, (min-width: 640px) calc(100vw - 80px), calc(100vw - 40px)"
+            className="rounded-xl object-contain object-left"
+          />
+        </div>
+      )}
       <GamePlayer
         url={`${await gameOrigin()}/play/${game.id}/${game.current_release_id}/index.html`}
         title={game.listing.title}
