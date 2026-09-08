@@ -115,10 +115,10 @@ arbitrary branch preview environments with production service credentials. Catal
 branch previews use only `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
 `GAME_ORIGIN=https://glassbox-games.vercel.app`, and
 `CATALOG_READ_ONLY_ORIGIN=https://gauntletgamesmith.com`. The last setting blocks
-privileged catalog clients and redirects validated public listing covers to production.
+privileged catalog clients and proxies validated public listing covers to production.
 Public pages read the live catalog through the anon client and RLS; publishing,
 authentication, and the preview catalog multiplayer API are unavailable. Published
-games still run on the existing game host. Preview code must include ADR-042's
+games still run on the existing game host. Preview code must include ADR-043's
 public-client separation; older branches need that change before browsing works.
 Full staging needs its own Supabase project, signing secret, and Redis namespace.
 

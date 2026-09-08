@@ -16,9 +16,14 @@ export async function GET(
     const target = new URL(`/covers/${encodeURIComponent(gameId)}/${encodeURIComponent(key)}`, publicOrigin)
     if (target.origin === new URL(_request.url).origin)
       throw new Error('Read-only covers require a separate catalog origin.')
-    return new Response(null, {
-      status: 307,
-      headers: { Location: target.href, 'Cache-Control': 'no-store' },
+    const cover = await fetch(target, { cache: 'no-store', redirect: 'error' })
+    return new Response(cover.body, {
+      status: cover.status,
+      headers: {
+        'Content-Type': 'image/png',
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store',
+      },
     })
   }
   const bytes = await createCatalog().coverBytes(gameId, key)

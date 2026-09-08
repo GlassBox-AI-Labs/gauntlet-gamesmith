@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import Image from 'next/image'
 import { Button } from '@gauntlet/ui/button'
 import { captureClientError } from '@/lib/capture'
-export function GamePlayer({ url, title }: { url: string; title: string }) {
+export function GamePlayer({ url, title, cover }: { url: string; title: string; cover?: string }) {
   const [playing, setPlaying] = useState(false),
     [expanded, setExpanded] = useState(false),
     [loading, setLoading] = useState(false),
@@ -81,9 +82,25 @@ export function GamePlayer({ url, title }: { url: string; title: string }) {
             )}
           </>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-6 p-6">
-            <h2 className="text-2xl">{title}</h2>
+          <div data-testid="game-poster" className="absolute inset-0 flex flex-col items-center justify-center gap-6 overflow-hidden p-6">
+            {cover && (
+              <>
+                <Image
+                  src={cover}
+                  alt=""
+                  fill
+                  sizes={expanded ? '100vw' : '(min-width: 1280px) 1200px, (min-width: 640px) calc(100vw - 80px), calc(100vw - 40px)'}
+                  loading="lazy"
+                  crossOrigin="anonymous"
+                  referrerPolicy="no-referrer"
+                  className="object-cover"
+                />
+                <div className="absolute inset-0 bg-background/60" />
+              </>
+            )}
+            <h2 className="relative text-center text-2xl">{title}</h2>
             <Button
+              className="relative"
               data-testid="game-play"
               disabled={loading}
               onClick={() => void play()}

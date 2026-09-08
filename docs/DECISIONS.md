@@ -1093,7 +1093,30 @@ identity. Generated cover paths cannot overwrite existing artifact files. Existi
 releases remain immutable; this takes effect when preparing a new release. No
 schema or hosted API change is required for automatic covers.
 
-## ADR-042 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
+## ADR-042 — Optimize public catalog covers with Next.js (2026-09-08)
+
+**Context.** Plain image tags downloaded original release artwork for small catalog
+cards, including a 7 MB PNG. CSS dimensions did not reduce transfer size.
+
+**Decision.** Catalog and publisher cards and custom game-detail covers use
+`next/image`, responsive sizes, and lazy loading. Allow remote images only below
+`/play/` on the configured `GAME_ORIGIN`, with no query strings or redirects.
+Local HTTP development may optimize its explicitly configured private game host;
+Vercel retains the private-IP prohibition. Supply `GAME_ORIGIN` at build time as
+well as runtime. Original release artifacts and uploaded covers remain unchanged.
+
+**Consequences.** Next.js serves resized WebP to supporting browsers and caches
+public image variants. Set the minimum cache TTL to 60 seconds rather than the
+four-hour default. Cover keys/release IDs change the URL after updates. Cached
+artwork is not subject to immediate unpublish revocation: revalidation, stale
+responses, and eviction follow the image optimizer's cache behavior. This narrow
+exception to ADR-026's no-cache posture is for public raster artwork only;
+executable game responses and private previews retain their existing access checks
+and no-store policy. Cold optimization still fetches the original from the game
+host. `scripts/catalog-image-smoke.mjs` checks rendered pages and actual image
+responses against a running catalog with published covers.
+
+## ADR-043 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
 
 **Decision.** Use the official Vercel GitHub integration for the public repository.
 The catalog production environment tracks `main`; other branches receive Preview
@@ -1105,7 +1128,7 @@ The separate game-host rollout remains explicit until deliberately connected.
 Supabase URL and publishable key. Public and privileged client configuration are
 separate. `CATALOG_READ_ONLY_ORIGIN` disables privileged catalog clients, including
 publisher authentication and mutations, even if service credentials are accidentally
-supplied. Validated, currently published listing covers redirect to that public
+supplied. Validated, currently published listing covers stream from that public
 origin; private cover storage never requires service keys in Preview. Public game
 execution uses the existing separate game host. This is browsing/play review, not
 an isolated staging environment or a publisher/multiplayer API test environment.
@@ -1117,3 +1140,4 @@ separate database and signing/Redis configuration. Database migrations must prec
 merges whose catalog APIs require them. Branch protection gates production merges;
 Vercel deployment builds run independently of GitHub Actions. Existing branches need
 the public-client separation before their previews can browse without service keys.
+
