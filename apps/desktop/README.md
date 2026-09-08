@@ -230,13 +230,49 @@ project roots, links into those roots, and private app directories remain exclud
 
 Open a run and click **Publish round N**, or select a specific completed saved
 round and click **Publish**. Create an account with an approved email and verify its
-email code, or sign in to your existing account in the publishing drawer. Signup,
+email code, or sign in to your existing account in the publishing drawer. The compact
+account form starts with email, then offers password sign-in or **Email me a code**.
+Signup and code sign-in lead to eight OTP slots with paste support, automatic verification,
+and a 60-second resend countdown. Back navigation lets you change the email. Signup,
 sign-in, and publishing use `https://gauntletgamesmith.com` by default in development
 and packaged apps; private previews use `https://glassbox-games.vercel.app`. Supabase sign-in
 and the encrypted publisher session stay in Electron. No browser opens for login. Build the saved revision, play its private
 preview, and explicitly publish. The same drawer's **Releases** tab owns history,
-rollback, and unpublish; sign-out is there too. There is no web management UI or
-artifact file picker. The website only browses and plays games.
+rollback, and unpublish; sign-out is there too. Saved round actions show whether
+that exact revision is published, whether another round is live, or whether
+publication status is unavailable. A live round offers **Manage game**, opening
+its listing and release management directly; other saved rounds offer **Publish
+round N**. Publishing actions wait while status is being checked, and **Open game**
+remains separate. Private previews are not published games.
+
+Publishing automatically captures a 1280 × 720 main-menu image as the default
+cover. New game implementations support `?gamesmithCapture=main-menu` and signal
+readiness through `document.documentElement.dataset.gamesmithCover`; older rounds
+without the hook use their loaded startup screen. The capture is cached for exact
+build retries, and progress/failures appear in the build log. Manually selected
+covers continue to take precedence. Existing releases keep their current cover;
+preparing a new release creates the automatic cover.
+
+Open **My games** in the sidebar to manage every game owned by your signed-in
+publisher account, including unpublished games and games created on another
+computer. Cards remain in a grid; hover and keyboard focus highlight the entire
+card. Selecting a card opens a separate detail screen with its full-width cover,
+description, controls, and release history. You can open a live game, preview retained releases, explicitly publish
+or roll back, and unpublish without the original local build. Unpublish asks for
+confirmation and preserves the releases.
+
+**Edit listing**, available from My games and a build's Releases tab, opens a
+separate `max-w-sm` editor, matching the compact sign-in form. Save or Cancel
+returns to the game detail screen. It updates the
+description, controls, and cover without rebuilding or changing the playable
+release or URL. Choose a static PNG, JPEG, WebP, or GIF up to 3 MiB and 4096 × 4096
+pixels; the app previews the selection and saves a normalized PNG. Cancel leaves
+the public listing unchanged. Saved listing edits survive later release promotions
+and rollbacks. If another operation changed the game, refresh and reopen the editor
+before saving again.
+
+There is no web management UI or game-artifact file picker. The website only
+browses and plays games.
 
 Local development and Play remain account-free. See [local catalog setup](../../docs/CATALOG.md)
 for startup, developer provisioning, networking limits, and verification.

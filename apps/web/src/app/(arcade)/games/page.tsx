@@ -1,13 +1,10 @@
-import * as catalogApi from '@gauntlet/data/api/catalog'
-import { createAnonClient } from '@/lib/supabase-anon'
-import { captureServerError } from '@/lib/capture'
+import { publicGames } from '@/lib/public-games'
+import { socialMetadata } from '@/lib/social-metadata'
 import { GameGrid } from '@/components/features/catalog/game-grid'
 export const dynamic = 'force-dynamic'
+export const metadata = socialMetadata({ path: '/games' })
 export default async function CatalogPage() {
-  const games = await catalogApi.publicGames(
-    createAnonClient(),
-    captureServerError,
-  )
+  const games = await publicGames()
   return (
     <>
       <p className="mb-4 text-xs uppercase tracking-widest text-muted-foreground">

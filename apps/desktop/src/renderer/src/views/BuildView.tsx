@@ -31,7 +31,7 @@ function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback
 }
 
-export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React.JSX.Element {
+export function BuildView({ onOpenAgents, onOpenGames }: { onOpenAgents: () => void; onOpenGames: () => void }): React.JSX.Element {
   const [snapshots, setSnapshots] = useState<BuildSnapshot[]>([])
   const [snapshot, setSnapshot] = useState<BuildSnapshot | null>(null)
   const [lines, setLines] = useState<BuildLogLine[]>([])
@@ -543,6 +543,7 @@ export function BuildView({ onOpenAgents }: { onOpenAgents: () => void }): React
         onSelectRound={(next, round) => void selectBuild(next, round)}
         onToggleBuild={(buildId) => setExpandedBuilds((current) => { const next = new Set(current); if (next.has(buildId)) next.delete(buildId); else next.add(buildId); return next })}
         onOpenAgents={onOpenAgents}
+        onOpenGames={onOpenGames}
         onToggleEditing={() => {
           setEditingBuilds((current) => !current)
           setCheckedBuilds(new Set())

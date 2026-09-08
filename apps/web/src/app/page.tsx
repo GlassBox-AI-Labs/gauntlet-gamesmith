@@ -2,8 +2,10 @@ import type { CSSProperties } from 'react'
 import Link from 'next/link'
 import { Sprite } from '@/components/features/splash/sprite'
 import { SplashClient } from '@/components/features/splash/splash-client'
+import { socialMetadata } from '@/lib/social-metadata'
 import { fontClass } from './splash-fonts'
 import './splash.css'
+export const metadata = socialMetadata({ path: '/' })
 export default function SplashPage() {
   return (
     <article className={`page ${fontClass}`} id="splash">

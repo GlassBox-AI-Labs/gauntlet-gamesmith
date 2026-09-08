@@ -13,7 +13,7 @@ Guide the user through committing the current workspace onto a new feature branc
 - Preserve all user changes. Never reset, discard, overwrite, or automatically stash them.
 - Never use force push, rebase published commits, or amend existing commits.
 - Fetch and merge `origin/main`; do not use `git pull`. A Conductor workspace is a worktree whose local `main` may be checked out elsewhere or stale.
-- Do not stage secrets, `.context`, generated output, or unrelated files. Ask before including files whose intent is unclear.
+- Do not stage secrets, `.context`, build output, or unrelated files. Intentionally selected screenshots or recordings for PR review are allowed in a dedicated review-media directory when PR attachments are unavailable. Ask before including files whose intent is unclear.
 - Resolve conflicts by understanding both sides. Never accept all of `ours` or `theirs` across the merge.
 - Do not bypass hooks or weaken tests to make the ship pass.
 
@@ -65,24 +65,34 @@ pnpm build
 
 Diagnose failures, make minimal fixes, rerun the affected command, then rerun all three gates. Commit any fixes in a new commit. Do not proceed with a failing gate unless the user explicitly accepts the identified failure.
 
-### 6. Push the branch and open the PR
+### 6. Capture visual evidence
+
+1. Inventory every created or updated app surface in the final diff: screens, dialogs, forms, controls, and relevant interaction states. Each changed surface must be shown in at least one screenshot or recording of the running app. A single capture may cover multiple surfaces if each change is clearly visible. Use a recording when a still image cannot demonstrate the behavior.
+2. Capture the final implementation after checks pass, using the actual app UI. Do not substitute source code, terminal output, mockups, or generated illustrations for app evidence. Safe seeded data or mocked service responses are acceptable; label them clearly and do not claim they prove live integrations.
+3. Exercise the changed flows, inspect every screenshot or recording, and confirm the intended change is visible and legible. Include enough app context to identify the surface. Never expose credentials, tokens, private user data, or sensitive logs; use safe test data when capturing.
+4. Embed the evidence in the PR description with a short caption for each surface/state and the captured commit SHA. Prefer PR attachments; if unavailable, commit only the selected review media in a dedicated directory and use repository-hosted, commit-pinned image URLs or recording links that reviewers can open. Local paths and `.context` links are not reviewable PR evidence.
+5. Refresh affected captures and their PR links after subsequent UI changes, including changes during review or main-branch integration. Do not leave stale screenshots depicting superseded behavior. Media-only follow-up commits may identify the unchanged app-code SHA they depict.
+6. If the diff changes no app surfaces, state that visual evidence is not applicable and why in the PR description. If a changed surface cannot be captured, report the specific blocker and missing coverage in the PR and final response; do not call the visual-evidence requirement complete or substitute unrelated screenshots.
+
+### 7. Push the branch and open the PR
 
 1. Run `git status --short --branch` and `git diff --check`; require a clean working tree.
 2. Fetch `origin/main` again. If it moved and is not an ancestor of `HEAD`, merge it as above and rerun all three project gates.
 3. Record the candidate SHA with `git rev-parse HEAD`. Show the user the commit range, gate results, branch name, and base branch, then push with `git push -u origin <branch>`. Invocation already authorizes this push; do not ask for redundant confirmation.
-4. Open the pull request with `gh pr create --base main --head <branch>`, a title derived from the change, and a body covering what changed, why, and the gate results. If `gh` is unavailable or unauthenticated, stop and report the branch is pushed and the PR still needs creating, with the compare URL.
+4. Open the pull request with `gh pr create --base main --head <branch>`, a title derived from the change, and a body covering what changed, why, the gate results, and the visual evidence from step 6 (or its explicit non-applicability/blocker). If `gh` is unavailable or unauthenticated, stop and report the branch is pushed and the PR still needs creating, with the compare URL.
 5. On a non-fast-forward rejection, fetch, integrate the new `origin/main`, rerun all gates, and retry. Never force push.
 6. On an auth or permission rejection, stop and report the exact blocker.
 
-### 7. Verify
+### 8. Verify
 
 1. Run `git fetch origin <branch>` and confirm the recorded SHA is the tip of `origin/<branch>`.
 2. Confirm the pull request exists with `gh pr view --json number,url,state,baseRefName`.
-3. Report the branch name, pushed SHA, PR number and URL, the successful gates, and whether conflicts were resolved. Do not merge the PR unless the user asks.
+3. Check the rendered PR description: screenshots must render, recordings must open, captions must match the final changes, and every changed app surface must be covered. Fix broken or stale links before reporting visual evidence complete.
+4. Report the branch name, pushed SHA, PR number and URL, the successful gates, whether conflicts were resolved, and visual-evidence coverage or blockers. Do not merge the PR unless the user asks.
 
-### 8. Clean up the local branch
+### 9. Clean up the local branch
 
-Only after step 7 confirms the branch is on `origin` and the PR exists:
+Only after step 8 confirms the branch is on `origin` and the PR exists:
 
 1. Switch back to the branch the workspace started on with `git switch <original-branch>`.
 2. Delete the local feature branch with `git branch -d <branch>`. The safe delete succeeds because the branch is fully merged into its pushed upstream.

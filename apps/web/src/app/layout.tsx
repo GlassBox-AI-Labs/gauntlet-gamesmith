@@ -1,9 +1,11 @@
 import type { Metadata } from 'next'
+import { catalogOrigin, siteDescription, siteName } from '@/lib/social-metadata'
 import './globals.css'
 export const metadata: Metadata = {
-  title: { default: 'Gauntlet Gamesmith', template: '%s · Gauntlet Gamesmith' },
-  description:
-    'Type a sentence. Play a game. A Mac app that builds, judges, and rebuilds browser games.',
+  metadataBase: catalogOrigin(),
+  applicationName: siteName,
+  title: { default: siteName, template: `%s · ${siteName}` },
+  description: siteDescription,
 }
 export default function RootLayout({
   children,

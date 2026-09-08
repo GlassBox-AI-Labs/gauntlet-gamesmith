@@ -99,6 +99,7 @@ installing/building Electron on Vercel. The root pins pnpm 10.15.0.
 | `SUPABASE_SERVICE_ROLE_KEY` | Required | Required | Server secret/service-role key for validated privileged operations |
 | `CATALOG_SECRET` | Required | Required | Same stable random 32-byte key, encoded as 64 lowercase hex characters; signs private previews |
 | `GAME_ORIGIN` | Required | — | Stable HTTPS URL of the separate game project |
+| `CATALOG_ORIGIN` | Optional | — | Canonical/social URL origin; defaults to `https://gauntletgamesmith.com` |
 
 Store these in Vercel's server environment settings. Never prefix a server secret
 with `NEXT_PUBLIC_`, put it in Git, send it to Electron, or include it in a game
@@ -506,3 +507,20 @@ non-spatial puzzle state and legacy pose compatibility. This was a protocol and
 presentation check, not newly generated browser games in every genre. Historical
 racing gameplay validation above remains one concrete example. This SDK update
 did not deploy infrastructure or publish a game.
+
+### Desktop email-code sign-in
+
+Before distributing the desktop email-first auth flow, deploy the catalog's
+`/api/sign-in-code` endpoint. In Supabase Auth, set **Email OTP Length** to **8**
+and copy `packages/db/supabase/templates/magic-link.html` into the **Magic Link**
+email template. The template must include `{{ .Token }}` so users receive a code
+to enter in Electron. Keep the existing Confirm signup template and SMTP settings.
+The local Supabase config includes both templates and the eight-digit setting.
+
+The desktop offers password sign-in or **Email me a code**, then verifies using
+the existing `/api/verify-email` endpoint. Code sign-in uses `shouldCreateUser: false`,
+checks the approved email domain at both request boundaries, and requires publisher
+enrollment before releasing a session. Resends use the same sign-in-code endpoint
+for sign-in and `/api/resend-verification` for signup. No social login or browser
+callback is involved. Hosted configuration is an explicit deployment step; editing
+these local files does not change the hosted Supabase project.

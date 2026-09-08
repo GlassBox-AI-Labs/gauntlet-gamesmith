@@ -3,7 +3,20 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts", "./node": "./src/node.ts" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
-  "devDependencies": { "@types/node": "24.13.3", "typescript": "7.0.2", "vitest": "4.1.11" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  },
+  "dependencies": {
+    "sharp": "0.34.5"
+  }
 }

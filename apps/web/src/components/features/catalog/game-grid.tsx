@@ -24,9 +24,9 @@ export async function GameGrid({ games }: { games: PublicGame[] }) {
             className="group block"
           >
             <div className="flex aspect-[1.35] items-center justify-center overflow-hidden rounded-xl border bg-card">
-              {game.listing.coverPath ? (
+              {game.cover_key || game.listing.coverPath ? (
                 <img
-                  src={`${origin}/play/${game.id}/${game.current_release_id}/${game.listing.coverPath}`}
+                  src={game.cover_key ? `/covers/${game.id}/${game.cover_key}` : `${origin}/play/${game.id}/${game.current_release_id}/${game.listing.coverPath}`}
                   alt=""
                   loading="lazy"
                   crossOrigin="anonymous"

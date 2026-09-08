@@ -2,9 +2,20 @@ import { uploadArtifact } from './artifact-upload'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
-import { app, ipcMain, safeStorage, shell, dialog } from 'electron'
+import {
+  app,
+  ipcMain,
+  safeStorage,
+  shell,
+  dialog,
+  BrowserWindow,
+} from 'electron'
 import { boundedText, object, uuid } from '@gauntlet/publishing'
-import { packDirectory, validateArtifact } from '@gauntlet/publishing/node'
+import {
+  packDirectory,
+  validateArtifact,
+  normalizeCover,
+} from '@gauntlet/publishing/node'
 import type { Ledger } from './ledger'
 import { checkoutRoundRevision, cleanupRoundCheckout } from './round-revision'
 import {
@@ -13,7 +24,8 @@ import {
   type BuildJob,
 } from './publication-build'
 import { playAccessError } from './play'
-import { publicationCover, publicationListing } from './publication-listing'
+import { publicationListing } from './publication-listing'
+import { withPublicationCover } from './publication-cover'
 import { requestCatalog } from './publishing-response'
 import { publishingConfig } from './publishing-config'
 import { IPC } from '../shared/ipc'
@@ -26,7 +38,14 @@ import {
   publisherSignup,
   publisherVerification,
 } from './publishing-auth'
-import type { PublicationPreview, ReleaseHistory } from '../shared/publishing'
+import { studioSchema, listingUpdateSchema } from '@gauntlet/data/contracts'
+import { publicationGames } from './publication-state'
+import type {
+  PublicationPreview,
+  ReleaseHistory,
+  PublishedGame,
+  PublisherLibrary,
+} from '../shared/publishing'
 
 interface Session {
   access_token: string
@@ -49,6 +68,10 @@ export class Publishing {
   })
   readonly catalogUrl = this.config.catalogUrl
   private active = false
+  private sessionEpoch = 0
+  private refreshing: Promise<Session> | null = null
+  private previews = new Map<string, PublicationPreview>()
+  private coverSelection: { id: string; bytes: Buffer } | null = null
   private signInAbort: AbortController | null = null
   private logTarget: { buildId: string; attemptId: string | null } | null = null
   private readonly root = path.join(
@@ -68,7 +91,8 @@ export class Publishing {
   private log(buildId: string, text: string): void {
     const line: BuildLogLine = {
       buildId,
-      attemptId: this.logTarget?.buildId === buildId ? this.logTarget.attemptId : null,
+      attemptId:
+        this.logTarget?.buildId === buildId ? this.logTarget.attemptId : null,
       ts: new Date().toISOString(),
       kind: 'system',
       channel: 'system',
@@ -128,27 +152,56 @@ export class Publishing {
     })
   }
   private async authenticated(): Promise<Session> {
-    const current = this.session()
-    if (!current) throw new Error('Sign in to publishing first.')
-    const updated = await this.request('refresh', {
-      refreshToken: current.refresh_token,
-    })
-    return this.session(updated)!
+    if (this.refreshing) return this.refreshing
+    const epoch = this.sessionEpoch
+    const operation = (async () => {
+      const current = this.session()
+      if (!current) throw new Error('Sign in to publishing first.')
+      const updated = await this.request('refresh', {
+        refreshToken: current.refresh_token,
+      })
+      if (epoch !== this.sessionEpoch)
+        throw new Error('Publisher account changed. Refresh and try again.')
+      return this.session(updated)!
+    })()
+    this.refreshing = operation
+    try {
+      return await operation
+    } finally {
+      if (this.refreshing === operation) this.refreshing = null
+    }
+  }
+  private async studio() {
+    const epoch = this.sessionEpoch
+    const result = studioSchema.parse(
+      await this.request('me', undefined, await this.authenticated()),
+    )
+    if (epoch !== this.sessionEpoch)
+      throw new Error('Publisher account changed. Refresh and try again.')
+    return result
+  }
+  async library(): Promise<PublisherLibrary> {
+    if (!this.session())
+      return {
+        status: {
+          connected: false,
+          catalogUrl: this.catalogUrl,
+          publisherName: null,
+        },
+        games: [],
+      }
+    const me = await this.studio()
+    return {
+      status: {
+        connected: true,
+        catalogUrl: this.catalogUrl,
+        publisherName: me.publisher.display_name,
+      },
+      games: publicationGames(me, this.catalogUrl),
+    }
   }
   async status() {
-    const session = this.session()
-    if (!session)
-      return {
-        connected: false,
-        catalogUrl: this.catalogUrl,
-        publisherName: null,
-      }
-    const me = await this.request('me', undefined, await this.authenticated())
-    return {
-      connected: true,
-      catalogUrl: this.catalogUrl,
-      publisherName: String(me.publisher.display_name),
-    }
+    return (await this.library()).status
   }
   private async accountOperation<T>(operation: () => Promise<T>): Promise<T> {
     const endpoint = new URL(this.catalogUrl)
@@ -180,6 +233,10 @@ export class Publishing {
       200,
     )
     // Never persist passwords or codes, or return tokens through IPC.
+    this.sessionEpoch += 1
+    this.refreshing = null
+    this.previews.clear()
+    this.coverSelection = null
     this.session(input)
     return { connected: true, catalogUrl: this.catalogUrl, publisherName }
   }
@@ -201,6 +258,12 @@ export class Publishing {
       this.completeSignIn(await this.request('verify-email', input)),
     )
   }
+  async sendSignInCode(value: unknown): Promise<void> {
+    const input = enrollmentEmail(value)
+    return this.accountOperation(async () => {
+      await this.request('sign-in-code', input)
+    })
+  }
   async resendVerification(value: unknown): Promise<void> {
     const input = enrollmentEmail(value)
     return this.accountOperation(async () => {
@@ -213,6 +276,10 @@ export class Publishing {
   signOut(): void {
     if (this.active)
       throw new Error('Wait for the publishing operation to finish.')
+    this.sessionEpoch += 1
+    this.refreshing = null
+    this.previews.clear()
+    this.coverSelection = null
     fs.rmSync(path.join(this.root, 'session.enc'), { force: true })
   }
   private jobFile(buildId: string): string {
@@ -353,14 +420,15 @@ export class Publishing {
         },
         (text) => this.log(buildId, text),
       )
-      const artifact = await packDirectory(buildDir, revision, text => this.log(buildId, text))
-      metadata.coverPath = publicationCover(artifact)
-      this.log(
-        buildId,
-        metadata.coverPath
-          ? `Using shipping cover: ${metadata.coverPath}.`
-          : 'No shipping cover found; the catalog will use its default artwork.',
+      const shipping = await packDirectory(buildDir, revision, (text) =>
+        this.log(buildId, text),
       )
+      const { artifact, coverPath } = await withPublicationCover(
+        shipping,
+        path.join(this.root, 'menu-covers'),
+        (text) => this.log(buildId, text),
+      )
+      metadata.coverPath = coverPath
       const fingerprint = createHash('sha256')
         .update(validateArtifact(artifact).digest + JSON.stringify(metadata))
         .digest('hex')
@@ -405,7 +473,9 @@ export class Publishing {
           )
         )
           throw new Error('Untrusted artifact upload URL.')
-        await uploadArtifact(uploadUrl, artifact, text => this.log(buildId, text))
+        await uploadArtifact(uploadUrl, artifact, (text) =>
+          this.log(buildId, text),
+        )
       }
       const release = await this.request(
         'releases/complete',
@@ -437,6 +507,7 @@ export class Publishing {
       if (previewOrigin !== this.config.gameOrigin)
         throw new Error('Unexpected preview origin.')
       await shell.openExternal(preview.url)
+      this.previews.set(result.gameId, { ...result, previewUrl: '' })
       return { ...result, previewUrl: '' }
     } catch (error) {
       this.log(
@@ -449,66 +520,80 @@ export class Publishing {
       if (checkout) cleanupRoundCheckout(checkout)
     }
   }
+  private async game(value: unknown): Promise<PublishedGame> {
+    const input = object(value)
+    const games = (await this.library()).games
+    if (input.gameId !== undefined) {
+      const id = uuid(input.gameId)
+      const game = games.find((g) => g.gameId === id)
+      if (!game)
+        throw new Error('This game is not owned by the connected publisher.')
+      return game
+    }
+    const buildId = uuid(input.buildId)
+    const game = games.find((g) =>
+      g.releases.some((r) => r.buildId === buildId),
+    )
+    if (!game)
+      throw new Error('No published game is associated with this build.')
+    return game
+  }
   async history(value: unknown): Promise<ReleaseHistory> {
-    const buildId = uuid(value),
-      job = this.readJob(buildId)
-    if (!job)
-      return {
-        gameId: null,
-        currentReleaseId: null,
-        generation: 0,
-        gameUrl: null,
-        releases: [],
-      }
-    const me = await this.request('me', undefined, await this.authenticated())
-    if (job.publisherId !== me.publisher.id)
-      throw new Error('This build belongs to another publisher account.')
-    const game = me.games.find((game: { id: string }) => game.id === job.gameId)
-    if (!game) throw new Error('Published game was not found.')
+    const buildId = uuid(value)
+    const library = await this.library()
+    if (!library.status.connected)
+      throw new Error('Sign in to check publication status.')
+    const game = library.games.find((g) =>
+      g.releases.some((r) => r.buildId === buildId),
+    )
+    if (game) return game
+    if (fs.existsSync(this.jobFile(buildId)))
+      throw new Error(
+        'Publication unavailable for this account. Sign in to the build’s publisher account or refresh.',
+      )
     return {
-      gameId: game.id,
-      currentReleaseId: game.current_release_id,
-      generation: game.generation,
-      gameUrl: `${this.catalogUrl}/games/${game.slug}`,
-      releases: me.releases
-        .filter((release: { game_id: string }) => release.game_id === game.id)
-        .map(
-          (release: {
-            id: string
-            listing: { title: string }
-            status: string
-            created_at: string
-            source: { round: number; revision: string } | null
-          }) => ({
-            id: release.id,
-            title: release.listing.title,
-            status: release.status,
-            createdAt: release.created_at,
-            round: release.source?.round ?? null,
-            revision: release.source?.revision ?? null,
-          }),
-        ),
+      gameId: null,
+      currentReleaseId: null,
+      generation: 0,
+      gameUrl: null,
+      releases: [],
+    }
+  }
+  private async manage<T>(
+    value: unknown,
+    operation: (game: PublishedGame) => Promise<T>,
+  ): Promise<T> {
+    if (this.active)
+      throw new Error('A publishing operation is already running.')
+    this.active = true
+    let game: PublishedGame | undefined
+    try {
+      game = await this.game(value)
+      return await operation(game)
+    } catch (error) {
+      if (game)
+        this.logGame(
+          game,
+          `Publishing operation failed: ${redactedErrorMessage(error, 'Unknown error.')}`,
+        )
+      throw error
+    } finally {
+      this.active = false
+    }
+  }
+  private logGame(game: PublishedGame, text: string) {
+    for (const buildId of new Set(game.releases.map((r) => r.buildId))) {
+      if (buildId && this.ledger.getBuild(buildId)) this.log(buildId, text)
     }
   }
   async previewRelease(value: unknown): Promise<PublicationPreview> {
-    if (this.active)
-      throw new Error('A publishing operation is already running.')
     const input = object(value),
-      buildId = uuid(input.buildId),
       releaseId = uuid(input.releaseId)
-    this.active = true
-    try {
-      const history = await this.history(buildId),
-        job = this.readJob(buildId)
+    return this.manage(input, async (game) => {
       if (
-        !job ||
-        !history.gameId ||
-        !history.gameUrl ||
-        !history.releases.some(
-          (release) => release.id === releaseId && release.status === 'ready',
-        )
+        !game.releases.some((r) => r.id === releaseId && r.status === 'ready')
       )
-        throw new Error('Choose a ready release from this build.')
+        throw new Error('Choose a ready release from this game.')
       const preview = await this.request(
         'preview',
         { releaseId },
@@ -516,35 +601,23 @@ export class Publishing {
       )
       if (new URL(preview.url).origin !== this.config.gameOrigin)
         throw new Error('Unexpected preview origin.')
+      await shell.openExternal(preview.url)
       const result = {
-        gameId: history.gameId,
+        gameId: game.gameId,
         releaseId,
-        generation: history.generation,
-        gameUrl: history.gameUrl,
+        generation: game.generation,
+        gameUrl: game.gameUrl,
         previewUrl: '',
       }
-      job.preview = result
-      this.save(buildId, job)
-      await shell.openExternal(preview.url)
-      this.log(buildId, `Opened private preview for release ${releaseId}.`)
+      this.previews.set(game.gameId, result)
+      this.logGame(game, `Opened private preview for release ${releaseId}.`)
       return result
-    } finally {
-      this.active = false
-    }
+    })
   }
   async unpublish(value: unknown): Promise<void> {
-    if (this.active)
-      throw new Error('A publishing operation is already running.')
-    const input = object(value),
-      buildId = uuid(input.buildId)
-    this.active = true
-    try {
-      const history = await this.history(buildId)
-      if (
-        !history.gameId ||
-        !history.currentReleaseId ||
-        input.generation !== history.generation
-      )
+    const input = object(value)
+    return this.manage(input, async (game) => {
+      if (!game.currentReleaseId || input.generation !== game.generation)
         throw new Error('Refresh releases before unpublishing.')
       const choice = await dialog.showMessageBox({
         type: 'question',
@@ -558,69 +631,208 @@ export class Publishing {
       if (choice.response !== 1) return
       await this.request(
         'promote',
-        {
-          gameId: history.gameId,
-          releaseId: null,
-          generation: history.generation,
-        },
+        { gameId: game.gameId, releaseId: null, generation: game.generation },
         await this.authenticated(),
       )
-      this.log(
-        buildId,
-        `Unpublished game ${history.gameId}. Saved releases remain available.`,
+      this.previews.delete(game.gameId)
+      this.logGame(
+        game,
+        `Unpublished game ${game.gameId}. Saved releases remain available.`,
       )
+    })
+  }
+  async publish(value: unknown): Promise<string> {
+    const input = object(value),
+      gameId = uuid(input.gameId),
+      releaseId = uuid(input.releaseId)
+    return this.manage(input, async (game) => {
+      const preview = this.previews.get(gameId)
+      if (
+        !preview ||
+        preview.releaseId !== releaseId ||
+        preview.generation !== input.generation ||
+        game.generation !== input.generation
+      )
+        throw new Error('Preview this exact release again before publishing.')
+      await this.request(
+        'promote',
+        { gameId, releaseId, generation: game.generation },
+        await this.authenticated(),
+      )
+      this.previews.delete(gameId)
+      this.logGame(game, `Published release ${releaseId}: ${game.gameUrl}`)
+      return game.gameUrl
+    })
+  }
+  async openGame(value: unknown): Promise<void> {
+    const game = await this.game({ gameId: uuid(value) })
+    if (!game.currentReleaseId) throw new Error('This game is unpublished.')
+    await shell.openExternal(game.gameUrl)
+  }
+  async cover(value: unknown): Promise<string | null> {
+    const epoch = this.sessionEpoch
+    const data = await this.request(
+      'covers/read',
+      { gameId: uuid(value) },
+      await this.authenticated(),
+    )
+    if (epoch !== this.sessionEpoch)
+      throw new Error('Publisher account changed.')
+    if (data.dataUrl === null) return null
+    if (
+      typeof data.dataUrl !== 'string' ||
+      data.dataUrl.length > 4 * 1024 * 1024 + 32 ||
+      !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(data.dataUrl)
+    )
+      throw new Error('Invalid cover response.')
+    return data.dataUrl
+  }
+  async chooseCover() {
+    if (this.active)
+      throw new Error('A publishing operation is already running.')
+    this.active = true
+    try {
+      const selected = await dialog.showOpenDialog({
+        title: 'Choose game cover',
+        properties: ['openFile'],
+        filters: [
+          {
+            name: 'Cover image',
+            extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'],
+          },
+        ],
+      })
+      if (selected.canceled || !selected.filePaths[0]) return null
+      const file = fs.openSync(
+        selected.filePaths[0],
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+      )
+      let bytes: Buffer
+      try {
+        const stat = fs.fstatSync(file)
+        if (!stat.isFile() || stat.size > 3 * 1024 * 1024)
+          throw new Error('Choose an image up to 3 MiB.')
+        bytes = Buffer.alloc(stat.size)
+        if (fs.readSync(file, bytes, 0, bytes.length, 0) !== bytes.length)
+          throw new Error('Cover changed while reading. Choose it again.')
+      } finally {
+        fs.closeSync(file)
+      }
+      bytes = await normalizeCover(bytes)
+      const id = randomUUID()
+      this.coverSelection = { id, bytes }
+      return {
+        id,
+        dataUrl: `data:image/png;base64,${bytes.toString('base64')}`,
+      }
     } finally {
       this.active = false
     }
   }
-  async publish(value: unknown): Promise<string> {
-    const input = object(value),
-      buildId = uuid(input.buildId)
-    if (this.active)
-      throw new Error('A publishing operation is already running.')
-    const job = this.readJob(buildId)
-    if (
-      !job?.preview ||
-      job.preview.gameId !== input.gameId ||
-      job.preview.releaseId !== input.releaseId ||
-      job.preview.generation !== input.generation
-    )
-      throw new Error('Preview this exact release before publishing.')
-    this.active = true
-    try {
-      await this.request(
-        'promote',
-        {
-          gameId: uuid(input.gameId),
-          releaseId: uuid(input.releaseId),
-          generation: input.generation,
-        },
-        await this.authenticated(),
+  async updateListing(value: unknown): Promise<void> {
+    const input = object(value)
+    const listing = listingUpdateSchema.parse({
+      gameId: input.gameId,
+      generation: input.generation,
+      description: input.description,
+      controls: input.controls,
+    })
+    const selection =
+      input.coverSelectionId === undefined ? null : uuid(input.coverSelectionId)
+    return this.manage(listing, async (game) => {
+      if (game.generation !== listing.generation)
+        throw new Error('Game changed. Refresh before saving.')
+      const auth = await this.authenticated()
+      let upload: { coverId: string; coverToken: string } | undefined
+      if (selection) {
+        if (this.coverSelection?.id !== selection)
+          throw new Error('Select the cover again.')
+        const started = await this.request(
+          'covers/upload',
+          { gameId: game.gameId, generation: game.generation },
+          auth,
+        )
+        const url = new URL(
+          boundedText(started.uploadUrl, 'cover upload URL', 4000),
+        )
+        if (
+          url.protocol !== 'https:' &&
+          !(
+            new URL(this.catalogUrl).protocol === 'http:' &&
+            url.protocol === 'http:' &&
+            ['localhost', '127.0.0.1'].includes(url.hostname)
+          )
+        )
+          throw new Error('Untrusted cover upload URL.')
+        const response = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'image/png', 'x-upsert': 'false' },
+          body: new Uint8Array(this.coverSelection.bytes),
+          signal: AbortSignal.timeout(120000),
+        })
+        if (!response.ok) throw new Error('Cover upload failed. Try again.')
+        upload = {
+          coverId: uuid(started.coverId),
+          coverToken: boundedText(
+            started.coverToken,
+            'cover upload receipt',
+            100,
+          ),
+        }
+      }
+      await this.request('listing', { ...listing, ...upload }, auth)
+      this.coverSelection = null
+      this.previews.delete(game.gameId)
+      this.logGame(
+        game,
+        `Updated published listing for ${game.gameId}. The playable release is unchanged.`,
       )
-      this.log(
-        buildId,
-        `Published release ${job.preview.releaseId}: ${job.preview.gameUrl}`,
-      )
-      return job.preview.gameUrl
-    } finally {
-      this.active = false
-    }
+    })
   }
 }
 export function registerPublishingIpc(service: Publishing): void {
   const handle = (name: string, operation: (value: unknown) => unknown) =>
     ipcMain.handle(name, async (_event, value: unknown) => {
       try {
-        return success(await operation(value))
+        const result = await operation(value)
+        if (
+          [
+            IPC.publishing.signIn,
+            IPC.publishing.verifyEmail,
+            IPC.publishing.signOut,
+            IPC.publishing.publish,
+            IPC.publishing.unpublish,
+            IPC.publishing.updateListing,
+          ].some((channel) => channel === name)
+        ) {
+          for (const window of BrowserWindow.getAllWindows())
+            window.webContents.send(
+              IPC.publishing.changed,
+              [
+                IPC.publishing.signIn,
+                IPC.publishing.verifyEmail,
+                IPC.publishing.signOut,
+              ].some((channel) => channel === name)
+                ? 'account'
+                : 'games',
+            )
+        }
+        return success(result)
       } catch (error) {
         return failure(
           redactedErrorMessage(error, 'Publishing operation failed.'),
         )
       }
     })
+  handle(IPC.publishing.library, () => service.library())
+  handle(IPC.publishing.cover, (value) => service.cover(value))
+  handle(IPC.publishing.chooseCover, () => service.chooseCover())
+  handle(IPC.publishing.updateListing, (value) => service.updateListing(value))
+  handle(IPC.publishing.openGame, (value) => service.openGame(value))
   handle(IPC.publishing.status, () => service.status())
   handle(IPC.publishing.signIn, (input) => service.signIn(input))
   handle(IPC.publishing.signUp, (input) => service.signUp(input))
+  handle(IPC.publishing.sendSignInCode, (input) => service.sendSignInCode(input))
   handle(IPC.publishing.verifyEmail, (input) => service.verifyEmail(input))
   handle(IPC.publishing.resendVerification, (input) =>
     service.resendVerification(input),

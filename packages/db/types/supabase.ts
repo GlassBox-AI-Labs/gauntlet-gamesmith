@@ -36,24 +36,33 @@ export type Database = {
     Tables: {
       games: {
         Row: {
+          controls_override: string | null
+          cover_key: string | null
           created_at: string
           current_release_id: string | null
+          description_override: string | null
           generation: number
           id: string
           publisher_id: string
           slug: string
         }
         Insert: {
+          controls_override?: string | null
+          cover_key?: string | null
           created_at?: string
           current_release_id?: string | null
+          description_override?: string | null
           generation?: number
           id: string
           publisher_id: string
           slug: string
         }
         Update: {
+          controls_override?: string | null
+          cover_key?: string | null
           created_at?: string
           current_release_id?: string | null
+          description_override?: string | null
           generation?: number
           id?: string
           publisher_id?: string
@@ -228,8 +237,11 @@ export type Database = {
           target_release: string
         }
         Returns: {
+          controls_override: string | null
+          cover_key: string | null
           created_at: string
           current_release_id: string | null
+          description_override: string | null
           generation: number
           id: string
           publisher_id: string
@@ -244,6 +256,33 @@ export type Database = {
       }
       publisher_for_user: { Args: { actor: string }; Returns: Json }
       publisher_studio: { Args: { actor: string }; Returns: Json }
+      update_game_listing: {
+        Args: {
+          actor: string
+          controls: string
+          description: string
+          expected_generation: number
+          replacement_cover?: string
+          target_game: string
+        }
+        Returns: {
+          controls_override: string | null
+          cover_key: string | null
+          created_at: string
+          current_release_id: string | null
+          description_override: string | null
+          generation: number
+          id: string
+          publisher_id: string
+          slug: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "games"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
     }
     Enums: {
       [_ in never]: never
