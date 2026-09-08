@@ -1140,4 +1140,3 @@ separate database and signing/Redis configuration. Database migrations must prec
 merges whose catalog APIs require them. Branch protection gates production merges;
 Vercel deployment builds run independently of GitHub Actions. Existing branches need
 the public-client separation before their previews can browse without service keys.
-

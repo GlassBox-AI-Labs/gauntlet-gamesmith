@@ -236,6 +236,9 @@ Homepage and game HTML contain OG/Twitter tags, and `/social-card.png` returns P
 This check did not send an auth email or publish a game. Previous production deployment
 `dpl_9FokSvBZZoNz7E89s5r4hv82FHss` remains available for rollback.
 
+The subsequent merge of PR #98 (`0a694dd`) automatically created Ready production
+deployment `dpl_CepgseKKJUF9QMYB85UT6dJzok4P`, confirming the deploy-on-push trigger.
+
 Do not rewrite commits or impersonate the hosting account to satisfy an author check.
 
 The custom domain was attached with `vercel domains add gauntletgamesmith.com
