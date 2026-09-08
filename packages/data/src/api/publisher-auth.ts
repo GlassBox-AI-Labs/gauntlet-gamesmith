@@ -111,6 +111,19 @@ export class PublisherAuth {
       )
     return this.authorizedSession(data.session!)
   }
+  async sendSignInCode(input: { email: string }) {
+    const { error } = await this.anon.auth.signInWithOtp({
+      email: input.email,
+      options: { shouldCreateUser: false },
+    })
+    if (error)
+      this.authError(
+        error,
+        'auth.sign-in-code',
+        'Could not send a code. Check your email or create an account, and wait a minute before trying again.',
+      )
+    return { verificationRequired: true as const }
+  }
   async resend(input: { email: string }) {
     const { error } = await this.anon.auth.resend({
       type: 'signup',

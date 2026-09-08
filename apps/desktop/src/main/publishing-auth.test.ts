@@ -60,10 +60,12 @@ describe('publisher credential IPC validation', () => {
     expect(() =>
       publisherSignup({ email, password: 'short', displayName: 'Person' }),
     ).toThrow('at least 10')
-    expect(publisherVerification({ email, code: '123456' })).toEqual({
+    expect(publisherVerification({ email, code: '12345678' })).toEqual({
       email,
-      code: '123456',
+      code: '12345678',
     })
+    for (const code of ['123456', '1234567', '123456789', '1234567890'])
+      expect(() => publisherVerification({ email, code })).toThrow('verification code')
     expect(() => publisherVerification({ email, code: 'secret-code' })).toThrow(
       'Enter the verification code',
     )

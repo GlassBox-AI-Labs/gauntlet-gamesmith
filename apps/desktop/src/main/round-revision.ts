@@ -113,6 +113,9 @@ function ownedDirectory(workspaceDir: string, segments: string[], create: boolea
  */
 const IGNORED_PATHS_WARNING = /paths are ignored by one of your \.gitignore files/
 
+/** Git's wording when the named object is absent from the repository. */
+const MISSING_OBJECT = /Not a valid object name|could not get object info|bad file/i
+
 function safeGitEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(
     ['SystemRoot', 'COMSPEC', 'PATHEXT', 'TMPDIR', 'TMP', 'TEMP']
@@ -230,6 +233,21 @@ function assertRevision(revision: string): void {
   if (!REVISION_PATTERN.test(revision)) throw new Error('Invalid round revision.')
 }
 
+/**
+ * Git reports a snapshot that is no longer in the store as `Not a valid object
+ * name <sha>^{commit}`, which tells an operator nothing. Say what is actually
+ * wrong, and let every other Git failure through untouched.
+ */
+function assertRevisionStored(workspaceDir: string, buildId: string, revision: string): void {
+  try {
+    git(workspaceDir, buildId, ['cat-file', '-e', `${revision}^{commit}`])
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (!MISSING_OBJECT.test(detail)) throw error
+    throw new Error(`This build's saved snapshot ${revision.slice(0, 12)} is missing from the app's storage, so the round cannot be played or published. Run the round again to record a new snapshot.`)
+  }
+}
+
 function withTemporaryIndex<T>(work: (indexFile: string) => T): T {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gauntlet-round-revision-'))
   try {
@@ -292,7 +310,7 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
   ensureRepository(input.workspaceDir, input.buildId)
   if (input.parentRevision) {
     assertRevision(input.parentRevision)
-    git(input.workspaceDir, input.buildId, ['cat-file', '-e', `${input.parentRevision}^{commit}`])
+    assertRevisionStored(input.workspaceDir, input.buildId, input.parentRevision)
   }
 
   const revision = withTemporaryIndex((indexFile) => {
@@ -317,6 +335,7 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
 function withComparisonIndex<T>(workspaceDir: string, buildId: string, revision: string, read: (indexFile: string) => T): T {
   assertRevision(revision)
   ensureRepository(workspaceDir, buildId)
+  assertRevisionStored(workspaceDir, buildId, revision)
   return withTemporaryIndex((indexFile) => {
     git(workspaceDir, buildId, ['read-tree', revision], indexFile)
     // Files present in the immutable revision remain tracked even when they
@@ -355,7 +374,7 @@ export function checkoutRoundRevision(workspaceDir: string, buildId: string, rou
   if (!Number.isInteger(round) || round < 1) throw new Error('Round must be a positive integer.')
   assertRevision(revision)
   ensureRepository(workspaceDir, buildId)
-  git(workspaceDir, buildId, ['cat-file', '-e', `${revision}^{commit}`])
+  assertRevisionStored(workspaceDir, buildId, revision)
   const playRoot = ownedDirectory(workspaceDir, [BUILD_METADATA_DIR, PLAY_DIR], true)
   assertCheckoutCapacity(playRoot)
   // A fresh unguessable directory makes every Play session a no-clobber

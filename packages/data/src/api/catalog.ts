@@ -1,10 +1,17 @@
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import {
+  createHash,
+  randomUUID,
+  createHmac,
+  timingSafeEqual,
+} from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@gauntlet/db/types'
 import { MAX_WIRE_BYTES, type GameArtifact } from '@gauntlet/publishing'
-import { validateArtifact } from '@gauntlet/publishing/node'
+import { normalizeCover, validateArtifact } from '@gauntlet/publishing/node'
 import {
   beginSchema,
+  coverUploadSchema,
+  listingUpdateSchema,
   gameSchema,
   promotionSchema,
   publicGamesSchema,
@@ -182,6 +189,116 @@ export class Catalog {
         'catalog.promote',
       ),
     )
+  }
+  async beginCover(actor: string, input: unknown) {
+    const data = coverUploadSchema.parse(input)
+    const game = await this.owned(actor, data.gameId)
+    if (game.generation !== data.generation)
+      throw new CatalogError('Game changed. Refresh before saving.', 'conflict')
+    const coverId = randomUUID()
+    const upload = checked(
+      await this.client.storage
+        .from('game-covers')
+        .createSignedUploadUrl(`pending/${actor}/${game.id}/${coverId}.png`, {
+          upsert: false,
+        }),
+      this.capture,
+      'catalog.cover-upload',
+    )
+    return {
+      coverId,
+      uploadUrl: upload!.signedUrl,
+      coverToken: this.previewToken(
+        `cover:${actor}:${game.id}:${data.generation}:${coverId}`,
+      ),
+    }
+  }
+  async updateListing(actor: string, input: unknown) {
+    const data = listingUpdateSchema.parse(input)
+    const game = await this.owned(actor, data.gameId)
+    if (game.generation !== data.generation)
+      throw new CatalogError('Game changed. Refresh before saving.', 'conflict')
+    let coverKey: string | undefined
+    if (data.coverId) {
+      if (
+        !data.coverToken ||
+        !this.validPreview(
+          `cover:${actor}:${game.id}:${data.generation}:${data.coverId}`,
+          data.coverToken,
+        )
+      )
+        throw new CatalogError('Cover upload expired. Select the cover again.')
+      const pending = `pending/${actor}/${game.id}/${data.coverId}.png`
+      const uploaded = checked(
+        await this.client.storage.from('game-covers').download(pending),
+        this.capture,
+        'catalog.cover-read',
+      )
+      if (!uploaded || uploaded.size > 3 * 1024 * 1024)
+        throw new CatalogError('Cover exceeds 3 MiB.')
+      const bytes = await normalizeCover(
+        Buffer.from(await uploaded.arrayBuffer()),
+      ).catch((error) => {
+        throw new CatalogError(
+          error instanceof Error ? error.message : 'Invalid cover image.',
+        )
+      })
+      coverKey = createHash('sha256').update(bytes).digest('hex')
+      // Content addressing makes retries safe and gives browsers a new URL after replacement.
+      checked(
+        await this.client.storage
+          .from('game-covers')
+          .upload(`${game.id}/${coverKey}.png`, bytes, {
+            contentType: 'image/png',
+            upsert: true,
+          }),
+        this.capture,
+        'catalog.cover-store',
+      )
+    } else if (data.coverToken) throw new CatalogError('Invalid cover upload.')
+    return gameSchema.parse(
+      checked(
+        await this.client.rpc('update_game_listing', {
+          actor,
+          target_game: game.id,
+          expected_generation: data.generation,
+          description: data.description,
+          controls: data.controls,
+          ...(coverKey ? { replacement_cover: coverKey } : {}),
+        }),
+        this.capture,
+        'catalog.listing-update',
+      ),
+    )
+  }
+  async cover(actor: string, gameId: string): Promise<string | null> {
+    const game = await this.owned(actor, gameId)
+    if (game.cover_key)
+      return `data:image/png;base64,${(await this.coverBytes(game.id, game.cover_key)).toString('base64')}`
+    const owned = await studio(this.client, this.capture, actor)
+    const release =
+      owned.releases.find((r) => r.id === game.current_release_id) ??
+      owned.releases.find((r) => r.game_id === game.id && r.status === 'ready')
+    if (!release?.listing.coverPath) return null
+    const artifact = await this.artifact(release)
+    const file = artifact.files.find(
+      (f) => f.path === release.listing.coverPath,
+    )
+    if (!file) return null
+    const bytes = await normalizeCover(Buffer.from(file.data, 'base64'))
+    return `data:image/png;base64,${bytes.toString('base64')}`
+  }
+  async coverBytes(gameId: string, key: string): Promise<Buffer> {
+    const blob = checked(
+      await this.client.storage
+        .from('game-covers')
+        .download(`${gameId}/${key}.png`),
+      this.capture,
+      'catalog.cover-download',
+    )
+    if (!blob || blob.size > 3 * 1024 * 1024)
+      throw new CatalogError('Cover unavailable.')
+    return Buffer.from(await blob.arrayBuffer())
   }
   async artifact(release: Release): Promise<GameArtifact> {
     const validated = await this.readArtifact(`${release.id}.json`)

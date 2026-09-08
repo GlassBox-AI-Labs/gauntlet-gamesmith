@@ -37,7 +37,9 @@ export async function readCatalogResponse(
   route: string,
 ): Promise<Record<string, unknown>> {
   const fallback =
-    ENROLLMENT_ROUTES.has(route) && [404, 405].includes(response.status)
+    route === 'sign-in-code' && [404, 405].includes(response.status)
+      ? 'Email-code sign-in is not available on this publishing server yet. Sign in with your password instead.'
+      : ENROLLMENT_ROUTES.has(route) && [404, 405].includes(response.status)
       ? 'Account creation is not available on this publishing server yet. You can still sign in with an existing publisher account.'
       : 'The publishing service could not complete this request. Please try again.'
   if (

@@ -6,3 +6,11 @@ onlyBuiltDependencies:
   - electron
   - esbuild
   - node-pty
+
+# Both macOS app targets need their native image decoder, even when built on Apple Silicon.
+supportedArchitectures:
+  os:
+    - current
+  cpu:
+    - x64
+    - arm64

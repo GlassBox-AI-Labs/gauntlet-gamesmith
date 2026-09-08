@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID, randomBytes } from 'node:crypto'
+import { PUBLISHER_OTP_LENGTH } from '@gauntlet/publishing'
 import { localEnvironment } from './environment.mjs'
 import { localClient } from '../server/supabase'
 
@@ -77,11 +78,12 @@ try {
   ).json()
   const code = String(message.HTML).match(/\b\d{6,10}\b/)?.[0]
   assert.ok(code, 'Confirmation template must show the email code')
+  assert.equal(code.length, PUBLISHER_OTP_LENGTH, 'Email code length must match the desktop input')
   assert.equal(
     (
       await request('verify-email', {
         email,
-        code: code === '000000' ? '111111' : '000000',
+        code: code === '0'.repeat(PUBLISHER_OTP_LENGTH) ? '1'.repeat(PUBLISHER_OTP_LENGTH) : '0'.repeat(PUBLISHER_OTP_LENGTH),
       })
     ).status,
     401,

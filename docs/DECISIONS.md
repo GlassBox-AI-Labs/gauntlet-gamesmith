@@ -993,7 +993,107 @@ and local serving uses the same policy. Static directory prefixes support common
 dynamic model/texture names. This does not promise arbitrary runtime URL inference,
 missing-file repair, backend emulation, or compatibility with every game engine.
 
-## ADR-038 — A stale critique re-binds to the workspace instead of failing the build (2026-09-07)
+## ADR-038 — Account-wide desktop publishing management and editable listings (2026-09-07)
+
+**Decision.** Electron's **My games** view lists the connected publisher's entire
+catalog, including unpublished games and releases created on other machines. The
+existing build publishing drawer and My games share release management and listing
+editing. Remote ownership is authoritative; management of an uploaded release does
+not require a local build, publishing job, or source checkout. New artifact creation
+still requires a trusted, immutable saved round. A round's Published indicator matches
+its build, round, and exact revision against the current ready release; prepared
+previews do not imply publication. Unavailable and signed-out state are explicit.
+
+Description and controls overrides belong to the game, and survive promotion,
+rollback, and unpublish. Null overrides preserve the existing release-derived
+listing; saving an empty string intentionally clears that field. Listing updates
+use the same generation counter as release promotion, reject stale edits, and never
+change the playable release, artifact digest, source provenance, or stable game URL.
+
+ADR-028's automatic cover remains the initial default. An optional native image
+picker now replaces a game's listing cover without rebuilding it. Both trusted seams
+decode bounded static raster input (3 MiB, 4096 × 4096 maximum), strip metadata, and
+normalize it to PNG. The desktop retains a temporary selection capability rather than
+accepting renderer filesystem paths. The service issues owner/game/generation-bound
+upload receipts and validates uploaded bytes before committing listing changes.
+Final covers use content-addressed keys in a separate private bucket; public cover
+reads require the matching published game. No executable game artifact is modified.
+
+**Consequences.** Apply the publisher-management database migration before deploying
+the new catalog API, then distribute the desktop update. Failed uploads and conflicts
+preserve the prior public listing. Unreferenced uploads can remain in private storage
+for later maintenance. Publisher session changes invalidate in-flight reads and
+preview capabilities; refreshes cannot restore a signed-out session. Native image
+decoding adds Sharp to desktop packaging. Permanent deletion, ownership transfer,
+bulk actions, and title/slug editing remain outside this change. The website remains
+public browse/play only (ADR-024).
+
+## ADR-039 — Email-first desktop publisher authentication (2026-09-08)
+
+**Decision.** The compact publisher form starts with email, then offers password
+sign-in or an emailed code. Signup collects email, public publisher name, and
+password before verification. Both code paths use the shared shadcn Input OTP
+component with six slots, paste support, automatic verification, explicit retry,
+and a 60-second resend countdown. Users enter verification only after requesting
+a code; the separate “I have a verification code” entry is removed. No social
+login is introduced.
+
+Code sign-in only targets existing eligible accounts (`shouldCreateUser: false`).
+Main validates email requests, the catalog validates them again, and verified
+sessions still require the existing publisher enrollment/disabled-account check.
+Password login remains available for administrator-provisioned exceptions.
+Passwords and codes stay ephemeral; only main persists encrypted session tokens.
+
+**Consequences.** Deploy `/api/sign-in-code` and configure the hosted Magic Link
+email template to send `{{ .Token }}` with six-digit OTPs before shipping the
+desktop flow. The committed local Supabase configuration includes this template.
+Signup confirmation, approved-domain eligibility, and the public website's
+browse/play-only scope remain unchanged.
+
+## ADR-040 — Match publisher OTP input to eight-digit email codes (2026-09-08)
+
+**Decision.** Publisher email verification uses exactly eight digits, matching the
+reported hosted Supabase emails. This supersedes ADR-039's six-digit assumption.
+`PUBLISHER_OTP_LENGTH` in `@gauntlet/publishing` drives the renderer's slot count,
+copy, input limit, completion guard, and server validation. Main validates the
+same contract. The local Supabase `auth.email.otp_length` is eight and a regression
+test checks it against the shared value. SMS configuration is independent.
+
+**Consequences.** The code can be pasted without truncation or premature submission
+after six digits. Both signup and sign-in verification follow this contract.
+Local services must reload their updated email configuration. Hosted deployment
+checks must keep the sender's email OTP length at eight; this change does not alter
+the hosted sender or consume a user's live verification code.
+
+
+## ADR-041 — Capture the main menu for the default published cover (2026-09-08)
+
+**Decision.** Preparing a saved round automatically captures its main menu at
+1280 × 720 and includes the normalized PNG in the validated release artifact.
+The main process renders only the packaged shipping bytes in a hidden, sandboxed
+Electron window with a fresh in-memory session, no preload or Node access, denied
+permissions/downloads/navigation, and no external network. This replaces the
+filename heuristic for shipping cover artwork. Owner-selected listing covers
+retain their existing precedence over release defaults.
+
+**Readiness.** Implementation prompts require `?gamesmithCapture=main-menu` to
+skip splash/resume flows, show the real menu, set
+`document.documentElement.dataset.gamesmithCover` to `loading` immediately, then
+`ready` after assets and the first menu frame load. Older rounds without the hook
+use their loaded startup screen after a short settling period; the log identifies
+this fallback. The app cannot infer a canvas game's semantic menu state without
+the hook. A declared loading state never falls back to a splash screenshot.
+Capture times out after 20 seconds and failed preparation leaves the live game
+unchanged. Capture start, readiness/fallback, cached reuse, completion, and errors
+remain visible in the build log (VIS-001).
+
+**Retries and compatibility.** Cache normalized captures in the private publishing
+directory by shipping-artifact digest, so menu animations do not change retry
+identity. Generated cover paths cannot overwrite existing artifact files. Existing
+releases remain immutable; this takes effect when preparing a new release. No
+schema or hosted API change is required for automatic covers.
+
+## ADR-042 — A stale critique re-binds to the workspace instead of failing the build (2026-09-07)
 
 **Status:** accepted.
 

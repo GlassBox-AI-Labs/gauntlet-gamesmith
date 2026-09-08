@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { GameArtifact } from '@gauntlet/publishing'
-import { publicationCover, publicationListing } from './publication-listing'
+import { publicationListing } from './publication-listing'
 describe('optional publishing details', () => {
   it('allows a title and URL alone and ignores caller-selected packaging paths', () => {
     const result = publicationListing({
@@ -31,16 +30,5 @@ describe('optional publishing details', () => {
     expect(() =>
       publicationListing({ title: 'Maze', slug: 'maze', description: {} }),
     ).toThrow()
-  })
-  it('uses named shipping artwork when present and needs no cover otherwise', () => {
-    const artifact = (paths: string[]) =>
-      ({ files: paths.map((path) => ({ path })) }) as GameArtifact
-    expect(publicationCover(artifact(['assets/ghost.png']))).toBeNull()
-    expect(
-      publicationCover(artifact(['assets/preview.webp', 'cover.png'])),
-    ).toBe('cover.png')
-    expect(publicationCover(artifact(['assets/thumbnail.jpg']))).toBe(
-      'assets/thumbnail.jpg',
-    )
   })
 })

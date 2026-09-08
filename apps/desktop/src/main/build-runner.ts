@@ -2881,7 +2881,7 @@ export class BuildRunner {
    *
    * A critique whose revision is stale before it has judged anything has
    * nothing to corrupt — the drift is almost always the operator's own work
-   * between rounds, and reverting it is not the app's call (ADR-038). So the
+   * between rounds, and reverting it is not the app's call (ADR-042). So the
    * current source is captured as a fresh revision, chained to the one the
    * implementer produced, and the critique is re-bound to it. The check that
    * runs *after* a critic has judged stays fatal: there, the evidence really is
