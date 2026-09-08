@@ -477,7 +477,7 @@ incomplete.
   folder and may work in it between rounds, so the critique re-binds to a fresh revision captured
   from the current source, chained to the implementation's, and logs the changed paths and the new
   revision. Drift found *after* a critic has judged is fatal and stays fatal: the evidence is split
-  across two versions of the game. See ADR-042.
+  across two versions of the game. See ADR-043.
 - The authoritative bare revision repository lives under the app-private user-data root. Workspace
   metadata and imported portable history never become Git ref/object authority.
 - A phase's inputs are named by exact path in its prompt and are immutable for the build's lifetime.
