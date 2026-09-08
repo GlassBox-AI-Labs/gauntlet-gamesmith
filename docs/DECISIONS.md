@@ -1064,3 +1064,31 @@ after six digits. Both signup and sign-in verification follow this contract.
 Local services must reload their updated email configuration. Hosted deployment
 checks must keep the sender's email OTP length at eight; this change does not alter
 the hosted sender or consume a user's live verification code.
+
+
+## ADR-041 — Capture the main menu for the default published cover (2026-09-08)
+
+**Decision.** Preparing a saved round automatically captures its main menu at
+1280 × 720 and includes the normalized PNG in the validated release artifact.
+The main process renders only the packaged shipping bytes in a hidden, sandboxed
+Electron window with a fresh in-memory session, no preload or Node access, denied
+permissions/downloads/navigation, and no external network. This replaces the
+filename heuristic for shipping cover artwork. Owner-selected listing covers
+retain their existing precedence over release defaults.
+
+**Readiness.** Implementation prompts require `?gamesmithCapture=main-menu` to
+skip splash/resume flows, show the real menu, set
+`document.documentElement.dataset.gamesmithCover` to `loading` immediately, then
+`ready` after assets and the first menu frame load. Older rounds without the hook
+use their loaded startup screen after a short settling period; the log identifies
+this fallback. The app cannot infer a canvas game's semantic menu state without
+the hook. A declared loading state never falls back to a splash screenshot.
+Capture times out after 20 seconds and failed preparation leaves the live game
+unchanged. Capture start, readiness/fallback, cached reuse, completion, and errors
+remain visible in the build log (VIS-001).
+
+**Retries and compatibility.** Cache normalized captures in the private publishing
+directory by shipping-artifact digest, so menu animations do not change retry
+identity. Generated cover paths cannot overwrite existing artifact files. Existing
+releases remain immutable; this takes effect when preparing a new release. No
+schema or hosted API change is required for automatic covers.

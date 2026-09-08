@@ -24,7 +24,8 @@ import {
   type BuildJob,
 } from './publication-build'
 import { playAccessError } from './play'
-import { publicationCover, publicationListing } from './publication-listing'
+import { publicationListing } from './publication-listing'
+import { withPublicationCover } from './publication-cover'
 import { requestCatalog } from './publishing-response'
 import { publishingConfig } from './publishing-config'
 import { IPC } from '../shared/ipc'
@@ -419,16 +420,15 @@ export class Publishing {
         },
         (text) => this.log(buildId, text),
       )
-      const artifact = await packDirectory(buildDir, revision, (text) =>
+      const shipping = await packDirectory(buildDir, revision, (text) =>
         this.log(buildId, text),
       )
-      metadata.coverPath = publicationCover(artifact)
-      this.log(
-        buildId,
-        metadata.coverPath
-          ? `Using shipping cover: ${metadata.coverPath}.`
-          : 'No shipping cover found; the catalog will use its default artwork.',
+      const { artifact, coverPath } = await withPublicationCover(
+        shipping,
+        path.join(this.root, 'menu-covers'),
+        (text) => this.log(buildId, text),
       )
+      metadata.coverPath = coverPath
       const fingerprint = createHash('sha256')
         .update(validateArtifact(artifact).digest + JSON.stringify(metadata))
         .digest('hex')

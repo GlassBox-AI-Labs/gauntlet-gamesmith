@@ -155,6 +155,7 @@ ${multiplayerInstructions()}
 
 Artifact contract:
 - The implementation artifact is the runnable project source under ./, excluding the read-only ./${referenceDir}, forbidden ./critique, and private ./.gauntlet-gamesmith trees.
+- Publishing captures the actual main menu automatically for the default cover. Support the URL query \`?gamesmithCapture=main-menu\`: immediately set \`document.documentElement.dataset.gamesmithCover = 'loading'\`, skip splash screens and saved-game resume, render the real main menu without starting gameplay, and set that attribute to \`'ready'\` only after its fonts, images, and first rendered frame are ready. Keep the menu visible while this query is present. Do not substitute a fake screenshot or alter normal play. Verify this capture path while checking the running game.
 - Do not write a verdict or advancement JSON file. The app, not this agent, captures the immutable Git revision after the process and all delegated workers finish.
 - Keep existing project build/test conventions intact; do not invent a second wrapper project or store generated evidence in a phase-owned directory.
 

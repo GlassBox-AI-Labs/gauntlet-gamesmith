@@ -175,6 +175,10 @@ export function PublishDialog({
                             />
                           </label>
                         ))}
+                        <p className="text-sm text-muted-foreground">
+                          The main menu is captured automatically as the default
+                          cover. You can change it later in Edit listing.
+                        </p>
                         {!preview && (
                           <Button
                             data-testid="publishing-build"

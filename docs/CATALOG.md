@@ -73,8 +73,13 @@ use Supabase Auth administration.
 4. **Preview game** compiles the selected immutable saved revision
    with its installed dependencies. Vite receives `--base=./`. Only validated
    shipping files are uploaded, directly to a scoped Supabase Storage URL.
-   The app detects the generated browser output and named cover artwork;
-   no folder or file path is requested. Missing artwork uses the catalog default.
+   The app detects the generated browser output and automatically captures a
+   1280 × 720 main-menu cover from those exact shipping bytes. No cover selection
+   is required. A manually selected listing cover continues to take precedence.
+   New games implement the menu-ready capture hook; older rounds without it use
+   their loaded startup screen without clicking into gameplay. Capture failures
+   stop preparation with an actionable error instead of silently using generic
+   artwork.
 5. Play the private preview and explicitly **Publish this version**.
 6. In the same drawer, **Releases** lists that build's game history. Preview an
    older ready release before rolling back. **Unpublish** asks for confirmation

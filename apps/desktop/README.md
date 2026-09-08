@@ -245,6 +245,14 @@ its listing and release management directly; other saved rounds offer **Publish
 round N**. Publishing actions wait while status is being checked, and **Open game**
 remains separate. Private previews are not published games.
 
+Publishing automatically captures a 1280 × 720 main-menu image as the default
+cover. New game implementations support `?gamesmithCapture=main-menu` and signal
+readiness through `document.documentElement.dataset.gamesmithCover`; older rounds
+without the hook use their loaded startup screen. The capture is cached for exact
+build retries, and progress/failures appear in the build log. Manually selected
+covers continue to take precedence. Existing releases keep their current cover;
+preparing a new release creates the automatic cover.
+
 Open **My games** in the sidebar to manage every game owned by your signed-in
 publisher account, including unpublished games and games created on another
 computer. Cards remain in a grid; hover and keyboard focus highlight the entire
