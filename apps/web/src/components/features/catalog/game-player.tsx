@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Image from 'next/image'
 import { Button } from '@gauntlet/ui/button'
+import { GAME_FRAME_SANDBOX } from '@gauntlet/publishing'
 import { captureClientError } from '@/lib/capture'
 export function GamePlayer({ url, title, cover }: { url: string; title: string; cover?: string }) {
   const [playing, setPlaying] = useState(false),
@@ -68,7 +69,7 @@ export function GamePlayer({ url, title, cover }: { url: string; title: string; 
               src={url}
               title={title}
               referrerPolicy="no-referrer"
-              sandbox="allow-scripts allow-pointer-lock"
+              sandbox={GAME_FRAME_SANDBOX}
               allow="fullscreen; gamepad"
               onLoad={(event) => {
                 setLoading(false)

@@ -1140,3 +1140,21 @@ separate database and signing/Redis configuration. Database migrations must prec
 merges whose catalog APIs require them. Branch protection gates production merges;
 Vercel deployment builds run independently of GitHub Actions. Existing branches need
 the public-client separation before their previews can browse without service keys.
+
+## ADR-044 — Hosted games support JavaScript form handlers (2026-09-08)
+
+**Context.** The game-content CSP and catalog iframe both omitted `allow-forms`.
+Browsers stop sandboxed form submission before dispatching the `submit` event,
+so even a lobby handler that calls `preventDefault()` could not join a game.
+
+**Decision.** Share the hosted-game sandbox tokens through `@gauntlet/publishing`
+and include `allow-forms` in both the iframe and game-content CSP. Preserve
+`form-action 'none'`: client-side validation and submit handlers may run, but
+native form navigation remains forbidden. Keep the opaque origin and existing
+network, popup, and top-level navigation restrictions. Menu-cover capture keeps
+its separate, more restrictive policy because it does not interact with forms.
+
+**Consequences.** Existing published artifacts can use their JavaScript lobby
+forms after the catalog and game-host deployments update; no game rebuild is
+needed for this permission fix. Games must cancel native submission and use the
+existing authorized multiplayer client for networking.

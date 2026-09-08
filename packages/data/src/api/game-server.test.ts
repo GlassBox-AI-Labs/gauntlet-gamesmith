@@ -30,13 +30,24 @@ function fixture(data = '<html>Game</html>', multiplayer = false, configured = t
   }
 }
 describe('game serving on local and hosted origins', () => {
+  it.each([false, true])('allows form events but blocks native submission for preview and published games (multiplayer=%s)', async (multiplayer) => {
+    const { request } = fixture('<html><head></head><body><form><button>Join</button></form></body></html>', multiplayer)
+    for (const path of [`play/${gameId}/${releaseId}/index.html`, `preview/${releaseId}/valid/index.html`]) {
+      const response = await request(path)
+      expect(response.status).toBe(200)
+      const directives = response.headers.get('content-security-policy')!.split(';').map(value => value.trim())
+      expect(directives.find(value => value.startsWith('sandbox '))!.split(' ').slice(1).sort()).toEqual(['allow-forms', 'allow-pointer-lock', 'allow-scripts'])
+      expect(directives).toContain("form-action 'none'")
+    }
+  })
+
   it('streams large assets with the sandbox policy and no browser/CDN response cache', async () => {
     const large = 'x'.repeat(5 * 1024 * 1024)
     const { request } = fixture(large)
     const response = await request()
     expect(response.status).toBe(200)
     expect(response.headers.get('content-security-policy')).toContain(
-      'sandbox allow-scripts allow-pointer-lock;',
+      'sandbox allow-scripts allow-pointer-lock allow-forms;',
     )
     expect(response.headers.get('content-security-policy')).toContain(
       "connect-src 'self'",
