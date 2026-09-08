@@ -42,9 +42,20 @@ for (const handle of new Set(games.map((game) => game.publisher.handle))) {
   publisher.forEach(checkImage)
 }
 for (const game of games) {
-  const detail = covers(await (await get(`/games/${encodeURIComponent(game.slug)}`)).text())
-  assert.equal(detail.length, game.cover_key ? 1 : 0)
+  const html = await (await get(`/games/${encodeURIComponent(game.slug)}`)).text()
+  const detail = covers(html)
+  assert.equal(detail.length, game.cover_key || game.listing.coverPath ? 1 : 0)
   detail.forEach(checkImage)
+  const poster = html.match(/<div data-testid="game-poster"[^>]*>([\s\S]*?)<\/div>/)
+  assert(poster, 'Detail needs an idle player')
+  assert.equal(covers(poster[1]).length, detail.length, 'Cover must be inside the player')
+  assert(!html.includes('<iframe'), 'Game must not load before Play')
+  if (detail.length) {
+    const source = new URL(detail[0].src, catalog).searchParams.get('url')
+    const card = grid.find((img) => new URL(img.src, catalog).searchParams.get('url')?.includes(`/${game.id}/`))
+    assert(card, 'Game needs a catalog cover')
+    assert.equal(source, new URL(card.src, catalog).searchParams.get('url'), 'Player must use the same cover as its card')
+  }
 }
 for (const img of grid) {
   const optimized = new URL(img.src, catalog)

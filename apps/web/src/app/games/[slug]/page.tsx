@@ -1,6 +1,5 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import { publicGames } from '@/lib/public-games'
 import { socialMetadata } from '@/lib/social-metadata'
@@ -39,7 +38,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function GamePage({ params }: Props) {
   const { slug } = await params,
-    game = await findGame(slug)
+    game = await findGame(slug),
+    origin = await gameOrigin()
+  const coverPath = game.listing.coverPath?.split('/').map(encodeURIComponent).join('/')
+  const cover = game.cover_key
+    ? `/covers/${game.id}/${game.cover_key}`
+    : coverPath
+      ? `${origin}/play/${game.id}/${game.current_release_id}/${coverPath}`
+      : undefined
   return (
     <>
       <Link
@@ -59,20 +65,10 @@ export default async function GamePage({ params }: Props) {
           {game.publisher.display_name}
         </Link>
       </p>
-      {game.cover_key && (
-        <div className="relative mb-6 h-64 w-full max-w-lg">
-          <Image
-            src={`/covers/${game.id}/${game.cover_key}`}
-            alt=""
-            fill
-            sizes="(min-width: 640px) 512px, calc(100vw - 40px)"
-            className="rounded-xl object-contain object-left"
-          />
-        </div>
-      )}
       <GamePlayer
-        url={`${await gameOrigin()}/play/${game.id}/${game.current_release_id}/index.html`}
+        url={`${origin}/play/${game.id}/${game.current_release_id}/index.html`}
         title={game.listing.title}
+        cover={cover}
       />
       <section className="mt-10 grid gap-8 sm:grid-cols-2">
         <div>
