@@ -34,7 +34,19 @@ async function get(url, options) {
   )
   return result
 }
-assert.equal((await get(catalog)).status, 200)
+const home = await get(catalog, { headers: { 'User-Agent': 'facebookexternalhit/1.1' } })
+assert.equal(home.status, 200)
+const html = await home.text()
+for (const property of ['og:title', 'og:description', 'og:image', 'og:url']) {
+  const tags = html.match(/<meta\s[^>]*>/g) ?? []
+  assert(tags.some(tag => tag.includes(`property="${property}"`) && /content="[^"]+"/.test(tag)), `Missing ${property} social metadata`)
+}
+assert.match(html, /name="twitter:card"\s+content="summary_large_image"/)
+const socialCard = await get(`${catalog}/social-card.png`)
+assert.equal(socialCard.status, 200)
+assert.match(socialCard.headers.get('content-type'), /^image\/png/)
+assert((await socialCard.arrayBuffer()).byteLength > 0, 'Social card is empty')
+console.log('PASS homepage social metadata and default preview image')
 assert.equal((await get(`${catalog}/api/health`)).status, 200)
 assert.equal((await get(games)).status, 200)
 assert.equal((await get(`${catalog}/api/me`)).status, 401)

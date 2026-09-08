@@ -198,13 +198,54 @@ and function region before testing the stable domain. The initial CLI global-con
 directory is `~/.gauntlet-catalog/hosted/vercel-cli`; keep it private. API responses may
 contain environment metadata and must not be copied wholesale into PRs.
 
-Automatic deploy-on-push is **not enabled**. `vercel git connect` additionally needs
-the Vercel GitHub application installed for the organization; the connected account
-can request but cannot approve that organization installation. Explicit Git-source
-deployments work without that project link and were used for this rollout. Enable
-automatic deployment only after an organization owner installs the application for
-this repository and the feature is merged; use `main` for production then. Do not
-rewrite commits or impersonate the hosting account to satisfy an author check.
+### Manual deploy button in GitHub Actions
+
+Open **GitHub → Actions → Deploy catalog → Run workflow**, select **main**, then
+click **Run workflow**. `.github/workflows/deploy-catalog.yml` provides this
+interface (ADR-042). It reuses the CI workflow to run typecheck, tests, build, and
+deployment-script tests against the selected main SHA. If they pass, it deploys
+that exact SHA to `glassbox-arcade`. Pushes and PRs do not trigger deployment;
+selecting another branch skips both jobs.
+
+Deployments are serialized; queued jobs and old reruns skip if `main` has advanced.
+The job waits for Ready and the production domain assignment, verifies the source
+SHA and project, then runs the read-only hosted smoke checks including homepage
+Open Graph tags and the default social card. Results appear in Actions logs and
+the job summary. Smoke checks happen after production deployment; a failed smoke
+check requires investigation and, if needed, manual rollback.
+
+One-time setup:
+
+1. Merge the workflow into `main` so GitHub displays its Run workflow button.
+2. Create a Vercel access token under the GlassBox account scoped to the
+   `glassbox-arcade` project in the `glassbox3` team. Save it as the repository Actions secret **`VERCEL_TOKEN`** at
+   GitHub → Settings → Secrets and variables → Actions. Do not paste tokens into
+   chat or commit them. Existing production server environments remain in Vercel.
+3. Before clicking Run workflow, confirm production has the schema and service
+   configuration required by main, including ADR-038's publisher-management
+   migration and ADR-040's eight-digit email codes. Migrations and service
+   configuration remain operator-managed.
+
+The workflow and token must both be in place before the button can deploy. On
+2026-09-08, `VERCEL_TOKEN` was configured using the GlassBox account's
+`gamesmith-github-deploy` token, scoped to `glassbox-arcade` and expiring September
+9, 2027. Rotate it in Vercel and update the GitHub secret before expiration. A
+missing secret fails the deployment job with a setup message. This is catalog-only;
+the game host still uses the explicit rollout above. To deploy the latest main
+from a terminal instead of the UI:
+
+```sh
+GH_HOST=github.com gh workflow run deploy-catalog.yml --ref main \
+  --repo GlassBox-AI-Labs/gauntlet-gamesmith
+```
+
+A canceled/timed-out Actions job may leave its Vercel build running; inspect that
+deployment before retrying or rolling back, and avoid concurrent manual CLI
+releases. Native Vercel Git auto-deploy remains disconnected. `vercel git connect`
+needs the Vercel GitHub application installed by an organization owner; this
+workflow uses the existing explicit API method without that project link. Keep
+native auto-deploy disabled to retain the manual release boundary. Do not rewrite
+commits or impersonate the hosting account to satisfy an author check.
 
 The custom domain was attached with `vercel domains add gauntletgamesmith.com
 glassbox-arcade` under the same scope/config. Vercel manages its DNS and certificate.

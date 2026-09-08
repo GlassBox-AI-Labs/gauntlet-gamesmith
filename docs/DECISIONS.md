@@ -1092,3 +1092,25 @@ directory by shipping-artifact digest, so menu animations do not change retry
 identity. Generated cover paths cannot overwrite existing artifact files. Existing
 releases remain immutable; this takes effect when preparing a new release. No
 schema or hosted API change is required for automatic covers.
+
+## ADR-042 — A manual GitHub Actions deploy interface for the catalog (2026-09-08)
+
+**Decision.** A workflow_dispatch-only **Deploy catalog** workflow provides the
+operator's production deploy button. It accepts main only, reuses the CI checks,
+and deploys its exact tested SHA to the existing GlassBox Vercel catalog project
+through the Git-source deployment API. Pushes and PRs never trigger deployment.
+A dedicated `VERCEL_TOKEN` Actions secret authenticates only the deployment step;
+verification receives no deployment token. Serialize production jobs, skip
+superseded commits before creation, wait for the production alias, verify
+provenance, and run public smoke checks with social metadata coverage. Log IDs,
+SHAs, states, and results without dumping environment-bearing API responses.
+
+**Reason.** The operator needs a deploy interface in GitHub, without having to
+prepare API requests locally. Reusing CI and the already-used deployment API
+keeps checks attached to the release without the disconnected native Git integration.
+
+**Consequences.** Activation requires merging the workflow and configuring its
+secret. Game-host deployments, database migrations, service configuration, and
+rollback remain operator-managed; apply prerequisites before clicking Deploy.
+Smoke failures report an already-deployed production problem rather than rolling
+back automatically. Native Vercel Git auto-deploy stays disabled.
