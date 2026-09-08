@@ -188,6 +188,19 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for infrastructure, environment variables,
 migrations, account provisioning, deployment, smoke checks, and rollback. Local
 commands above remain available independently of cloud hosting.
 
+## Social previews
+
+Public home, game, and publisher pages include canonical URLs, Open Graph previews,
+and X large-image cards. Games use the current published release's cover art when
+available; other links use the bundled 1200×630 Glassbox Arcade card. Metadata and
+page content share one public catalog read per request. No private preview URL is
+included in social metadata.
+
+`CATALOG_ORIGIN` optionally overrides the canonical origin, which defaults to
+`https://gauntletgamesmith.com`. Set it to the public catalog URL for staging or
+local metadata checks; `GAME_ORIGIN` continues to identify the separate game host.
+Social platforms may retain cached previews until they crawl a link again.
+
 ## Verification
 
 ```sh

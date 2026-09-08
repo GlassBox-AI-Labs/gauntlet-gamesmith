@@ -99,6 +99,7 @@ installing/building Electron on Vercel. The root pins pnpm 10.15.0.
 | `SUPABASE_SERVICE_ROLE_KEY` | Required | Required | Server secret/service-role key for validated privileged operations |
 | `CATALOG_SECRET` | Required | Required | Same stable random 32-byte key, encoded as 64 lowercase hex characters; signs private previews |
 | `GAME_ORIGIN` | Required | — | Stable HTTPS URL of the separate game project |
+| `CATALOG_ORIGIN` | Optional | — | Canonical/social URL origin; defaults to `https://gauntletgamesmith.com` |
 
 Store these in Vercel's server environment settings. Never prefix a server secret
 with `NEXT_PUBLIC_`, put it in Git, send it to Electron, or include it in a game
