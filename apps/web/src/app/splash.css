@@ -79,6 +79,9 @@
 #splash .points { display: grid; margin-top: clamp(40px, 5cqi, 72px); }
 #splash .point { display: grid; grid-template-columns: 4fr 8fr; gap: var(--gap); align-items: center; padding: clamp(32px, 4cqi, 56px) 0; border-top: 1px solid var(--line); }
 #splash .point.flip .pt { order: 2; }
+#splash .point.wide { grid-template-columns: 1fr; gap: 22px; }
+#splash .point.wide .pt { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--gap); align-items: baseline; }
+#splash .point.wide .pt p { margin-top: 0; max-width: 48ch; }
 #splash .point .case .glass { aspect-ratio: var(--ar); }
 #splash .points h3 { font-size: clamp(1.35rem, 2.2cqi, 1.9rem); }
 #splash .points p { margin-top: 12px; color: var(--fg-2); max-width: 36ch; }
@@ -198,6 +201,8 @@
   #splash .hero h1 { max-width: none; }
   #splash .point, #splash .evidence, #splash .get { grid-template-columns: 1fr; }
   #splash .point.flip .pt { order: 0; }
+  #splash .point.wide .pt { grid-template-columns: 1fr; gap: 10px; }
+  #splash .point.wide .pt p { margin-top: 10px; }
   #splash .typed li { grid-template-columns: 1fr; gap: 16px; }
   #splash .case.tiny { width: 100%; }
   #splash .arcade .case .glass { min-height: 0; }

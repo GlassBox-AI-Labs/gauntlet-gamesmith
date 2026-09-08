@@ -50,11 +50,11 @@ export default function SplashPage() {
             <div className="pt"><h3>It studies the real thing first.</h3><p>Name the game yours should feel like. It gathers stills, clips, and sources before writing a line.</p></div>
             <div className="case" style={{ '--ar': '1200 / 698' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-study.mp4" poster="/splash/clip-study-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The reference study running, with cost and tokens ticking up"></video></div></div>
           </div>
-          <div className="point flip" data-reveal>
+          <div className="point wide" data-reveal>
             <div className="pt"><h3>It criticises itself.</h3><p>A second agent, with no memory of building, plays your game and scores it. The notes go back in.</p></div>
             <div className="case" style={{ '--ar': '1200 / 776' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-critique.mp4" poster="/splash/clip-critique-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The rounds table as the critic scores each round: 0.46, then 0.52, then 0.58"></video></div></div>
           </div>
-          <div className="point" data-reveal>
+          <div className="point wide" data-reveal>
             <div className="pt"><h3>Nothing is hidden.</h3><p>Every prompt, command, helper, and cost estimate is on screen while it works.</p></div>
             <div className="case" style={{ '--ar': '1200 / 776' } as CSSProperties}><div className="back"></div><div className="glass"><video src="/splash/clip-log.mp4" poster="/splash/clip-log-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-label="The run log: totals, the four prompts, and the attempts table with a cost per round"></video></div></div>
           </div>
