@@ -247,11 +247,15 @@ remains separate. Private previews are not published games.
 
 Open **My games** in the sidebar to manage every game owned by your signed-in
 publisher account, including unpublished games and games created on another
-computer. You can open a live game, preview retained releases, explicitly publish
+computer. Cards remain in a grid; hover and keyboard focus highlight the entire
+card. Selecting a card opens a separate detail screen with its full-width cover,
+description, controls, and release history. You can open a live game, preview retained releases, explicitly publish
 or roll back, and unpublish without the original local build. Unpublish asks for
 confirmation and preserves the releases.
 
-**Edit listing**, available from My games and a build's Releases tab, updates the
+**Edit listing**, available from My games and a build's Releases tab, opens a
+separate `max-w-sm` editor, matching the compact sign-in form. Save or Cancel
+returns to the game detail screen. It updates the
 description, controls, and cover without rebuilding or changing the playable
 release or URL. Choose a static PNG, JPEG, WebP, or GIF up to 3 MiB and 4096 × 4096
 pixels; the app previews the selection and saves a normalized PNG. Cancel leaves
