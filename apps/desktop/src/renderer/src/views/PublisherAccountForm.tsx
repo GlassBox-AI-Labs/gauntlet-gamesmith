@@ -66,7 +66,7 @@ export function PublisherAccountForm({
   }
   return (
     <form
-      className="space-y-4"
+      className="w-full max-w-sm space-y-4"
       onSubmit={(event) => {
         event.preventDefault()
         void work(submit)

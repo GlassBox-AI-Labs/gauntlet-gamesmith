@@ -15,16 +15,18 @@ export function PublishDialog({
   buildId,
   round,
   title,
+  initialTab = 'build',
   onClose,
 }: {
   buildId: string
   round: number
   title: string
+  initialTab?: 'build' | 'releases'
   onClose: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'build' | 'releases'>('build')
+  const [tab, setTab] = useState<'build' | 'releases'>(initialTab)
   const [preview, setPreview] = useState<PublicationPreview | null>(null)
   const [draft, setDraft] = useState({
     title,
@@ -74,7 +76,9 @@ export function PublishDialog({
         }}
       >
         <SheetHeader>
-          <SheetTitle>Publish round {round}</SheetTitle>
+          <SheetTitle>
+            {tab === 'releases' ? 'Manage game' : `Publish round ${round}`}
+          </SheetTitle>
           <SheetDescription>
             Preview a saved round or manage this game's published listing and
             releases.

@@ -237,7 +237,10 @@ and the encrypted publisher session stay in Electron. No browser opens for login
 preview, and explicitly publish. The same drawer's **Releases** tab owns history,
 rollback, and unpublish; sign-out is there too. Saved round actions show whether
 that exact revision is published, whether another round is live, or whether
-publication status is unavailable. Private previews are not published games.
+publication status is unavailable. A live round offers **Manage game**, opening
+its listing and release management directly; other saved rounds offer **Publish
+round N**. Publishing actions wait while status is being checked, and **Open game**
+remains separate. Private previews are not published games.
 
 Open **My games** in the sidebar to manage every game owned by your signed-in
 publisher account, including unpublished games and games created on another

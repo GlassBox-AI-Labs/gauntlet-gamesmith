@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react'
+import { Button } from '@gauntlet/ui/button'
+import { Settings2, Upload } from 'lucide-react'
 import type { ReleaseHistory } from '../../../shared/publishing'
 import { roundPublication } from '@/lib/round-publication'
 export function RoundPublication({
   buildId,
   round,
   revision,
+  onAction,
+  actionTestId,
 }: {
   buildId: string
   round: number
   revision: string | null
+  onAction: (tab: 'build' | 'releases') => void
+  actionTestId: string
 }) {
   const [data, setData] = useState<ReleaseHistory | null>(null)
   const [error, setError] = useState('')
@@ -73,6 +79,17 @@ export function RoundPublication({
         </button>
       )}
       {openError && <span role="alert">{openError}</span>}
+      <Button
+        variant="outline"
+        data-testid={actionTestId}
+        disabled={status.loading || !revision}
+        onClick={() =>
+          onAction(status.action === 'manage' ? 'releases' : 'build')
+        }
+      >
+        {status.action === 'manage' ? <Settings2 /> : <Upload />}
+        {status.action === 'manage' ? 'Manage game' : `Publish round ${round}`}
+      </Button>
     </span>
   )
 }

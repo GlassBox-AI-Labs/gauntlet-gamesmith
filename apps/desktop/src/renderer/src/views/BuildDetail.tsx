@@ -266,7 +266,7 @@ export function BuildDetail({
   onReadStream,
   onScrollTop,
 }: BuildDetailProps): React.JSX.Element {
-  const [publishing, setPublishing] = useState<number | null>(null)
+  const [publishing, setPublishing] = useState<{ round: number; tab: 'build' | 'releases' } | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [renameBusy, setRenameBusy] = useState(false)
   const [titleDraft, setTitleDraft] = useState(snapshot.build.title)
@@ -452,8 +452,8 @@ export function BuildDetail({
         {selectedRound == null && (
           <div className="ml-auto flex items-center gap-2">
             {playingSelectedBuild && play.url && <button type="button" onClick={() => onPlayStart(null)} className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20" title="Open in browser">{play.url}</button>}
-              {publishableRound != null && <RoundPublication key={build.id} buildId={build.id} round={publishableRound} revision={snapshot.attempts.find(a => a.role === 'implement' && a.status === 'succeeded' && a.round === publishableRound)?.revision ?? null} />}
-              <Button data-testid="build-publish" variant="outline" disabled={publishableRound == null} onClick={() => setPublishing(publishableRound)}><Upload /> Publish{publishableRound ? ` round ${publishableRound}` : ""}</Button>
+              {publishableRound != null && <RoundPublication key={build.id} buildId={build.id} round={publishableRound} revision={snapshot.attempts.find(a => a.role === 'implement' && a.status === 'succeeded' && a.round === publishableRound)?.revision ?? null} actionTestId="build-publish" onAction={tab => setPublishing({ round: publishableRound, tab })} />}
+              {publishableRound == null && <Button data-testid="build-publish" variant="outline" disabled><Upload /> Publish</Button>}
             {playingSelectedBuild ? (
             <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" onClick={onPlayStop}><Square /> Stop game</Button>
             ) : (
@@ -484,14 +484,13 @@ export function BuildDetail({
                 <Play className="fill-current" /> {selectedRoundPlayable ? `Play round ${selectedRound}` : 'Revision unavailable'}
               </Button>
             )}
-            <RoundPublication key={build.id} buildId={build.id} round={selectedRound} revision={selectedRevision} />
-            <Button variant="outline" disabled={!selectedRoundPlayable} data-testid="round-publish" onClick={() => setPublishing(selectedRound)}><Upload /> Publish</Button>
+            <RoundPublication key={build.id} buildId={build.id} round={selectedRound} revision={selectedRevision} actionTestId="round-publish" onAction={tab => setPublishing({ round: selectedRound, tab })} />
           </div>
         )}
       </div>
 
       {selectedRound == null && build.stopReason && !running && <p className="mb-5 rounded-lg border border-[#3f3a39] bg-[#1d1918] px-3 py-2.5 text-xs text-[#c9c3c0]">{build.stopReason}</p>}
-      {publishing != null && <PublishDialog buildId={build.id} round={publishing} title={build.title} onClose={() => setPublishing(null)} />}
+      {publishing != null && <PublishDialog buildId={build.id} round={publishing.round} initialTab={publishing.tab} title={build.title} onClose={() => setPublishing(null)} />}
       {play.error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">Play: {play.error}</p>}
       {error && <p className="mb-5 rounded-lg border border-[#603f3f] bg-[#251718] px-3 py-2.5 text-xs text-[#f0aaaa]">{error}</p>}
       {projectionWarning && <p className="mb-5 rounded-lg border border-amber-700/40 bg-amber-950/20 px-3 py-2.5 text-xs leading-relaxed text-amber-200">Bounded history view: {projectionWarning} Canonical history remains in the project ledger and exported build folder.</p>}
