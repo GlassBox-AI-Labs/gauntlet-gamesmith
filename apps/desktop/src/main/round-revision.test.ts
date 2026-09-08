@@ -247,6 +247,16 @@ describe('round revisions', () => {
     expect(fs.readdirSync(outside)).toEqual([])
   })
 
+  it('names the missing snapshot instead of leaking a raw Git object error', () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'game.js'), 'safe')
+    const revision = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 1 })
+    fs.rmSync(path.join(roundRevisionRepositoryPath(LOOP_ID), 'objects'), { recursive: true, force: true })
+    fs.mkdirSync(path.join(roundRevisionRepositoryPath(LOOP_ID), 'objects'), { recursive: true })
+
+    expect(() => checkoutRoundRevision(dir, LOOP_ID, 1, revision)).toThrow(/saved snapshot .* is missing from the app's storage/)
+  })
+
   it('uses a unique checkout and never deletes a replacement during cleanup', () => {
     const dir = workspace()
     fs.writeFileSync(path.join(dir, 'game.js'), 'saved revision')
