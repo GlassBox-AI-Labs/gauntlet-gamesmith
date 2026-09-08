@@ -3,6 +3,7 @@ import { assetPath, uuid, MIME, GAME_FRAME_SANDBOX, type GameArtifact } from '@g
 import type { Catalog } from './catalog'
 import type { Capture } from '../errors'
 import { gameAssetResponse } from './game-asset-urls'
+export { PublicGamePreview } from './public-game-preview'
 
 type Source = Pick<Catalog, 'game' | 'release' | 'artifact' | 'validPreview'>
 const headers = {

@@ -1158,3 +1158,24 @@ its separate, more restrictive policy because it does not interact with forms.
 forms after the catalog and game-host deployments update; no game rebuild is
 needed for this permission fix. Games must cancel native submission and use the
 existing authorized multiplayer client for networking.
+
+
+## ADR-045 — Public game content previews without database credentials (2026-09-08)
+
+**Context.** A catalog-only branch preview cannot test game-host sandbox changes
+because its iframe still loads the production host's unchanged response policy.
+
+**Decision.** Add an explicit `GAME_READ_ONLY_ORIGIN` mode to the game host. It
+initializes no database clients and proxies only validated `/play/<game>/<release>/<asset>`
+GET/HEAD requests to a configured separate HTTPS game origin. Do not forward
+cookies, authorization, query strings, or redirects. Recheck public access on every
+request, stream bytes without caching, and never expose private preview routes.
+Preserve upstream CSP restrictions and multiplayer bootstrap; replace only the
+sandbox directive with the shared hosted-game form policy, requiring native form
+navigation to remain blocked.
+
+Use a separate public preview-host project with no database/signing credentials,
+so opaque game frames can load assets without Vercel login cookies. Catalog previews
+retain their existing protection and select this host through branch-scoped
+`GAME_ORIGIN`. This reviews already-public games; it is not isolated multiplayer
+staging and guest sessions still use the existing public multiplayer service.
