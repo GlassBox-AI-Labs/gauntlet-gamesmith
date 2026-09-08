@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
   ipcMain: { handle: vi.fn() },
   safeStorage: {
     isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptString: (s: string) => Buffer.from(s),
     decryptString: (s: Buffer) => s.toString(),
   },
