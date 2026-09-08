@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtemp, readFile, writeFile, symlink, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, open, readFile, writeFile, symlink, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { digest, packDirectory, validateArtifact } from './node'
@@ -62,12 +62,15 @@ describe('artifact publication seam', () => {
       await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Duplicate asset path')
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
-  it('still rejects arbitrary Markdown and linked license files', async () => {
+  it('leaves arbitrary Markdown out of the upload and still rejects linked license files', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-license-unsafe-'))
     try {
       await writeFile(path.join(dir, 'index.html'), 'game')
       await writeFile(path.join(dir, 'private-notes.md'), 'not for publication')
-      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Unsupported asset path')
+      const lines: string[] = []
+      const artifact = await packDirectory(dir, 'saved-round', (text) => lines.push(text))
+      expect(artifact.files.map((file) => file.path)).toEqual(['index.html'])
+      expect(lines.join('\n')).toContain('private-notes.md')
       await rm(path.join(dir, 'private-notes.md'))
       await symlink(path.join(dir, 'index.html'), path.join(dir, 'LICENSE.md'))
       await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Linked build entry')
@@ -91,12 +94,43 @@ describe('artifact publication seam', () => {
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 
-  it('still rejects an unsupported file type that is not a source map', async () => {
+  it('leaves Blender files out of the upload instead of failing the whole artifact', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-blend-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      await mkdir(path.join(dir, 'world-concept'))
+      await writeFile(path.join(dir, 'world-concept', 'pilgrim-chapel.blend'), 'blender')
+      await writeFile(path.join(dir, 'world-concept', 'limestone-albedo.png'), 'png')
+      const lines: string[] = []
+      const artifact = await packDirectory(dir, 'saved-round', (text) => lines.push(text))
+      expect(artifact.files.map((file) => file.path).sort()).toEqual([
+        'index.html',
+        'world-concept/limestone-albedo.png',
+      ])
+      expect(lines.join('\n')).toContain('world-concept/pilgrim-chapel.blend')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('names the byte ceiling when the shipping tree is too large', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-too-large-'))
+    try {
+      await writeFile(path.join(dir, 'index.html'), 'game')
+      const oversized = await open(path.join(dir, 'cover.png'), 'w')
+      await oversized.truncate(25 * 1024 * 1024)
+      await oversized.close()
+      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow(/24 MiB/)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('leaves unsupported authoring files out of the upload instead of failing the whole artifact', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'catalog-unsupported-'))
     try {
       await writeFile(path.join(dir, 'index.html'), 'game')
       await writeFile(path.join(dir, 'game.exe'), 'binary')
-      await expect(packDirectory(dir, 'saved-round')).rejects.toThrow('Unsupported asset path')
+      const lines: string[] = []
+      const artifact = await packDirectory(dir, 'saved-round', (text) => lines.push(text))
+      expect(artifact.files.map((file) => file.path)).toEqual(['index.html'])
+      expect(lines.join('\n')).toContain('game.exe')
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
 })

@@ -123,14 +123,15 @@ Private previews last 30 minutes and survive server restart with the same
   and requires files changed by this compilation. Stale, absent, or ambiguous
   output fails with an explanation in the build log; the source root never ships.
 - Maximum 1,500 files and 24 MiB decoded shipping data (35 MiB envelope).
-- No links, hidden/private directories, reference/critique folders, source maps,
-  source TypeScript, or unsupported types. The server verifies hashes, source
+- No links, hidden/private directories, or reference/critique folders. Source maps,
+  Blender files, and other non-browser types are left out of the upload with a log
+  line rather than failing the whole publication. The server verifies hashes, source
   revision, listing, and cover before marking a release ready.
 - Markdown notices named `ASSET-LICENSES.md`, `LICENSE.md`, `LICENCE.md`, or
   `NOTICE.md` (case-insensitive) ship as `.txt` with identical contents. The build
   log records the published path; source files stay unchanged. Links to these
   notices in a game should use the published `.txt` path. Name collisions fail
-  instead of overwriting a notice. Other Markdown files remain unsupported.
+  instead of overwriting a notice. Other Markdown files are omitted from the upload.
 - A PNG, JPEG, WebP, or GIF named `cover`, `thumbnail`, `preview`, or `screenshot`
   at the output root or in `assets/` is selected automatically when present.
 - Games use an opaque sandbox origin: no account credentials, persistent browser
