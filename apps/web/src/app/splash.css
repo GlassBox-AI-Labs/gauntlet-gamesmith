@@ -78,6 +78,7 @@
 #splash .what .line { margin-top: 20px; color: var(--fg-2); max-width: 44ch; font-size: clamp(1.05rem, 1.4cqi, 1.2rem); }
 #splash .points { display: grid; margin-top: clamp(40px, 5cqi, 72px); }
 #splash .point { display: grid; grid-template-columns: 4fr 8fr; gap: var(--gap); align-items: center; padding: clamp(32px, 4cqi, 56px) 0; border-top: 1px solid var(--line); }
+#splash .point.flip { grid-template-columns: 8fr 4fr; }
 #splash .point.flip .pt { order: 2; }
 #splash .point.wide { grid-template-columns: 1fr; gap: 22px; }
 #splash .point.wide .pt { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--gap); align-items: baseline; }
