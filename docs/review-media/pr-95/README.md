@@ -1,9 +1,9 @@
 # Publishing UI review captures
 
-The five account-flow screenshots were refreshed from the built desktop React
-renderer at app-code commit `d30969e3b37051506cdc08f37ace418c1d4269de`. The eight
-unchanged game-management and publishing captures are from app-code commit
-`40b23a3936a22fcba5c99de4dbd548b5302fddfb`. All captures are 1440 × 1050. All
+The five account-flow screenshots are from the built desktop React renderer at
+app-code commit `d30969e3b37051506cdc08f37ace418c1d4269de`. The ten grid, detail,
+editor, and publishing captures were refreshed at app-code commit `b87bb0cf391ea843fbbc4e8a33232f8764036a7d`.
+Captures use a 1440 × 1050 viewport (full-page images extend to fit content). All
 accounts, email codes, games, build history, and cover art are sample fixtures;
 IPC/service responses are mocked. These images show actual app components,
 not live account operations or evidence of hosted email delivery.
@@ -14,10 +14,12 @@ not live account operations or evidence of hosted email delivery.
 - [Eight-slot OTP verification with resend countdown](publisher-otp.png)
 - [Invalid-code feedback with retry](auth-invalid-code.png)
 - [Account-wide library showing published and unpublished games](my-games.png)
-- [Published game management and retained releases](game-manager.png)
-- [Editing description, controls, and the cover image](edit-listing.png)
+- [Whole-card hover including card padding](my-games-hover.png)
+- [Full-width game detail with cover, description, controls, and releases](game-manager.png)
+- [Separate compact editor for description, controls, and cover](edit-listing.png)
 - [Build overview showing Published and Manage game](build-published.png)
 - [Exact live round showing Published and Manage game](round-published.png)
 - [Another round offers Publish round 1 while round 2 is live](round-other.png)
 - [Manage game opens the release-management drawer directly](publishing-manager.png)
+- [Compact listing editor within the publishing drawer](publishing-edit.png)
 - [Publishing another saved round opens its preview form](publish-round.png)
