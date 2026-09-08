@@ -1,21 +1,44 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import * as catalogApi from '@gauntlet/data/api/catalog'
-import { createAnonClient } from '@/lib/supabase-anon'
-import { captureServerError } from '@/lib/capture'
+import { publicGames } from '@/lib/public-games'
+import { socialMetadata } from '@/lib/social-metadata'
 import { gameOrigin } from '@/lib/config'
 import { GamePlayer } from '@/components/features/catalog/game-player'
 export const dynamic = 'force-dynamic'
-export default async function GamePage({
-  params,
-}: {
+type Props = {
   params: Promise<{ slug: string }>
-}) {
-  const { slug } = await params,
-    game = (
-      await catalogApi.publicGames(createAnonClient(), captureServerError)
-    ).find((g) => g.slug === slug)
+}
+
+async function findGame(slug: string) {
+  const game = (await publicGames()).find((game) => game.slug === slug)
   if (!game) notFound()
+  return game
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { slug } = await params
+  const game = await findGame(slug)
+  const coverPath = game.listing.coverPath
+    ?.split('/')
+    .map(encodeURIComponent)
+    .join('/')
+  return socialMetadata({
+    title: game.listing.title,
+    description: game.listing.description,
+    path: `/games/${encodeURIComponent(game.slug)}`,
+    image: coverPath
+      ? {
+          url: `${await gameOrigin()}/play/${game.id}/${game.current_release_id}/${coverPath}`,
+          alt: `${game.listing.title} — cover art`,
+        }
+      : undefined,
+  })
+}
+
+export default async function GamePage({ params }: Props) {
+  const { slug } = await params,
+    game = await findGame(slug)
   return (
     <>
       <Link

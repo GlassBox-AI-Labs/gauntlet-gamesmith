@@ -2,12 +2,14 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import Image from 'next/image'
 import { Brand } from '@gauntlet/ui/brand'
+import { catalogOrigin, siteDescription, siteName } from '@/lib/social-metadata'
 import logo from '../app-logo.png'
 import './globals.css'
 export const metadata: Metadata = {
-  title: { default: 'Glassbox Arcade', template: '%s · Glassbox Arcade' },
-  description:
-    'Games made with Glassbox. Browse and play, no account required.',
+  metadataBase: catalogOrigin(),
+  applicationName: siteName,
+  title: { default: siteName, template: `%s · ${siteName}` },
+  description: siteDescription,
 }
 export default function RootLayout({
   children,
