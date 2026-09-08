@@ -559,3 +559,26 @@ enrollment before releasing a session. Resends use the same sign-in-code endpoin
 for sign-in and `/api/resend-verification` for signup. No social login or browser
 callback is involved. Hosted configuration is an explicit deployment step; editing
 these local files does not change the hosted Supabase project.
+
+
+## Public game-host preview for sandbox fixes
+
+`glassbox-games-preview` (`prj_R82RaAe9gfzMGSfJVAWWdN8c4rRY`) is a separate,
+public Vercel Hobby project rooted at `apps/game-host`, using Node 22 and `iad1`.
+Its stable URL is `https://glassbox-games-preview.vercel.app`. It has no database,
+signing, account, or Redis credentials. Its sole app setting is
+`GAME_READ_ONLY_ORIGIN=https://glassbox-games.vercel.app`, applied in both Vercel
+Preview and Production scopes: the project's default deployment is the public
+preview service, not the production game host.
+
+This mode streams only already-published `/play/` assets, rechecks access upstream
+on every request, retains no-store and native-form navigation restrictions, and
+uses the shared iframe sandbox tokens. Private previews and account/API routes
+are unavailable. Upstream multiplayer bootstrap remains intact, so guest lobby
+tests use the existing public multiplayer service rather than isolated staging.
+
+Catalog branch `fix/hosted-game-form-preview` has a branch-specific Preview
+`GAME_ORIGIN` pointing to this service. Its catalog deployments remain protected
+by Vercel login. Use the branch alias for the latest catalog deployment; older
+immutable deployment URLs retain their original game-host configuration. The two
+existing production projects and other branches' `GAME_ORIGIN` are unchanged.
