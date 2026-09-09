@@ -1191,3 +1191,67 @@ link that meant "all games" points at `/games`; the brand link still points at `
 **Consequences.** Bookmarks to `/` now land on the splash rather than the grid. The splash owns
 its own tokens under `.page`, so the arcade theme and `@gauntlet/ui` are untouched. Copy on the
 splash is the approved content spec; changing it is a content decision, not a layout one.
+
+## ADR-045 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
+
+**Decision.** Use the official Vercel GitHub integration for the public repository.
+The catalog production environment tracks `main`; other branches receive Preview
+URLs and PR deployment comments. The Vercel Deployments interface supports manual
+branch/commit deployment and redeployment. No GitHub Actions deployment token is needed.
+The separate game-host rollout remains explicit until deliberately connected.
+
+**Preview access.** Branch previews read the live public catalog using only the
+Supabase URL and publishable key. Public and privileged client configuration are
+separate. `CATALOG_READ_ONLY_ORIGIN` disables privileged catalog clients, including
+publisher authentication and mutations, even if service credentials are accidentally
+supplied. Validated, currently published listing covers stream from that public
+origin; private cover storage never requires service keys in Preview. Public game
+execution uses the existing separate game host. This is browsing/play review, not
+an isolated staging environment or a publisher/multiplayer API test environment.
+
+**Consequences.** Production service/signing/Redis credentials stay production-only.
+The publishable key is safe only with the existing public projections and RLS; the
+read-only flag does not make arbitrary branch code trustworthy. Full staging needs
+separate database and signing/Redis configuration. Database migrations must precede
+merges whose catalog APIs require them. Branch protection gates production merges;
+Vercel deployment builds run independently of GitHub Actions. Existing branches need
+the public-client separation before their previews can browse without service keys.
+
+## ADR-046 — Hosted games support JavaScript form handlers (2026-09-08)
+
+**Context.** The game-content CSP and catalog iframe both omitted `allow-forms`.
+Browsers stop sandboxed form submission before dispatching the `submit` event,
+so even a lobby handler that calls `preventDefault()` could not join a game.
+
+**Decision.** Share the hosted-game sandbox tokens through `@gauntlet/publishing`
+and include `allow-forms` in both the iframe and game-content CSP. Preserve
+`form-action 'none'`: client-side validation and submit handlers may run, but
+native form navigation remains forbidden. Keep the opaque origin and existing
+network, popup, and top-level navigation restrictions. Menu-cover capture keeps
+its separate, more restrictive policy because it does not interact with forms.
+
+**Consequences.** Existing published artifacts can use their JavaScript lobby
+forms after the catalog and game-host deployments update; no game rebuild is
+needed for this permission fix. Games must cancel native submission and use the
+existing authorized multiplayer client for networking.
+
+
+## ADR-047 — Public game content previews without database credentials (2026-09-08)
+
+**Context.** A catalog-only branch preview cannot test game-host sandbox changes
+because its iframe still loads the production host's unchanged response policy.
+
+**Decision.** Add an explicit `GAME_READ_ONLY_ORIGIN` mode to the game host. It
+initializes no database clients and proxies only validated `/play/<game>/<release>/<asset>`
+GET/HEAD requests to a configured separate HTTPS game origin. Do not forward
+cookies, authorization, query strings, or redirects. Recheck public access on every
+request, stream bytes without caching, and never expose private preview routes.
+Preserve upstream CSP restrictions and multiplayer bootstrap; replace only the
+sandbox directive with the shared hosted-game form policy, requiring native form
+navigation to remain blocked.
+
+Use a separate public preview-host project with no database/signing credentials,
+so opaque game frames can load assets without Vercel login cookies. Catalog previews
+retain their existing protection and select this host through branch-scoped
+`GAME_ORIGIN`. This reviews already-public games; it is not isolated multiplayer
+staging and guest sessions still use the existing public multiplayer service.

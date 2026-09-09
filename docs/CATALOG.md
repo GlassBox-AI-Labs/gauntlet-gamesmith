@@ -134,7 +134,9 @@ Private previews last 30 minutes and survive server restart with the same
 - A PNG, JPEG, WebP, or GIF named `cover`, `thumbnail`, `preview`, or `screenshot`
   at the output root or in `assets/` is selected automatically when present.
 - Games use an opaque sandbox origin: no account credentials, persistent browser
-  storage, external fetches, forms, or top-level navigation. Bundle assets locally.
+  storage, unrestricted external fetches, native form navigation, or top-level
+  navigation. JavaScript form handlers and validation work; cancel submission with
+  `event.preventDefault()` and use the Gamesmith client for multiplayer. Bundle assets locally.
 
 Export is a separate developer archive with history and reference evidence; it
 must never be uploaded as a release. Publish only assets you may share. The saved

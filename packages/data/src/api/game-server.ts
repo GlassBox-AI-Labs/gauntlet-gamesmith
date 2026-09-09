@@ -1,8 +1,9 @@
 import { MANIFEST_FILE, multiplayerManifest } from '@glassbox/multiplayer'
-import { assetPath, uuid, MIME, type GameArtifact } from '@gauntlet/publishing'
+import { assetPath, uuid, MIME, GAME_FRAME_SANDBOX, type GameArtifact } from '@gauntlet/publishing'
 import type { Catalog } from './catalog'
 import type { Capture } from '../errors'
 import { gameAssetResponse } from './game-asset-urls'
+export { PublicGamePreview } from './public-game-preview'
 
 type Source = Pick<Catalog, 'game' | 'release' | 'artifact' | 'validPreview'>
 const headers = {
@@ -11,7 +12,7 @@ const headers = {
   'Referrer-Policy': 'no-referrer',
   'Access-Control-Allow-Origin': '*',
   'Content-Security-Policy':
-    "sandbox allow-scripts allow-pointer-lock; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'self'",
+    `sandbox ${GAME_FRAME_SANDBOX}; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'self'`,
 }
 
 /** Shared local/hosted serving policy. Cached bytes never bypass access checks. */

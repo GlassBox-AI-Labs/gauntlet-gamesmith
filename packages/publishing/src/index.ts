@@ -3,6 +3,8 @@ export { PUBLISHER_EMAIL_DOMAIN, PUBLISHER_OTP_LENGTH, isPublisherEmail, isPubli
 export const MAX_ARTIFACT_BYTES = 24 * 1024 * 1024
 export const MAX_WIRE_BYTES = 35 * 1024 * 1024
 export const MAX_FILES = 1500
+// Form events must reach game handlers; the host's form-action 'none' blocks navigation.
+export const GAME_FRAME_SANDBOX = 'allow-scripts allow-pointer-lock allow-forms'
 export interface ArtifactFile { path: string; data: string; sha256: string }
 export interface GameArtifact { version: 1; sourceRevision: string; files: ArtifactFile[] }
 export interface Listing { title: string; slug: string; description: string; controls: string; coverPath: string | null }
