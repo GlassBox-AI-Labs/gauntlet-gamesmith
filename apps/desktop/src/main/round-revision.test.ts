@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  captureLiveRevision,
   captureRoundRevision,
   checkoutRoundRevision,
   cleanupRoundCheckout,
@@ -150,6 +151,24 @@ describe('round revisions', () => {
     const secondCheckout = checkoutRoundRevision(dir, LOOP_ID, 2, second)
     expect(fs.readFileSync(path.join(secondCheckout, 'game.js'), 'utf8')).toBe('round two')
     expect(second).not.toBe(first)
+  })
+
+  it('snapshots the live workspace without moving the round-zero research baseline', () => {
+    const dir = workspace()
+    fs.writeFileSync(path.join(dir, 'game.js'), 'baseline')
+    const baseline = captureRoundRevision({ workspaceDir: dir, buildId: LOOP_ID, round: 0 })
+    fs.writeFileSync(path.join(dir, 'game.js'), 'operator edit')
+    const live = captureLiveRevision({ workspaceDir: dir, buildId: LOOP_ID, parentRevision: baseline })
+    expect(live).not.toBe(baseline)
+    const repo = roundRevisionRepositoryPath(LOOP_ID)
+    expect(fs.readFileSync(path.join(repo, 'refs/builds', LOOP_ID, 'rounds', '0'), 'utf8').trim()).toBe(baseline)
+    expect(fs.readFileSync(path.join(repo, 'refs/builds', LOOP_ID, 'live'), 'utf8').trim()).toBe(live)
+    const liveCheckout = checkoutRoundRevision(dir, LOOP_ID, 0, live)
+    expect(fs.readFileSync(path.join(liveCheckout, 'game.js'), 'utf8')).toBe('operator edit')
+    cleanupRoundCheckout(liveCheckout)
+    const baselineCheckout = checkoutRoundRevision(dir, LOOP_ID, 0, baseline)
+    expect(fs.readFileSync(path.join(baselineCheckout, 'game.js'), 'utf8')).toBe('baseline')
+    cleanupRoundCheckout(baselineCheckout)
   })
 
   it('ignores an imported repository fsmonitor and hooks path', () => {

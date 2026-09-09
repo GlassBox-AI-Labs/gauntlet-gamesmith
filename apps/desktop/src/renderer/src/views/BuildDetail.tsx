@@ -362,8 +362,8 @@ export function BuildDetail({
       }, null)
   const playingSelectedBuild = play.running && play.round === selectedRound
   const selectedRevision = selectedRound == null ? null : (visibleAttempts.find((attempt) => attempt.role === 'implement' && attempt.status === 'succeeded')?.revision ?? null)
-  const publishableRound = snapshot.attempts.filter(attempt => attempt.role === 'implement' && attempt.status === 'succeeded' && attempt.revision).sort((a, b) => b.round - a.round)[0]?.round ?? null
   const selectedRoundPlayable = selectedRevision != null
+  const canPublishLive = build.playTrusted || build.executionTrusted
 
   const saveTitle = async (): Promise<void> => {
     if (renameBusy) return
@@ -452,8 +452,7 @@ export function BuildDetail({
         {selectedRound == null && (
           <div className="ml-auto flex items-center gap-2">
             {playingSelectedBuild && play.url && <button type="button" onClick={() => onPlayStart(null)} className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-300 hover:bg-emerald-500/20" title="Open in browser">{play.url}</button>}
-              {publishableRound != null && <RoundPublication key={build.id} buildId={build.id} round={publishableRound} revision={snapshot.attempts.find(a => a.role === 'implement' && a.status === 'succeeded' && a.round === publishableRound)?.revision ?? null} actionTestId="build-publish" onAction={tab => setPublishing({ round: publishableRound, tab })} />}
-              {publishableRound == null && <Button data-testid="build-publish" variant="outline" disabled><Upload /> Publish</Button>}
+              <Button data-testid="build-publish" variant="outline" disabled={!canPublishLive} title={canPublishLive ? 'Publish a snapshot of the current project folder' : 'Trust this build and folder before publishing'} onClick={() => setPublishing({ round: 0, tab: 'build' })}><Upload /> Publish</Button>
             {playingSelectedBuild ? (
             <Button variant="outline" className="border-[#494343] bg-transparent text-[#96908d] hover:bg-white/5 hover:text-white" onClick={onPlayStop}><Square /> Stop game</Button>
             ) : (

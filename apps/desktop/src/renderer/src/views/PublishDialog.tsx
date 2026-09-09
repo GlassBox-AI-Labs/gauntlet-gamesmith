@@ -24,6 +24,7 @@ export function PublishDialog({
   initialTab?: 'build' | 'releases'
   onClose: () => void
 }) {
+  const liveWorkspace = round === 0
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'build' | 'releases'>(initialTab)
@@ -77,11 +78,16 @@ export function PublishDialog({
       >
         <SheetHeader>
           <SheetTitle>
-            {tab === 'releases' ? 'Manage game' : `Publish round ${round}`}
+            {tab === 'releases'
+              ? 'Manage game'
+              : liveWorkspace
+                ? 'Publish live workspace'
+                : `Publish round ${round}`}
           </SheetTitle>
           <SheetDescription>
-            Preview a saved round or manage this game's published listing and
-            releases.
+            {liveWorkspace
+              ? 'Snapshot the current project folder, preview it, then publish to the arcade. This includes edits made outside the build.'
+              : "Preview a saved round or manage this game's published listing and releases."}
           </SheetDescription>
         </SheetHeader>
         <div className="space-y-5 px-6 pb-8">
@@ -99,7 +105,7 @@ export function PublishDialog({
                       onClick={() => setTab('build')}
                       aria-pressed={tab === 'build'}
                     >
-                      Publish this round
+                      {liveWorkspace ? 'Publish this folder' : 'Publish this round'}
                     </Button>
                     <Button
                       data-testid="publishing-releases-tab"
@@ -128,7 +134,10 @@ export function PublishDialog({
                       />
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        No releases yet. Preview this saved round to begin.
+                        No releases yet.{' '}
+                        {liveWorkspace
+                          ? 'Preview this folder to begin.'
+                          : 'Preview this saved round to begin.'}
                       </p>
                     )
                   ) : (

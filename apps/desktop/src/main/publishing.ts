@@ -17,7 +17,7 @@ import {
   normalizeCover,
 } from '@gauntlet/publishing/node'
 import type { Ledger } from './ledger'
-import { checkoutRoundRevision, cleanupRoundCheckout } from './round-revision'
+import { captureLiveRevision, checkoutRoundRevision, cleanupRoundCheckout } from './round-revision'
 import {
   buildPublication,
   recoverPublicationBuild,
@@ -374,19 +374,28 @@ export class Publishing {
     const input = object(value),
       buildId = uuid(input.buildId),
       round = input.round
-    if (!Number.isSafeInteger(round) || (round as number) < 1)
-      throw new Error('Select a completed saved round.')
+    if (!Number.isSafeInteger(round) || (round as number) < 0)
+      throw new Error('Select a completed saved round or the live workspace.')
+    const liveWorkspace = (round as number) === 0
     const metadata = publicationListing(input)
     const projectBuild = this.ledger.getBuild(buildId)
     if (!projectBuild) throw new Error('Build not found.')
     const trustError = playAccessError(projectBuild)
     if (trustError) throw new Error(trustError)
     this.ledger.assertBuildWorkspaceIdentity(buildId)
-    const revision = this.ledger.succeededImplementRevision(
-      buildId,
-      round as number,
-    )
-    if (!revision)
+    const sourceAttemptId = liveWorkspace
+      ? this.ledger.latestAttemptId(buildId)
+      : this.ledger.succeededImplementAttemptId(buildId, round as number)
+    if (!sourceAttemptId)
+      throw new Error(
+        liveWorkspace
+          ? 'This build has no attempt to record as publication provenance.'
+          : 'The saved round has no implementation attempt.',
+      )
+    let revision = liveWorkspace
+      ? null
+      : this.ledger.succeededImplementRevision(buildId, round as number)
+    if (!liveWorkspace && !revision)
       throw new Error('No immutable revision exists for this round.')
     this.active = true
     let checkout: string | null = null
@@ -406,21 +415,25 @@ export class Publishing {
         await recoverPublicationBuild(job.build, (text) =>
           this.log(buildId, text),
         )
-      this.logTarget = {
-        buildId,
-        attemptId:
-          this.ledger
-            .attemptsForBuild(buildId)
-            .find(
-              (attempt) =>
-                attempt.role === 'implement' &&
-                attempt.round === round &&
-                attempt.revision === revision,
-            )?.id ?? null,
+      this.logTarget = { buildId, attemptId: sourceAttemptId }
+      if (liveWorkspace) {
+        revision = captureLiveRevision({
+          workspaceDir: projectBuild.workspaceDir,
+          buildId,
+          parentRevision: this.ledger.latestImplementRevision(buildId),
+        })
       }
+      if (!revision)
+        throw new Error(
+          liveWorkspace
+            ? 'The live workspace could not be captured as a publication snapshot.'
+            : 'No immutable revision exists for this round.',
+        )
       this.log(
         buildId,
-        `Preparing publication of round ${round}, revision ${revision}.`,
+        liveWorkspace
+          ? `Preparing publication of the live workspace, revision ${revision}. Catalog provenance uses round ${this.ledger.latestSucceededImplement(buildId)?.round ?? 1} until hosted publishing accepts workspace snapshots.`
+          : `Preparing publication of round ${round}, revision ${revision}.`,
       )
       checkout = checkoutRoundRevision(
         projectBuild.workspaceDir,
@@ -458,9 +471,6 @@ export class Publishing {
         buildId,
         `Uploading ${artifact.files.length} shipping files. Build history and harness credentials are excluded.`,
       )
-      const sourceAttemptId = this.logTarget.attemptId
-      if (!sourceAttemptId)
-        throw new Error('The saved round has no implementation attempt.')
       const started = await this.request(
         'releases',
         {
@@ -468,8 +478,17 @@ export class Publishing {
           requestKey: job.requestKey,
           listing: metadata,
           digest: validateArtifact(artifact).digest,
-          // Keep the initial hosted provenance contract compatible across desktop updates.
-          source: { loopId: buildId, runId: sourceAttemptId, round, revision },
+          // Hosted begin_release still requires a positive round. Live uploads
+          // keep the snapshot revision and attempt id, and borrow the latest
+          // implement round number so the current catalog accepts the request.
+          source: {
+            loopId: buildId,
+            runId: sourceAttemptId,
+            round: liveWorkspace
+              ? (this.ledger.latestSucceededImplement(buildId)?.round ?? 1)
+              : round,
+            revision,
+          },
         },
         auth,
       )

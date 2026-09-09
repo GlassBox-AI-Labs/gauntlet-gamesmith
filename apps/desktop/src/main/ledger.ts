@@ -2242,6 +2242,28 @@ export class Ledger {
     return row && REVISION.test(row.revision) ? row.revision : null
   }
 
+  latestImplementRevision(buildId: string): string | null {
+    return this.latestSucceededImplement(buildId)?.revision ?? null
+  }
+
+  latestSucceededImplement(buildId: string): { id: string; round: number; revision: string } | null {
+    const row = this.db.prepare(
+      `SELECT id, round, revision FROM phase_attempts
+       WHERE build_id = ? AND role = 'implement' AND status = 'succeeded' AND revision IS NOT NULL
+       ORDER BY round DESC, created_at DESC, rowid DESC LIMIT 1`,
+    ).get(buildId) as { id: string; round: number; revision: string } | undefined
+    return row && Number.isSafeInteger(row.round) && row.round >= 1 && REVISION.test(row.revision)
+      ? row
+      : null
+  }
+
+  latestAttemptId(buildId: string): string | null {
+    const row = this.db.prepare(
+      'SELECT id FROM phase_attempts WHERE build_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    ).get(buildId) as { id: string } | undefined
+    return row?.id ?? null
+  }
+
   bestVerdictScore(buildId: string): number {
     const row = this.db.prepare(
       `SELECT COALESCE(MAX(CAST(json_extract(verdict_json, '$.score') AS REAL)), 0) AS score
@@ -2296,6 +2318,15 @@ export class Ledger {
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(buildId, round) as { revision: string } | undefined
     return row && REVISION.test(row.revision) ? row.revision : null
+  }
+
+  succeededImplementAttemptId(buildId: string, round: number): string | null {
+    const row = this.db.prepare(
+      `SELECT id FROM phase_attempts
+       WHERE build_id = ? AND role = 'implement' AND round = ? AND status = 'succeeded' AND revision IS NOT NULL
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(buildId, round) as { id: string } | undefined
+    return row?.id ?? null
   }
 
   promptAttemptForLog(attemptId: string): PromptLogAttempt | null {

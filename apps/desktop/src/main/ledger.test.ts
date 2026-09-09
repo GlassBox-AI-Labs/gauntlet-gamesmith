@@ -840,6 +840,14 @@ describe('Ledger', () => {
     expect(ledger.hasAttemptErrorPrefixForWorkspace(build.workspaceDir, 'UNKNOWN OWNERSHIP')).toBe(true)
     expect(() => ledger.hasAttemptErrorPrefixForWorkspace(build.workspaceDir, '')).toThrow(/bounded/)
     expect(ledger.succeededImplementRevision(build.id, 1)).toBe('b'.repeat(40))
+    expect(ledger.succeededImplementAttemptId(build.id, 1)).toBe(second.id)
+    expect(ledger.latestImplementRevision(build.id)).toBe('b'.repeat(40))
+    expect(ledger.latestSucceededImplement(build.id)).toEqual({
+      id: second.id,
+      round: 1,
+      revision: 'b'.repeat(40),
+    })
+    expect(ledger.latestAttemptId(build.id)).toBe(second.id)
     expect(ledger.succeededImplementRevision(build.id, 2)).toBeNull()
     ledger.close()
   })

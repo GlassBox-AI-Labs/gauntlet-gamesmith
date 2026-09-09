@@ -90,8 +90,9 @@ declare g public.games; r public.releases;
 begin
   if not exists(select 1 from public.publishers where id=actor and enabled) then raise exception 'Publisher account required'; end if;
   if provenance is null or provenance->>'loopId' is null or provenance->>'runId' is null
-    or coalesce((provenance->>'round')::integer,0) < 1 or coalesce(provenance->>'revision','') !~ '^[a-f0-9]{40,64}$'
-    then raise exception 'Saved round provenance required'; end if;
+    or provenance->>'round' is null or coalesce((provenance->>'round')::integer, -1) < 0
+    or coalesce(provenance->>'revision','') !~ '^[a-f0-9]{40,64}$'
+    then raise exception 'Publication provenance required'; end if;
   perform (provenance->>'loopId')::uuid, (provenance->>'runId')::uuid;
   insert into public.games(id,publisher_id,slug) values(target_game,actor,metadata->>'slug') on conflict(id) do nothing;
   select * into g from public.games where id=target_game for update;

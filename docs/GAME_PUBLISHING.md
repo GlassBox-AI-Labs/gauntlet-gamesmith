@@ -1,12 +1,13 @@
 # Game catalog and publishing
 
-Status: accepted v1 boundary, updated 2026-09-06. See [CATALOG.md](CATALOG.md)
+Status: accepted v1 boundary, updated 2026-09-08. See [CATALOG.md](CATALOG.md)
 for implemented setup, limits, and verification.
 
 ## Current product boundary
 
-Developers build locally with their harness accounts. They publish a completed
-saved round from Electron using a separate Supabase publisher account. The desktop
+Developers build locally with their harness accounts. They publish from Electron
+using a separate Supabase publisher account: the live project folder from the
+overall build view, or a completed saved round from a round view. The desktop
 owns listing metadata, builds, private previews, explicit promotion, release
 history, rollback, unpublish, and sign-out. The Next.js website only exposes a
 public game grid, player, and publisher profile. Email/password login lives in the Electron publishing drawer; the website
@@ -22,7 +23,7 @@ main. The app never reads or transfers harness credentials. Publisher eligibilit
 is administrator-verified monorepo access, with closed public signup for v1.
 
 Only source-derived shipping builds become releases. A release records its run,
-round, saved revision, digest, and listing. The backend validates it before
+round (0 for a live-workspace snapshot), saved revision, digest, and listing. The backend validates it before
 readiness. An explicit generation-checked promotion updates a stable game's
 current-release pointer. Failed updates preserve the published version; rollback
 uses the same preview/promotion flow. Executable game content has a separate

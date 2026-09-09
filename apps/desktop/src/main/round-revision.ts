@@ -17,7 +17,7 @@ const MAX_REPOSITORY_ENTRIES = 200_000
 const MAX_RETAINED_CHECKOUTS = 16
 const MAX_RETAINED_CHECKOUT_ENTRIES = 100_000
 const MAX_RETAINED_CHECKOUT_BYTES = 1024 * 1024 * 1024
-const CHECKOUT_NAME = /^round-[1-9]\d*-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const CHECKOUT_NAME = /^round-(?:0|[1-9]\d*)-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const EXCLUDED_PATHS = [
   `:(exclude)${BUILD_METADATA_DIR}`,
   `:(exclude)${BUILD_METADATA_DIR}/**`,
@@ -301,11 +301,13 @@ function assertCheckoutCapacity(playRoot: string): void {
   }
 }
 
-/** Commit the playable source tree without touching a user's Git repository, index, or branch. */
-export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
-  // Round zero is the durable pre-reference source baseline. Positive rounds
-  // remain the immutable implementations assigned to critics.
-  if (!Number.isInteger(input.round) || input.round < 0) throw new Error('Round must be a nonnegative integer.')
+function commitPlayableSource(input: {
+  workspaceDir: string
+  buildId: string
+  parentRevision?: string | null
+  message: string
+  ref: string
+}): string {
   if (!isRecordId(input.buildId)) throw new Error('Invalid build id for round revision.')
   ensureRepository(input.workspaceDir, input.buildId)
   if (input.parentRevision) {
@@ -317,14 +319,39 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
     git(input.workspaceDir, input.buildId, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
     git(input.workspaceDir, input.buildId, ['add', '-A', '-f', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
     const tree = git(input.workspaceDir, input.buildId, ['write-tree'], indexFile)
-    const args = ['commit-tree', tree, '-m', `Gauntlet Gamesmith ${input.buildId} round ${input.round}`]
+    const args = ['commit-tree', tree, '-m', input.message]
     if (input.parentRevision) args.push('-p', input.parentRevision)
     return git(input.workspaceDir, input.buildId, args, indexFile)
   })
 
   assertRevision(revision)
-  git(input.workspaceDir, input.buildId, ['update-ref', `refs/builds/${input.buildId}/rounds/${input.round}`, revision])
+  git(input.workspaceDir, input.buildId, ['update-ref', input.ref, revision])
   return revision
+}
+
+/** Commit the playable source tree without touching a user's Git repository, index, or branch. */
+export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
+  // Round zero is the durable pre-reference source baseline. Positive rounds
+  // remain the immutable implementations assigned to critics.
+  if (!Number.isInteger(input.round) || input.round < 0) throw new Error('Round must be a nonnegative integer.')
+  return commitPlayableSource({
+    workspaceDir: input.workspaceDir,
+    buildId: input.buildId,
+    parentRevision: input.parentRevision,
+    message: `Gauntlet Gamesmith ${input.buildId} round ${input.round}`,
+    ref: `refs/builds/${input.buildId}/rounds/${input.round}`,
+  })
+}
+
+/** Snapshot the live workspace for publication without moving the round-zero research baseline. */
+export function captureLiveRevision(input: Omit<CaptureRoundRevisionInput, 'round'>): string {
+  return commitPlayableSource({
+    workspaceDir: input.workspaceDir,
+    buildId: input.buildId,
+    parentRevision: input.parentRevision,
+    message: `Gauntlet Gamesmith ${input.buildId} live workspace`,
+    ref: `refs/builds/${input.buildId}/live`,
+  })
 }
 
 /**
@@ -371,7 +398,7 @@ export function revisionDriftPaths(workspaceDir: string, buildId: string, revisi
 
 /** Materialize a temporary playable checkout for one immutable round revision. */
 export function checkoutRoundRevision(workspaceDir: string, buildId: string, round: number, revision: string): string {
-  if (!Number.isInteger(round) || round < 1) throw new Error('Round must be a positive integer.')
+  if (!Number.isInteger(round) || round < 0) throw new Error('Round must be a nonnegative integer.')
   assertRevision(revision)
   ensureRepository(workspaceDir, buildId)
   assertRevisionStored(workspaceDir, buildId, revision)
