@@ -50,7 +50,7 @@ export default async function GamePage({ params }: Props) {
     <>
       <Link
         data-testid="game-browse"
-        href="/"
+        href="/games"
         className="text-sm text-muted-foreground"
       >
         ← All games
