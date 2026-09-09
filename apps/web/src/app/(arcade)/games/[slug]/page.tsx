@@ -38,7 +38,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function GamePage({ params }: Props) {
   const { slug } = await params,
-    game = await findGame(slug)
+    game = await findGame(slug),
+    origin = await gameOrigin()
+  const coverPath = game.listing.coverPath?.split('/').map(encodeURIComponent).join('/')
+  const cover = game.cover_key
+    ? `/covers/${game.id}/${game.cover_key}`
+    : coverPath
+      ? `${origin}/play/${game.id}/${game.current_release_id}/${coverPath}`
+      : undefined
   return (
     <>
       <Link
@@ -58,10 +65,10 @@ export default async function GamePage({ params }: Props) {
           {game.publisher.display_name}
         </Link>
       </p>
-      {game.cover_key && <img src={`/covers/${game.id}/${game.cover_key}`} alt="" className="mb-6 max-h-64 rounded-xl object-contain" />}
       <GamePlayer
-        url={`${await gameOrigin()}/play/${game.id}/${game.current_release_id}/index.html`}
+        url={`${origin}/play/${game.id}/${game.current_release_id}/index.html`}
         title={game.listing.title}
+        cover={cover}
       />
       <section className="mt-10 grid gap-8 sm:grid-cols-2">
         <div>
