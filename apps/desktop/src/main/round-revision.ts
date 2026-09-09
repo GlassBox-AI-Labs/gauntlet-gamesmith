@@ -39,7 +39,8 @@ const EXCLUDED_PATHS = [
   ':(exclude,glob)**/playwright-report/**',
   ':(exclude,glob)**/test-results/**',
 ]
-const liveCheckoutIdentities = new Map<string, { dev: number; ino: number }>()
+const CHECKOUT_IDENTITY_FILE = '.gauntlet-checkout-id'
+const liveCheckoutIdentities = new Map<string, { dev: number; ino: number; token: string }>()
 let revisionStorageRoot: string | null = null
 
 interface CaptureRoundRevisionInput {
@@ -414,11 +415,13 @@ export function checkoutRoundRevision(workspaceDir: string, buildId: string, rou
       git(workspaceDir, buildId, ['read-tree', revision], indexFile)
       git(workspaceDir, buildId, ['checkout-index', '--all', '--force', `--prefix=${destination}${path.sep}`], indexFile)
     })
+    const token = randomUUID()
+    fs.writeFileSync(path.join(destination, CHECKOUT_IDENTITY_FILE), token, { mode: 0o600, flag: 'wx' })
     const stat = fs.lstatSync(destination)
     if (stat.isSymbolicLink() || !stat.isDirectory() || !contained(playRoot, fs.realpathSync(destination))) {
       throw new Error('Round checkout destination is not a contained real directory.')
     }
-    liveCheckoutIdentities.set(destination, { dev: stat.dev, ino: stat.ino })
+    liveCheckoutIdentities.set(destination, { dev: stat.dev, ino: stat.ino, token })
     return destination
   } catch (error) {
     // Node has no inode-conditional recursive delete. Retain the unique partial
@@ -452,9 +455,16 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
     }
     throw error
   }
+  let tokenOnDisk: string
+  try {
+    tokenOnDisk = fs.readFileSync(path.join(checkoutDir, CHECKOUT_IDENTITY_FILE), 'utf8')
+  } catch {
+    throw new Error('Refusing to clean an unowned round checkout.')
+  }
   if (
     stat.isSymbolicLink()
     || !stat.isDirectory()
+    || tokenOnDisk !== expected.token
     || stat.dev !== expected.dev
     || stat.ino !== expected.ino
     || !contained(expectedRoot, fs.realpathSync(checkoutDir))
@@ -469,7 +479,11 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
   // again afterwards. Only a tree that is still the one this session created is
   // removed; anything else is put back untouched.
   //
-  // Without this the app never reclaimed a checkout at all. Every Play and every
+  // Directory inodes are reused quickly on ext4. A rm+mkdir at the same path
+  // can keep the recorded (dev, ino) pair, so the token file — which the
+  // replacement does not have — is what stops cleanup from deleting it.
+  //
+  // Without reclaim the app never removed a checkout at all. Every Play and every
   // publish left a full copy of the round behind — 5.8 GB for one real build —
   // and the next one failed its storage limit.
   // The rename target keeps the `round-N-<revision>-<uuid>` shape. A crash
@@ -479,7 +493,14 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
   const quarantine = path.join(playRoot, `${name.split('-').slice(0, 3).join('-')}-${randomUUID()}`)
   fs.renameSync(checkoutDir, quarantine)
   const moved = fs.lstatSync(quarantine)
-  if (moved.dev !== expected.dev || moved.ino !== expected.ino) {
+  let movedToken: string
+  try {
+    movedToken = fs.readFileSync(path.join(quarantine, CHECKOUT_IDENTITY_FILE), 'utf8')
+  } catch {
+    fs.renameSync(quarantine, checkoutDir)
+    throw new Error('Refusing to clean a round checkout that changed identity while being reclaimed.')
+  }
+  if (moved.dev !== expected.dev || moved.ino !== expected.ino || movedToken !== expected.token) {
     fs.renameSync(quarantine, checkoutDir)
     throw new Error('Refusing to clean a round checkout that changed identity while being reclaimed.')
   }

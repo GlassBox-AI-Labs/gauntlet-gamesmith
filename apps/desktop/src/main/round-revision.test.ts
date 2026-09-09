@@ -116,6 +116,8 @@ describe('round revisions', () => {
     const checkout = checkoutRoundRevision(dir, LOOP_ID, 1, revision)
 
     // An operator (or hostile) replacement standing where the checkout was.
+    // On ext4 this often reuses the directory inode, so (dev, ino) is not
+    // enough to refuse the delete.
     fs.rmSync(checkout, { recursive: true, force: true })
     fs.mkdirSync(checkout, { mode: 0o700 })
     fs.writeFileSync(path.join(checkout, 'not-ours.txt'), 'do not delete me')
