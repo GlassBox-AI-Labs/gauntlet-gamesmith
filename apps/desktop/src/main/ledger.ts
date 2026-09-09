@@ -2219,12 +2219,17 @@ export class Ledger {
     return Number.isSafeInteger(row.count) && row.count >= 0 ? row.count : 0
   }
 
-  latestImplementSessionId(buildId: string, round: number, excludedAttemptId: string): string | null {
+  /**
+   * The session a replacement attempt at the same phase can continue. Scoped to
+   * one role and round so a resumed critique never adopts the implementer's
+   * thread, or a thread from a round it was not asked to judge.
+   */
+  latestSessionIdForRole(buildId: string, role: PhaseRole, round: number, excludedAttemptId: string): string | null {
     const row = this.db.prepare(
       `SELECT session_id FROM phase_attempts
-       WHERE build_id = ? AND role = 'implement' AND round = ? AND id <> ? AND session_id IS NOT NULL
+       WHERE build_id = ? AND role = ? AND round = ? AND id <> ? AND session_id IS NOT NULL
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-    ).get(buildId, round, excludedAttemptId) as { session_id: string } | undefined
+    ).get(buildId, role, round, excludedAttemptId) as { session_id: string } | undefined
     return normalizeSessionId(row?.session_id)
   }
 
