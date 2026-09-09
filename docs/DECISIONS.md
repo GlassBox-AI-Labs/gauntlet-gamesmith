@@ -1175,3 +1175,28 @@ mid-run; the log is the record, and no schema or report field was added to track
 critique now spends the session it continues, and `resumeBuild`'s retry branch remains unbounded
 by `MAX_CRITIQUE_ATTEMPTS`, so each press is a real paid attempt — an explicit operator action,
 left as is.
+
+## ADR-044 — Build-level Publish ships the live workspace (2026-09-08)
+
+**Status:** accepted; refines ADR-023/024/028.
+
+**Context.** Operators edit the project folder outside the implement → critique loop.
+Play already previews that live tree from the overall build view. Publish, however,
+only compiled a completed implement revision, so those edits could not ship until
+another implement round captured them.
+
+**Decision.** The overall build view publishes a frozen snapshot of the current
+project folder. Round views still publish that round's saved implement revision.
+Live publication captures the playable source into an app-private `live` Git ref
+(not round 0, which remains the Reference Study baseline), checks that snapshot
+out, and compiles it so agents cannot mutate the tree mid-pack. Catalog provenance
+uses `round: 0` for that snapshot and a positive round for saved implementations.
+There is still no artifact file picker; Export remains a separate archive.
+
+**Consequences.** Hosted `begin_release` still requires a positive round, so a
+live upload keeps the snapshot revision and attempt id and borrows the latest
+implement round number until that catalog change ships. Local schema
+`20260908000000_workspace_publication_provenance.sql` already allows round 0.
+Release history should treat round 0 as the live workspace when hosted stores it.
+Untrusted imported history still requires explicit Play/Resume consent before
+publish.

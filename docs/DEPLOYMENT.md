@@ -243,7 +243,8 @@ publishers create their own accounts and publish their own saved rounds in Elect
 For a fresh environment or sender rotation, use this order:
 
 1. Apply the Challenger migration without resetting the hosted database.
-   Apply subsequent versioned migrations, including neutral generated publisher identities.
+   Apply subsequent versioned migrations, including neutral generated publisher identities
+   and live-workspace publication provenance (`round: 0`).
    Regenerated `schema.sql` and types are references; the versioned migration is the input.
 2. In Supabase Authentication → Email, configure a **custom SMTP sender** and a verified
    sender address. Supabase's built-in sender only sends to authorized project-team

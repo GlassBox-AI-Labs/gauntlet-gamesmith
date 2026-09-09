@@ -32,7 +32,7 @@ export const sourceSchema = z
   .object({
     loopId: z.uuid(),
     runId: z.uuid(),
-    round: z.number().int().positive(),
+    round: z.number().int().nonnegative(),
     revision: z.string().regex(/^[a-f0-9]{40,64}$/),
   })
   .strict()

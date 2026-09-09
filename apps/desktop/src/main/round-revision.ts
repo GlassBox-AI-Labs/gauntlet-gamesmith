@@ -17,7 +17,7 @@ const MAX_REPOSITORY_ENTRIES = 200_000
 const MAX_RETAINED_CHECKOUTS = 16
 const MAX_RETAINED_CHECKOUT_ENTRIES = 100_000
 const MAX_RETAINED_CHECKOUT_BYTES = 1024 * 1024 * 1024
-const CHECKOUT_NAME = /^round-[1-9]\d*-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const CHECKOUT_NAME = /^round-(?:0|[1-9]\d*)-[0-9a-f]{12}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const EXCLUDED_PATHS = [
   `:(exclude)${BUILD_METADATA_DIR}`,
   `:(exclude)${BUILD_METADATA_DIR}/**`,
@@ -39,7 +39,8 @@ const EXCLUDED_PATHS = [
   ':(exclude,glob)**/playwright-report/**',
   ':(exclude,glob)**/test-results/**',
 ]
-const liveCheckoutIdentities = new Map<string, { dev: number; ino: number }>()
+const CHECKOUT_IDENTITY_FILE = '.gauntlet-checkout-id'
+const liveCheckoutIdentities = new Map<string, { dev: number; ino: number; token: string }>()
 let revisionStorageRoot: string | null = null
 
 interface CaptureRoundRevisionInput {
@@ -301,11 +302,13 @@ function assertCheckoutCapacity(playRoot: string): void {
   }
 }
 
-/** Commit the playable source tree without touching a user's Git repository, index, or branch. */
-export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
-  // Round zero is the durable pre-reference source baseline. Positive rounds
-  // remain the immutable implementations assigned to critics.
-  if (!Number.isInteger(input.round) || input.round < 0) throw new Error('Round must be a nonnegative integer.')
+function commitPlayableSource(input: {
+  workspaceDir: string
+  buildId: string
+  parentRevision?: string | null
+  message: string
+  ref: string
+}): string {
   if (!isRecordId(input.buildId)) throw new Error('Invalid build id for round revision.')
   ensureRepository(input.workspaceDir, input.buildId)
   if (input.parentRevision) {
@@ -317,14 +320,39 @@ export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
     git(input.workspaceDir, input.buildId, input.parentRevision ? ['read-tree', input.parentRevision] : ['read-tree', '--empty'], indexFile)
     git(input.workspaceDir, input.buildId, ['add', '-A', '-f', '--', '.', ...EXCLUDED_PATHS], indexFile, IGNORED_PATHS_WARNING)
     const tree = git(input.workspaceDir, input.buildId, ['write-tree'], indexFile)
-    const args = ['commit-tree', tree, '-m', `Gauntlet Gamesmith ${input.buildId} round ${input.round}`]
+    const args = ['commit-tree', tree, '-m', input.message]
     if (input.parentRevision) args.push('-p', input.parentRevision)
     return git(input.workspaceDir, input.buildId, args, indexFile)
   })
 
   assertRevision(revision)
-  git(input.workspaceDir, input.buildId, ['update-ref', `refs/builds/${input.buildId}/rounds/${input.round}`, revision])
+  git(input.workspaceDir, input.buildId, ['update-ref', input.ref, revision])
   return revision
+}
+
+/** Commit the playable source tree without touching a user's Git repository, index, or branch. */
+export function captureRoundRevision(input: CaptureRoundRevisionInput): string {
+  // Round zero is the durable pre-reference source baseline. Positive rounds
+  // remain the immutable implementations assigned to critics.
+  if (!Number.isInteger(input.round) || input.round < 0) throw new Error('Round must be a nonnegative integer.')
+  return commitPlayableSource({
+    workspaceDir: input.workspaceDir,
+    buildId: input.buildId,
+    parentRevision: input.parentRevision,
+    message: `Gauntlet Gamesmith ${input.buildId} round ${input.round}`,
+    ref: `refs/builds/${input.buildId}/rounds/${input.round}`,
+  })
+}
+
+/** Snapshot the live workspace for publication without moving the round-zero research baseline. */
+export function captureLiveRevision(input: Omit<CaptureRoundRevisionInput, 'round'>): string {
+  return commitPlayableSource({
+    workspaceDir: input.workspaceDir,
+    buildId: input.buildId,
+    parentRevision: input.parentRevision,
+    message: `Gauntlet Gamesmith ${input.buildId} live workspace`,
+    ref: `refs/builds/${input.buildId}/live`,
+  })
 }
 
 /**
@@ -371,7 +399,7 @@ export function revisionDriftPaths(workspaceDir: string, buildId: string, revisi
 
 /** Materialize a temporary playable checkout for one immutable round revision. */
 export function checkoutRoundRevision(workspaceDir: string, buildId: string, round: number, revision: string): string {
-  if (!Number.isInteger(round) || round < 1) throw new Error('Round must be a positive integer.')
+  if (!Number.isInteger(round) || round < 0) throw new Error('Round must be a nonnegative integer.')
   assertRevision(revision)
   ensureRepository(workspaceDir, buildId)
   assertRevisionStored(workspaceDir, buildId, revision)
@@ -387,11 +415,13 @@ export function checkoutRoundRevision(workspaceDir: string, buildId: string, rou
       git(workspaceDir, buildId, ['read-tree', revision], indexFile)
       git(workspaceDir, buildId, ['checkout-index', '--all', '--force', `--prefix=${destination}${path.sep}`], indexFile)
     })
+    const token = randomUUID()
+    fs.writeFileSync(path.join(destination, CHECKOUT_IDENTITY_FILE), token, { mode: 0o600, flag: 'wx' })
     const stat = fs.lstatSync(destination)
     if (stat.isSymbolicLink() || !stat.isDirectory() || !contained(playRoot, fs.realpathSync(destination))) {
       throw new Error('Round checkout destination is not a contained real directory.')
     }
-    liveCheckoutIdentities.set(destination, { dev: stat.dev, ino: stat.ino })
+    liveCheckoutIdentities.set(destination, { dev: stat.dev, ino: stat.ino, token })
     return destination
   } catch (error) {
     // Node has no inode-conditional recursive delete. Retain the unique partial
@@ -425,9 +455,16 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
     }
     throw error
   }
+  let tokenOnDisk: string
+  try {
+    tokenOnDisk = fs.readFileSync(path.join(checkoutDir, CHECKOUT_IDENTITY_FILE), 'utf8')
+  } catch {
+    throw new Error('Refusing to clean an unowned round checkout.')
+  }
   if (
     stat.isSymbolicLink()
     || !stat.isDirectory()
+    || tokenOnDisk !== expected.token
     || stat.dev !== expected.dev
     || stat.ino !== expected.ino
     || !contained(expectedRoot, fs.realpathSync(checkoutDir))
@@ -442,7 +479,11 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
   // again afterwards. Only a tree that is still the one this session created is
   // removed; anything else is put back untouched.
   //
-  // Without this the app never reclaimed a checkout at all. Every Play and every
+  // Directory inodes are reused quickly on ext4. A rm+mkdir at the same path
+  // can keep the recorded (dev, ino) pair, so the token file — which the
+  // replacement does not have — is what stops cleanup from deleting it.
+  //
+  // Without reclaim the app never removed a checkout at all. Every Play and every
   // publish left a full copy of the round behind — 5.8 GB for one real build —
   // and the next one failed its storage limit.
   // The rename target keeps the `round-N-<revision>-<uuid>` shape. A crash
@@ -452,7 +493,14 @@ export function cleanupRoundCheckout(checkoutDir: string): void {
   const quarantine = path.join(playRoot, `${name.split('-').slice(0, 3).join('-')}-${randomUUID()}`)
   fs.renameSync(checkoutDir, quarantine)
   const moved = fs.lstatSync(quarantine)
-  if (moved.dev !== expected.dev || moved.ino !== expected.ino) {
+  let movedToken: string
+  try {
+    movedToken = fs.readFileSync(path.join(quarantine, CHECKOUT_IDENTITY_FILE), 'utf8')
+  } catch {
+    fs.renameSync(quarantine, checkoutDir)
+    throw new Error('Refusing to clean a round checkout that changed identity while being reclaimed.')
+  }
+  if (moved.dev !== expected.dev || moved.ino !== expected.ino || movedToken !== expected.token) {
     fs.renameSync(quarantine, checkoutDir)
     throw new Error('Refusing to clean a round checkout that changed identity while being reclaimed.')
   }

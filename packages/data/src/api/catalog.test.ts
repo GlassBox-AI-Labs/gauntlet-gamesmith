@@ -25,6 +25,7 @@ describe('saved-round publication contract', () => {
       source,
     }
     expect(beginSchema.parse(input).source).toEqual(source)
+    expect(beginSchema.parse({ ...input, source: { ...source, round: 0 } }).source.round).toBe(0)
     expect(beginSchema.safeParse({ ...input, source: undefined }).success).toBe(
       false,
     )

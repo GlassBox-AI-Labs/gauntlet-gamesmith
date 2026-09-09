@@ -63,15 +63,16 @@ use Supabase Auth administration.
 
 ## Desktop workflow
 
-1. Open a build and click **Publish round N** for its latest completed saved round,
-   or select a specific completed round and click **Publish**.
+1. Open a build and click **Publish** to snapshot the live project folder, or
+   open a completed round and click **Publish** for that round's saved revision.
 2. Create and verify a Challenger account, or enter an existing publisher email and password in the publishing drawer and
    click **Sign in to publish**. Supabase authenticates the account without opening
    a browser. The password is cleared after each attempt and is never saved.
 3. Review the prefilled title and URL. Description and controls are optional;
    an omitted description uses "Created with Gauntlet Gamesmith."
-4. **Preview game** compiles the selected immutable saved revision
-   with its installed dependencies. Vite receives `--base=./`. Only validated
+4. **Preview game** compiles the selected source: the live workspace snapshot
+   from the overall build view, or the immutable saved revision from a round view.
+   Vite receives `--base=./`. Only validated
    shipping files are uploaded, directly to a scoped Supabase Storage URL.
    The app detects the generated browser output and automatically captures a
    1280 × 720 main-menu cover from those exact shipping bytes. No cover selection
@@ -138,8 +139,8 @@ Private previews last 30 minutes and survive server restart with the same
   storage, external fetches, forms, or top-level navigation. Bundle assets locally.
 
 Export is a separate developer archive with history and reference evidence; it
-must never be uploaded as a release. Publish only assets you may share. The saved
-round provenance is an integrity contract, not remote attestation of a publisher's
+must never be uploaded as a release. Publish only assets you may share. Publication
+provenance is an integrity contract, not remote attestation of a publisher's
 machine; v1 deliberately trusts allowlisted developers.
 
 ## Architecture and conventions

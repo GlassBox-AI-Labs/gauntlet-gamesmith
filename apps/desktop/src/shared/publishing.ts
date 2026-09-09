@@ -1,6 +1,7 @@
 import type { OperationResult } from './result'
 export interface PublishDraft {
   buildId: string
+  /** Positive rounds publish that saved implement revision. `0` publishes a snapshot of the live workspace. */
   round: number
   title: string
   slug: string
