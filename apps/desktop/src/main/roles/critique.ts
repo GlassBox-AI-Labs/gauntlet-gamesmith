@@ -28,6 +28,8 @@ interface CritiqueRoleRuntime {
   verifyReference(terminalLog: { kind: string; text: string }): boolean
   failOrRetry(error: string, label: string, maxAttempts: number, prompt: string, terminalLog: { kind: string; text: string }): Promise<void>
   overBudget(): boolean
+  /** Name the source files that moved while this critic was judging. */
+  reportRevisionDrift(revision: string): void
   finishBuild(status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void
   persistBuildTerminal(status: 'passed' | 'exhausted' | 'stopped' | 'failed', reason: string): void
   implementPrompt(round: number, verdict: NonNullable<PhaseAttempt['verdict']>): string
@@ -138,6 +140,13 @@ export function createCritiqueProtocol(runtime: CritiqueRoleRuntime): StreamPars
       text: `▤ critique metrics: ${criticCost != null ? `$${criticCost.toFixed(2)} equivalent API cost (price_table:${PRICE_TABLE_VERSION}) · ` : 'equivalent API cost n/a · '}in ${formatTokens(state.tokens.input + state.tokens.cacheRead)} · out ${formatTokens(state.tokens.output)} · ${Math.round(durationMs / 60_000)}m`,
     }
 
+    // A stopped or timed-out critique returns before either boundary check, so
+    // drift that happened while it ran used to surface only when the *next*
+    // attempt refused to launch. Say it here, where it happened (VIS-001). The
+    // terminal transition is unchanged.
+    if (exit.timedOut && attempt.revision && !workspaceMatchesRevision(build.workspaceDir, build.id, attempt.revision)) {
+      runtime.reportRevisionDrift(attempt.revision)
+    }
     if (runtime.finishCancelled(exit, 'Critique attempt timed out.', terminalMetric)) return
     if (state.failure || exit.spawnError || (exit.code !== 0 && exit.code !== null) || !verdict) {
       const error = exit.spawnError ?? state.rateLimitNotice ?? state.failure ?? (verdict ? `${attempt.harness} exited ${exit.code}` : `${artifact.error ?? 'invalid verdict artifact'} (exit ${exit.code})`)

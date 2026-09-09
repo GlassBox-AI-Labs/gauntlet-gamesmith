@@ -166,7 +166,9 @@ describe('Ledger', () => {
     expect(ledger.latestInterruptedAttemptForBuild(build.id)?.id).toBe(pause.id)
     expect(ledger.oldestQueuedAttemptForBuild(build.id)?.id).toBe(queued.id)
     expect(ledger.activeAttemptForBuild(build.id)?.id).toBe(active.id)
-    expect(ledger.latestImplementSessionId(build.id, 1, pause.id)).toBe('thread-1')
+    expect(ledger.latestSessionIdForRole(build.id, 'implement', 1, pause.id)).toBe('thread-1')
+    // Role-scoped: a resumed critique must never adopt the implementer's thread.
+    expect(ledger.latestSessionIdForRole(build.id, 'critique', 1, pause.id)).toBeNull()
     expect(ledger.previousImplementRevision(build.id, 2)).toBe('b'.repeat(40))
     expect(ledger.bestVerdictScore(build.id)).toBe(0.75)
     ledger.close()

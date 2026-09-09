@@ -118,7 +118,7 @@ branch previews use only `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
 privileged catalog clients and proxies validated public listing covers to production.
 Public pages read the live catalog through the anon client and RLS; publishing,
 authentication, and the preview catalog multiplayer API are unavailable. Published
-games still run on the existing game host. Preview code must include ADR-043's
+games still run on the existing game host. Preview code must include ADR-045's
 public-client separation; older branches need that change before browsing works.
 Full staging needs its own Supabase project, signing secret, and Redis namespace.
 
