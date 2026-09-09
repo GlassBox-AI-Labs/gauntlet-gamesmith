@@ -1116,7 +1116,83 @@ and no-store policy. Cold optimization still fetches the original from the game
 host. `scripts/catalog-image-smoke.mjs` checks rendered pages and actual image
 responses against a running catalog with published covers.
 
-## ADR-043 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
+## ADR-043 — A stale critique re-binds to the workspace instead of failing the build (2026-09-07)
+
+**Status:** accepted.
+
+**Context.** Round 1 of the "Ashen Woods" build lost a critique twice over. It was killed at
+exactly 60 minutes with `Timed out.` while a Bash tool was 240 seconds into a run and a subagent
+was mid-task — critique and reference passed one constant as both the idle limit and the hard
+cap, so an hour of elapsed time ended them however busy they were. That discarded $13.51 and an
+hour of gathered playtest evidence. Implement had already learned this lesson and holds 40
+minutes idle against a 12-hour ceiling; the other two phases never got the split.
+
+Pressing Resume could not recover any of it. A cancelled critique goes down `planResume`'s
+`retry` branch, which built a cold attempt: no `--resume`, no preamble, the same one-hour clock,
+even though the critic's session id is recorded on its first stream line and its transcript was
+still on disk. And it would not have reached the CLI at all — six files in the project folder
+had changed since the implementation revision was captured, so the pre-launch binding check
+failed the whole build with `Workspace changed after implementation revision capture` and no
+indication of which files moved. Those files were the operator's own work, not the critic's: the
+critic writes only under `critique/round-N/`, which the drift check already excludes.
+
+**Decision.** Three changes, each scoped to what the rule it touches actually protects.
+
+Critique and reference get implement's shape: a 40-minute idle limit against a four-hour ceiling,
+roughly five times the longest run either phase has recorded. Because their parser advances
+progress on every stdout and stderr line, the idle limit fires only on genuine silence.
+
+An interrupted critique resumes as a second attempt at the same phase, never as a new role
+(ADR-020). The queued row carries the existing `[[gauntlet:resume]]` marker; `executeCritique`
+reads it before launch, because it rebuilds its contract from scratch — the verdict filename is
+attempt-scoped — and prepends the same resume preamble the implementer uses. The CLI flag is
+gated exactly as implement gates it: marker, a stored session id for that role and round, and a
+locally created build. Session lookup is role-scoped so a critic can never adopt the
+implementer's thread. Without all three the critic still cold-starts under the preamble, which
+points it at the evidence its predecessor left on disk — session resume stays an optimization
+and never a correctness dependency (PHASE-002).
+
+A critique whose revision is stale **before it has judged anything** re-binds instead of failing.
+The current source is captured as a fresh revision chained to the implementation's, the attempt
+is re-bound to it, and the changed paths and the new revision are logged. The operator keeps
+their changes; the app does not revert a project folder it does not own. CONT-002 still holds —
+the critic is bound to an immutable revision and the verdict names the revision it judged — but
+the revision is a newer one.
+
+**What stays fatal.** The check *after* a critic has judged (`roles/critique.ts`). There the
+evidence really is split across two versions of the game and no one can say which scenario ran
+against which, so a verdict is refused and the build fails. That path is unchanged. A timed-out
+critique now runs the same check for reporting only and names the drifted files, so drift
+surfaces where it happened rather than an hour later at the next launch (VIS-001).
+
+`.DS_Store` joins `EXCLUDED_PATHS`. Browsing the project folder in Finder while a critic ran was
+enough to reject a whole critique.
+
+**Consequences.** A verdict produced after a re-bind covers the workspace as it stands, including
+edits made outside the build, and the build log says so on the round it happened. Scores are
+therefore not automatically comparable across builds where the operator worked in the folder
+mid-run; the log is the record, and no schema or report field was added to track it. Resume of a
+critique now spends the session it continues, and `resumeBuild`'s retry branch remains unbounded
+by `MAX_CRITIQUE_ATTEMPTS`, so each press is a real paid attempt — an explicit operator action,
+left as is.
+
+## ADR-044 — The web home is the splash; the catalog lives at /games (2026-09-07)
+
+**Context.** The catalog grid was the root page of the web app, so the first thing a visitor
+saw was a list of published games with no explanation of the product that made them.
+
+**Decision.** `/` renders the Vitrine splash for Gauntlet Gamesmith and `/how` the run
+walkthrough, both as Server Components with page-scoped CSS, fonts from `next/font`, and one
+small Client Component for scroll reveal, the blind-pair slider, and the hero particle field.
+The arcade chrome moves into an `(arcade)` route group, and the catalog grid, game pages, and
+publisher pages live under it at `/games`, `/games/[slug]`, and `/publishers/[handle]`. Every
+link that meant "all games" points at `/games`; the brand link still points at `/`.
+
+**Consequences.** Bookmarks to `/` now land on the splash rather than the grid. The splash owns
+its own tokens under `.page`, so the arcade theme and `@gauntlet/ui` are untouched. Copy on the
+splash is the approved content spec; changing it is a content decision, not a layout one.
+
+## ADR-045 — Native Vercel catalog deploys and public-only branch previews (2026-09-08)
 
 **Decision.** Use the official Vercel GitHub integration for the public repository.
 The catalog production environment tracks `main`; other branches receive Preview
@@ -1141,7 +1217,7 @@ merges whose catalog APIs require them. Branch protection gates production merge
 Vercel deployment builds run independently of GitHub Actions. Existing branches need
 the public-client separation before their previews can browse without service keys.
 
-## ADR-044 — Hosted games support JavaScript form handlers (2026-09-08)
+## ADR-046 — Hosted games support JavaScript form handlers (2026-09-08)
 
 **Context.** The game-content CSP and catalog iframe both omitted `allow-forms`.
 Browsers stop sandboxed form submission before dispatching the `submit` event,
@@ -1160,7 +1236,7 @@ needed for this permission fix. Games must cancel native submission and use the
 existing authorized multiplayer client for networking.
 
 
-## ADR-045 — Public game content previews without database credentials (2026-09-08)
+## ADR-047 — Public game content previews without database credentials (2026-09-08)
 
 **Context.** A catalog-only branch preview cannot test game-host sandbox changes
 because its iframe still loads the production host's unchanged response policy.

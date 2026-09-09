@@ -66,6 +66,25 @@ describe('critiquePlan', () => {
     expect(claude.bin).toBe('claude')
     expect(claude.args).not.toContain('-o')
   })
+
+  it('resumes an interrupted critic the same way an interrupted implementer resumes', () => {
+    const claude = critiquePlan({ ...ctx(resolveModels(null, { criticModel: 'claude-opus-5', criticEffort: 'high' })), resumeId: 'sess-9' })
+    expect(claude.args.slice(0, 2)).toEqual(['--resume', 'sess-9'])
+
+    const codex = critiquePlan({ ...ctx(resolveModels(null, { criticModel: 'gpt-5.6-sol', criticEffort: 'medium' })), outFile: '/w/verdict.txt', resumeId: 'thread-9' })
+    expect(codex.args.slice(0, 3)).toEqual(['exec', 'resume', 'thread-9'])
+    // `exec resume` rejects `-s`; the sandbox has to arrive as a config key.
+    expect(codex.args).not.toContain('-s')
+    expect(codex.args).toContain('sandbox_mode=workspace-write')
+  })
+
+  it('cold-starts a critic that has no session to continue', () => {
+    const claude = critiquePlan(ctx(resolveModels(null, { criticModel: 'claude-opus-5', criticEffort: 'high' })))
+    expect(claude.args).not.toContain('--resume')
+    const codex = critiquePlan({ ...ctx(resolveModels(null, { criticModel: 'gpt-5.6-sol', criticEffort: 'medium' })), outFile: '/w/verdict.txt' })
+    expect(codex.args).not.toContain('resume')
+    expect(codex.args).toContain('-s')
+  })
 })
 
 describe('referencePlan', () => {

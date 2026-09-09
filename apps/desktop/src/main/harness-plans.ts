@@ -189,13 +189,13 @@ export function critiquePlan(ctx: PlanContext): SpawnPlan {
   if (harnessFor(models.criticModel) === 'codex') {
     return {
       bin: 'codex',
-      args: [...codexArgs(models.criticModel, models.criticEffort, ctx.outFile), ctx.prompt],
+      args: [...codexArgs(models.criticModel, models.criticEffort, ctx.outFile, ctx.resumeId), ctx.prompt],
       env: cliHomeEnv('codex', ctx.codexHome),
     }
   }
   return {
     bin: 'claude',
-    args: claudeArgs(models.criticModel, models.criticEffort, ctx.prompt),
+    args: [...(ctx.resumeId ? ['--resume', ctx.resumeId] : []), ...claudeArgs(models.criticModel, models.criticEffort, ctx.prompt)],
     env: { ...cliHomeEnv('claude', ctx.claudeHome), CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' },
   }
 }
