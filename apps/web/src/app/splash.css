@@ -69,7 +69,7 @@
 #splash .cta .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); flex-basis: 100%; }
 #splash .hero-case { margin-bottom: 0; justify-self: end; width: 100%; }
 @media (max-height: 820px) {
-  #splash .hero-case .glass { max-height: 42svh; }
+  #splash .hero-case .glass { max-height: 40svh; }
   #splash .hero h1 { font-size: clamp(2.2rem, 4cqi, 3.5rem); max-width: 30ch; }
   #splash .hero .lead { font-size: 1.05rem; margin-top: 0; }
   #splash .hero .cta { margin-top: 18px; }
