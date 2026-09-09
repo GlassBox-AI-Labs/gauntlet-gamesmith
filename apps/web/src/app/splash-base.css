@@ -109,7 +109,7 @@
   font-family: var(--mono);
   font-weight: 400;
   font-size: 0.72rem;
-  opacity: 0.75;
+  color: var(--fg-2);
 }
 .page .icon {
   width: 1.05em;

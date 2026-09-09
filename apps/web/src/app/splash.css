@@ -55,8 +55,8 @@
 
 /* Hero: dim footage behind, the app surface in front */
 #splash .hero { position: relative; min-height: 82svh; display: grid; align-content: end; padding-top: clamp(28px, 4cqi, 48px); padding-bottom: clamp(24px, 3cqi, 40px); overflow: hidden; }
-#splash .hero .footage { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; filter: brightness(0.45) saturate(0.85); }
-#splash .hero .scrim { position: absolute; inset: 0; z-index: 1; background: linear-gradient(180deg, rgba(7, 8, 12, 0.9) 0%, rgba(7, 8, 12, 0.78) 50%, rgba(7, 8, 12, 0.64) 100%); }
+#splash .hero .footage { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; filter: brightness(0.7) saturate(0.85); }
+#splash .hero .scrim { position: absolute; inset: 0; z-index: 1; background: linear-gradient(180deg, rgba(7, 8, 12, 0.7) 0%, rgba(7, 8, 12, 0.55) 50%, rgba(7, 8, 12, 0.45) 100%); }
 #splash .field { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0.8; }
 #splash .hero .wrap { position: relative; z-index: 3; width: 100%; display: grid; gap: clamp(14px, 2cqi, 22px); }
 #splash .hero-row { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.3fr); gap: var(--gap); align-items: start; }
@@ -67,7 +67,12 @@
 #splash .hero .cta .meta { color: var(--fg-2); }
 #splash .hero .btn-primary { font-size: clamp(1.15rem, 1.6cqi, 1.4rem); padding: 1em 1.7em; }
 #splash .cta .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); flex-basis: 100%; }
-#splash .hero-case { margin-bottom: 0; }
+#splash .hero-case { margin-bottom: 0; justify-self: end; width: 100%; }
+@media (max-height: 820px) {
+  #splash .hero-case .glass { max-height: 44svh; }
+  #splash .hero h1 { font-size: clamp(2.3rem, 4.4cqi, 3.8rem); }
+  #splash .hero { padding-top: 24px; }
+}
 #splash .hero-case .glass { aspect-ratio: 1034 / 814; max-height: 56svh; }
 @media (prefers-reduced-motion: no-preference) {
   #splash .hero-case { animation: splash-float 9s ease-in-out infinite; }
@@ -127,9 +132,10 @@
 #splash .arcade video { position: absolute; inset: 0; z-index: 0; filter: saturate(0.9) brightness(0.8); }
 #splash .arcade .scrim { position: absolute; inset: 0; z-index: 1; background: linear-gradient(90deg, rgba(7, 8, 12, 0.94) 0%, rgba(7, 8, 12, 0.82) 45%, rgba(7, 8, 12, 0.25) 100%); }
 #splash .arcade .copy { position: relative; z-index: 2; padding: clamp(32px, 5cqi, 72px); max-width: 640px; }
-#splash .arcade h2 { margin-top: 18px; }
+#splash .arcade h2 { margin-top: 0; }
+#splash .arcade .live { display: inline-flex; margin-top: 22px; }
 #splash .arcade .copy > p { margin-top: 18px; color: var(--fg-2); max-width: 50ch; }
-#splash .shelf { margin-top: 28px; display: inline-grid; gap: 4px; padding: 16px 20px; border: 1px solid var(--line-2); background: rgba(7, 8, 12, 0.6); }
+#splash .shelf { margin-top: 14px; display: inline-grid; gap: 4px; padding: 16px 20px; border: 1px solid var(--line-2); background: rgba(7, 8, 12, 0.6); }
 #splash .shelf strong { font-family: var(--display); font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; }
 #splash .shelf span { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); }
 #splash .arcade .cta { margin-top: 28px; }
@@ -202,6 +208,7 @@
   #splash .hero h1 { max-width: none; }
   #splash .point, #splash .evidence, #splash .get { grid-template-columns: 1fr; }
   #splash .point.flip .pt { order: 0; }
+  #splash .point.flip { grid-template-columns: 1fr; }
   #splash .point.wide .pt { grid-template-columns: 1fr; gap: 10px; }
   #splash .point.wide .pt p { margin-top: 10px; }
   #splash .typed li { grid-template-columns: 1fr; gap: 16px; }

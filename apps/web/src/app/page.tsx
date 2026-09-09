@@ -100,9 +100,9 @@ export default function SplashPage() {
             <video src="/splash/arcade-clip.mp4" poster="/splash/arcade-poster.webp" muted loop playsInline autoPlay preload="metadata" aria-hidden="true"></video>
             <div className="scrim"></div>
             <div className="copy">
-              <span className="live">The arcade is live</span>
               <h2>Made here. Played here.</h2>
               <p>Publish from the app. Anyone can play it in a browser, no account.</p>
+              <span className="live">The arcade is live</span>
               <div className="shelf"><strong>Pac-claude Arcade</strong><span>published by Gabe's Games</span></div>
               <div className="cta">
                 <Link className="btn btn-secondary" href="/games">Open the arcade<span className="meta">gauntletgamesmith.com</span><svg className="icon" aria-hidden="true"><use href="#i-arrow-up-right"/></svg></Link>
