@@ -69,9 +69,13 @@
 #splash .cta .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--fg-3); flex-basis: 100%; }
 #splash .hero-case { margin-bottom: 0; justify-self: end; width: 100%; }
 @media (max-height: 820px) {
-  #splash .hero-case .glass { max-height: 44svh; }
-  #splash .hero h1 { font-size: clamp(2.3rem, 4.4cqi, 3.8rem); }
-  #splash .hero { padding-top: 24px; }
+  #splash .hero-case .glass { max-height: 42svh; }
+  #splash .hero h1 { font-size: clamp(2.2rem, 4cqi, 3.5rem); max-width: 30ch; }
+  #splash .hero .lead { font-size: 1.05rem; margin-top: 0; }
+  #splash .hero .cta { margin-top: 18px; }
+  #splash .hero .btn-primary { font-size: 1.15rem; padding: 0.9em 1.5em; }
+  #splash .hero { padding-top: 20px; padding-bottom: 20px; min-height: 0; }
+  #splash .hero .wrap { gap: 14px; }
 }
 #splash .hero-case .glass { aspect-ratio: 1034 / 814; max-height: 56svh; }
 @media (prefers-reduced-motion: no-preference) {
