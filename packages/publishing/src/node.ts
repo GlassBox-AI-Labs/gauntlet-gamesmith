@@ -38,11 +38,12 @@ function shippingPath(relative: string): string {
   return assetPath(shipping)
 }
 
-/** Only package a chosen shipping directory. Links, source, and unknown file types fail closed. */
+/** Only package a chosen shipping directory. Links and private trees fail closed. */
 export async function packDirectory(directory: string, sourceRevision: string, log: (text: string) => void = () => {}): Promise<GameArtifact> {
   const root = await fs.realpath(directory), files: GameArtifact['files'] = []
   if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error('Build directory cannot be a symlink.')
   let total = 0, entries = 0
+  const skipped: string[] = []
   async function visit(dir: string): Promise<void> {
     const handle = await fs.opendir(dir)
     for await (const entry of handle) {
@@ -55,8 +56,28 @@ export async function packDirectory(directory: string, sourceRevision: string, l
       if (entry.name.startsWith('.') || /^(node_modules|reference|critique)$/i.test(entry.name)) throw new Error(`Private directory in build: ${relative}`)
       if (stat.isDirectory()) { await visit(target); continue }
       if (!stat.isFile()) throw new Error(`Special file in build: ${relative}`)
-      const publishedPath = shippingPath(relative)
-      if (files.length >= MAX_FILES || (total += stat.size) > MAX_ARTIFACT_BYTES) throw new Error('Build exceeds publication limits.')
+      // Source maps, Blender files, and other non-browser types used to fail
+      // the whole artifact. Vite copies whatever sits in public/, so one
+      // workshop .blend was enough to leave a finished game unpublishable.
+      let publishedPath: string
+      try {
+        publishedPath = shippingPath(relative)
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith('Unsupported asset path:')) {
+          skipped.push(relative)
+          continue
+        }
+        throw error
+      }
+      if (files.length >= MAX_FILES) {
+        throw new Error(`Build exceeds publication limits (${MAX_FILES} files).`)
+      }
+      total += stat.size
+      if (total > MAX_ARTIFACT_BYTES) {
+        throw new Error(
+          `Build exceeds publication limits (${(total / (1024 * 1024)).toFixed(1)} MiB of ${MAX_ARTIFACT_BYTES / (1024 * 1024)} MiB). Workshop dashboards, videos, and source trees in the shipping output count against this cap.`,
+        )
+      }
       const fd = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
         const actual = await fd.stat()
@@ -76,5 +97,6 @@ export async function packDirectory(directory: string, sourceRevision: string, l
     }
   }
   await visit(root)
+  if (skipped.length > 0) log(`Leaving ${skipped.length} non-shipping file${skipped.length === 1 ? '' : 's'} out of the upload: ${skipped.join(', ')}.`)
   return validateArtifact({ version: 1, sourceRevision, files }).artifact
 }
